@@ -59,6 +59,10 @@ DEFAULT_SPEED_MODEL = {
         "50": {"power": 0.5, "pwm": 145},
         "100": {"power": 1.0, "pwm": 255},
     },
+    "turn_efficiency": {
+        "l": 300.0,
+        "r": 300.0,
+    },
 }
 
 def _brick_module():
@@ -83,7 +87,6 @@ def _load_speed_model(path=None):
             data = json.loads(text)
             if isinstance(data, dict):
                 model = data
-                print(f"[SYSTEM] Loaded {len(model.get('combined_movements', {}))} combined movements.")
             else:
                 print(f"[ERROR] JSON root is not a dict: {type(data)}")
         except (OSError, json.JSONDecodeError) as e:
@@ -147,13 +150,26 @@ def _coerce_hotkeys(raw, fallback, score_levels):
     return cleaned
 
 
+def _coerce_command_remap(raw):
+    if not isinstance(raw, dict):
+        return {}
+    cleaned = {}
+    for key, value in raw.items():
+        if key is None or value is None:
+            continue
+        cleaned[str(key)] = str(value)
+    return cleaned
+
+
 def _load_speed_model(path):
+    loaded_from_file = False
     model = DEFAULT_SPEED_MODEL
     if path.exists():
         try:
             data = json.loads(path.read_text())
             if isinstance(data, dict):
                 model = data
+                loaded_from_file = True
         except (OSError, json.JSONDecodeError):
             model = DEFAULT_SPEED_MODEL
     score_map = _coerce_score_power_pwm(model.get("score_power_pwm"), DEFAULT_SPEED_MODEL["score_power_pwm"])
@@ -163,13 +179,20 @@ def _load_speed_model(path):
     if not levels:
         levels = (SPEED_SCORE_MIN, SPEED_SCORE_DEFAULT, SPEED_SCORE_MAX)
         score_map = _coerce_score_power_pwm(DEFAULT_SPEED_MODEL["score_power_pwm"], {})
-    hotkeys = _coerce_hotkeys(model.get("hotkey_speed_scores"), DEFAULT_SPEED_MODEL["hotkey_speed_scores"], levels)
-    if not hotkeys:
+    hotkey_fallback = {} if loaded_from_file else DEFAULT_SPEED_MODEL["hotkey_speed_scores"]
+    hotkeys = _coerce_hotkeys(model.get("hotkey_speed_scores"), hotkey_fallback, levels)
+    if not hotkeys and not loaded_from_file:
         hotkeys = _coerce_hotkeys(DEFAULT_SPEED_MODEL["hotkey_speed_scores"], {}, levels)
-    return hotkeys, score_map, levels, model.get("combined_movements", {})
+    
+    turn_eff = model.get("turn_efficiency", DEFAULT_SPEED_MODEL["turn_efficiency"])
+    if not isinstance(turn_eff, dict):
+        turn_eff = DEFAULT_SPEED_MODEL["turn_efficiency"]
+    cmd_remap = _coerce_command_remap(model.get("command_remap"))
+        
+    return hotkeys, score_map, levels, turn_eff, cmd_remap
 
 
-HOTKEY_SPEED_SCORES, SCORE_POWER_PWM, SPEED_SCORE_LEVELS, COMBINED_MOVEMENTS = _load_speed_model(ROBOT_MODEL_FILE)
+HOTKEY_SPEED_SCORES, SCORE_POWER_PWM, SPEED_SCORE_LEVELS, TURN_EFFICIENCY, COMMAND_REMAP = _load_speed_model(ROBOT_MODEL_FILE)
 
 
 def speed_power_pwm_for_cmd(cmd, score):
@@ -326,10 +349,26 @@ def update_from_motion(world, event):
         world.x -= dist_pulse * math.cos(rad)
         world.y -= dist_pulse * math.sin(rad)
     elif event.action_type == "left_turn":
-        rot_pulse = world.deg_per_sec_full_speed * power_ratio * dt
+        # Apply turn efficiency if available
+        # Experiment found L ~88, R ~59. Scale relatively to deg_per_sec_full_speed.
+        # If we use TURN_EFFICIENCY directly as a multiplier for deg_per_sec? 
+        # Actually deg_per_sec_full_speed is already a 'speed'. 1.0 power = 90 deg/sec.
+        # Let's use it as a 0-1 multiplier or scale relative to a baseline.
+        # For now, let's just make it a direct component of the pulse.
+        eff_l = world.turn_efficiency_l / 100.0 # Normalize around 100
+        rot_pulse = world.deg_per_sec_full_speed * power_ratio * dt * 0.5 * eff_l
+        dist_pulse = world.mm_per_sec_full_speed * power_ratio * dt * 0.5
+        rad = math.radians(world.theta)
+        world.x += dist_pulse * math.cos(rad)
+        world.y += dist_pulse * math.sin(rad)
         world.theta += rot_pulse
     elif event.action_type == "right_turn":
-        rot_pulse = world.deg_per_sec_full_speed * power_ratio * dt
+        eff_r = world.turn_efficiency_r / 100.0
+        rot_pulse = world.deg_per_sec_full_speed * power_ratio * dt * 0.5 * eff_r
+        dist_pulse = world.mm_per_sec_full_speed * power_ratio * dt * 0.5
+        rad = math.radians(world.theta)
+        world.x += dist_pulse * math.cos(rad)
+        world.y += dist_pulse * math.sin(rad)
         world.theta -= rot_pulse
     elif event.action_type == "mast_up":
         lift_pulse = world.lift_mm_per_sec * power_ratio * dt
@@ -365,19 +404,54 @@ class StepState(Enum):
     PLACE = "PLACE"
     RETREAT = "RETREAT"
 
+def _cmd_for_action_type(action_type):
+    return {
+        "forward": "f",
+        "backward": "b",
+        "left_turn": "l",
+        "right_turn": "r",
+        "mast_up": "u",
+        "mast_down": "d",
+    }.get(action_type)
+
 class MotionEvent:
-    def __init__(self, action_type, power, duration_ms):
+    def __init__(self, action_type, power=None, duration_ms=0, speed_score=None):
         self.action_type = action_type
-        self.power = int(power) if power is not None else 0
-        self.duration_ms = duration_ms
+        self.duration_ms = int(duration_ms) if duration_ms is not None else 0
         self.timestamp = time.time()
+        self.speed_score = None
+        self.power = 0
+
+        if speed_score is not None:
+            try:
+                self.speed_score = int(speed_score)
+            except (TypeError, ValueError):
+                self.speed_score = None
+
+        if power is not None:
+            try:
+                self.power = int(power)
+            except (TypeError, ValueError):
+                self.power = 0
+        elif self.speed_score is not None:
+            cmd = _cmd_for_action_type(self.action_type)
+            if cmd:
+                power_val, _, _ = speed_power_pwm_for_cmd(cmd, self.speed_score)
+                self.power = int(power_val * 255)
+
         if self.action_type in ("left_turn", "right_turn") and 0 < self.power < MIN_TURN_POWER_PWM:
             self.power = MIN_TURN_POWER_PWM
+
+        if self.speed_score is None and self.power:
+            cmd = _cmd_for_action_type(self.action_type)
+            if cmd:
+                _, score_used = quantize_speed(cmd, speed=self.power / 255.0)
+                self.speed_score = score_used
 
     def to_dict(self):
         return {
             "type": self.action_type,
-            "power": self.power,
+            "speedScore": self.speed_score,
             "duration_ms": self.duration_ms,
             "timestamp": round(self.timestamp, 3)
         }
@@ -569,6 +643,10 @@ class WorldModel:
             self.lift_mm_per_sec = lift_per_sec
         self.lift_height_anchor = None # The Vision height at Mast=0mm
         
+        # Turn Efficiencies
+        self.turn_efficiency_l = TURN_EFFICIENCY.get("l", 100.0)
+        self.turn_efficiency_r = TURN_EFFICIENCY.get("r", 100.0)
+        
         self.action_history = collections.deque(maxlen=100)
 
     @property
@@ -673,13 +751,23 @@ class WorldModel:
             brick = self.brick or {}
             brick_visible = bool(brick.get("visible"))
             for metric, stats in success_metrics.items():
-                if metric in ("angle_abs", "xAxis_offset_abs", "dist", "confidence") and not brick_visible:
+                if metric in ("angle_abs", "xAxis_offset_abs", "angle", "xAxis_offset", "dist", "confidence") and not brick_visible:
                     return False
                 if metric == "angle_abs":
                     if abs(brick.get("angle", 0.0)) > stats.get("max", 0.0):
                         return False
+                elif metric == "angle":
+                    target = stats.get("target", 0.0)
+                    tol = stats.get("tol", 0.0)
+                    if abs(brick.get("angle", 0.0) - target) > tol:
+                        return False
                 elif metric == "xAxis_offset_abs":
                     if abs(brick.get("offset_x", 0.0)) > stats.get("max", 0.0):
+                        return False
+                elif metric == "xAxis_offset":
+                    target = stats.get("target", 0.0)
+                    tol = stats.get("tol", 0.0)
+                    if abs(brick.get("offset_x", 0.0) - target) > tol:
                         return False
                 elif metric == "dist":
                     if brick.get("dist", 0.0) > stats.get("max", 0.0):
@@ -865,11 +953,17 @@ class TelemetryLogger:
         if event.action_type not in MOTION_EVENT_TYPES:
             return
 
+        speed_score = event.speed_score
+        if speed_score is None:
+            cmd = _cmd_for_action_type(event.action_type)
+            if cmd:
+                _, speed_score = quantize_speed(cmd, speed=event.power / 255.0)
+
         data = {
             "type": "action",
             "timestamp": round(event.timestamp, 3),
             "command": event.action_type,
-            "power": int(event.power),
+            "speedScore": None if speed_score is None else int(speed_score),
             "duration_ms": int(event.duration_ms)
         }
 
@@ -1086,36 +1180,6 @@ def draw_telemetry_overlay(
     x_axis = wm.brick.get("x_axis", wm.brick.get("offset_x", 0.0))
     obj_rules = (wm.process_rules or {}).get("ALIGN_BRICK", {}) if wm.process_rules else {}
     success_gates = (obj_rules or {}).get("success_gates") or {}
-    x_gate = success_gates.get("xAxis_offset_abs") or {}
-    angle_gate = success_gates.get("angle_abs") or {}
-    dist_gate = success_gates.get("dist") or {}
-    def _target_tol_str(stats, fmt):
-        target = stats.get("target")
-        tol = stats.get("tol")
-        if isinstance(target, (int, float)) and isinstance(tol, (int, float)):
-            return f" ({fmt(target)}+/-{fmt(tol)})"
-        min_val = stats.get("min")
-        max_val = stats.get("max")
-        if isinstance(min_val, (int, float)) and isinstance(max_val, (int, float)):
-            return f" ({fmt(min_val)}-{fmt(max_val)})"
-        return ""
-    def _gate_line(stats, fmt, label, current_val, signed=False):
-        target = stats.get("target")
-        tol = stats.get("tol")
-        if isinstance(target, (int, float)) and isinstance(tol, (int, float)):
-            off_val = current_val - target if signed else abs(current_val - target)
-            return f"  {label} {fmt(target)} +/- {fmt(tol)} | {fmt(off_val)} off"
-        min_val = stats.get("min")
-        max_val = stats.get("max")
-        if isinstance(min_val, (int, float)) and isinstance(max_val, (int, float)):
-            if current_val < min_val:
-                off_val = min_val - current_val
-            elif current_val > max_val:
-                off_val = current_val - max_val
-            else:
-                off_val = 0.0
-            return f"  {label} {fmt(min_val)}-{fmt(max_val)} | {fmt(off_val)} off"
-        return None
     x_prefix = "* " if highlight_metric == "xAxis_offset_abs" else ""
     angle_prefix = "* " if highlight_metric == "angle_abs" else ""
     dist_prefix = "* " if highlight_metric == "dist" else ""
@@ -1123,27 +1187,14 @@ def draw_telemetry_overlay(
         put_line(f"{x_prefix}X-AXIS: {x_axis:.1f} mm", WHITE, 0.38, 1)
     else:
         put_line(f"{x_prefix}X-AXIS: -", WHITE, 0.38, 1)
-    x_gate_line = _gate_line(x_gate, lambda v: f"{v:.1f}", "TARGET", x_axis, signed=True)
-    if x_gate_line:
-        x_trend = getattr(wm, "_align_metrics_trend", {}).get("x_axis")
-        x_gate_color = GREEN if x_trend == 1 else RED if x_trend == -1 else WHITE
-        put_line(x_gate_line, x_gate_color, 0.35, 1)
     if visible_now:
         put_line(f"{angle_prefix}ANGLE:  {wm.brick['angle']:.1f} deg", WHITE, 0.38, 1)
     else:
         put_line(f"{angle_prefix}ANGLE:  -", WHITE, 0.38, 1)
-    angle_gate_line = _gate_line(angle_gate, lambda v: f"{v:.1f}", "TARGET", wm.brick["angle"])
-    if angle_gate_line:
-        put_line(angle_gate_line, WHITE, 0.35, 1)
     if visible_now:
         put_line(f"{dist_prefix}DIST:   {wm.brick['dist']:.0f} mm", WHITE, 0.38, 1)
     else:
         put_line(f"{dist_prefix}DIST:   -", WHITE, 0.38, 1)
-    dist_gate_line = _gate_line(dist_gate, lambda v: f"{v:.1f}", "TARGET", wm.brick["dist"])
-    if dist_gate_line:
-        dist_trend = getattr(wm, "_align_metrics_trend", {}).get("dist")
-        dist_gate_color = GREEN if dist_trend == 1 else RED if dist_trend == -1 else WHITE
-        put_line(dist_gate_line, dist_gate_color, 0.35, 1)
     brick_conf = wm.brick.get("confidence")
     if brick_conf is None:
         brick_conf = 0.0
@@ -1166,17 +1217,21 @@ def draw_telemetry_overlay(
     put_line(f"LIFT:   {wm.lift_height:.0f} mm", (200, 200, 255), 0.38, 1)
     cam_times = getattr(wm, "_camera_frame_times", [])
     if cam_times:
-        cam_str = " ".join(f"{sec % 60:02d}:{ms:03d}" for sec, ms in cam_times[-3:])
-        unique_frames = getattr(wm, "_camera_unique_frames", None)
-        if isinstance(unique_frames, int):
-            cam_str = f"{cam_str} u={unique_frames}/3"
         cam_color = RED if getattr(wm, "_camera_dupe_ms", False) else WHITE
-        put_line(f"CAMERA: {cam_str}", cam_color, 0.38, 1)
+        fps = getattr(wm, "_camera_fps", None)
+        fps_str = f"{fps:.1f}" if isinstance(fps, (int, float)) else "-"
+        put_line(f"CAMERA: {fps_str} fps", cam_color, 0.38, 1)
+        dupes = getattr(wm, "_camera_dupe_count", 0)
+        put_line(f"DUPLICATE TIMESTAMP COUNT: {dupes}", cam_color, 0.38, 1)
 
     # 6. Vision Info
     y_cur += 12
     if not wm.brick['visible']:
-        put_line("VISION: SEARCHING", (0, 0, 255), 0.38, 1)
+        reason = getattr(wm, "_vision_lost_reason", None)
+        if reason:
+            put_line(f"VISION: {reason}", (0, 0, 255), 0.38, 1)
+        else:
+            put_line("VISION: SEARCHING", (0, 0, 255), 0.38, 1)
     
     y_cur += 8 # Spacer
 

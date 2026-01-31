@@ -64,7 +64,7 @@ def _score_entry(score_map, score):
 
 
 def _set_score_entry(score_map, score, power, pwm):
-    score_map[str(int(score))] = {"power": float(power), "pwm": int(pwm)}
+    score_map[str(int(score))] = {"power": round(float(power), 2), "pwm": int(pwm)}
 
 
 def _power_to_pwm(power):

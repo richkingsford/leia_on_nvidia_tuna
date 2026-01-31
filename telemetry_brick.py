@@ -22,16 +22,14 @@ from telemetry_robot import (
     ALIGN_SPEED_FAST_MM,
     ALIGN_MICRO_OFFSET_MM,
     ALIGN_MICRO_ANGLE_DEG,
-    COMBINED_MOVEMENTS,
 )
 START_GATE_MIN_CONFIDENCE = 25.0
 ALIGN_CONFIDENCE_MIN = 25.0
-COMBINED_MOVEMENT_THRESHOLD_MM = 5.0  # Use combined movements when lateral offset > 5mm
-COMBINED_MOVEMENT_FAST_THRESHOLD_MM = 20.0  # Use fast combined movements when distance > 20mm
 VISIBILITY_LOST_GRACE_S = 0.5
 BRICK_SMOOTH_FRAMES = 3
 BRICK_SMOOTH_OUTLIER_MM = 12.0
 BRICK_SMOOTH_OUTLIER_DEG = 6.0
+VISIBILITY_LOST_CONFIRM_FRAMES = 3
 VISIBLE_FALSE_GRACE_S_BY_STEP = {
     "EXIT_WALL": 1.0,
 }
@@ -48,7 +46,7 @@ METRICS_BY_STEP = {
     "FIND_WALL": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "EXIT_WALL": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "FIND_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
-    "ALIGN_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
+    "ALIGN_BRICK": ("xAxis_offset_abs", "dist", "visible"),
     "SCOOP": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "POSITION_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
 }
@@ -107,7 +105,7 @@ def _filtered_brick_frame_average(frames, min_frames=BRICK_SMOOTH_FRAMES):
         keep.append(frame)
 
     if len(keep) < min_frames:
-        return None, True, f"{len(keep)}/{min_frames} tight variance frames (inconsistent)"
+        return None, True, f"only {len(keep)}/{min_frames} frames agreed (inconsistent)"
     return _average_brick_frames(keep), True, None
 
 
@@ -353,12 +351,26 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
     success_metrics = (process_rules or {}).get(obj_name, {}).get("success_gates") or {}
     brick = world.brick or {}
     visible = bool(brick.get("visible"))
+    visible_for_cmd = visible
+    lost_frames = getattr(world, "_visibility_lost_frames", 0)
+    last_seen_time = getattr(world, "last_visible_time", None)
     x_axis = brick.get("x_axis")
     if x_axis is None:
         x_axis = 0.0
     x_axis = float(x_axis)
     angle = float(brick.get("angle", 0.0) or 0.0)
     dist = float(brick.get("dist", 0.0) or 0.0)
+    if not visible and last_seen_time is not None and lost_frames < VISIBILITY_LOST_CONFIRM_FRAMES:
+        visible_for_cmd = True
+        last_x = getattr(world, "last_seen_x_axis", None)
+        last_angle = getattr(world, "last_seen_angle", None)
+        last_dist = getattr(world, "last_seen_dist", None)
+        if last_x is not None:
+            x_axis = float(last_x)
+        if last_angle is not None:
+            angle = float(last_angle)
+        if last_dist is not None:
+            dist = float(last_dist)
 
     metrics = {
         "xAxis_offset_abs": x_axis,
@@ -564,84 +576,21 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
             elif dist_min is not None and dist < dist_min:
                 cmd = "b"
         
-        # Check if we should use combined movement (diagonal correction)
-        # Use combined movement when we need both distance AND lateral correction
-        if cmd is not None and not x_axis_ok:
-            x_offset = signed_values.get("xAxis_offset_abs", 0.0)
-            # Only use combined movements if lateral offset is significant
-            if abs(x_offset) > COMBINED_MOVEMENT_THRESHOLD_MM:
-                # Determine speed variant
-                suffix = "_fast" if dist > COMBINED_MOVEMENT_FAST_THRESHOLD_MM else "_slow"
-                
-                # Forward and left -- only if far enough away
-                if cmd == "f" and x_offset < 0 and dist > 70.0:
-                    cmd = f"fl{suffix}"
-                # Forward and right -- only if far enough away
-                elif cmd == "f" and x_offset > 0 and dist > 70.0:
-                    cmd = f"fr{suffix}"
-                # Backward and left
-                elif cmd == "b" and x_offset < 0:
-                    cmd = f"bl{suffix}"
-                # Backward and right
-                elif cmd == "b" and x_offset > 0:
-                    cmd = f"br{suffix}"
     elif worst_metric == "xAxis_offset_abs":
         signed = signed_values.get("xAxis_offset_abs", 0.0)
         stats = success_metrics.get("xAxis_offset_abs") or fallback_stats("xAxis_offset_abs")
         target = stats.get("target")
         tol = stats.get("tol")
         signed_error = signed - target if target is not None and tol is not None else signed
-        if signed_error == 0:
-            cmd = None
-        else:
-            cmd = "r" if signed_error > 0 else "l"
+        # Positive error should turn right, negative error should turn left.
+        cmd = turn_cmd_from_signed_error(-signed_error)
         if abs(signed_error) < micro_offset_mm:
             speed = min(speed, micro_speed)
+        worst_metric = "xAxis_offset"
         
-        # Check if we should use combined movement when lateral is worst metric
-        # Use combined movement when we need both lateral AND distance correction
-        if cmd is not None:
-            dist_offset = offsets.get("dist", 0.0)
-            dist_stats = success_metrics.get("dist") or fallback_stats("dist")
-            dist_min = dist_stats.get("min")
-            dist_max = dist_stats.get("max")
-            target_dist = dist_stats.get("target")
-            tol_dist = dist_stats.get("tol")
-            
-            # Determine if distance needs correction
-            needs_forward = False
-            needs_backward = False
-            if target_dist is not None and tol_dist is not None:
-                if dist > target_dist + tol_dist:
-                    needs_forward = True
-                elif dist < target_dist - tol_dist:
-                    needs_backward = True
-            else:
-                if dist_max is not None and dist > dist_max:
-                    needs_forward = True
-                elif dist_min is not None and dist < dist_min:
-                    needs_backward = True
-            
-            # Use combined movements if distance offset is significant
-            if abs(dist_offset) > COMBINED_MOVEMENT_THRESHOLD_MM:
-                # Determine speed variant
-                suffix = "_fast" if dist > COMBINED_MOVEMENT_FAST_THRESHOLD_MM else "_slow"
-                
-                # Left and forward -- only if far enough away
-                if cmd == "l" and needs_forward and dist > 70.0:
-                    cmd = f"fl{suffix}"
-                # Right and forward -- only if far enough away
-                elif cmd == "r" and needs_forward and dist > 70.0:
-                    cmd = f"fr{suffix}"
-                # Left and backward
-                elif cmd == "l" and needs_backward:
-                    cmd = f"bl{suffix}"
-                # Right and backward
-                elif cmd == "r" and needs_backward:
-                    cmd = f"br{suffix}"
-    elif worst_metric == "angle_abs":
-        signed = signed_values.get("angle_abs", 0.0)
-        stats = success_metrics.get("angle_abs") or fallback_stats("angle_abs")
+    elif worst_metric == "angle":
+        signed = signed_values.get("angle", 0.0)
+        stats = success_metrics.get("angle") or fallback_stats("angle")
         target = stats.get("target")
         tol = stats.get("tol")
         mag = abs(signed)
@@ -652,6 +601,7 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
             cmd = "l" if signed > 0 else "r"
         if abs(signed) < micro_angle_deg:
             speed = min(speed, micro_speed)
+        worst_metric = "angle"
 
     visible_only = success_gates_visible_only(process_rules, obj_name)
     if visible_only:
@@ -660,10 +610,10 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
     else:
         mm_off = None
         if cmd in ("l", "r"):
-            mm_off = mm_errors.get("xAxis_offset_abs")
+            mm_off = mm_errors.get("xAxis_offset")
         elif cmd in ("f", "b"):
             mm_off = mm_errors.get("dist")
-        if (mm_off is None or mm_off <= 0.0) and worst_metric == "angle_abs":
+        if (mm_off is None or mm_off <= 0.0) and worst_metric == "angle":
             mm_off = None
         slow_mm = ALIGN_SPEED_SLOW_MM
         fast_mm = ALIGN_SPEED_FAST_MM
@@ -673,13 +623,13 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
         speed_score = _score_from_mm(mm_off, slow_mm, fast_mm)
         speed_score = normalize_speed_score(speed_score)
 
-    if not visible:
+    if not visible_for_cmd:
         speed_score = SPEED_SCORE_DEFAULT
         speed_score = normalize_speed_score(speed_score)
 
-    # Override for combined movements
-    if cmd in COMBINED_MOVEMENTS:
-        speed_score = COMBINED_MOVEMENTS[cmd].get("score", speed_score)
+    # Force 1% speed score (fixed 0.24 power) for all alignment turns
+    if cmd in ("l", "r"):
+        speed_score = SPEED_SCORE_MIN
 
     if cmd:
         speed = manual_speed_for_cmd(cmd, speed_score)
@@ -781,7 +731,7 @@ def compute_brick_analytics(world, process_rules, learned_rules, step, duration_
         speed = align.get("speed") or 0.0
         speed_score = align.get("speed_score")
         suffix = f" {int(speed_score)}%" if speed_score is not None else ""
-        suggestion = f"{cmd.upper()} {speed:.2f}p{suffix}"
+        suggestion = f"{cmd.upper()}{suffix}"
 
     return {
         "gate_status": gate_status,
@@ -1113,15 +1063,18 @@ def offset_gap_phrase(offset_x):
         return "between the left side of the robot and the aruco marker"
     return "between the robot and the aruco marker"
 
+def turn_cmd_from_signed_error(signed_error):
+    if signed_error is None:
+        return None
+    if signed_error > 0:
+        return "l"
+    if signed_error < 0:
+        return "r"
+    return None
+
 
 def offset_cmd_from_offset_x(offset_x):
-    if offset_x is None:
-        return None
-    if offset_x > 0:
-        return "r"
-    if offset_x < 0:
-        return "l"
-    return None
+    return turn_cmd_from_signed_error(offset_x)
 
 
 def distance_marker_direction(dist, gates):
@@ -1222,15 +1175,14 @@ def offset_correction_cmd(measurement, gates):
     max_val = stats.get("max")
     abs_offset = abs(offset)
     if target is not None and tol is not None:
-        if abs_offset > target + tol:
-            return "r" if offset > 0 else "l"
-        if abs_offset < target - tol:
-            return "l" if offset > 0 else "r"
+        signed_error = offset - target
+        if abs(signed_error) > tol:
+            return turn_cmd_from_signed_error(-signed_error)
         return None
     if max_val is not None and abs_offset > max_val:
-        return "r" if offset > 0 else "l"
+        return turn_cmd_from_signed_error(-offset)
     if min_val is not None and abs_offset < min_val:
-        return "l" if offset > 0 else "r"
+        return turn_cmd_from_signed_error(-offset)
     return None
 
 

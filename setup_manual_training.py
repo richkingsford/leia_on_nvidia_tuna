@@ -26,7 +26,7 @@ from telemetry_robot import (
     SCORE_POWER_PWM,
     step_sequence,
 )
-from telemetry_process import compute_stream_gate_summary
+from telemetry_process import compute_stream_gate_summary, record_action_display
 from autobuild import (
     collect_segments,
     CONTROL_DT,
@@ -254,7 +254,8 @@ def run_auto_step(app_state, obj_enum):
         align_silent=quiet_align,
     )
     if ok:
-        log_line(f"[AUTO] {step_key} success ({reason}).")
+        reason_text = reason.replace("_", " ") if isinstance(reason, str) else "success criteria met"
+        log_line(f"[AUTO] {step_key} complete — {reason_text}.")
     else:
         if not quiet_align:
             log_line(f"[AUTO] {step_key} failed ({reason}).")
@@ -446,7 +447,7 @@ def update_stream_frame(app_state):
         step_suggestions = []
         if app_state.step_suggestions:
             step_suggestions.extend(app_state.step_suggestions)
-        active = bool(app_state.active_attempt or app_state.step_open or app_state.auto_running)
+        active = True
         gate_summary, analytics = compute_stream_gate_summary(
             app_state.world,
             app_state.world.step_state.value,
@@ -606,7 +607,7 @@ def format_hotkey_speeds():
     key_order = {key: idx for idx, key in enumerate([
         "W", "S", "R", "F", "T", "G",
         "A", "D", "Q", "E", "Z", "C",
-        "U", "L",
+        "P", "L",
     ])}
     grouped = {}
     for key, info in HOTKEY_SPEED_SCORES.items():
@@ -616,16 +617,7 @@ def format_hotkey_speeds():
             continue
         grouped.setdefault(categories[cmd], {}).setdefault(score, []).append(key.upper())
     def score_display(score):
-        entry = SCORE_POWER_PWM.get(int(score), {})
-        power = entry.get("power")
-        pwm = entry.get("pwm")
-        if power is None or pwm is None:
-            return f"{int(score)}%"
-        if abs(power) < 0.1:
-            power_str = f"{power:.3f}"
-        else:
-            power_str = f"{power:.2f}"
-        return f"{int(score)}% ({power_str}p/{int(pwm)})"
+        return f"{int(score)}%"
 
     parts = []
     for label in ("Drive", "Turn", "Lift"):
@@ -881,7 +873,8 @@ def keyboard_thread(app_state):
                     obj_key = normalize_step_label(obj_enum.value)
                     obj_cfg = (model.get("steps") or {}).get(obj_key, {})
                     success_gates = obj_cfg.get("success_gates") if isinstance(obj_cfg, dict) else None
-                    if not success_gates:
+                    nominal_only = isinstance(obj_cfg, dict) and obj_cfg.get("nominalDemosOnly")
+                    if not success_gates and not nominal_only:
                         messages.append(f"[AUTO] No success gates for {obj_key}. Record a success demo first.")
                     else:
                         with app_state.lock:
@@ -1050,6 +1043,7 @@ def control_loop(app_state):
         with app_state.lock:
             cmd = app_state.active_command
             speed = app_state.active_speed
+            score = app_state.active_speed_score
         if cmd and speed > 0:
             atype = "unknown"
             if cmd == 'f': atype = "forward"
@@ -1060,7 +1054,7 @@ def control_loop(app_state):
             elif cmd == 'd': atype = "mast_down"
             
             pwr = int(speed * 255)
-            evt = MotionEvent(atype, pwr, int(dt*1000))
+            evt = MotionEvent(atype, pwr, int(dt*1000), speed_score=score)
             app_state.world.update_from_motion(evt)
             if app_state.active_attempt:
                 app_state.logger.log_event(evt, app_state.world.step_state.value)
@@ -1103,6 +1097,7 @@ def command_loop(app_state):
 
         if cmd and speed > 0:
             app_state.robot.send_command(cmd, speed)
+            record_action_display(app_state.world, app_state.world.step_state, cmd, speed, speed_score=score)
             was_moving = True
         elif was_moving:
             app_state.robot.stop()

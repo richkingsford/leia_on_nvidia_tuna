@@ -69,15 +69,7 @@ def find_demo_files(demos_dir, session_name=None):
 
     if not demos_dir.exists():
         return []
-    files = sorted([p for p in demos_dir.glob("*.json") if p.is_file()])
-    for entry in sorted(demos_dir.iterdir()):
-        if not entry.is_dir():
-            continue
-        for name in DEMO_LOG_FILENAMES:
-            candidate = entry / name
-            if candidate.exists():
-                files.append(candidate)
-    return files
+    return sorted([p for p in demos_dir.rglob("*.json") if p.is_file()])
 
 
 def read_demo_log(path, strict=False):

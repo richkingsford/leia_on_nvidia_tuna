@@ -20,7 +20,7 @@ import numpy as np
 from flask import Flask, Response
 from helper_robot_control import Robot
 from helper_brick_vision import BrickDetector
-from telemetry_robot import WorldModel, MotionEvent, draw_telemetry_overlay
+from telemetry_robot import WorldModel, MotionEvent, draw_telemetry_overlay, manual_key_action
 
 # --- CONFIG ---
 GEAR_1_SPEED = 0.32
@@ -99,18 +99,10 @@ def keyboard_thread(state):
                 state.running = False
                 break
             
-            if ch == 'w':
-                state.active_command = 'b' # INVERTED
-            elif ch == 's':
-                state.active_command = 'f' # INVERTED
-            elif ch == 'a':
-                state.active_command = 'l'
-            elif ch == 'd':
-                state.active_command = 'r'
-            elif ch == 'p':
-                state.active_command = 'u'
-            elif ch == 'l':
-                state.active_command = 'd'
+            action = manual_key_action(ch)
+            if action:
+                cmd, _score = action
+                state.active_command = cmd
             
             # MOVEMENT
 

@@ -48,7 +48,7 @@
       "cmd": "r",
       "score": 100
     },
-    "u": {
+    "p": {
       "cmd": "u",
       "score": 50
     },
@@ -57,84 +57,28 @@
       "score": 50
     }
   },
-  "combined_movements": {
-    "fl_slow": {
-      "drive_cmd": "f",
-      "turn_cmd": "l",
-      "drive_speed": 0.22,
-      "turn_speed": 0.22,
-      "score": 33,
-      "description": "Forward+Left Slow Pivot"
-    },
-    "fl_fast": {
-      "drive_cmd": "f",
-      "turn_cmd": "l",
-      "drive_speed": 0.30,
-      "turn_speed": 0.30,
-      "score": 45,
-      "description": "Forward+Left Fast Pivot"
-    },
-    "fr_slow": {
-      "drive_cmd": "f",
-      "turn_cmd": "r",
-      "drive_speed": 0.22,
-      "turn_speed": 0.22,
-      "score": 33,
-      "description": "Forward+Right Slow Pivot"
-    },
-    "fr_fast": {
-      "drive_cmd": "f",
-      "turn_cmd": "r",
-      "drive_speed": 0.30,
-      "turn_speed": 0.30,
-      "score": 45,
-      "description": "Forward+Right Fast Pivot"
-    },
-    "bl_slow": {
-      "drive_cmd": "b",
-      "turn_cmd": "l",
-      "drive_speed": 0.22,
-      "turn_speed": 0.22,
-      "score": 33,
-      "description": "Backward+Left Slow Pivot"
-    },
-    "bl_fast": {
-      "drive_cmd": "b",
-      "turn_cmd": "l",
-      "drive_speed": 0.30,
-      "turn_speed": 0.30,
-      "score": 45,
-      "description": "Backward+Left Fast Pivot"
-    },
-    "br_slow": {
-      "drive_cmd": "b",
-      "turn_cmd": "r",
-      "drive_speed": 0.22,
-      "turn_speed": 0.22,
-      "score": 33,
-      "description": "Backward+Right Slow Pivot"
-    },
-    "br_fast": {
-      "drive_cmd": "b",
-      "turn_cmd": "r",
-      "drive_speed": 0.30,
-      "turn_speed": 0.30,
-      "score": 45,
-      "description": "Backward+Right Fast Pivot"
-    }
-  },
   "score_power_pwm": {
     "1": {
-      "power": 0.2900000000000001,
+      "power": 0.295,
       "pwm": 99
     },
     "50": {
-      "power": 0.4400000000000001,
+      "power": 0.44,
       "pwm": 132
     },
     "100": {
       "power": 1.0,
       "pwm": 255
     }
+  },
+  "command_remap": {
+    "l": "r",
+    "r": "l",
+    "f": "b",
+    "b": "f"
+  },
+  "turn_efficiency": {
+    "l": 88.04,
+    "r": 59.25
   }
 }

@@ -8,67 +8,7 @@ that your Arduino firmware expects (e.g., "f 200 50").
 import serial
 import time
 import sys
-import threading
-
-from telemetry_robot import MIN_PWM, MAX_PWM, MIN_TURN_POWER, COMBINED_MOVEMENTS
-
-class CombinedMover:
-    """
-    Handles combined movements (Forward/Backward + Turn) in a background thread.
-    This ensures a precise 50ms/50ms rhythm independent of the main program loop.
-    """
-    def __init__(self, robot):
-        self.robot = robot
-        self.running = False
-        self.thread = None
-        self.lock = threading.Lock()
-        self.params = None
-        
-    def start(self, d_cmd, t_cmd, d_spd, t_spd):
-        """Update parameters and ensure thread is running."""
-        with self.lock:
-            # Check if params changed to avoid restarting thread unnecessarily
-            new_params = (d_cmd, t_cmd, d_spd, t_spd)
-            if self.params == new_params and self.running:
-                return
-                
-            self.params = new_params
-            if not self.running:
-                self.running = True
-                self.thread = threading.Thread(target=self._loop, daemon=True)
-                self.thread.start()
-    
-    def stop(self):
-        """Stop the background movement thread."""
-        with self.lock:
-            if not self.running:
-                return
-            self.running = False
-            self.params = None
-        # We don't join here to keep the main loop fast; thread will exit on next cycle
-        
-    def _loop(self):
-        """Background loop toggling drive and turn commands."""
-        while True:
-            with self.lock:
-                if not self.running or not self.params:
-                    self.running = False
-                    break
-                d_cmd, t_cmd, d_spd, t_spd = self.params
-            
-            # 1. Drive Phase (50ms)
-            # We call robot.send_command, which handles inversion/normalization.
-            # It will NOT recurse back here because d_cmd ('f'/'b') is not a combined key.
-            self.robot.send_command(d_cmd, d_spd)
-            time.sleep(0.05)
-            
-            # Check exit
-            with self.lock:
-                if not self.running: break
-
-            # 2. Turn Phase (50ms)
-            self.robot.send_command(t_cmd, t_spd)
-            time.sleep(0.05)
+from telemetry_robot import MIN_PWM, MAX_PWM, MIN_TURN_POWER, COMMAND_REMAP
 
 
 class Robot:
@@ -82,9 +22,6 @@ class Robot:
         self.MAX_PWM = MAX_PWM
         self.MIN_TURN_POWER = MIN_TURN_POWER
         self.CMD_DURATION = 100 # ms (Keep it running slightly longer for smooth auto-drive)
-        
-        # Background mover for combined diagonal actions
-        self.mover = CombinedMover(self)
         
         self.connect()
 
@@ -121,48 +58,15 @@ class Robot:
     def send_command(self, cmd_char, speed):
         """
         Sends a high-level command: {char} {pwm} {duration}
-        cmd_char: f, b, l, r, u, d, or combined movements (fl_slow, fl_fast, etc)
-        speed: 0.0 to 1.0 (ignored for combined movements as they have internal speeds)
+        cmd_char: f, b, l, r, u, d
+        speed: 0.0 to 1.0
         """
-        # 1. Check for combined movement commands from configuration
-        if cmd_char in COMBINED_MOVEMENTS:
-            config = COMBINED_MOVEMENTS[cmd_char]
-            drive_cmd = config.get("drive_cmd")
-            turn_cmd = config.get("turn_cmd")
-            drive_speed = config.get("drive_speed", 0.0)
-            turn_speed = config.get("turn_speed", 0.0)
-            
-            if drive_cmd and turn_cmd:
-                # Hand off to background thread for precise timing
-                self.mover.start(drive_cmd, turn_cmd, drive_speed, turn_speed)
-                return
-
-        # 2. For normal commands, ensure background mover is stopped
-        # (Only stop if we are sending a conflicting move command)
-        # If we send a STOP (speed=0), we definitely stop the mover.
-        # If we send a regular move, we stop the mover to take control.
-        self.mover.stop()
-        
+        real_hw_cmd = COMMAND_REMAP.get(cmd_char, cmd_char)
         speed, pwm = self.normalize_speed(cmd_char, speed)
         if speed <= 0.0:
             # For safety, sending 0 speed usually stops that action
-            self._send(f"{cmd_char} 0 {self.CMD_DURATION}\n")
+            self._send(f"{real_hw_cmd} 0 {self.CMD_DURATION}\n")
             return
-
-        # 3. Hardware Inversion Correction
-        # The robot wiring is currently swapped:
-        # - 'f' moves backward, 'b' moves forward
-        # - 'l' turns right, 'r' turns left
-        # We fix this here so all high-level scripts (autolay, recording, etc) can use logical commands.
-        real_hw_cmd = cmd_char
-        if cmd_char == 'f':
-            real_hw_cmd = 'b'
-        elif cmd_char == 'b':
-            real_hw_cmd = 'f'
-        elif cmd_char == 'l':
-            real_hw_cmd = 'r'
-        elif cmd_char == 'r':
-            real_hw_cmd = 'l'
 
         # 4. Send
         self._send(f"{real_hw_cmd} {pwm} {self.CMD_DURATION}\n")
@@ -195,9 +99,6 @@ class Robot:
             self.send_command('u', 0)
 
     def stop(self):
-        # Stop background mover
-        self.mover.stop()
-        
         # Stop everything. 'f 0' usually stops the base?
         # Let's send a stop for drive and lift to be sure.
         self._send(f"f 0 {self.CMD_DURATION}\n")

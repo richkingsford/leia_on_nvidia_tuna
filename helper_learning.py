@@ -2,6 +2,7 @@ import math
 import numpy as np
 from collections import defaultdict
 from dataclasses import dataclass
+import telemetry_robot
 
 @dataclass
 class Action:
@@ -64,11 +65,22 @@ class BehavioralCloningPolicy:
                             pass
                         continue
                         
-                    cmd = evt.get("command") # f, b, l, r
+                    cmd = evt.get("command") # f, b, l, r or action name
+                    if cmd not in ("f", "b", "l", "r"):
+                        cmd = {
+                            "forward": "f",
+                            "backward": "b",
+                            "left_turn": "l",
+                            "right_turn": "r",
+                        }.get(cmd)
                     if cmd not in ("f", "b", "l", "r"):
                         continue
-                        
-                    power = float(evt.get("power", 0)) / 255.0
+
+                    speed_score = evt.get("speedScore")
+                    if speed_score is not None:
+                        power, _, _ = telemetry_robot.speed_power_pwm_for_cmd(cmd, speed_score)
+                    else:
+                        power = float(evt.get("power", 0)) / 255.0
                     if power <= 0.05:
                         continue
                         

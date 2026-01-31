@@ -50,23 +50,21 @@
                     "min": true
                 }
             },
-            "start_gates": {
-                "visible": {
-                    "min": false
-                }
+            "movement_learnings": {
+                "cmd": "r",
+                "speed": 1.1
             }
         },
         "EXIT_WALL": {
             "scan_direction": "r",
-            "start_gates": {
-                "visible": {
-                    "min": true
-                }
-            },
             "success_gates": {
                 "visible": {
                     "min": false
                 }
+            },
+            "movement_learnings": {
+                "cmd": "r",
+                "speed": 2.2
             }
         },
         "FIND_BRICK": {
@@ -76,13 +74,32 @@
                     "min": true
                 }
             },
-            "start_gates": {
-                "visible": {
-                    "min": false
-                }
+            "movement_learnings": {
+                "cmd": "r",
+                "speed": 4.4
             }
         },
         "ALIGN_BRICK": {
+            "gate_validation": {
+                "timestamp": 1769218132.666,
+                "fail_runs": 0,
+                "fail_states": 0,
+                "overlap_fail_runs": 0,
+                "metrics": {
+                    "angle": {
+                        "target": 5.34,
+                        "tol": 18.7
+                    },
+                    "xAxis_offset": {
+                        "target": 11.27,
+                        "tol": 3.162
+                    },
+                    "dist": {
+                        "target": 79.65,
+                        "tol": 9.911
+                    }
+                }
+            },
             "start_gates": {
                 "visible": {
                     "min": true
@@ -93,41 +110,70 @@
                     "min": true
                 },
                 "xAxis_offset_abs": {
-                    "target": -8.4,
+                    "target": -2.24,
                     "tol": 1.5
                 },
                 "dist": {
-                    "target": 60.35,
+                    "target": 81.38,
                     "tol": 1.5
-                }
-            },
-            "gate_validation": {
-                "timestamp": 1769218132.666,
-                "fail_runs": 0,
-                "fail_states": 0,
-                "overlap_fail_runs": 0,
-                "metrics": {
-                    "angle_abs": {
-                        "target": 5.34,
-                        "tol": 18.7
-                    },
-                    "xAxis_offset_abs": {
-                        "target": 11.27,
-                        "tol": 3.162
-                    },
-                    "dist": {
-                        "target": 79.65,
-                        "tol": 9.911
-                    }
                 }
             }
         },
         "SCOOP": {
-            "nominalDemosOnly": true
+            "nominalDemosOnly": true,
+            "movement_learnings": {
+                "cmd": "u",
+                "speed": 0.44
+            }
         },
-        "FIND_WALL2": {},
-        "POSITION_BRICK": {},
-        "PLACE": {},
-        "RETREAT": {}
+        "FIND_WALL2": {
+            "movement_learnings": {
+                "cmd": "b",
+                "speed": 4.4
+            },
+            "success_gates": {
+                "visible": {
+                    "min": true
+                }
+            }
+        },
+        "POSITION_BRICK": {
+            "start_gates": {
+                "visible": {
+                    "min": true
+                }
+            },
+            "success_gates": {
+                "visible": {
+                    "min": true
+                },
+                "angle_abs": {
+                    "target": 0.21,
+                    "tol": 0.16
+                },
+                "xAxis_offset_abs": {
+                    "target": -4.25,
+                    "tol": 1.5
+                },
+                "dist": {
+                    "target": 91.6,
+                    "tol": 1.5
+                }
+            }
+        },
+        "PLACE": {
+            "nominalDemosOnly": true,
+            "movement_learnings": {
+                "cmd": "l",
+                "speed": 2.95
+            }
+        },
+        "RETREAT": {
+            "nominalDemosOnly": true,
+            "movement_learnings": {
+                "cmd": "d",
+                "speed": 0.73
+            }
+        }
     }
 }

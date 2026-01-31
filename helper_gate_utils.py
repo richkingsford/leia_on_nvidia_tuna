@@ -26,7 +26,12 @@ def metric_value_from_measurement(measurement, metric):
         value = measurement.get("x_axis")
         if value is None:
             value = measurement.get("offset_x")
-        return abs(value) if value is not None else None
+        return float(value) if value is not None else None
+    if metric == "xAxis_offset":
+        value = measurement.get("x_axis")
+        if value is None:
+            value = measurement.get("offset_x")
+        return float(value) if value is not None else None
     if metric == "dist":
         value = measurement.get("dist")
         return float(value) if value is not None else None
