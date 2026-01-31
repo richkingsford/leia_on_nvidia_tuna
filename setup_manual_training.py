@@ -21,12 +21,11 @@ from telemetry_robot import (
     StepState,
     draw_telemetry_overlay,
     manual_key_action,
-    manual_speed_for_cmd,
     HOTKEY_SPEED_SCORES,
-    SCORE_POWER_PWM,
     step_sequence,
+    quantize_speed,
 )
-from telemetry_process import compute_stream_gate_summary, record_action_display
+from telemetry_process import compute_stream_gate_summary, send_robot_command
 from autobuild import (
     collect_segments,
     CONTROL_DT,
@@ -1061,7 +1060,7 @@ def control_loop(app_state):
             
         # 4. Save Log (Image saving removed)
         with app_state.lock:
-            if app_state.active_attempt:
+            if app_state.active_attempt and app_state.active_attempt != "NOMINAL":
                 app_state.logger.log_state(app_state.world)
         
         # 5. Rate Limiting
@@ -1084,20 +1083,28 @@ def command_loop(app_state):
             cmd = app_state.active_command
             score = app_state.active_speed_score
 
+        score_used = score
         if cmd and score is not None:
-            desired_speed = manual_speed_for_cmd(cmd, score)
-            speed, pwm = app_state.robot.normalize_speed(cmd, desired_speed)
+            quantized_speed, score_used = quantize_speed(cmd, score=score)
+            speed, _ = app_state.robot.normalize_speed(cmd, quantized_speed)
             with app_state.lock:
                 app_state.active_speed = speed
+                if score_used is not None:
+                    app_state.active_speed_score = score_used
         else:
             speed = 0.0
-            pwm = 0
             with app_state.lock:
                 app_state.active_speed = 0.0
 
         if cmd and speed > 0:
-            app_state.robot.send_command(cmd, speed)
-            record_action_display(app_state.world, app_state.world.step_state, cmd, speed, speed_score=score)
+            send_robot_command(
+                app_state.robot,
+                app_state.world,
+                app_state.world.step_state,
+                cmd,
+                speed,
+                speed_score=score_used,
+            )
             was_moving = True
         elif was_moving:
             app_state.robot.stop()

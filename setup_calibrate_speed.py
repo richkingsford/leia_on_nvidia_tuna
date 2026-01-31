@@ -63,8 +63,11 @@ def _score_entry(score_map, score):
     return entry
 
 
-def _set_score_entry(score_map, score, power, pwm):
-    score_map[str(int(score))] = {"power": round(float(power), 2), "pwm": int(pwm)}
+def _set_score_entry(score_map, score, power, pwm, duration_ms=None):
+    entry = {"power": round(float(power), 2), "pwm": int(pwm)}
+    if duration_ms is not None:
+        entry["duration_ms"] = int(duration_ms)
+    score_map[str(int(score))] = entry
 
 
 def _power_to_pwm(power):
@@ -74,11 +77,15 @@ def _power_to_pwm(power):
     return min(pwm, MAX_PWM)
 
 
-def _run_demo(robot, cmd, power, duration_s):
-    interval = max(0.05, robot.CMD_DURATION / 1000.0)
+def _run_demo(robot, cmd, pwm, duration_s, duration_ms=None):
+    act_ms = robot.CMD_DURATION if duration_ms is None else int(duration_ms)
+    interval = max(0.05, act_ms / 1000.0)
     start = time.time()
     while time.time() - start < duration_s:
-        robot.send_command(cmd, power)
+        if hasattr(robot, "send_command_pwm"):
+            robot.send_command_pwm(cmd, pwm, duration_ms=act_ms)
+        else:
+            robot.send_command(cmd, pwm / 255.0, duration_ms=act_ms)
         time.sleep(interval)
     robot.stop()
 
@@ -128,8 +135,8 @@ def main():
             score = entry.get("score", 0)
             score_entry = _score_entry(score_map, score)
             if not score_entry:
-                score_entry = {"power": 0.5, "pwm": 128}
-                _set_score_entry(score_map, score, score_entry["power"], score_entry["pwm"])
+                score_entry = {"power": 0.5, "pwm": 128, "duration_ms": robot.CMD_DURATION}
+                _set_score_entry(score_map, score, score_entry["power"], score_entry["pwm"], score_entry["duration_ms"])
                 _save_model(model_path, model)
 
             power = float(score_entry.get("power", 0.0))
@@ -146,19 +153,19 @@ def main():
                 idx = (idx + 1) % len(key_list)
                 continue
             if ch in ("d", "D"):
-                _run_demo(robot, cmd, power, args.duration)
+                _run_demo(robot, cmd, pwm, args.duration, score_entry.get("duration_ms"))
                 continue
             if ch == "\x1b[A":  # up arrow
                 power = min(1.0, power + args.step)
                 pwm = _power_to_pwm(power)
-                _set_score_entry(score_map, score, power, pwm)
+                _set_score_entry(score_map, score, power, pwm, score_entry.get("duration_ms"))
                 _save_model(model_path, model)
                 print(f"Updated score {score}% -> power {power:.3f}, pwm {pwm}")
                 continue
             if ch == "\x1b[B":  # down arrow
                 power = max(0.0, power - args.step)
                 pwm = _power_to_pwm(power)
-                _set_score_entry(score_map, score, power, pwm)
+                _set_score_entry(score_map, score, power, pwm, score_entry.get("duration_ms"))
                 _save_model(model_path, model)
                 print(f"Updated score {score}% -> power {power:.3f}, pwm {pwm}")
                 continue

@@ -11,8 +11,8 @@ from collections import deque
 
 from helper_robot_control import Robot
 from helper_vision_aruco import ArucoBrickVision
-from telemetry_robot import WorldModel, draw_telemetry_overlay, manual_speed_for_cmd, StepState
-from telemetry_process import compute_stream_gate_summary
+from telemetry_robot import WorldModel, draw_telemetry_overlay, StepState
+from telemetry_process import compute_stream_gate_summary, send_robot_command
 from helper_stream_server import StreamServer, format_stream_url
 from helper_gate_utils import load_process_steps, gate_satisfied
 
@@ -138,9 +138,7 @@ class AlignCalibrator:
         for i in range(1, max_attempts + 1):
             scan_dir = 'l' if i % 2 == 0 else 'r'
             duration = 0.1 + (i * 0.05)
-            speed = manual_speed_for_cmd(scan_dir, PRECISION_SCORE)
-            
-            self.robot.send_command(scan_dir, speed)
+            send_robot_command(self.robot, self.world, StepState.ALIGN_BRICK, scan_dir, 0.0, speed_score=PRECISION_SCORE)
             time.sleep(duration)
             # No robot.stop() - keep moving during experiment as much as possible
             # but for recovery we might need to pause to check.
@@ -175,7 +173,7 @@ class AlignCalibrator:
             off_start = pose_start["offset_x"]
             target_reset_off = random.uniform(15.0, 35.0) * random.choice([-1, 1])
             reset_dir = 'r' if target_reset_off > off_start else 'l'
-            reset_speed = manual_speed_for_cmd(reset_dir, 1) # Slowest effective turn (1%)
+            reset_score = 1 # Slowest effective turn (1%)
             
             print(f"  [RESET] Starting at {off_start:+.1f}mm. Moving to {target_reset_off:+.1f}mm target...")
             
@@ -189,7 +187,7 @@ class AlignCalibrator:
                    (reset_dir == 'l' and off_now <= target_reset_off):
                     break
                 
-                self.robot.send_command(reset_dir, reset_speed)
+                send_robot_command(self.robot, self.world, StepState.ALIGN_BRICK, reset_dir, 0.0, speed_score=reset_score)
                 time.sleep(0.04)
 
             # No robot.stop() here - we want to transition immediately into ALIGN
@@ -243,10 +241,8 @@ class AlignCalibrator:
                 else:
                     score = 1 # 1% speed
                 
-                speed = manual_speed_for_cmd(align_dir, score)
-                
                 # HEARTBEAT: Always send command to feed the 100ms watchdog
-                self.robot.send_command(align_dir, speed)
+                send_robot_command(self.robot, self.world, StepState.ALIGN_BRICK, align_dir, 0.0, speed_score=score)
                 if align_dir != last_cmd or score != last_score:
                     print(f"  [ADJUST] {off_now:+.1f}mm -> {align_dir}@{score}%")
                     last_cmd = align_dir

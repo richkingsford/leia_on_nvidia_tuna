@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from helper_robot_control import Robot
+from telemetry_robot import quantize_speed, speed_power_pwm_for_cmd
 
 ACTION_SEQUENCE = [
     {"label": "FORWARD", "cmd": "f", "measure": "mm"},
@@ -100,9 +101,18 @@ def read_encoder_ticks(robot, timeout_s=1.0):
 
 def run_motor(robot, cmd, speed, duration_s):
     interval = max(0.05, robot.CMD_DURATION / 1000.0)
+    if speed is None or speed <= 0:
+        return
+    _, score = quantize_speed(cmd, speed=speed)
+    power, pwm, _, duration_ms = speed_power_pwm_for_cmd(cmd, score)
+    act_ms = robot.CMD_DURATION if duration_ms is None else int(duration_ms)
+    interval = max(0.05, act_ms / 1000.0)
     start = time.time()
     while time.time() - start < duration_s:
-        robot.send_command(cmd, speed)
+        if hasattr(robot, "send_command_pwm"):
+            robot.send_command_pwm(cmd, pwm, duration_ms=act_ms)
+        else:
+            robot.send_command(cmd, power, duration_ms=act_ms)
         time.sleep(interval)
     robot.stop()
 

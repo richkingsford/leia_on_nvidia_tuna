@@ -8,7 +8,7 @@ that your Arduino firmware expects (e.g., "f 200 50").
 import serial
 import time
 import sys
-from telemetry_robot import MIN_PWM, MAX_PWM, MIN_TURN_POWER, COMMAND_REMAP
+from telemetry_robot import MIN_PWM, MAX_PWM, MIN_TURN_POWER, COMMAND_REMAP, ACT_DURATION_MS
 
 
 class Robot:
@@ -21,7 +21,7 @@ class Robot:
         self.MIN_PWM = MIN_PWM
         self.MAX_PWM = MAX_PWM
         self.MIN_TURN_POWER = MIN_TURN_POWER
-        self.CMD_DURATION = 100 # ms (Keep it running slightly longer for smooth auto-drive)
+        self.CMD_DURATION = int(ACT_DURATION_MS) # ms (single source: world_model_robot.json)
         
         self.connect()
 
@@ -55,7 +55,7 @@ class Robot:
         pwm = min(pwm, 255)
         return speed, pwm
 
-    def send_command(self, cmd_char, speed):
+    def send_command(self, cmd_char, speed, duration_ms=None):
         """
         Sends a high-level command: {char} {pwm} {duration}
         cmd_char: f, b, l, r, u, d
@@ -63,13 +63,28 @@ class Robot:
         """
         real_hw_cmd = COMMAND_REMAP.get(cmd_char, cmd_char)
         speed, pwm = self.normalize_speed(cmd_char, speed)
+        duration = self.CMD_DURATION if duration_ms is None else int(duration_ms)
         if speed <= 0.0:
             # For safety, sending 0 speed usually stops that action
-            self._send(f"{real_hw_cmd} 0 {self.CMD_DURATION}\n")
+            self._send(f"{real_hw_cmd} 0 {duration}\n")
             return
 
         # 4. Send
-        self._send(f"{real_hw_cmd} {pwm} {self.CMD_DURATION}\n")
+        self._send(f"{real_hw_cmd} {pwm} {duration}\n")
+
+    def send_command_pwm(self, cmd_char, pwm, duration_ms=None):
+        """Send a command using a precomputed PWM value from world_model_robot."""
+        real_hw_cmd = COMMAND_REMAP.get(cmd_char, cmd_char)
+        try:
+            pwm_val = int(round(pwm))
+        except (TypeError, ValueError):
+            pwm_val = 0
+        pwm_val = max(0, min(255, pwm_val))
+        duration = self.CMD_DURATION if duration_ms is None else int(duration_ms)
+        if pwm_val <= 0:
+            self._send(f"{real_hw_cmd} 0 {duration}\n")
+            return
+        self._send(f"{real_hw_cmd} {pwm_val} {duration}\n")
 
     def drive(self, speed):
         """Wrapper for BACKWARD COMPATIBILITY with maneuvers.py"""

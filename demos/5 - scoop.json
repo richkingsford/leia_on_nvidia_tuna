@@ -1,87 +1,135 @@
 [
-{"type": "keyframe", "timestamp": 1769791858.956, "marker": "NOMINAL_START", "step": "SCOOP"},
-{"type": "state", "timestamp": 1769791859.134, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 0.0, "y": 0.0, "theta": 0.0, "height_mm": 0.02}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": true, "id": null, "dist": 81.66, "angle": 1.836, "offset_x": -5.51, "x_axis": -5.51, "confidence": 100, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791859.56, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 0.0, "y": 0.0, "theta": 0.0, "height_mm": 0.02}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": true, "id": null, "dist": 81.69, "angle": 1.643, "offset_x": -5.51, "x_axis": -5.51, "confidence": 100, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791859.927, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 0.0, "y": 0.0, "theta": 0.0, "height_mm": 0.01}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": true, "id": null, "dist": 81.72, "angle": 1.471, "offset_x": -5.51, "x_axis": -5.51, "confidence": 100, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791860.225, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 0.0, "y": 0.0, "theta": 0.0, "height_mm": 0.01}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": true, "id": null, "dist": 81.75, "angle": 1.898, "offset_x": -5.51, "x_axis": -5.51, "confidence": 100, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791860.526, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 0.0, "y": 0.0, "theta": 0.0, "height_mm": 0.01}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": true, "id": null, "dist": 81.76, "angle": 1.919, "offset_x": -5.51, "x_axis": -5.51, "confidence": 100, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791860.822, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 0.0, "y": 0.0, "theta": 0.0, "height_mm": 0.0}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": true, "id": null, "dist": 81.75, "angle": 2.055, "offset_x": -5.51, "x_axis": -5.51, "confidence": 100, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791861.122, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 0.0, "y": 0.0, "theta": 0.0, "height_mm": 0.0}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": true, "id": null, "dist": 81.71, "angle": 1.682, "offset_x": -5.51, "x_axis": -5.51, "confidence": 100, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "action", "timestamp": 1769791861.42, "command": "forward", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791861.422, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 3.52, "y": 0.0, "theta": 0.0, "height_mm": 0.12}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": true, "id": null, "dist": 81.59, "angle": 2.433, "offset_x": -5.67, "x_axis": -5.67, "confidence": 100, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791861.729, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 3.52, "y": 0.0, "theta": 0.0, "height_mm": 0.35}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": true, "id": null, "dist": 80.87, "angle": 3.096, "offset_x": -6.09, "x_axis": -6.09, "confidence": 100, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "action", "timestamp": 1769791862.024, "command": "forward", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791862.025, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 7.05, "y": 0.0, "theta": 0.0, "height_mm": 0.6}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": true, "id": null, "dist": 79.78, "angle": 3.67, "offset_x": -6.68, "x_axis": -6.68, "confidence": 100, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791862.317, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 7.05, "y": 0.0, "theta": 0.0, "height_mm": 0.6}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "action", "timestamp": 1769791862.956, "command": "forward", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791862.957, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 10.57, "y": 0.0, "theta": 0.0, "height_mm": 0.6}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791863.563, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 10.57, "y": 0.0, "theta": 0.0, "height_mm": 0.6}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791864.166, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 10.57, "y": 0.0, "theta": 0.0, "height_mm": 0.6}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791864.767, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 10.57, "y": 0.0, "theta": 0.0, "height_mm": 0.6}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791865.366, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 10.57, "y": 0.0, "theta": 0.0, "height_mm": 0.6}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791865.977, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 10.57, "y": 0.0, "theta": 0.0, "height_mm": 4.13}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": true, "id": null, "dist": 69.21, "angle": -38.413, "offset_x": 0.19, "x_axis": 0.19, "confidence": 100, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791866.532, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 10.57, "y": 0.0, "theta": 0.0, "height_mm": 4.11}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791867.17, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 10.57, "y": 0.0, "theta": 0.0, "height_mm": 4.11}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791867.772, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 10.57, "y": 0.0, "theta": 0.0, "height_mm": 4.11}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791868.367, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 10.57, "y": 0.0, "theta": 0.0, "height_mm": 4.14}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": true, "id": null, "dist": 67.89, "angle": -50.299, "offset_x": 0.89, "x_axis": 0.89, "confidence": 100, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791868.963, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 10.57, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": true, "id": null, "dist": 68.4, "angle": -50.841, "offset_x": 0.89, "x_axis": 0.89, "confidence": 100, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791869.544, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 10.57, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791870.14, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 10.57, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791870.731, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 10.57, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791871.329, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 10.57, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791871.93, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 10.57, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "action", "timestamp": 1769791872.532, "command": "forward", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791872.533, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 14.1, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791873.131, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 14.1, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1769791873.731, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 14.1, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.0},
-{"type": "action", "timestamp": 1769791874.33, "command": "mast_up", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791874.332, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 14.1, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 1.61},
-{"type": "action", "timestamp": 1769791874.934, "command": "mast_up", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791874.936, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 14.1, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 3.23},
-{"type": "action", "timestamp": 1769791875.527, "command": "mast_up", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791875.528, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 14.1, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 4.84},
-{"type": "action", "timestamp": 1769791876.127, "command": "mast_up", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791876.129, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 14.1, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 6.45},
-{"type": "action", "timestamp": 1769791876.728, "command": "mast_up", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791876.73, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 14.1, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 8.07},
-{"type": "action", "timestamp": 1769791877.33, "command": "mast_up", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791877.331, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 14.1, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 9.68},
-{"type": "action", "timestamp": 1769791877.932, "command": "mast_up", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791877.934, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 14.1, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 11.29},
-{"type": "action", "timestamp": 1769791878.53, "command": "mast_up", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791878.531, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 14.1, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 12.9},
-{"type": "action", "timestamp": 1769791879.13, "command": "mast_up", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791879.131, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 14.1, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 14.52},
-{"type": "action", "timestamp": 1769791879.729, "command": "mast_up", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791879.731, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 14.1, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "state", "timestamp": 1769791880.33, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 14.1, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "state", "timestamp": 1769791880.928, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 14.1, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "state", "timestamp": 1769791881.531, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 14.1, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "action", "timestamp": 1769791882.13, "command": "backward", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791882.132, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 10.57, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "action", "timestamp": 1769791882.729, "command": "backward", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791882.731, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 7.05, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "state", "timestamp": 1769791883.329, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 7.05, "y": 0.0, "theta": 0.0, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "action", "timestamp": 1769791883.929, "command": "right_turn", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791883.931, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 8.81, "y": 0.0, "theta": -0.462, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "action", "timestamp": 1769791884.527, "command": "right_turn", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791884.529, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 10.57, "y": -0.01, "theta": -0.924, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "action", "timestamp": 1769791885.13, "command": "backward", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791885.132, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 7.05, "y": 0.04, "theta": -0.924, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "state", "timestamp": 1769791885.734, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 7.05, "y": 0.04, "theta": -0.924, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "state", "timestamp": 1769791886.326, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 7.05, "y": 0.04, "theta": -0.924, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "state", "timestamp": 1769791886.929, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 7.05, "y": 0.04, "theta": -0.924, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "state", "timestamp": 1769791887.535, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 7.05, "y": 0.04, "theta": -0.924, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "state", "timestamp": 1769791888.137, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 7.05, "y": 0.04, "theta": -0.924, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "action", "timestamp": 1769791888.729, "command": "right_turn", "speedScore": 50, "duration_ms": 100},
-{"type": "state", "timestamp": 1769791888.73, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 8.81, "y": 0.01, "theta": -1.386, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "state", "timestamp": 1769791889.33, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 8.81, "y": 0.01, "theta": -1.386, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "state", "timestamp": 1769791889.939, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 8.81, "y": 0.01, "theta": -1.386, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "state", "timestamp": 1769791890.527, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 8.81, "y": 0.01, "theta": -1.386, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "state", "timestamp": 1769791891.139, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 8.81, "y": 0.01, "theta": -1.386, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "state", "timestamp": 1769791891.731, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 8.81, "y": 0.01, "theta": -1.386, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "state", "timestamp": 1769791892.335, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 8.81, "y": 0.01, "theta": -1.386, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "state", "timestamp": 1769791892.929, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 8.81, "y": 0.01, "theta": -1.386, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "state", "timestamp": 1769791893.534, "run_id": "run_20260130_095046", "attempt_id": 1, "robot_pose": {"x": 8.81, "y": 0.01, "theta": -1.386, "height_mm": 3.99}, "wall_origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "wall": {"origin": {"x": 81.5, "y": 2.37, "theta": 0.0}, "angle_deg": 0.0, "valid": true, "source": "FIND_WALL", "contradiction": null}, "brick": {"visible": false, "id": null, "dist": null, "angle": null, "offset_x": null, "x_axis": null, "confidence": null, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 16.13},
-{"type": "keyframe", "timestamp": 1769791893.542, "marker": "NOMINAL_END", "step": "SCOOP"}
+  {
+    "type": "keyframe",
+    "timestamp": 1769826675.369,
+    "marker": "NOMINAL_START",
+    "step": "SCOOP"
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826676.583,
+    "command": "forward",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826677.174,
+    "command": "forward",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826677.775,
+    "command": "forward",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826677.8,
+    "command": "forward",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826677.9,
+    "command": "forward",
+    "speedScore": 1
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826680.778,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  
+  {
+    "type": "action",
+    "timestamp": 1769826681.375,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826681.971,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826682.567,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826683.167,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826683.767,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826684.369,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826684.976,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826685.58,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826686.183,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826686.777,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826687.966,
+    "command": "right_turn",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826689.173,
+    "command": "left_turn",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826689.77,
+    "command": "backward",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826692.169,
+    "command": "backward",
+    "speedScore": 50
+  },
+  {
+    "type": "keyframe",
+    "timestamp": 1769826695.156,
+    "marker": "NOMINAL_END",
+    "step": "SCOOP"
+  }
 ]

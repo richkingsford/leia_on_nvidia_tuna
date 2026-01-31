@@ -9,6 +9,7 @@ while simultaneously turning left/right.
 import time
 import threading
 from helper_robot_control import Robot
+from telemetry_process import send_robot_command
 
 
 class CombinedMovement:
@@ -24,11 +25,11 @@ class CombinedMovement:
         start_time = time.time()
         while self.running and (time.time() - start_time) < duration_s:
             # Send drive command
-            self.robot.send_command(drive_cmd, drive_speed)
+            send_robot_command(self.robot, None, None, drive_cmd, drive_speed)
             time.sleep(0.05)  # Small delay between commands
             
             # Send turn command
-            self.robot.send_command(turn_cmd, turn_speed)
+            send_robot_command(self.robot, None, None, turn_cmd, turn_speed)
             time.sleep(0.05)  # Small delay before next cycle
     
     def move_and_turn(self, drive_cmd, turn_cmd, drive_speed=0.5, turn_speed=0.3, duration_s=1.0):

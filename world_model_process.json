@@ -52,7 +52,7 @@
             },
             "movement_learnings": {
                 "cmd": "r",
-                "speed": 1.1
+                "speed": 0.37
             }
         },
         "EXIT_WALL": {
@@ -64,7 +64,7 @@
             },
             "movement_learnings": {
                 "cmd": "r",
-                "speed": 2.2
+                "speed": 0.73
             }
         },
         "FIND_BRICK": {
@@ -76,7 +76,7 @@
             },
             "movement_learnings": {
                 "cmd": "r",
-                "speed": 4.4
+                "speed": 1.47
             }
         },
         "ALIGN_BRICK": {
@@ -120,16 +120,16 @@
             }
         },
         "SCOOP": {
-            "nominalDemosOnly": true,
             "movement_learnings": {
                 "cmd": "u",
-                "speed": 0.44
-            }
+                "speed": 0.13
+            },
+            "nominalDemosOnly": true
         },
         "FIND_WALL2": {
             "movement_learnings": {
                 "cmd": "b",
-                "speed": 4.4
+                "speed": 1.47
             },
             "success_gates": {
                 "visible": {
@@ -165,14 +165,14 @@
             "nominalDemosOnly": true,
             "movement_learnings": {
                 "cmd": "l",
-                "speed": 2.95
+                "speed": 0.98
             }
         },
         "RETREAT": {
             "nominalDemosOnly": true,
             "movement_learnings": {
                 "cmd": "d",
-                "speed": 0.73
+                "speed": 0.24
             }
         }
     }

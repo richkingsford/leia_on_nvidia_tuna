@@ -35,6 +35,7 @@ SPEED_SCORE_MIN = 1
 SPEED_SCORE_DEFAULT = 50
 SPEED_SCORE_MAX = 100
 SPEED_SCORE_LEVELS = (SPEED_SCORE_MIN, SPEED_SCORE_DEFAULT, SPEED_SCORE_MAX)
+DEFAULT_ACT_DURATION_MS = 300
 
 ROBOT_MODEL_FILE = Path(__file__).resolve().parent / "world_model_robot.json"
 DEFAULT_SPEED_MODEL = {
@@ -55,9 +56,9 @@ DEFAULT_SPEED_MODEL = {
         "l": {"cmd": "d", "score": 50},
     },
     "score_power_pwm": {
-        "1": {"power": 0.064, "pwm": 50},
-        "50": {"power": 0.5, "pwm": 145},
-        "100": {"power": 1.0, "pwm": 255},
+        "1": {"power": 0.064, "pwm": 50, "duration_ms": 300},
+        "50": {"power": 0.5, "pwm": 145, "duration_ms": 300},
+        "100": {"power": 1.0, "pwm": 255, "duration_ms": 300},
     },
     "turn_efficiency": {
         "l": 300.0,
@@ -126,12 +127,24 @@ def _coerce_score_power_pwm(raw, fallback):
             continue
         power = value.get("power")
         pwm = value.get("pwm")
+        duration_ms = value.get("duration_ms")
         try:
             power = float(power)
             pwm = int(pwm)
         except (TypeError, ValueError):
             continue
-        cleaned[score_key] = {"power": power, "pwm": pwm}
+        if duration_ms is None:
+            fallback_entry = None
+            if isinstance(fallback, dict):
+                fallback_entry = fallback.get(score_key)
+                if fallback_entry is None:
+                    fallback_entry = fallback.get(str(score_key))
+            duration_ms = None if fallback_entry is None else fallback_entry.get("duration_ms")
+        try:
+            duration_ms = int(duration_ms) if duration_ms is not None else DEFAULT_ACT_DURATION_MS
+        except (TypeError, ValueError):
+            duration_ms = DEFAULT_ACT_DURATION_MS
+        cleaned[score_key] = {"power": power, "pwm": pwm, "duration_ms": max(1, duration_ms)}
     return cleaned
 
 
@@ -188,11 +201,13 @@ def _load_speed_model(path):
     if not isinstance(turn_eff, dict):
         turn_eff = DEFAULT_SPEED_MODEL["turn_efficiency"]
     cmd_remap = _coerce_command_remap(model.get("command_remap"))
+    default_entry = score_map.get(SPEED_SCORE_DEFAULT, {})
+    act_duration_ms = default_entry.get("duration_ms", DEFAULT_ACT_DURATION_MS)
         
-    return hotkeys, score_map, levels, turn_eff, cmd_remap
+    return hotkeys, score_map, levels, turn_eff, cmd_remap, act_duration_ms
 
 
-HOTKEY_SPEED_SCORES, SCORE_POWER_PWM, SPEED_SCORE_LEVELS, TURN_EFFICIENCY, COMMAND_REMAP = _load_speed_model(ROBOT_MODEL_FILE)
+HOTKEY_SPEED_SCORES, SCORE_POWER_PWM, SPEED_SCORE_LEVELS, TURN_EFFICIENCY, COMMAND_REMAP, ACT_DURATION_MS = _load_speed_model(ROBOT_MODEL_FILE)
 
 
 def speed_power_pwm_for_cmd(cmd, score):
@@ -200,12 +215,13 @@ def speed_power_pwm_for_cmd(cmd, score):
     entry = SCORE_POWER_PWM.get(score, {})
     power = entry.get("power", 0.0)
     pwm = entry.get("pwm", 0)
-    return power, pwm, score
+    duration_ms = entry.get("duration_ms", ACT_DURATION_MS)
+    return power, pwm, score, duration_ms
 
 
 def quantize_speed(cmd, speed=None, score=None):
     if score is not None:
-        power, _, score_used = speed_power_pwm_for_cmd(cmd, score)
+        power, _, score_used, _ = speed_power_pwm_for_cmd(cmd, score)
         return power, score_used
     if speed is None:
         return 0.0, None
@@ -223,7 +239,7 @@ def quantize_speed(cmd, speed=None, score=None):
 
 
 def manual_speed_for_cmd(cmd, score):
-    power, _, _ = speed_power_pwm_for_cmd(cmd, score)
+    power, _, _, _ = speed_power_pwm_for_cmd(cmd, score)
     return power
 
 
@@ -436,7 +452,7 @@ class MotionEvent:
         elif self.speed_score is not None:
             cmd = _cmd_for_action_type(self.action_type)
             if cmd:
-                power_val, _, _ = speed_power_pwm_for_cmd(cmd, self.speed_score)
+                power_val, _, _, _ = speed_power_pwm_for_cmd(cmd, self.speed_score)
                 self.power = int(power_val * 255)
 
         if self.action_type in ("left_turn", "right_turn") and 0 < self.power < MIN_TURN_POWER_PWM:
@@ -452,7 +468,6 @@ class MotionEvent:
         return {
             "type": self.action_type,
             "speedScore": self.speed_score,
-            "duration_ms": self.duration_ms,
             "timestamp": round(self.timestamp, 3)
         }
 
@@ -963,8 +978,7 @@ class TelemetryLogger:
             "type": "action",
             "timestamp": round(event.timestamp, 3),
             "command": event.action_type,
-            "speedScore": None if speed_score is None else int(speed_score),
-            "duration_ms": int(event.duration_ms)
+            "speedScore": None if speed_score is None else int(speed_score)
         }
 
         self._write_row(data)

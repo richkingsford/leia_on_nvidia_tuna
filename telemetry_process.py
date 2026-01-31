@@ -51,7 +51,8 @@ DEFAULT_AUTOBUILD_CONFIG = {
     "success_tail_count": 3,
     "max_phase_attempts": 1,
     "smooth_step_s": 1.0,
-        "fail_pause_s": 3.0,
+    "fail_pause_s": 3.0,
+    "demo_action_pause_s": 1.5,
     "find_brick_slow_factor": 4.0,
     "visibility_lost_hold_s": 0.5,
     "learned_policy_confidence_threshold": 0.4,
@@ -116,6 +117,7 @@ def apply_autobuild_config(cfg):
     global MAX_PHASE_ATTEMPTS
     global SMOOTH_STEP_S
     global FAIL_PAUSE_S
+    global DEMO_ACTION_PAUSE_S
     global FIND_BRICK_SLOW_FACTOR
     global VISIBILITY_LOST_HOLD_S
     global LEARNED_POLICY_CONFIDENCE_THRESHOLD
@@ -196,6 +198,10 @@ def apply_autobuild_config(cfg):
     FAIL_PAUSE_S = _as_float(
         cfg.get("fail_pause_s"),
         DEFAULT_AUTOBUILD_CONFIG["fail_pause_s"],
+    )
+    DEMO_ACTION_PAUSE_S = _as_float(
+        cfg.get("demo_action_pause_s"),
+        DEFAULT_AUTOBUILD_CONFIG["demo_action_pause_s"],
     )
     FIND_BRICK_SLOW_FACTOR = _as_float(
         cfg.get("find_brick_slow_factor"),
@@ -620,15 +626,17 @@ def record_action_display(world, step, cmd, speed, speed_score=None):
 def send_robot_command(robot, world, step, cmd, speed, speed_score=None):
     if robot is None or cmd is None:
         return
-    quantized_speed, quantized_score = telemetry_robot_module.quantize_speed(
-        cmd,
-        speed=speed,
-        score=speed_score,
-    )
-    if quantized_score is None:
-        quantized_score = speed_score
-    record_action_display(world, step, cmd, quantized_speed, speed_score=quantized_score)
-    robot.send_command(cmd, quantized_speed)
+    score_used = speed_score
+    if score_used is None:
+        if speed is None or speed <= 0:
+            return
+        _, score_used = telemetry_robot_module.quantize_speed(cmd, speed=speed)
+    power, pwm, score_used, duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd(cmd, score_used)
+    record_action_display(world, step, cmd, power, speed_score=score_used)
+    if hasattr(robot, "send_command_pwm"):
+        robot.send_command_pwm(cmd, pwm, duration_ms=duration_ms)
+    else:
+        robot.send_command(cmd, power, duration_ms=duration_ms)
 
 
 def step_uses_alignment_control(step, process_rules):
@@ -641,6 +649,12 @@ def step_uses_alignment_control(step, process_rules):
         return True
     success_gates = rules.get("success_gates") or {}
     return any(metric in success_gates for metric in ALIGNMENT_METRICS)
+
+
+def step_is_nominal_only(step, process_rules):
+    obj_key = normalize_step_label(step)
+    rules = (process_rules or {}).get(obj_key, {})
+    return bool(rules.get("nominalDemosOnly"))
 
 
 def derive_action_speeds(steps, fallback_score=DEFAULT_SPEED_SCORE):
@@ -1248,30 +1262,30 @@ def update_process_model_from_demos(logs, path=PROCESS_MODEL_FILE):
 
 def build_motion_sequence(events):
     steps = []
+    default_duration_s = max(0.001, telemetry_robot_module.ACT_DURATION_MS / 1000.0)
     for evt in events:
         if evt.get("type") == "action":
             cmd_name = evt.get("command")
             speed_score = evt.get("speedScore")
             power = evt.get("power", 0)
-            duration_ms = evt.get("duration_ms", 0)
         elif evt.get("type") == "event":
             payload = evt.get("event") or {}
             cmd_name = payload.get("type")
             speed_score = payload.get("speedScore")
             power = payload.get("power", 0)
-            duration_ms = payload.get("duration_ms", 0)
         else:
             continue
 
         cmd = ACTION_CMD_MAP.get(cmd_name)
-        duration_s = (duration_ms or 0) / 1000.0
-        if not cmd or duration_s <= 0:
+        if not cmd:
             continue
         if speed_score is not None:
-            power_val, _, _ = telemetry_robot_module.speed_power_pwm_for_cmd(cmd, speed_score)
+            power_val, _, _, duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd(cmd, speed_score)
             speed = max(0.0, min(1.0, float(power_val or 0)))
+            duration_s = max(0.001, (duration_ms or 0) / 1000.0)
         else:
             speed = max(0.0, min(1.0, float(power or 0) / 255.0))
+            duration_s = default_duration_s
         if speed <= 0:
             continue
         steps.append(MotionStep(cmd, speed, duration_s, cmd_name))
@@ -1289,6 +1303,46 @@ def merge_motion_steps(steps, speed_tol=0.02):
         else:
             merged.append(step)
     return merged
+
+
+def nominal_actions_from_events(events):
+    actions = []
+    default_duration_s = max(0.001, telemetry_robot_module.ACT_DURATION_MS / 1000.0)
+    for evt in events:
+        if evt.get("type") == "action":
+            cmd_name = evt.get("command")
+            speed_score = evt.get("speedScore")
+            power = evt.get("power", 0)
+        elif evt.get("type") == "event":
+            payload = evt.get("event") or {}
+            cmd_name = payload.get("type")
+            speed_score = payload.get("speedScore")
+            power = payload.get("power", 0)
+        else:
+            continue
+        cmd = ACTION_CMD_MAP.get(cmd_name)
+        if not cmd:
+            continue
+        score = None
+        if speed_score is not None:
+            try:
+                score = int(speed_score)
+            except (TypeError, ValueError):
+                score = None
+        if score is not None:
+            _, _, _, duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd(cmd, score)
+            duration_s = max(0.001, (duration_ms or 0) / 1000.0)
+        else:
+            duration_s = default_duration_s
+        actions.append(
+            {
+                "cmd": cmd,
+                "speed_score": score,
+                "power": power,
+                "duration_s": duration_s,
+            }
+        )
+    return actions
 
 
 def smooth_motion_steps(steps, speed_score=DEFAULT_SPEED_SCORE, step_s=SMOOTH_STEP_S):
@@ -1312,6 +1366,17 @@ def select_demo_segment(segments_by_obj, step, nominal_only):
     obj_key = normalize_step_label(step)
     if not obj_key:
         return None, None
+
+    if nominal_only:
+        nominal_segs = segments_by_obj.get(obj_key, {}).get("NOMINAL", [])
+        if len(nominal_segs) > 1:
+            print(
+                format_headline(
+                    f"[FAIL] {obj_key}: {len(nominal_segs)} nominal demos found; expected exactly 1.",
+                    COLOR_RED,
+                )
+            )
+            return None, None
 
     prefer = ["NOMINAL", "SUCCESS"] if nominal_only else ["SUCCESS", "NOMINAL"]
     candidates = []
@@ -2083,7 +2148,8 @@ def replay_segment(
     align_silent=False,
 ):
     events = segment.get("events") or []
-    raw_steps = merge_motion_steps(build_motion_sequence(events))
+    base_steps = build_motion_sequence(events)
+    raw_steps = merge_motion_steps(base_steps)
     steps = smooth_motion_steps(raw_steps)
     if step_uses_alignment_control(step, world.process_rules):
         return run_alignment_segment(
@@ -2099,6 +2165,71 @@ def replay_segment(
             confirm_callback=confirm_callback,
             align_silent=align_silent,
         )
+    if step_is_nominal_only(step, world.process_rules):
+        actions = nominal_actions_from_events(events)
+        if not actions:
+            actions = [{"cmd": None, "speed_score": None, "power": 0.0, "duration_s": 0.1}]
+        total_actions = len(actions)
+        prior_suppress = getattr(world, "suppress_brick_state_log", False)
+        world.suppress_brick_state_log = True
+        try:
+            for idx, action in enumerate(actions, start=1):
+                cmd = action.get("cmd")
+                score = action.get("speed_score")
+                pwm = None
+                duration_ms = int(telemetry_robot_module.ACT_DURATION_MS)
+                if cmd:
+                    if score is None:
+                        print(
+                            format_headline(
+                                f"[FAIL] {step}: nominal action missing speedScore for {cmd.upper()}",
+                                COLOR_RED,
+                            )
+                        )
+                        if robot:
+                            robot.stop()
+                        return False, "missing speedScore"
+                    if score not in telemetry_robot_module.SCORE_POWER_PWM:
+                        print(
+                            format_headline(
+                                f"[FAIL] {step}: speedScore {score} not in world_model_robot.json",
+                                COLOR_RED,
+                            )
+                        )
+                        if robot:
+                            robot.stop()
+                        return False, "unknown speedScore"
+                    speed, pwm, score, duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd(cmd, score)
+                else:
+                    speed = 0.0
+                action_duration_s = max(0.001, (duration_ms or 0) / 1000.0)
+                if cmd:
+                    send_robot_command(robot, world, step, cmd, speed, speed_score=score)
+                    world._last_action_obj = normalize_step_label(step)
+                    world._last_action_time = time.time()
+                    score_suffix = f" {int(score)}%" if score is not None else ""
+                    world._last_action_display = f"DEMO {idx}/{total_actions}: {cmd.upper()}{score_suffix}"
+                    evt = MotionEvent(
+                        cmd_to_motion_type(cmd),
+                        int(speed * 255),
+                        int(action_duration_s * 1000),
+                    )
+                    world.update_from_motion(evt)
+                    if observer:
+                        observer("action", world, vision, cmd, speed, "nominal replay")
+                    time.sleep(action_duration_s)
+                else:
+                    if robot:
+                        robot.stop()
+                if robot:
+                    robot.stop()
+                if DEMO_ACTION_PAUSE_S > 0 and idx < total_actions:
+                    time.sleep(DEMO_ACTION_PAUSE_S)
+        finally:
+            world.suppress_brick_state_log = prior_suppress
+        if robot:
+            robot.stop()
+        return True, "nominal demo replay"
     if not steps:
         # Static segment (e.g. wait/observe). Insert a dummy nop step to allow wait_for_start_gates.
         steps = [MotionStep(None, 0.0, 0.1, "wait")]

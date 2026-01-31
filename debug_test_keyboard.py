@@ -20,10 +20,10 @@ import numpy as np
 from flask import Flask, Response
 from helper_robot_control import Robot
 from helper_brick_vision import BrickDetector
-from telemetry_robot import WorldModel, MotionEvent, draw_telemetry_overlay, manual_key_action
+from telemetry_robot import WorldModel, MotionEvent, draw_telemetry_overlay, manual_key_action, speed_power_pwm_for_cmd
+from telemetry_process import send_robot_command
 
 # --- CONFIG ---
-GEAR_1_SPEED = 0.32
 HEARTBEAT_TIMEOUT = 0.3 
 
 class TestState:
@@ -31,6 +31,7 @@ class TestState:
         self.running = True
         self.active_command = None
         self.active_speed = 0.0
+        self.active_speed_score = None
         self.last_key_time = 0
         self.current_frame = None
         self.world = WorldModel()
@@ -101,8 +102,9 @@ def keyboard_thread(state):
             
             action = manual_key_action(ch)
             if action:
-                cmd, _score = action
+                cmd, score = action
                 state.active_command = cmd
+                state.active_speed_score = score
             
             # MOVEMENT
 
@@ -137,14 +139,13 @@ def main():
                 if time.time() - state.last_key_time > HEARTBEAT_TIMEOUT:
                     state.active_command = None
                     state.active_speed = 0.0
-                
-                # Fixed speed based on Gear 1
-                speed = GEAR_1_SPEED
-                
+                    state.active_speed_score = None
+
                 cmd = state.active_command
+                score = state.active_speed_score
             
-            if cmd and speed > 0:
-                robot.send_command(cmd, speed)
+            if cmd and score is not None:
+                send_robot_command(robot, state.world, state.world.step_state, cmd, 0.0, speed_score=score)
                 was_moving = True
                 
                 # TRACK MOTION for Telemetry
@@ -156,7 +157,8 @@ def main():
                 elif cmd == 'u': atype = "mast_up"
                 elif cmd == 'd': atype = "mast_down"
                 
-                pwr = int(speed * 255)
+                power, _, _, _ = speed_power_pwm_for_cmd(cmd, score)
+                pwr = int(power * 255)
                 # Use current dt for duration
                 evt = MotionEvent(atype, pwr, int(dt * 1000))
                 with state.lock:

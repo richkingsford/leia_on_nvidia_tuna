@@ -2,7 +2,7 @@ import time
 import statistics
 from helper_robot_control import Robot
 from helper_vision_aruco import ArucoBrickVision
-from telemetry_robot import manual_speed_for_cmd
+from telemetry_process import send_robot_command
 
 def main():
     robot = Robot()
@@ -27,7 +27,7 @@ def main():
             scan_dir = 'l' if i % 2 == 0 else 'r'
             duration = 0.2 + (i * 0.1)
             print(f"  Pulse {scan_dir} for {duration:.1f}s")
-            robot.send_command(scan_dir, 0.4)
+            send_robot_command(robot, None, None, scan_dir, 0.4)
             time.sleep(duration)
             robot.stop()
             time.sleep(1.0)
@@ -52,7 +52,7 @@ def main():
         print(f"  X Before: {x_before:.1f}mm")
         
         # Move
-        robot.send_command(cmd, 0.4) # Moderate power
+        send_robot_command(robot, None, None, cmd, 0.4) # Moderate power
         print(f"  Moving {cmd}...")
         time.sleep(0.5)
         robot.stop()

@@ -60,15 +60,18 @@
   "score_power_pwm": {
     "1": {
       "power": 0.295,
-      "pwm": 99
+      "pwm": 99,
+      "duration_ms": 300
     },
     "50": {
       "power": 0.44,
-      "pwm": 132
+      "pwm": 132,
+      "duration_ms": 300
     },
     "100": {
       "power": 1.0,
-      "pwm": 255
+      "pwm": 255,
+      "duration_ms": 300
     }
   },
   "command_remap": {

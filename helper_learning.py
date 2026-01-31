@@ -78,7 +78,7 @@ class BehavioralCloningPolicy:
 
                     speed_score = evt.get("speedScore")
                     if speed_score is not None:
-                        power, _, _ = telemetry_robot.speed_power_pwm_for_cmd(cmd, speed_score)
+                        power, _, _, _ = telemetry_robot.speed_power_pwm_for_cmd(cmd, speed_score)
                     else:
                         power = float(evt.get("power", 0)) / 255.0
                     if power <= 0.05:
