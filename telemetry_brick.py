@@ -620,7 +620,15 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
         if obj_name != "ALIGN_BRICK":
             slow_mm = ALIGN_SPEED_SLOW_MM / 4.0
             fast_mm = ALIGN_SPEED_FAST_MM / 4.0
-        speed_score = _score_from_mm(mm_off, slow_mm, fast_mm)
+        if obj_name == "ALIGN_BRICK" and cmd == "f":
+            if mm_off is None:
+                speed_score = SPEED_SCORE_DEFAULT
+            elif mm_off <= slow_mm:
+                speed_score = SPEED_SCORE_MIN
+            else:
+                speed_score = SPEED_SCORE_DEFAULT
+        else:
+            speed_score = _score_from_mm(mm_off, slow_mm, fast_mm)
         speed_score = normalize_speed_score(speed_score)
 
     if not visible_for_cmd:
@@ -886,45 +894,61 @@ def evaluate_start_gates(world, step, learned_rules, process_rules=None):
     return GateCheck(ok=not reasons, reasons=reasons)
 
 
-def evaluate_success_gates(world, step, learned_rules, process_rules=None, visibility_grace_s=None):
+def _success_gate_eval(world, step, learned_rules, process_rules=None, visibility_grace_s=None):
     obj_name = _step_name(step)
-    if obj_name not in METRICS_BY_STEP:
-        return GateCheck(ok=True)
-
     envelope = build_envelope(process_rules or {}, learned_rules or {}, obj_name)
     success_metrics = envelope.get("success") or {}
-    if not success_metrics:
-        return GateCheck(ok=False, reasons=["no success envelope"])
+    if obj_name not in METRICS_BY_STEP:
+        supported_metrics = set(METRIC_DIRECTIONS.keys())
+        success_metrics = {k: v for k, v in success_metrics.items() if k in supported_metrics}
+        if not success_metrics:
+            return GateCheck(ok=True), []
+    elif not success_metrics:
+        return GateCheck(ok=False, reasons=["no success envelope"]), []
 
     brick = smoothed_brick_snapshot(world)
     visible = bool(brick.get("visible"))
     visible_gate = success_metrics.get("visible") or {}
     if visibility_grace_s is None:
         visible_grace_s = VISIBILITY_LOST_GRACE_S
-        if isinstance(visible_gate, dict) and visible_gate.get("min") is False:
-            visible_grace_s = VISIBLE_FALSE_GRACE_S_BY_STEP.get(
-                obj_name,
-                VISIBILITY_LOST_GRACE_S,
-            )
+        if isinstance(visible_gate, dict):
+            if visible_gate.get("min") is True:
+                visible_grace_s = 0.0
+            elif visible_gate.get("min") is False:
+                visible_grace_s = VISIBLE_FALSE_GRACE_S_BY_STEP.get(
+                    obj_name,
+                    VISIBILITY_LOST_GRACE_S,
+                )
     else:
         visible_grace_s = visibility_grace_s
     effective_visible = _effective_visible(world, visible, grace_s=visible_grace_s)
+
     reasons = []
-    
+    entries = []
+
     # FIND_BRICK: Ensure we're finding a loose brick, not one already on the wall
-    if obj_name == "FIND_BRICK":
-        if brick.get("brickBelow"):
-            reasons.append("brick already stacked")
-            return GateCheck(ok=False, reasons=reasons)
-    
+    if obj_name == "FIND_BRICK" and brick.get("brickBelow"):
+        reasons.append("brick already stacked")
+
     for metric, stats in success_metrics.items():
         direction = metric_direction_for_step(metric, obj_name)
+        entry = {
+            "metric": metric,
+            "stats": stats,
+            "raw_visible": visible,
+            "effective_visible": effective_visible,
+            "visible_grace_s": visible_grace_s,
+        }
+
         if metric in ("angle_abs", "xAxis_offset_abs", "dist", "confidence") and not visible:
             reasons.append("brick not visible")
+            entry["value"] = None
+            entries.append(entry)
             continue
 
         if metric == "angle_abs":
             angle_val = abs(brick.get("angle", 0.0))
+            entry["value"] = angle_val
             ok = _target_tol_ok(angle_val, stats, direction)
             if ok is False:
                 reasons.append("angle_abs gate")
@@ -932,6 +956,7 @@ def evaluate_success_gates(world, step, learned_rules, process_rules=None, visib
                 reasons.append("angle_abs gate")
         elif metric == "xAxis_offset_abs":
             offset_val = brick.get("x_axis", brick.get("offset_x", 0.0))
+            entry["value"] = offset_val
             target = stats.get("target") if isinstance(stats, dict) else None
             tol = stats.get("tol") if isinstance(stats, dict) else None
             if target is not None and tol is not None:
@@ -944,6 +969,7 @@ def evaluate_success_gates(world, step, learned_rules, process_rules=None, visib
                 reasons.append("xAxis_offset_abs gate")
         elif metric == "dist":
             dist_val = brick.get("dist", 0.0)
+            entry["value"] = dist_val
             ok = _target_tol_ok(dist_val, stats, direction)
             if ok is False:
                 reasons.append("dist gate")
@@ -951,6 +977,7 @@ def evaluate_success_gates(world, step, learned_rules, process_rules=None, visib
                 reasons.append("dist gate")
         elif metric == "confidence":
             conf_val = brick.get("confidence", 0.0)
+            entry["value"] = conf_val
             ok = _target_tol_ok(conf_val, stats, direction)
             if ok is False:
                 reasons.append("confidence gate")
@@ -959,6 +986,7 @@ def evaluate_success_gates(world, step, learned_rules, process_rules=None, visib
         elif metric == "visible":
             min_val = stats.get("min")
             max_val = stats.get("max")
+            entry["value"] = bool(effective_visible)
             if isinstance(min_val, bool):
                 if bool(effective_visible) != min_val:
                     reasons.append("visible gate")
@@ -968,7 +996,31 @@ def evaluate_success_gates(world, step, learned_rules, process_rules=None, visib
             else:
                 if (1.0 if effective_visible else 0.0) < stats.get("min", 0.0):
                     reasons.append("visible gate")
-    return GateCheck(ok=not reasons, reasons=reasons)
+        entries.append(entry)
+
+    return GateCheck(ok=not reasons, reasons=reasons), entries
+
+
+def success_gate_entries(world, step, learned_rules, process_rules=None, visibility_grace_s=None):
+    _, entries = _success_gate_eval(
+        world,
+        step,
+        learned_rules,
+        process_rules=process_rules,
+        visibility_grace_s=visibility_grace_s,
+    )
+    return entries
+
+
+def evaluate_success_gates(world, step, learned_rules, process_rules=None, visibility_grace_s=None):
+    check, _ = _success_gate_eval(
+        world,
+        step,
+        learned_rules,
+        process_rules=process_rules,
+        visibility_grace_s=visibility_grace_s,
+    )
+    return check
 
 
 def evaluate_failure_gates(world, step, learned_rules, process_rules=None):

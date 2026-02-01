@@ -1231,12 +1231,15 @@ def draw_telemetry_overlay(
     put_line(f"LIFT:   {wm.lift_height:.0f} mm", (200, 200, 255), 0.38, 1)
     cam_times = getattr(wm, "_camera_frame_times", [])
     if cam_times:
-        cam_color = RED if getattr(wm, "_camera_dupe_ms", False) else WHITE
+        has_dupes = getattr(wm, "_camera_dupe_ms", False)
+        cam_color = RED if has_dupes else WHITE
         fps = getattr(wm, "_camera_fps", None)
         fps_str = f"{fps:.1f}" if isinstance(fps, (int, float)) else "-"
-        put_line(f"CAMERA: {fps_str} fps", cam_color, 0.38, 1)
+        cam_note = " (repeated ms stamp)" if has_dupes else ""
+        put_line(f"CAMERA: {fps_str} fps{cam_note}", cam_color, 0.38, 1)
         dupes = getattr(wm, "_camera_dupe_count", 0)
-        put_line(f"DUPLICATE TIMESTAMP COUNT: {dupes}", cam_color, 0.38, 1)
+        dupe_note = " (same sec/ms frame)" if has_dupes else ""
+        put_line(f"DUPLICATE TIMESTAMP COUNT: {dupes}{dupe_note}", cam_color, 0.38, 1)
 
     # 6. Vision Info
     y_cur += 12

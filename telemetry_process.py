@@ -47,12 +47,14 @@ DEFAULT_AUTOBUILD_CONFIG = {
     "failure_tighten_high_pct": 0.9,
     "start_gate_timeout_s": 8.0,
     "success_settle_s": 1.0,
+    "success_recheck_s": 1.0,
     "success_tail_window_s": 1.5,
     "success_tail_count": 3,
     "max_phase_attempts": 1,
     "smooth_step_s": 1.0,
-    "fail_pause_s": 3.0,
-    "demo_action_pause_s": 1.5,
+    "fail_pause_s": 0.35,
+    "demo_action_pause_s": 0.35,
+    "post_act_pause_s": 3.0,
     "find_brick_slow_factor": 4.0,
     "visibility_lost_hold_s": 0.5,
     "learned_policy_confidence_threshold": 0.4,
@@ -112,12 +114,14 @@ def apply_autobuild_config(cfg):
     global FAILURE_TIGHTEN_HIGH_PCT
     global START_GATE_TIMEOUT_S
     global SUCCESS_SETTLE_S
+    global SUCCESS_RECHECK_S
     global SUCCESS_TAIL_WINDOW_S
     global SUCCESS_TAIL_COUNT
     global MAX_PHASE_ATTEMPTS
     global SMOOTH_STEP_S
     global FAIL_PAUSE_S
     global DEMO_ACTION_PAUSE_S
+    global POST_ACT_PAUSE_S
     global FIND_BRICK_SLOW_FACTOR
     global VISIBILITY_LOST_HOLD_S
     global LEARNED_POLICY_CONFIDENCE_THRESHOLD
@@ -179,6 +183,10 @@ def apply_autobuild_config(cfg):
         cfg.get("success_settle_s"),
         DEFAULT_AUTOBUILD_CONFIG["success_settle_s"],
     )
+    SUCCESS_RECHECK_S = _as_float(
+        cfg.get("success_recheck_s"),
+        DEFAULT_AUTOBUILD_CONFIG["success_recheck_s"],
+    )
     SUCCESS_TAIL_WINDOW_S = _as_float(
         cfg.get("success_tail_window_s"),
         DEFAULT_AUTOBUILD_CONFIG["success_tail_window_s"],
@@ -202,6 +210,10 @@ def apply_autobuild_config(cfg):
     DEMO_ACTION_PAUSE_S = _as_float(
         cfg.get("demo_action_pause_s"),
         DEFAULT_AUTOBUILD_CONFIG["demo_action_pause_s"],
+    )
+    POST_ACT_PAUSE_S = _as_float(
+        cfg.get("post_act_pause_s"),
+        DEFAULT_AUTOBUILD_CONFIG["post_act_pause_s"],
     )
     FIND_BRICK_SLOW_FACTOR = _as_float(
         cfg.get("find_brick_slow_factor"),
@@ -438,64 +450,76 @@ def format_gate_lines(cfg):
     )
 
 
+def _visibility_grace_s(world, step):
+    if success_visible_target(world, step) is False:
+        return SUCCESS_VISIBLE_FALSE_GRACE_S
+    return None
+
+
 def _success_gate_entries(world, step):
-    obj_key = normalize_step_label(step)
-    rules = world.process_rules.get(obj_key, {}) if world.process_rules else {}
-    gates = rules.get("success_gates") or {}
-    if not gates:
-        return []
+    process_rules = world.process_rules or {}
+    learned_rules = world.learned_rules or {}
+    visibility_grace_s = _visibility_grace_s(world, step)
+    return telemetry_brick.success_gate_entries(
+        world,
+        step,
+        learned_rules,
+        process_rules=process_rules,
+        visibility_grace_s=visibility_grace_s,
+    )
 
-    brick = world.brick or {}
-    entries = []
-    for metric, stats in gates.items():
-        actual = None
-        if metric == "visible":
-            actual = bool(brick.get("visible"))
-        elif metric == "angle_abs":
-            actual = abs(brick.get("angle", 0.0))
-        elif metric == "xAxis_offset_abs":
-            x_axis = brick.get("x_axis")
-            if x_axis is None:
-                x_axis = brick.get("offset_x", 0.0)
-            actual = x_axis
-        elif metric == "dist":
-            actual = brick.get("dist")
-        elif metric == "confidence":
-            actual = brick.get("confidence")
-        elif metric == "lift_height":
-            actual = world.lift_height
 
-        actual_str = _fmt_gate_value(actual) if actual is not None else "n/a"
-        gate_bits = []
-        if isinstance(stats, dict):
-            target = stats.get("target")
-            tol = stats.get("tol")
-            if target is not None and tol is not None:
-                gate_bits.append(f"{_fmt_gate_value(target)} +/- {_fmt_gate_value(tol)}")
+def _format_success_gate_entry(world, entry):
+    metric = entry.get("metric")
+    stats = entry.get("stats") or {}
+    value = entry.get("value")
+    actual_str = _fmt_gate_value(value) if value is not None else "n/a"
+    gate_bits = []
+    if isinstance(stats, dict):
+        target = stats.get("target")
+        tol = stats.get("tol")
+        if target is not None and tol is not None:
+            gate_bits.append(f"{_fmt_gate_value(target)} +/- {_fmt_gate_value(tol)}")
+        else:
+            if "min" in stats:
+                gate_bits.append(f">={_fmt_gate_value(stats.get('min'))}")
+            if "max" in stats:
+                gate_bits.append(f"<={_fmt_gate_value(stats.get('max'))}")
+        if "mu" in stats:
+            gate_bits.append(f"mu={_fmt_gate_value(stats.get('mu'))}")
+        if "sigma" in stats:
+            gate_bits.append(f"sigma={_fmt_gate_value(stats.get('sigma'))}")
+
+    if metric == "visible":
+        raw = entry.get("raw_visible")
+        effective = entry.get("effective_visible")
+        grace_s = entry.get("visible_grace_s")
+        if effective is not None:
+            eff_str = _fmt_gate_value(bool(effective))
+            raw_str = _fmt_gate_value(bool(raw)) if raw is not None else "n/a"
+            if raw is not None and bool(raw) != bool(effective):
+                if grace_s is not None:
+                    actual_str = f"{eff_str} (raw={raw_str}, grace={grace_s:.2f}s)"
+                else:
+                    actual_str = f"{eff_str} (raw={raw_str})"
+            elif grace_s is not None and grace_s > 0:
+                actual_str = f"{eff_str} (grace={grace_s:.2f}s)"
             else:
-                if "min" in stats:
-                    gate_bits.append(f">={_fmt_gate_value(stats.get('min'))}")
-                if "max" in stats:
-                    gate_bits.append(f"<={_fmt_gate_value(stats.get('max'))}")
-            if "mu" in stats:
-                gate_bits.append(f"mu={_fmt_gate_value(stats.get('mu'))}")
-            if "sigma" in stats:
-                gate_bits.append(f"sigma={_fmt_gate_value(stats.get('sigma'))}")
+                actual_str = eff_str
+        last_seen = getattr(world, "last_visible_time", None)
+        if last_seen is not None:
+            age_s = time.time() - last_seen
+            gate_bits.append(f"last_seen={age_s:.1f}s")
 
-        if metric == "visible":
-            last_seen = getattr(world, "last_visible_time", None)
-            if last_seen is not None:
-                age_s = time.time() - last_seen
-                gate_bits.append(f"last_seen={age_s:.1f}s")
-
-        gate_desc = " ".join(gate_bits) if gate_bits else "gate"
-        entries.append((metric, actual_str, gate_desc))
-    return entries
+    gate_desc = " ".join(gate_bits) if gate_bits else "gate"
+    return metric, actual_str, gate_desc
 
 
 def format_success_event_lines(world, step):
     entries = _success_gate_entries(world, step)
-    return [f"{metric}={actual} ({gate})" for metric, actual, gate in entries]
+    return [f"{metric}={actual} ({gate})" for metric, actual, gate in (
+        _format_success_gate_entry(world, entry) for entry in entries
+    )]
 
 
 def format_success_details(world, step):
@@ -803,6 +827,20 @@ def log_confidence(world, confidence, step):
         return
     pct = int(round(confidence * 100))
     print(format_headline(f"[CONF] {step} {pct}% confidence", COLOR_WHITE))
+
+
+def pause_for_gate_stability(world, vision, step):
+    deadline = time.time() + SUCCESS_RECHECK_S
+    tracker = SuccessGateTracker(success_frames_required(step))
+    while time.time() < deadline:
+        update_world_from_vision(world, vision)
+        success_ok, confidence = evaluate_gate_status(world, step)
+        confidence_ok = success_ok and confidence >= SUCCESS_CONFIDENCE_MIN
+        log_confidence(world, confidence, step)
+        if tracker.update(confidence_ok):
+            return True
+        time.sleep(CONTROL_DT)
+    return False
 
 
 def pause_after_fail(robot):
@@ -1406,15 +1444,14 @@ def update_world_from_vision(world, vision, log=True):
     sec = int(now)
     ms = int((now - sec) * 1000)
     cam_times = getattr(world, "_camera_frame_times", [])
+    stamp = (sec, ms)
+    duplicate_timestamp = stamp in cam_times
     cam_times.append((sec, ms))
     if len(cam_times) > 10:
         cam_times.pop(0)
     world._camera_frame_times = cam_times
-    ms_values = [t[1] for t in cam_times]
-    world._camera_dupe_ms = len(ms_values) != len(set(ms_values))
-    stamp = (sec, ms)
-    last_stamp = cam_times[-2] if len(cam_times) >= 2 else None
-    if last_stamp == stamp:
+    world._camera_dupe_ms = duplicate_timestamp
+    if duplicate_timestamp:
         world._camera_dupe_count = int(getattr(world, "_camera_dupe_count", 0)) + 1
     fps = None
     if len(cam_times) >= 2:
@@ -1450,12 +1487,10 @@ def update_world_from_vision(world, vision, log=True):
     if buffer is None:
         buffer = []
         setattr(world, "_brick_frame_buffer", buffer)
-    last_stamp = buffer[-1]["stamp"] if buffer else None
-    if stamp != last_stamp:
+    if not duplicate_timestamp and all(entry.get("stamp") != stamp for entry in buffer):
         buffer.append(frame)
     if len(buffer) > telemetry_brick.BRICK_SMOOTH_FRAMES:
         buffer.pop(0)
-    world._camera_unique_frames = len(buffer)
     avg = None
     obs_note = None
     if len(buffer) >= telemetry_brick.BRICK_SMOOTH_FRAMES:
@@ -1483,25 +1518,7 @@ def update_world_from_vision(world, vision, log=True):
             if normalize_step_label(current_name) == "EXIT_WALL":
                 pass
             elif not getattr(world, "suppress_brick_state_log", False):
-                print(format_headline(format_brick_state_line(world), COLOR_WHITE))
-            if getattr(world, "log_brick_frames", False):
-                frame_note = obs_note or "ok"
-                raw_frames = []
-                for idx, fr in enumerate(buffer[-telemetry_brick.BRICK_SMOOTH_FRAMES:]):
-                    raw_frames.append(
-                        f"{idx+1}:v={int(fr['found'])} d={fr['dist']:.1f} a={fr['angle']:.1f} "
-                        f"x={fr['offset_x']:.1f} c={fr['conf']:.1f}"
-                    )
-                avg_line = (
-                    f"avg:v={int(avg['found'])} d={avg['dist']:.1f} a={avg['angle']:.1f} "
-                    f"x={avg['offset_x']:.1f} c={avg['conf']:.1f}"
-                )
-                print(
-                    format_headline(
-                        "[BRICK] frames [" + " | ".join(raw_frames) + f"] -> {avg_line} ({frame_note})",
-                        COLOR_WHITE,
-                    )
-                )
+                pass
     elif len(buffer) >= telemetry_brick.BRICK_SMOOTH_FRAMES:
         # Mark inconsistent snapshot: force confidence to 0 and visible false until we stabilize.
         world._brick_inconsistent = True
@@ -1533,9 +1550,6 @@ def update_world_from_vision(world, vision, log=True):
         reasons = []
         if getattr(world, "_camera_dupe_ms", False):
             reasons.append("frame timestamp repeated")
-        unique_frames = getattr(world, "_camera_unique_frames", None)
-        if isinstance(unique_frames, int) and unique_frames < telemetry_brick.BRICK_SMOOTH_FRAMES:
-            reasons.append(f"only {unique_frames}/{telemetry_brick.BRICK_SMOOTH_FRAMES} unique frames")
         if obs_note:
             reasons.append(obs_note)
         if not reasons:
@@ -1583,13 +1597,27 @@ def _hold_reason(world, step, analytics):
     align = (analytics or {}).get("align") or {}
     brick = world.brick or {}
 
-    if getattr(world, "_brick_inconsistent", False):
+    if getattr(world, "_brick_inconsistent", False) and brick.get("visible"):
         obs_note = getattr(world, "_last_obs_note", None)
         reasons.append(obs_note or "inconsistent brick frames")
 
     if not brick.get("visible"):
         lost_reason = getattr(world, "_vision_lost_reason", None)
-        reasons.append(lost_reason or "brick not visible")
+        if lost_reason:
+            filtered = []
+            for part in (p.strip() for p in lost_reason.split(";")):
+                if not part:
+                    continue
+                lower = part.lower()
+                if "inconsistent" in lower or "unique frame" in lower:
+                    continue
+                filtered.append(part)
+            if filtered:
+                reasons.append("; ".join(filtered))
+            else:
+                reasons.append("brick not visible")
+        else:
+            reasons.append("brick not visible")
 
     brick_start = telemetry_brick.evaluate_start_gates(world, step, {}, world.process_rules)
     wall_start = telemetry_wall.evaluate_start_gates(world, step, world.wall_envelope)
@@ -1646,19 +1674,21 @@ def compute_stream_gate_summary(world, step, active=True):
         success_check = telemetry_brick.evaluate_success_gates(world, obj_name, world.learned_rules or {}, world.process_rules)
         pct = 100.0 if success_check.ok else 0.0
     pct_display = int(max(0.0, min(100.0, pct)))
-    success_gates = (world.process_rules or {}).get(obj_name, {}).get("success_gates") or {}
     metric_lines = []
-    for metric, stats in success_gates.items():
-        if metric == "lift_height":
-            value = world.lift_height
-        else:
-            value = telemetry_brick.metric_value(world.brick or {}, metric)
-        if metric == 'visible':
-            metric_lines.append(f"visible: {'true' if bool(value) else 'false'}")
+    for entry in _success_gate_entries(world, obj_name):
+        metric = entry.get("metric")
+        stats = entry.get("stats") or {}
+        value = entry.get("value")
+        if metric == "visible":
+            raw = entry.get("raw_visible")
+            effective = entry.get("effective_visible")
+            value_str = "true" if bool(effective) else "false"
+            if raw is not None and bool(raw) != bool(effective):
+                raw_str = "true" if bool(raw) else "false"
+                value_str = f"{value_str} (raw={raw_str})"
+            metric_lines.append(f"visible: {value_str}")
         else:
             metric_lines.append(_gate_value_line(metric, value, stats))
-    if getattr(world, "_brick_inconsistent", False):
-        metric_lines.append(("confidence: 0.0 (inconsistent)", (0, 0, 255)))
     suggestion = analytics.get("suggestion") or "HOLD"
     last_display = getattr(world, "_last_action_display", None)
     last_obj = getattr(world, "_last_action_obj", None)
@@ -1759,12 +1789,20 @@ def refresh_world_after_action(world, vision, log=True, attempts=8):
     return last_frame
 
 
+def post_act_analysis(world, vision, log=True):
+    last_frame = refresh_world_after_action(world, vision, log=log)
+    if POST_ACT_PAUSE_S > 0:
+        pause_deadline = time.time() + POST_ACT_PAUSE_S
+        while time.time() < pause_deadline:
+            update_world_from_vision(world, vision, log=False)
+            time.sleep(CONTROL_DT)
+    return last_frame
+
+
 def evaluate_gate_status(world, step):
     process_rules = world.process_rules or {}
     telemetry_rules = {}
-    visibility_grace_s = None
-    if success_visible_target(world, step) is False:
-        visibility_grace_s = SUCCESS_VISIBLE_FALSE_GRACE_S
+    visibility_grace_s = _visibility_grace_s(world, step)
     brick_success = telemetry_brick.evaluate_success_gates(
         world,
         step,
@@ -1949,13 +1987,24 @@ def run_alignment_segment(
         success_ok, confidence = evaluate_gate_status(world, step)
         if not align_silent:
             log_confidence(world, confidence, step)
+        if success_ok and confidence < SUCCESS_CONFIDENCE_MIN:
+            if robot:
+                robot.stop()
+            if observer:
+                observer("action", world, vision, None, 0.0, "hold for confidence")
+            time.sleep(CONTROL_DT)
+            continue
         if success_ok:
             if robot:
                 robot.stop()
             if not align_silent:
                 print(format_headline(f"[SUCCESS] {step} criteria met", COLOR_GREEN))
                 print_success_events(world, step)
-            return True, "success gate"
+            if pause_for_gate_stability(world, vision, step):
+                return True, "success gate"
+            if not align_silent:
+                print(format_headline(f"[HOLD] {step} success gates not stable yet", COLOR_WHITE))
+            continue
         if success_ok:
             if robot:
                 robot.stop()
@@ -2023,7 +2072,7 @@ def run_alignment_segment(
                 world._visible_speed_cycle = int(getattr(world, "_visible_speed_cycle", 0)) + 1
             if confirm_callback and robot:
                 robot.stop()
-            last_action_frame = refresh_world_after_action(world, vision, log=not align_silent)
+            last_action_frame = post_act_analysis(world, vision, log=not align_silent)
             post_frame_id = getattr(world, "_frame_id", 0)
             if post_frame_id <= pre_frame_id:
                 print(format_headline("[WARN] No new frame observed after action", COLOR_RED))
@@ -2218,6 +2267,7 @@ def replay_segment(
                     if observer:
                         observer("action", world, vision, cmd, speed, "nominal replay")
                     time.sleep(action_duration_s)
+                    post_act_analysis(world, vision, log=True)
                 else:
                     if robot:
                         robot.stop()
@@ -2235,11 +2285,12 @@ def replay_segment(
         steps = [MotionStep(None, 0.0, 0.1, "wait")]
 
     default_step = steps[0]
-    target_visible = success_visible_target(world, step)
+    step_key = step
+    target_visible = success_visible_target(world, step_key)
     start_status = wait_for_start_gates(
         world,
         vision,
-        step,
+        step_key,
         robot=robot,
         cmd=default_step.cmd,
         speed=default_step.speed,
@@ -2247,10 +2298,13 @@ def replay_segment(
     if start_status == "success":
         if robot:
             robot.stop()
-        print(format_headline(f"[SUCCESS] {step} criteria met 🎉", COLOR_GREEN))
-        print_success_events(world, step)
-        time.sleep(3.0)
-        return True, "success gate"
+        print(format_headline(f"[SUCCESS] {step_key} criteria met 🎉", COLOR_GREEN))
+        print_success_events(world, step_key)
+        if pause_for_gate_stability(world, vision, step_key):
+            time.sleep(3.0)
+            return True, "success gate"
+        print(format_headline(f"[HOLD] {step_key} success gates not stable yet", COLOR_WHITE))
+        start_status = "start"
     if start_status != "start":
         pause_after_fail(robot)
         return False, "start gates not met"
@@ -2262,42 +2316,55 @@ def replay_segment(
     last_cmd = default_step.cmd
     last_speed_base = default_step.speed
 
-    for step in steps:
-        if step.label != last_action:
+    for motion_step in steps:
+        if motion_step.label != last_action:
             update_world_from_vision(world, vision)
             if observer:
                 observer("frame", world, vision, None, None, None)
             world._last_action_line = format_control_action_line(
-                step.cmd,
-                step.speed,
+                motion_step.cmd,
+                motion_step.speed,
                 "replay",
             )
-            last_action = step.label
-        last_cmd = step.cmd
-        last_speed_base = step.speed
+            last_action = motion_step.label
+        last_cmd = motion_step.cmd
+        last_speed_base = motion_step.speed
         step_start = time.time()
-        while time.time() - step_start < step.duration_s:
+        while time.time() - step_start < motion_step.duration_s:
             update_world_from_vision(world, vision)
             if observer:
                 observer("frame", world, vision, None, None, None)
-            success_ok, confidence = evaluate_gate_status(world, step)
+            success_ok, confidence = evaluate_gate_status(world, step_key)
             confidence_ok = success_ok and confidence >= SUCCESS_CONFIDENCE_MIN
-            log_confidence(world, confidence, step)
+            log_confidence(world, confidence, step_key)
+
+            if success_ok and not confidence_ok:
+                success_tracker.update(False)
+                if robot:
+                    robot.stop()
+                if observer:
+                    observer("action", world, vision, None, 0.0, "hold for confidence")
+                time.sleep(CONTROL_DT)
+                continue
 
             if allow_early_exit:
                 success_met = success_tracker.update(confidence_ok)
                 if success_met:
                     robot.stop()
-                    print(format_headline(f"[SUCCESS] {step} criteria met 🎉", COLOR_GREEN))
-                    print_success_events(world, step)
-                    return True, "success gate"
+                    print(format_headline(f"[SUCCESS] {step_key} criteria met 🎉", COLOR_GREEN))
+                    print_success_events(world, step_key)
+                    if pause_for_gate_stability(world, vision, step_key):
+                        return True, "success gate"
+                    print(format_headline(f"[HOLD] {step_key} success gates not stable yet", COLOR_WHITE))
+                    success_tracker = SuccessGateTracker(success_frames_required(step_key))
+                    continue
 
-            active_speed = adjust_speed_for_find_brick(world, step, step.speed)
+            active_speed = adjust_speed_for_find_brick(world, step_key, motion_step.speed)
             analytics = telemetry_brick.compute_alignment_analytics(
                 world,
                 world.process_rules or {},
                 world.learned_rules or {},
-                step,
+                step_key,
                 duration_s=CONTROL_DT,
             )
             gate_speed = analytics.get("speed")
@@ -2306,22 +2373,23 @@ def replay_segment(
                 active_speed = gate_speed
             if speed_score is not None:
                 world._last_action_line = format_control_action_line(
-                    step.cmd,
+                    motion_step.cmd,
                     active_speed,
                     f"replay {int(speed_score)}%",
                 )
             active_speed = apply_pursuit_speed(active_speed)
             active_speed = apply_confidence_speed(active_speed, success_ok, confidence, world)
-            send_robot_command(robot, world, step, step.cmd, active_speed, speed_score=analytics.get("speed_score"))
+            send_robot_command(robot, world, step_key, motion_step.cmd, active_speed, speed_score=analytics.get("speed_score"))
             evt = MotionEvent(
-                cmd_to_motion_type(step.cmd),
+                cmd_to_motion_type(motion_step.cmd),
                 int(active_speed * 255),
                 int(CONTROL_DT * 1000),
             )
             world.update_from_motion(evt)
             if observer:
-                observer("action", world, vision, step.cmd, active_speed, "replay")
+                observer("action", world, vision, motion_step.cmd, active_speed, "replay")
             time.sleep(CONTROL_DT)
+        post_act_analysis(world, vision, log=True)
 
     robot.stop()
     settle_deadline = time.time() + SUCCESS_SETTLE_S
@@ -2330,21 +2398,33 @@ def replay_segment(
         update_world_from_vision(world, vision)
         if observer:
             observer("frame", world, vision, None, None, None)
-        success_ok, confidence = evaluate_gate_status(world, step)
+        success_ok, confidence = evaluate_gate_status(world, step_key)
         confidence_ok = success_ok and confidence >= SUCCESS_CONFIDENCE_MIN
-        log_confidence(world, confidence, step)
+        log_confidence(world, confidence, step_key)
+        if success_ok and not confidence_ok:
+            settle_tracker.update(False)
+            if robot:
+                robot.stop()
+            if observer:
+                observer("action", world, vision, None, 0.0, "hold for confidence")
+            time.sleep(CONTROL_DT)
+            continue
         success_met = settle_tracker.update(confidence_ok)
         if success_met:
-            print(format_headline(f"[SUCCESS] {step} criteria met 🎉", COLOR_GREEN))
-            print_success_events(world, step)
-            return True, "success gate"
+            print(format_headline(f"[SUCCESS] {step_key} criteria met 🎉", COLOR_GREEN))
+            print_success_events(world, step_key)
+            if pause_for_gate_stability(world, vision, step_key):
+                return True, "success gate"
+            print(format_headline(f"[HOLD] {step_key} success gates not stable yet", COLOR_WHITE))
+            settle_tracker = SuccessGateTracker(success_frames_required(step_key))
+            continue
         if last_cmd:
-            active_speed = adjust_speed_for_find_brick(world, step, last_speed_base)
+            active_speed = adjust_speed_for_find_brick(world, step_key, last_speed_base)
             analytics = telemetry_brick.compute_alignment_analytics(
                 world,
                 world.process_rules or {},
                 world.learned_rules or {},
-                step,
+                step_key,
                 duration_s=CONTROL_DT,
             )
             gate_speed = analytics.get("speed")
@@ -2359,7 +2439,7 @@ def replay_segment(
                 )
             active_speed = apply_pursuit_speed(active_speed)
             active_speed = apply_confidence_speed(active_speed, success_ok, confidence, world)
-            send_robot_command(robot, world, step, last_cmd, active_speed, speed_score=analytics.get("speed_score"))
+            send_robot_command(robot, world, step_key, last_cmd, active_speed, speed_score=analytics.get("speed_score"))
             evt = MotionEvent(
                 cmd_to_motion_type(last_cmd),
                 int(active_speed * 255),
@@ -2376,23 +2456,35 @@ def replay_segment(
             update_world_from_vision(world, vision)
             if observer:
                 observer("frame", world, vision, None, None, None)
-            success_ok, confidence = evaluate_gate_status(world, step)
+            success_ok, confidence = evaluate_gate_status(world, step_key)
             confidence_ok = success_ok and confidence >= SUCCESS_CONFIDENCE_MIN
-            log_confidence(world, confidence, step)
+            log_confidence(world, confidence, step_key)
+            if success_ok and not confidence_ok:
+                tail_tracker.update(False)
+                if robot:
+                    robot.stop()
+                if observer:
+                    observer("action", world, vision, None, 0.0, "hold for confidence")
+                time.sleep(CONTROL_DT)
+                continue
             success_met = tail_tracker.update(confidence_ok)
             if success_met:
                 if robot:
                     robot.stop()
-                print(format_headline(f"[SUCCESS] {step} criteria met 🎉", COLOR_GREEN))
-                print_success_events(world, step)
-                return True, "success gate"
+                print(format_headline(f"[SUCCESS] {step_key} criteria met 🎉", COLOR_GREEN))
+                print_success_events(world, step_key)
+                if pause_for_gate_stability(world, vision, step_key):
+                    return True, "success gate"
+                print(format_headline(f"[HOLD] {step_key} success gates not stable yet", COLOR_WHITE))
+                tail_tracker = SuccessGateTracker(success_frames_required(step_key))
+                continue
             if last_cmd:
-                active_speed = adjust_speed_for_find_brick(world, step, last_speed_base)
+                active_speed = adjust_speed_for_find_brick(world, step_key, last_speed_base)
                 analytics = telemetry_brick.compute_alignment_analytics(
                     world,
                     world.process_rules or {},
                     world.learned_rules or {},
-                    step,
+                    step_key,
                     duration_s=CONTROL_DT,
                 )
                 gate_speed = analytics.get("speed")
@@ -2407,7 +2499,7 @@ def replay_segment(
                     )
                 active_speed = apply_pursuit_speed(active_speed)
                 active_speed = apply_confidence_speed(active_speed, success_ok, confidence, world)
-                send_robot_command(robot, world, step, last_cmd, active_speed, speed_score=analytics.get("speed_score"))
+                send_robot_command(robot, world, step_key, last_cmd, active_speed, speed_score=analytics.get("speed_score"))
                 evt = MotionEvent(
                     cmd_to_motion_type(last_cmd),
                     int(active_speed * 255),
