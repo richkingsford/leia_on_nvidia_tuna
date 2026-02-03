@@ -54,6 +54,11 @@ DEFAULT_AUTOBUILD_CONFIG = {
     "learned_policy_confidence_threshold": 0.4,
 }
 
+DEFAULT_LITE_GATE_CHECK_CONFIG = {
+    "default_unique_smoothed_frames": 3,
+    "steps": {},
+}
+
 DEFAULT_SPEED_SCORE = telemetry_robot_module.SPEED_SCORE_DEFAULT
 MAX_SPEED_SCORE = telemetry_robot_module.SPEED_SCORE_MAX
 
@@ -196,6 +201,64 @@ def apply_autobuild_config(cfg):
 apply_autobuild_config(DEFAULT_AUTOBUILD_CONFIG)
 
 
+def apply_lite_gate_check_config(cfg):
+    global LITE_GATE_DEFAULT_UNIQUE_FRAMES
+    global LITE_GATE_STEP_UNIQUE_FRAMES
+
+    if not isinstance(cfg, dict):
+        cfg = {}
+    default_cfg = DEFAULT_LITE_GATE_CHECK_CONFIG
+    LITE_GATE_DEFAULT_UNIQUE_FRAMES = max(
+        1,
+        _as_int(
+            cfg.get("default_unique_smoothed_frames"),
+            default_cfg["default_unique_smoothed_frames"],
+        ),
+    )
+    steps_raw = cfg.get("steps") if isinstance(cfg, dict) else {}
+    parsed = {}
+    if isinstance(steps_raw, list):
+        for step_name in steps_raw:
+            step_key = normalize_step_label(step_name)
+            if not step_key:
+                continue
+            parsed[step_key] = LITE_GATE_DEFAULT_UNIQUE_FRAMES
+    elif isinstance(steps_raw, dict):
+        for step_name, step_cfg in steps_raw.items():
+            step_key = normalize_step_label(step_name)
+            if not step_key:
+                continue
+            if isinstance(step_cfg, dict):
+                enabled = step_cfg.get("enabled", True)
+                if enabled is False:
+                    continue
+                unique_frames = _as_int(
+                    step_cfg.get("unique_smoothed_frames"),
+                    LITE_GATE_DEFAULT_UNIQUE_FRAMES,
+                )
+            elif isinstance(step_cfg, bool):
+                if not step_cfg:
+                    continue
+                unique_frames = LITE_GATE_DEFAULT_UNIQUE_FRAMES
+            else:
+                unique_frames = _as_int(step_cfg, LITE_GATE_DEFAULT_UNIQUE_FRAMES)
+            parsed[step_key] = max(1, int(unique_frames))
+    LITE_GATE_STEP_UNIQUE_FRAMES = parsed
+
+
+apply_lite_gate_check_config(DEFAULT_LITE_GATE_CHECK_CONFIG)
+
+
+def lite_gate_unique_frames(step):
+    step_key = normalize_step_label(step)
+    if not step_key:
+        return None
+    frames = LITE_GATE_STEP_UNIQUE_FRAMES.get(step_key)
+    if frames is None:
+        return None
+    return max(1, int(frames))
+
+
 def apply_gate_checker_config(cfg):
     global GATECHECK_CONSECUTIVE_REQUIRED
     global GATECHECK_MAJORITY_WINDOW
@@ -238,6 +301,7 @@ COLOR_GREEN = "\033[32m"
 COLOR_RED = "\033[31m"
 COLOR_WHITE = "\033[37m"
 COLOR_GRAY = "\033[90m"
+ACTION_DISPLAY_TTL_S = 3.0
 
 
 ACTION_CMD_MAP = {
@@ -353,12 +417,18 @@ def derive_success_gate_scales(segments_by_obj, step_rules=None):
 
 
 def success_frames_required(step):
-    _ = step
+    lite_frames = lite_gate_unique_frames(step)
+    if lite_frames is not None:
+        return int(lite_frames)
     return int(GATECHECK_CONSECUTIVE_REQUIRED)
 
 
 def new_success_tracker(step):
-    _ = step
+    lite_frames = lite_gate_unique_frames(step)
+    if lite_frames is not None:
+        tracker = gate_utils.SuccessGateTracker(1, 1, 1)
+        tracker.lite_unique_frames = int(lite_frames)
+        return tracker
     return gate_utils.SuccessGateTracker(
         int(GATECHECK_CONSECUTIVE_REQUIRED),
         int(GATECHECK_MAJORITY_WINDOW),
@@ -611,6 +681,13 @@ def format_control_action_line(cmd, speed, reason=None):
     return f"{line1}{line2}"
 
 
+def action_display_text(cmd, speed_score=None):
+    if not cmd:
+        return "HOLD"
+    score_suffix = f" {int(speed_score)}%" if speed_score is not None else ""
+    return f"{str(cmd).upper()}{score_suffix}"
+
+
 def record_action_display(world, step, cmd, speed, speed_score=None):
     if world is None or not cmd:
         return
@@ -620,8 +697,7 @@ def record_action_display(world, step, cmd, speed, speed_score=None):
     world._last_action_cmd = cmd
     world._last_action_speed = speed
     world._last_action_score = speed_score
-    score_suffix = f" {int(speed_score)}%" if speed_score is not None else ""
-    world._last_action_display = f"{cmd.upper()}{score_suffix}"
+    world._last_action_display = action_display_text(cmd, speed_score)
 
 
 def send_robot_command(robot, world, step, cmd, speed, speed_score=None, auto_mode=False):
@@ -639,7 +715,10 @@ def send_robot_command(robot, world, step, cmd, speed, speed_score=None, auto_mo
             boost_scale = 1.0 + (boost_pct / 100.0)
             pwm = max(0, min(255, int(round(pwm * boost_scale))))
             power = max(0.0, min(1.0, float(power) * boost_scale))
-    record_action_display(world, step, cmd, power, speed_score=score_used)
+    _, score_effective = telemetry_robot_module.quantize_speed(cmd, speed=power)
+    if score_effective is None:
+        score_effective = score_used
+    record_action_display(world, step, cmd, power, speed_score=score_effective)
     duration_used_ms = duration_ms
     if cmd in ("l", "r"):
         # Normalize turn duration using turn efficiency so L/R produce similar angle.
@@ -860,7 +939,9 @@ def refresh_autobuild_config(path=PROCESS_MODEL_FILE, gate_checker_path=GATE_CHE
     model_cfg = model.get("autobuild") if isinstance(model, dict) else None
     if isinstance(model_cfg, dict):
         cfg.update(model_cfg)
+    lite_cfg = model.get("lite_gate_check") if isinstance(model, dict) else None
     apply_autobuild_config(cfg)
+    apply_lite_gate_check_config(lite_cfg)
     refresh_gate_checker_config(gate_checker_path)
     return cfg
 
@@ -1393,6 +1474,38 @@ def select_demo_segment(segments_by_obj, step, nominal_only):
     return candidates[0], chosen_type
 
 
+def _record_smoothed_frame_snapshot(world):
+    if world is None:
+        return
+    frame_id = int(getattr(world, "_frame_id", 0) or 0)
+    if frame_id <= 0:
+        return
+    history = getattr(world, "_smoothed_frame_history", None)
+    if history is None:
+        history = []
+        world._smoothed_frame_history = history
+    if history and int(history[-1].get("frame_id", 0) or 0) == frame_id:
+        return
+    brick = world.brick or {}
+    x_axis = brick.get("x_axis")
+    if x_axis is None:
+        x_axis = brick.get("offset_x")
+    history.append(
+        {
+            "frame_id": frame_id,
+            "timestamp": time.time(),
+            "visible": bool(brick.get("visible")),
+            "dist": float(brick.get("dist", 0.0) or 0.0),
+            "angle": float(brick.get("angle", 0.0) or 0.0),
+            "x_axis": float(x_axis or 0.0),
+            "offset_x": float(brick.get("offset_x", x_axis if x_axis is not None else 0.0) or 0.0),
+            "confidence": float(brick.get("confidence", 0.0) or 0.0),
+        }
+    )
+    if len(history) > 120:
+        del history[:-120]
+
+
 def update_world_from_vision(world, vision, log=True):
     now = time.time()
     sec = int(now)
@@ -1470,6 +1583,8 @@ def update_world_from_vision(world, vision, log=True):
             avg["brick_above"],
             avg["brick_below"],
         )
+        if fresh_input_frame:
+            _record_smoothed_frame_snapshot(world)
         if log:
             current_obj = getattr(world, "step_state", None)
             current_name = getattr(current_obj, "value", None)
@@ -1756,7 +1871,7 @@ def compute_stream_gate_summary(world, step, active=True):
     last_time = getattr(world, "_last_action_time", None)
     use_last = False
     if last_display and last_obj == obj_name:
-        if last_time is None or (time.time() - last_time) <= 1.5:
+        if last_time is None or (time.time() - last_time) <= ACTION_DISPLAY_TTL_S:
             suggestion = last_display
             use_last = True
     cmd = analytics.get("cmd")
@@ -1771,14 +1886,11 @@ def compute_stream_gate_summary(world, step, active=True):
             speed=speed,
             score=speed_score,
         )
-        if speed_score is not None:
-            suggestion = f"{cmd.upper()} {int(speed_score)}%"
-        else:
-            suggestion = f"{cmd.upper()}"
+        suggestion = action_display_text(cmd, speed_score)
     if suggestion == "HOLD":
         scan_dir = (world.process_rules or {}).get(obj_name, {}).get("scan_direction")
         if scan_dir in ("l", "r"):
-            suggestion = f"{scan_dir.upper()} {int(DEFAULT_SPEED_SCORE)}%"
+            suggestion = action_display_text(scan_dir, DEFAULT_SPEED_SCORE)
     if suggestion == "HOLD":
         reason = _hold_reason(world, obj_name, analytics)
         if reason:
@@ -1877,21 +1989,96 @@ def post_act_analysis(world, vision, step=None, log=True):
     return last_frame
 
 
+def _latest_unique_smoothed_frames(world, required_frames):
+    required = max(1, int(required_frames or 1))
+    history = getattr(world, "_smoothed_frame_history", None)
+    if not history:
+        return []
+    selected = []
+    seen_frame_ids = set()
+    for entry in reversed(history):
+        frame_id = int(entry.get("frame_id", 0) or 0)
+        if frame_id <= 0 or frame_id in seen_frame_ids:
+            continue
+        seen_frame_ids.add(frame_id)
+        selected.append(entry)
+        if len(selected) >= required:
+            break
+    selected.reverse()
+    return selected
+
+
+def _average_smoothed_frames(frames):
+    if not frames:
+        return None
+
+    def mean(key):
+        values = [float(frame.get(key, 0.0) or 0.0) for frame in frames]
+        return sum(values) / len(values) if values else 0.0
+
+    def majority(key):
+        values = [bool(frame.get(key)) for frame in frames]
+        return sum(1 for value in values if value) >= (len(values) / 2.0)
+
+    x_axis = mean("x_axis")
+    return {
+        "visible": majority("visible"),
+        "dist": mean("dist"),
+        "angle": mean("angle"),
+        "x_axis": x_axis,
+        "offset_x": mean("offset_x"),
+        "confidence": mean("confidence"),
+    }
+
+
+def _evaluate_lite_gate_brick_success(world, step, process_rules):
+    required_frames = lite_gate_unique_frames(step)
+    if required_frames is None:
+        return None
+    step_key = normalize_step_label(step)
+    step_cfg = (process_rules or {}).get(step_key, {}) if isinstance(process_rules, dict) else {}
+    success_gates = step_cfg.get("success_gates") if isinstance(step_cfg, dict) else {}
+    if not isinstance(success_gates, dict) or not success_gates:
+        return None
+
+    frames = _latest_unique_smoothed_frames(world, required_frames)
+    world._gatecheck_mode = "lite"
+    world._gatecheck_lite_required = int(required_frames)
+    world._gatecheck_lite_collected = int(len(frames))
+    if len(frames) < required_frames:
+        return False
+
+    measurement = _average_smoothed_frames(frames)
+    if measurement is None:
+        return False
+    world._lite_gate_measurement = measurement
+    world._lite_gate_frame_ids = [int(frame.get("frame_id", 0) or 0) for frame in frames]
+    return gate_utils.gate_satisfied(measurement, success_gates)
+
+
 def evaluate_gate_status(world, step):
     process_rules = world.process_rules or {}
     telemetry_rules = {}
-    visibility_grace_s = _visibility_grace_s(world, step)
-    brick_success = telemetry_brick.evaluate_success_gates(
-        world,
-        step,
-        telemetry_rules,
-        process_rules,
-        visibility_grace_s=visibility_grace_s,
-    )
+    lite_brick_ok = _evaluate_lite_gate_brick_success(world, step, process_rules)
+    if lite_brick_ok is None:
+        world._gatecheck_mode = "traditional"
+        world._gatecheck_lite_required = 0
+        world._gatecheck_lite_collected = 0
+        visibility_grace_s = _visibility_grace_s(world, step)
+        brick_success = telemetry_brick.evaluate_success_gates(
+            world,
+            step,
+            telemetry_rules,
+            process_rules,
+            visibility_grace_s=visibility_grace_s,
+        )
+        brick_ok = bool(brick_success.ok)
+    else:
+        brick_ok = bool(lite_brick_ok)
     wall_success = telemetry_wall.evaluate_success_gates(world, step, world.wall_envelope)
     robot_success = telemetry_robot_module.evaluate_success_gates(world, step, telemetry_rules, process_rules)
 
-    success_ok = brick_success.ok and wall_success.ok and robot_success.ok
+    success_ok = brick_ok and wall_success.ok and robot_success.ok
     confidence = step_confidence(success_ok, world, step)
     return success_ok, confidence
 
@@ -1928,6 +2115,9 @@ def run_full_gatecheck_after_act(
         int(getattr(tracker, "consecutive_required", 1)),
         int(getattr(tracker, "majority_window", 1)),
     )
+    lite_frames = lite_gate_unique_frames(step)
+    if lite_frames is not None:
+        checks_per_act = max(checks_per_act, int(lite_frames))
     truth_hit = False
     truth_by = None
     for _ in range(checks_per_act):
@@ -2428,7 +2618,9 @@ def replay_segment(
         if not actions:
             actions = [{"cmd": None, "speed_score": None, "power": 0.0, "duration_s": 0.1}]
         total_actions = len(actions)
-        nominal_gate_tracker = new_success_tracker(step)
+        # Nominal replay is a strict script playback path; do not run gatecheck loops.
+        world._gatecheck_status = None
+        world._last_gate_summary = None
         prior_suppress = getattr(world, "suppress_brick_state_log", False)
         world.suppress_brick_state_log = True
         try:
@@ -2474,8 +2666,10 @@ def replay_segment(
                     )
                     world._last_action_obj = normalize_step_label(step)
                     world._last_action_time = time.time()
-                    score_suffix = f" {int(score)}%" if score is not None else ""
-                    world._last_action_display = f"DEMO {idx}/{total_actions}: {cmd.upper()}{score_suffix}"
+                    world._last_action_display = (
+                        f"DEMO {idx}/{total_actions}: "
+                        f"{action_display_text(cmd, score)}"
+                    )
                     evt = MotionEvent(
                         cmd_to_motion_type(cmd),
                         int(speed * 255),
@@ -2486,15 +2680,6 @@ def replay_segment(
                         observer("action", world, vision, cmd, speed, "nominal replay")
                     time.sleep(action_duration_s)
                     post_act_analysis(world, vision, step=step, log=True)
-                    run_full_gatecheck_after_act(
-                        world,
-                        vision,
-                        step,
-                        nominal_gate_tracker,
-                        phase="nominal",
-                        log=True,
-                        observer=observer,
-                    )
                 else:
                     if robot:
                         robot.stop()

@@ -27,6 +27,7 @@ METRICS_BY_STEP = {
     "FIND_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "ALIGN_BRICK": ("xAxis_offset_abs", "dist", "visible"),
     "SCOOP": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
+    "FIND_WALL2": ("visible",),
     "POSITION_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
 }
 

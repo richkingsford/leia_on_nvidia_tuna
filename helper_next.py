@@ -22,6 +22,8 @@ from telemetry_robot import (
 )
 
 VISIBILITY_LOST_CONFIRM_FRAMES = 3
+ALIGN_BRICK_TURN_FAST_SCORE = 3
+ALIGN_BRICK_TURN_FAST_OFFSET_MM = 9.0
 
 METRIC_DIRECTIONS = {
     "angle_abs": "low",
@@ -380,9 +382,15 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
         speed_score = SPEED_SCORE_DEFAULT
         speed_score = normalize_speed_score(speed_score)
 
-    # Force 1% speed score (fixed 0.24 power) for all alignment turns
+    # ALIGN_BRICK turn tuning:
+    # - offset magnitude above 9mm: use 3%
+    # - offset magnitude at/under 9mm: use 1%
     if cmd in ("l", "r"):
-        speed_score = SPEED_SCORE_MIN
+        if obj_name == "ALIGN_BRICK" and abs(x_axis) > ALIGN_BRICK_TURN_FAST_OFFSET_MM:
+            speed_score = ALIGN_BRICK_TURN_FAST_SCORE
+        else:
+            speed_score = SPEED_SCORE_MIN
+        speed_score = normalize_speed_score(speed_score)
 
     if cmd:
         speed = manual_speed_for_cmd(cmd, speed_score)

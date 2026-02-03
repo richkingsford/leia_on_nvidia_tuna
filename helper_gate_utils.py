@@ -251,11 +251,15 @@ def update_gatecheck(world, step, tracker, success_ok, phase=None):
         truth_by = "majority"
     else:
         truth_by = None
+    mode = str(getattr(world, "_gatecheck_mode", "traditional") or "traditional").lower()
+    if mode == "lite" and truth_ok:
+        truth_by = "lite"
     checks = int(getattr(tracker, "total_checks", 0))
     passed = int(getattr(tracker, "total_pass", 0))
     status = {
         "step": _step_key(step),
         "phase": phase or "run",
+        "mode": mode,
         "checks": checks,
         "pass": passed,
         "fail": max(0, checks - passed),
@@ -269,6 +273,8 @@ def update_gatecheck(world, step, tracker, success_ok, phase=None):
         "majority_ok": bool(majority_ok),
         "truth_ok": bool(truth_ok),
         "truth_by": truth_by,
+        "lite_required": int(getattr(world, "_gatecheck_lite_required", 0) or 0),
+        "lite_collected": int(getattr(world, "_gatecheck_lite_collected", 0) or 0),
         "frame_id": int(getattr(world, "_frame_id", 0) or 0),
         "timestamp": time.time(),
     }
@@ -344,7 +350,17 @@ def format_gatecheck_stream_lines(world, step=None):
     status = getattr(world, "_gatecheck_status", None)
     if not isinstance(status, dict):
         return []
+    mode = str(status.get("mode") or "traditional").lower()
     checks = int(status.get("checks", 0))
+    if mode == "lite":
+        lite_required = max(1, int(status.get("lite_required", 1)))
+        lite_collected = max(0, int(status.get("lite_collected", 0)))
+        lite_ok = bool(status.get("truth_ok", False))
+        lite_state = "ok" if lite_ok else "wait"
+        lite_line = f"LITE: {lite_collected}/{lite_required} avg-smoothed frames"
+        seen_line = f"SEEN: {checks} total"
+        verdict_line = f"LITE-GATE: {lite_state}"
+        return [lite_line, seen_line, verdict_line]
     streak = int(status.get("streak", 0))
     need = max(1, int(status.get("need", 1)))
     consecutive_ok = bool(status.get("consecutive_ok", False))

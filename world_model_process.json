@@ -26,6 +26,19 @@
         "stream_fps": 10,
         "stream_jpeg_quality": 85
     },
+    "lite_gate_check": {
+        "default_unique_smoothed_frames": 3,
+        "steps": {
+            "ALIGN_BRICK": {
+                "enabled": true,
+                "unique_smoothed_frames": 3
+            },
+            "POSITION_BRICK": {
+                "enabled": true,
+                "unique_smoothed_frames": 3
+            }
+        }
+    },
     "steps": {
         "FIND_WALL": {
             "scan_direction": "r",
@@ -107,6 +120,11 @@
             "alignment_metrics": []
         },
         "FIND_WALL2": {
+            "success_gates": {
+                "visible": {
+                    "min": true
+                }
+            },
             "alignment_metrics": [
                 "visible"
             ]

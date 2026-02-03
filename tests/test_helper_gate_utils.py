@@ -83,6 +83,27 @@ class TestHelperGateUtils(unittest.TestCase):
         self.assertIn("MAJ: 3/5 pass", lines[2])
         self.assertIn("need:4", lines[2])
 
+    def test_gatecheck_stream_line_lite_mode(self):
+        class DummyWorld:
+            pass
+
+        world = DummyWorld()
+        world._frame_id = 21
+        world._gatecheck_mode = "lite"
+        world._gatecheck_lite_required = 3
+        world._gatecheck_lite_collected = 2
+        tracker = helper_gate_utils.SuccessGateTracker(
+            consecutive_required=1,
+            majority_window=1,
+            majority_required=1,
+        )
+        self.assertFalse(helper_gate_utils.update_gatecheck(world, "ALIGN_BRICK", tracker, False, phase="align"))
+        lines = helper_gate_utils.format_gatecheck_stream_lines(world, "ALIGN_BRICK")
+        self.assertEqual(len(lines), 3)
+        self.assertIn("LITE: 2/3 avg-smoothed frames", lines[0])
+        self.assertIn("SEEN: 1 total", lines[1])
+        self.assertIn("LITE-GATE: wait", lines[2])
+
     def test_load_gate_checker_config_sanitizes_values(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "world_model_gate_checker.json"
