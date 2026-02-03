@@ -10,7 +10,7 @@ from pathlib import Path
 
 from helper_robot_control import Robot
 from helper_demo_log_utils import load_demo_logs, normalize_step_label, prune_log_file
-from helper_gate_utils import load_process_steps
+from helper_gate_utils import format_gatecheck_stream_lines, load_process_steps
 from helper_streaming import start_stream_server
 from helper_vision_aruco import ArucoBrickVision
 from helper_manual_config import load_manual_training_config
@@ -311,8 +311,9 @@ def update_brick_analytics(app_state):
     else:
         app_state.step_suggestions = []
 
-def refresh_brick_telemetry(app_state):
-    update_world_from_vision(app_state.world, app_state.vision, log=False)
+def refresh_brick_telemetry(app_state, read_vision=True):
+    if read_vision:
+        update_world_from_vision(app_state.world, app_state.vision, log=False)
     update_brick_analytics(app_state)
     update_stream_frame(app_state)
 
@@ -452,6 +453,10 @@ def update_stream_frame(app_state):
             app_state.world.step_state.value,
             active=active,
         )
+        gate_checker_summary = format_gatecheck_stream_lines(
+            app_state.world,
+            app_state.world.step_state.value,
+        )
         if analytics:
             app_state.brick_highlight_metric = analytics.get("highlight_metric")
         draw_telemetry_overlay(
@@ -464,6 +469,7 @@ def update_stream_frame(app_state):
             highlight_metric=app_state.brick_highlight_metric,
             loop_id=getattr(app_state.world, "loop_id", None),
             gate_summary=gate_summary if gate_summary is not None else [],
+            gate_checker_summary=gate_checker_summary,
         )
         app_state.current_frame = frame
     if app_state.stream_state:
@@ -473,7 +479,9 @@ def update_stream_frame(app_state):
 
 def make_auto_observer(app_state):
     def _observer(stage, world, vision, cmd, speed, reason):
-        refresh_brick_telemetry(app_state)
+        # replay_segment already refreshed world from vision before observer callbacks.
+        # Avoid a second camera read here; it can stall stream updates on some cameras.
+        refresh_brick_telemetry(app_state, read_vision=False)
     return _observer
 
 
@@ -501,7 +509,7 @@ def make_auto_confirm(app_state):
                     app_state.auto_confirm_needed = False
                 return True
             update_world_from_vision(world, vision, log=False)
-            refresh_brick_telemetry(app_state)
+            refresh_brick_telemetry(app_state, read_vision=False)
             time.sleep(0.05)
         return False
     return _confirm
@@ -815,6 +823,9 @@ class AppState:
         self.brick_highlight_metric = None
         self.brick_frame_buffer = []
         self.stream_state = {"frame": None, "lock": threading.Lock()}
+        self.stream_enabled = False
+        # Allow telemetry_process helpers to push frames directly during auto-run pauses.
+        self.world._stream_state = self.stream_state
 
         self.config_mtime = 0
         self.last_config_check = 0
@@ -882,7 +893,6 @@ def keyboard_thread(app_state):
                             app_state.active_command = None
                             app_state.active_speed = 0.0
                             app_state.active_speed_score = None
-                        messages.append(f"[AUTO] Queued {step_label(obj_enum)}.")
         elif auto_prompt:
             with app_state.lock:
                 app_state.last_key_time = time.time()
@@ -897,7 +907,6 @@ def keyboard_thread(app_state):
                         app_state.active_command = None
                         app_state.active_speed = 0.0
                         app_state.active_speed_score = None
-                        messages.append(f"[AUTO] Queued {step_label(obj_enum)}.")
                     else:
                         messages.append("[AUTO] Unknown step code.")
         elif ch_lower == ':':
@@ -969,11 +978,31 @@ def keyboard_thread(app_state):
         if not app_state.running:
             break
 
+
+def stream_refresh_loop(app_state):
+    dt = 1.0 / max(STREAM_FPS, 1)
+    while app_state.running:
+        loop_start = time.time()
+        if app_state.vision is not None:
+            try:
+                update_stream_frame(app_state)
+            except Exception:
+                # Keep streaming alive even if a single overlay pass fails.
+                pass
+        elapsed = time.time() - loop_start
+        if elapsed < dt:
+            time.sleep(dt - elapsed)
+
+
 def control_loop(app_state):
     app_state.robot = Robot()
     # speed_optimize=False so we get the debug markers drawn on the frame
     app_state.vision = ArucoBrickVision(debug=True)
     print_command_help(app_state)
+
+    if app_state.stream_enabled:
+        stream_t = threading.Thread(target=stream_refresh_loop, args=(app_state,), daemon=True)
+        stream_t.start()
 
     cmd_t = threading.Thread(target=command_loop, args=(app_state,), daemon=True)
     cmd_t.start()
@@ -993,7 +1022,6 @@ def control_loop(app_state):
                 app_state.active_speed_score = None
 
         if auto_obj:
-            log_line(f"[AUTO] Starting {step_label(auto_obj)}...")
             run_auto_step(app_state, auto_obj)
             with app_state.lock:
                 app_state.auto_running = False
@@ -1145,8 +1173,10 @@ if __name__ == "__main__":
             fps=STREAM_FPS,
             jpeg_quality=STREAM_JPEG_QUALITY,
         )
+        state.stream_enabled = True
         log_line(f"[VISION] Stream started at {url}")
     else:
+        state.stream_enabled = False
         log_line("[VISION] Stream disabled")
 
     log_line("[CTRL] Drive: W/S 50%, R/F 1%, T/G 100%. Turn: A/D 50%, Q/E 1%, Z/C 100%. Lift: U/L 50%. F action, ':' command, m auto, 1 trash log, Q quit")

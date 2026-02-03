@@ -1,7 +1,63 @@
 import json
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
+from helper_demo_log_utils import normalize_step_label
 
 PROCESS_MODEL_FILE = Path(__file__).resolve().parent / "world_model_process.json"
+GATE_CHECKER_MODEL_FILE = Path(__file__).resolve().parent / "world_model_gate_checker.json"
+
+DEFAULT_GATE_CHECKER_CONFIG = {
+    "consecutive_required": 8,
+    "majority_window": 17,
+    "majority_required": 9,
+}
+
+
+def _coerce_int(value, fallback, minimum=1):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = int(fallback)
+    return max(int(minimum), parsed)
+
+
+def load_gate_checker_config(path=GATE_CHECKER_MODEL_FILE, default_config=None):
+    cfg = dict(default_config or DEFAULT_GATE_CHECKER_CONFIG)
+    raw = {}
+    file_path = Path(path)
+    if file_path.exists():
+        try:
+            loaded = json.loads(file_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            loaded = {}
+        if isinstance(loaded, dict):
+            nested = loaded.get("gate_checker")
+            if isinstance(nested, dict):
+                raw = nested
+            else:
+                raw = loaded
+    consecutive_required = _coerce_int(
+        raw.get("consecutive_required"),
+        cfg["consecutive_required"],
+        minimum=1,
+    )
+    majority_window = _coerce_int(
+        raw.get("majority_window"),
+        cfg["majority_window"],
+        minimum=1,
+    )
+    majority_required = _coerce_int(
+        raw.get("majority_required"),
+        cfg["majority_required"],
+        minimum=1,
+    )
+    majority_required = min(majority_required, majority_window)
+    return {
+        "consecutive_required": consecutive_required,
+        "majority_window": majority_window,
+        "majority_required": majority_required,
+    }
 
 
 def load_process_steps(path=PROCESS_MODEL_FILE):
@@ -138,3 +194,292 @@ def satisfied_steps(measurement, steps):
         if gate_satisfied(measurement, success_gates):
             satisfied.append(step_name)
     return satisfied
+
+
+@dataclass
+class SuccessGateTracker:
+    consecutive_required: int
+    majority_window: int
+    majority_required: int
+    consecutive: int = 0
+    window: list = field(default_factory=list)
+    total_checks: int = 0
+    total_pass: int = 0
+
+    def update(self, success_ok):
+        self.total_checks += 1
+        if success_ok:
+            self.total_pass += 1
+            self.consecutive += 1
+        else:
+            self.consecutive = 0
+        self.window.append(bool(success_ok))
+        if len(self.window) > max(1, int(self.majority_window)):
+            self.window.pop(0)
+        if self.consecutive >= max(1, int(self.consecutive_required)):
+            return True
+        if (
+            len(self.window) == max(1, int(self.majority_window))
+            and sum(self.window) >= max(1, int(self.majority_required))
+        ):
+            return True
+        return False
+
+
+def _step_key(step):
+    key = normalize_step_label(step)
+    return key or str(step)
+
+
+def update_gatecheck(world, step, tracker, success_ok, phase=None):
+    success_met = tracker.update(success_ok)
+    if world is None:
+        return success_met
+    window_vals = list(getattr(tracker, "window", []))
+    window_pass = int(sum(1 for ok in window_vals if ok))
+    window_size = int(len(window_vals))
+    window_total = max(1, int(getattr(tracker, "majority_window", 1)))
+    window_need = max(1, int(getattr(tracker, "majority_required", 1)))
+    streak = int(getattr(tracker, "consecutive", 0))
+    need = max(1, int(getattr(tracker, "consecutive_required", 1)))
+    consecutive_ok = streak >= need
+    majority_ok = window_size >= window_total and window_pass >= window_need
+    truth_ok = consecutive_ok or majority_ok
+    if consecutive_ok:
+        truth_by = "consecutive"
+    elif majority_ok:
+        truth_by = "majority"
+    else:
+        truth_by = None
+    checks = int(getattr(tracker, "total_checks", 0))
+    passed = int(getattr(tracker, "total_pass", 0))
+    status = {
+        "step": _step_key(step),
+        "phase": phase or "run",
+        "checks": checks,
+        "pass": passed,
+        "fail": max(0, checks - passed),
+        "streak": streak,
+        "need": need,
+        "consecutive_ok": bool(consecutive_ok),
+        "window_pass": window_pass,
+        "window_size": window_size,
+        "window_total": window_total,
+        "window_need": window_need,
+        "majority_ok": bool(majority_ok),
+        "truth_ok": bool(truth_ok),
+        "truth_by": truth_by,
+        "frame_id": int(getattr(world, "_frame_id", 0) or 0),
+        "timestamp": time.time(),
+    }
+    world._gatecheck_status = status
+    return success_met
+
+
+def record_success_gate_entry(world, step, success_ok):
+    if world is None:
+        return
+    world._success_gate_last_step = _step_key(step)
+    world._success_gate_last_ok = bool(success_ok)
+
+
+def should_hold_for_success_confirmation(visible_only, tracker, success_met):
+    if success_met or not visible_only:
+        return False
+    needed = max(1, int(getattr(tracker, "consecutive_required", 1)))
+    streak = max(0, int(getattr(tracker, "consecutive", 0)))
+    if 0 < streak < needed:
+        return True
+    window_vals = list(getattr(tracker, "window", []))
+    if not window_vals:
+        return False
+    window_total = max(1, int(getattr(tracker, "majority_window", 1)))
+    # If we have any positive evidence, pause motion long enough to confirm/refute
+    # truth from a full majority window.
+    return any(window_vals) and len(window_vals) < window_total
+
+
+def store_gate_summary(world, tracker):
+    if world is None:
+        return
+    checks = int(getattr(tracker, "total_checks", 0))
+    passed = int(getattr(tracker, "total_pass", 0))
+    world._last_gate_summary = {
+        "checks": checks,
+        "pass": passed,
+        "fail": max(0, checks - passed),
+        "streak": int(getattr(tracker, "consecutive", 0)),
+        "need": int(getattr(tracker, "consecutive_required", 0)),
+    }
+
+
+def consume_gate_summary(world):
+    if world is None:
+        return None
+    summary = getattr(world, "_last_gate_summary", None)
+    world._last_gate_summary = None
+    return summary
+
+
+def format_gate_summary_line(summary, smooth_frames=1):
+    if not summary:
+        return None
+    checks = int(summary.get("checks", 0))
+    passed = int(summary.get("pass", 0))
+    failed = int(summary.get("fail", 0))
+    return (
+        f"Required {checks} gate checks "
+        f"({passed} pass, {failed} fail; {int(smooth_frames)}-frame smoothing)."
+    )
+
+
+def format_gatecheck_stream_line(world, step=None):
+    lines = format_gatecheck_stream_lines(world, step=step)
+    return lines[0] if lines else None
+
+
+def format_gatecheck_stream_lines(world, step=None):
+    if world is None:
+        return []
+    status = getattr(world, "_gatecheck_status", None)
+    if not isinstance(status, dict):
+        return []
+    checks = int(status.get("checks", 0))
+    streak = int(status.get("streak", 0))
+    need = max(1, int(status.get("need", 1)))
+    consecutive_ok = bool(status.get("consecutive_ok", False))
+    window_pass = int(status.get("window_pass", 0))
+    window_size = int(status.get("window_size", 0))
+    window_total = max(1, int(status.get("window_total", 1)))
+    window_need = max(1, int(status.get("window_need", 1)))
+    majority_ok = bool(status.get("majority_ok", False))
+    consec_state = "OK" if consecutive_ok else "WAIT"
+    majority_state = "OK" if majority_ok else "WAIT"
+    consec_line = f"CONSEC: {streak}/{need} {consec_state.lower()}"
+    seen_line = f"SEEN: {checks} total (win {window_size}/{window_total})"
+    majority_line = (
+        f"MAJ: {window_pass}/{window_total} pass "
+        f"need:{window_need} {majority_state.lower()}"
+    )
+    return [consec_line, seen_line, majority_line]
+
+
+def wait_for_fresh_frames(world, refresh_once, required_new_frames=1, max_cycles=80, sleep_s=0.0):
+    if world is None:
+        return {"required": 0, "start": 0, "end": 0, "advanced": 0, "cycles": 0}
+    required = max(0, int(required_new_frames or 0))
+    start_frame = int(getattr(world, "_frame_id", 0) or 0)
+    target_frame = start_frame + required
+    cycles = 0
+    while int(getattr(world, "_frame_id", 0) or 0) < target_frame:
+        refresh_once()
+        cycles += 1
+        if max_cycles is not None and cycles >= max(1, int(max_cycles)):
+            break
+        if sleep_s and int(getattr(world, "_frame_id", 0) or 0) < target_frame:
+            time.sleep(max(0.0, float(sleep_s)))
+    end_frame = int(getattr(world, "_frame_id", 0) or 0)
+    info = {
+        "required": required,
+        "start": start_frame,
+        "end": end_frame,
+        "advanced": max(0, end_frame - start_frame),
+        "cycles": cycles,
+    }
+    world._frame_wait_status = info
+    return info
+
+
+def evaluate_brick_start_gates(world, step, learned_rules, process_rules=None):
+    import telemetry_brick
+    return telemetry_brick.evaluate_start_gates(world, step, learned_rules, process_rules=process_rules)
+
+
+def evaluate_brick_success_gates(world, step, learned_rules, process_rules=None, visibility_grace_s=None):
+    import telemetry_brick
+    return telemetry_brick.evaluate_success_gates(
+        world,
+        step,
+        learned_rules,
+        process_rules=process_rules,
+        visibility_grace_s=visibility_grace_s,
+    )
+
+
+def evaluate_brick_failure_gates(world, step, learned_rules, process_rules=None):
+    import telemetry_brick
+    return telemetry_brick.evaluate_failure_gates(world, step, learned_rules, process_rules=process_rules)
+
+
+def brick_success_gate_entries(world, step, learned_rules, process_rules=None, visibility_grace_s=None):
+    import telemetry_brick
+    return telemetry_brick.success_gate_entries(
+        world,
+        step,
+        learned_rules,
+        process_rules=process_rules,
+        visibility_grace_s=visibility_grace_s,
+    )
+
+
+def brick_success_gate_bounds(process_rules, learned_rules, step):
+    import telemetry_brick
+    return telemetry_brick.success_gate_bounds(process_rules, learned_rules, step)
+
+
+def evaluate_wall_start_gates(world, step, envelope):
+    import telemetry_wall
+    return telemetry_wall.evaluate_start_gates(world, step, envelope)
+
+
+def evaluate_wall_success_gates(world, step, envelope):
+    import telemetry_wall
+    return telemetry_wall.evaluate_success_gates(world, step, envelope)
+
+
+def evaluate_wall_failure_gates(world, step, envelope):
+    import telemetry_wall
+    return telemetry_wall.evaluate_failure_gates(world, step, envelope)
+
+
+def evaluate_robot_start_gates(world, step, learned_rules, process_rules=None):
+    import telemetry_robot
+    return telemetry_robot.evaluate_start_gates(world, step, learned_rules, process_rules=process_rules)
+
+
+def evaluate_robot_success_gates(world, step, learned_rules, process_rules=None):
+    import telemetry_robot
+    return telemetry_robot.evaluate_success_gates(world, step, learned_rules, process_rules=process_rules)
+
+
+def evaluate_robot_failure_gates(world, step, learned_rules, process_rules=None):
+    import telemetry_robot
+    return telemetry_robot.evaluate_failure_gates(world, step, learned_rules, process_rules=process_rules)
+
+
+def derive_start_gates(success_segments):
+    import telemetry_process
+    return telemetry_process.derive_start_gates(success_segments)
+
+
+def derive_success_gates(success_segments, scale_by_step=None, step_rules=None):
+    import telemetry_process
+    return telemetry_process.derive_success_gates(
+        success_segments,
+        scale_by_step=scale_by_step,
+        step_rules=step_rules,
+    )
+
+
+def refine_success_gates_with_failures(success_gates, fail_segments, step_rules=None):
+    import telemetry_process
+    return telemetry_process.refine_success_gates_with_failures(
+        success_gates,
+        fail_segments,
+        step_rules=step_rules,
+    )
+
+
+def success_gate_metrics_for_step(metrics, step, step_rules=None):
+    import telemetry_process
+    return telemetry_process.success_gate_metrics_for_step(metrics, step, step_rules=step_rules)

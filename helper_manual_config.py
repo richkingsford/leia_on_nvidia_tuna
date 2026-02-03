@@ -6,8 +6,6 @@ PROCESS_MODEL_FILE = Path(__file__).resolve().parent / "world_model_process.json
 DEFAULT_MANUAL_TRAINING_CONFIG = {
     "log_rate_hz": 10,
     "command_rate_hz": 30,
-    "gear_1_speed": 0.32,
-    "gear_9_speed": 1.0,
     "heartbeat_timeout": 0.3,
     "stream_host": "127.0.0.1",
     "stream_port": 5000,

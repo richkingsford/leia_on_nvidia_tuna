@@ -56,14 +56,23 @@ DEFAULT_SPEED_MODEL = {
         "l": {"cmd": "d", "score": 50},
     },
     "score_power_pwm": {
-        "1": {"power": 0.064, "pwm": 50, "duration_ms": 300},
-        "50": {"power": 0.5, "pwm": 145, "duration_ms": 300},
-        "100": {"power": 1.0, "pwm": 255, "duration_ms": 300},
+        "1": {"power": 0.064, "pwm": 50},
+        "50": {"power": 0.5, "pwm": 145},
+        "100": {"power": 1.0, "pwm": 255},
+    },
+    # Optional duration override by score (seconds).
+    # If present in world_model_robot.json, these values override duration_ms.
+    "speed_score_seconds": {
+        "1": 0.30,
+        "50": 0.30,
+        "100": 0.30,
     },
     "turn_efficiency": {
         "l": 300.0,
         "r": 300.0,
     },
+    # Optional autonomous-only turn boost at score=1 (percent).
+    "auto_turn_speed_boost_pct": 0.0,
 }
 
 def _brick_module():
@@ -114,6 +123,29 @@ def normalize_speed_score(score, default=SPEED_SCORE_DEFAULT):
     return _closest_score(score, levels, default=default)
 
 
+def _power_to_pwm(power):
+    try:
+        p = float(power)
+    except (TypeError, ValueError):
+        return None
+    p = max(0.0, min(1.0, p))
+    pwm = int(round(MIN_PWM + (MAX_PWM - MIN_PWM) * p))
+    return max(0, min(255, pwm))
+
+
+def _pwm_to_power(pwm):
+    try:
+        raw = float(pwm)
+    except (TypeError, ValueError):
+        return None
+    raw = max(0.0, min(255.0, raw))
+    if raw <= 0.0:
+        return 0.0
+    span = max(1.0, float(MAX_PWM - MIN_PWM))
+    p = (raw - MIN_PWM) / span
+    return max(0.0, min(1.0, p))
+
+
 def _coerce_score_power_pwm(raw, fallback):
     if not isinstance(raw, dict):
         raw = fallback
@@ -125,26 +157,44 @@ def _coerce_score_power_pwm(raw, fallback):
             continue
         if not isinstance(value, dict):
             continue
-        power = value.get("power")
-        pwm = value.get("pwm")
-        duration_ms = value.get("duration_ms")
-        try:
-            power = float(power)
-            pwm = int(pwm)
-        except (TypeError, ValueError):
+        power_raw = value.get("power")
+        pwm_raw = value.get("pwm")
+
+        power = None
+        pwm = None
+        if power_raw is not None:
+            try:
+                power = float(power_raw)
+            except (TypeError, ValueError):
+                power = None
+        if pwm_raw is not None:
+            try:
+                pwm = int(pwm_raw)
+            except (TypeError, ValueError):
+                pwm = None
+
+        # Keep power/pwm consistent. PWM is authoritative because hardware sends PWM.
+        if pwm is not None and power is not None:
+            power = _pwm_to_power(pwm)
+            pwm = max(0, min(255, int(pwm)))
+        elif pwm is not None:
+            pwm = max(0, min(255, int(pwm)))
+            power = _pwm_to_power(pwm)
+        elif power is not None:
+            power = max(0.0, min(1.0, float(power)))
+            pwm = _power_to_pwm(power)
+        else:
             continue
-        if duration_ms is None:
-            fallback_entry = None
-            if isinstance(fallback, dict):
-                fallback_entry = fallback.get(score_key)
-                if fallback_entry is None:
-                    fallback_entry = fallback.get(str(score_key))
-            duration_ms = None if fallback_entry is None else fallback_entry.get("duration_ms")
-        try:
-            duration_ms = int(duration_ms) if duration_ms is not None else DEFAULT_ACT_DURATION_MS
-        except (TypeError, ValueError):
-            duration_ms = DEFAULT_ACT_DURATION_MS
-        cleaned[score_key] = {"power": power, "pwm": pwm, "duration_ms": max(1, duration_ms)}
+
+        if power is None or pwm is None:
+            continue
+
+        cleaned[score_key] = {
+            "power": max(0.0, min(1.0, float(power))),
+            "pwm": max(0, min(255, int(pwm))),
+            # Duration is sourced separately from speed_score_seconds.
+            "duration_ms": DEFAULT_ACT_DURATION_MS,
+        }
     return cleaned
 
 
@@ -160,6 +210,23 @@ def _coerce_hotkeys(raw, fallback, score_levels):
             continue
         score = _closest_score(value.get("score"), score_levels, default=SPEED_SCORE_DEFAULT)
         cleaned[str(key)] = {"cmd": str(cmd), "score": score}
+    return cleaned
+
+
+def _coerce_score_seconds(raw, fallback, score_levels):
+    if not isinstance(raw, dict):
+        raw = fallback if isinstance(fallback, dict) else {}
+    cleaned = {}
+    for key, value in raw.items():
+        try:
+            score_key = int(float(key))
+            seconds = float(value)
+        except (TypeError, ValueError):
+            continue
+        if seconds <= 0:
+            continue
+        score_key = _closest_score(score_key, score_levels, default=score_key)
+        cleaned[int(score_key)] = float(seconds)
     return cleaned
 
 
@@ -192,6 +259,16 @@ def _load_speed_model(path):
     if not levels:
         levels = (SPEED_SCORE_MIN, SPEED_SCORE_DEFAULT, SPEED_SCORE_MAX)
         score_map = _coerce_score_power_pwm(DEFAULT_SPEED_MODEL["score_power_pwm"], {})
+    score_seconds = _coerce_score_seconds(
+        model.get("speed_score_seconds"),
+        DEFAULT_SPEED_MODEL.get("speed_score_seconds"),
+        levels,
+    )
+    for score_key, seconds in score_seconds.items():
+        entry = score_map.get(score_key)
+        if not isinstance(entry, dict):
+            continue
+        entry["duration_ms"] = max(1, int(round(seconds * 1000.0)))
     hotkey_fallback = {} if loaded_from_file else DEFAULT_SPEED_MODEL["hotkey_speed_scores"]
     hotkeys = _coerce_hotkeys(model.get("hotkey_speed_scores"), hotkey_fallback, levels)
     if not hotkeys and not loaded_from_file:
@@ -203,11 +280,33 @@ def _load_speed_model(path):
     cmd_remap = _coerce_command_remap(model.get("command_remap"))
     default_entry = score_map.get(SPEED_SCORE_DEFAULT, {})
     act_duration_ms = default_entry.get("duration_ms", DEFAULT_ACT_DURATION_MS)
-        
-    return hotkeys, score_map, levels, turn_eff, cmd_remap, act_duration_ms
+    boost_raw = model.get("auto_turn_speed_boost_pct", DEFAULT_SPEED_MODEL.get("auto_turn_speed_boost_pct", 0.0))
+    try:
+        auto_turn_speed_boost_pct = float(boost_raw)
+    except (TypeError, ValueError):
+        auto_turn_speed_boost_pct = 0.0
+    auto_turn_speed_boost_pct = max(0.0, min(100.0, auto_turn_speed_boost_pct))
+
+    return (
+        hotkeys,
+        score_map,
+        levels,
+        turn_eff,
+        cmd_remap,
+        act_duration_ms,
+        auto_turn_speed_boost_pct,
+    )
 
 
-HOTKEY_SPEED_SCORES, SCORE_POWER_PWM, SPEED_SCORE_LEVELS, TURN_EFFICIENCY, COMMAND_REMAP, ACT_DURATION_MS = _load_speed_model(ROBOT_MODEL_FILE)
+(
+    HOTKEY_SPEED_SCORES,
+    SCORE_POWER_PWM,
+    SPEED_SCORE_LEVELS,
+    TURN_EFFICIENCY,
+    COMMAND_REMAP,
+    ACT_DURATION_MS,
+    AUTO_TURN_SPEED_BOOST_PCT,
+) = _load_speed_model(ROBOT_MODEL_FILE)
 
 
 def speed_power_pwm_for_cmd(cmd, score):
@@ -241,6 +340,29 @@ def quantize_speed(cmd, speed=None, score=None):
 def manual_speed_for_cmd(cmd, score):
     power, _, _, _ = speed_power_pwm_for_cmd(cmd, score)
     return power
+
+
+def turn_duration_scale(cmd, turn_efficiency=None, min_scale=0.5, max_scale=1.5):
+    """
+    Convert turn efficiency into a duration multiplier.
+    Higher efficiency => shorter duration, lower efficiency => longer duration.
+    """
+    if cmd not in ("l", "r"):
+        return 1.0
+    eff_map = turn_efficiency if isinstance(turn_efficiency, dict) else TURN_EFFICIENCY
+    try:
+        left = float(eff_map.get("l"))
+        right = float(eff_map.get("r"))
+    except (TypeError, ValueError, AttributeError):
+        return 1.0
+    if left <= 0 or right <= 0:
+        return 1.0
+    avg = (left + right) / 2.0
+    cmd_eff = left if cmd == "l" else right
+    if cmd_eff <= 0:
+        return 1.0
+    raw = avg / cmd_eff
+    return max(float(min_scale), min(float(max_scale), float(raw)))
 
 
 def manual_key_action(key):
@@ -1075,6 +1197,7 @@ def draw_telemetry_overlay(
     loop_id=None,
     header_lines=None,
     gate_summary=None,
+    gate_checker_summary=None,
 ):
     """
     Simplified HUD renderer.
@@ -1120,6 +1243,19 @@ def draw_telemetry_overlay(
         cv2.putText(frame, txt, (x_base, y_cur), font, s, c, th)
         y_cur += line_h
 
+    def put_line_segments(segments, s=scale, th=thickness):
+        nonlocal y_cur
+        x_cur = x_base
+        for seg in segments:
+            if not isinstance(seg, (tuple, list)) or not seg:
+                continue
+            txt = str(seg[0])
+            color = seg[1] if len(seg) > 1 else WHITE
+            cv2.putText(frame, txt, (x_cur, y_cur), font, s, color, th)
+            (txt_w, _), _ = cv2.getTextSize(txt, font, s, th)
+            x_cur += txt_w
+        y_cur += line_h
+
     # 3. MERGED STATE & PROMPT - REMOVED per user request
     y_cur += 5
 
@@ -1144,6 +1280,11 @@ def draw_telemetry_overlay(
         put_line("--- SUCCESS GATES ---", WHITE, 0.35, 1)
         if gate_summary:
             for line in gate_summary:
+                if isinstance(line, dict):
+                    segments = line.get("segments")
+                    if isinstance(segments, list) and segments:
+                        put_line_segments(segments, 0.35, 1)
+                        continue
                 if isinstance(line, tuple):
                     text, color = line
                     put_line(str(text), color, 0.35, 1)
@@ -1186,6 +1327,27 @@ def draw_telemetry_overlay(
                         put_line(f"  {suggestion}", sug_color, 0.35, 1)
         else:
             put_line("(none)", WHITE, 0.35, 1)
+        y_cur += 5
+
+    # 4c. Gate Checker (compact truth confirmation status)
+    if gate_checker_summary is not None:
+        put_line("--- GATE CHECKER ---", WHITE, 0.35, 1)
+        lines = []
+        if isinstance(gate_checker_summary, (list, tuple)):
+            for line in gate_checker_summary:
+                if line is None:
+                    continue
+                lines.append(str(line))
+        elif gate_checker_summary:
+            lines = [str(gate_checker_summary)]
+        while len(lines) < 3:
+            lines.append("-")
+        dupes = int(getattr(wm, "_camera_dupe_count", 0) or 0)
+        has_dupes = bool(getattr(wm, "_camera_dupe_ms", False))
+        lines.append(f"DUPES: {dupes}")
+        for line in lines:
+            color = RED if (line.startswith("DUPES:") and has_dupes) else WHITE
+            put_line(line, color, 0.35, 1)
         y_cur += 5
 
     # 5. Position Info
@@ -1237,19 +1399,7 @@ def draw_telemetry_overlay(
         fps_str = f"{fps:.1f}" if isinstance(fps, (int, float)) else "-"
         cam_note = " (repeated ms stamp)" if has_dupes else ""
         put_line(f"CAMERA: {fps_str} fps{cam_note}", cam_color, 0.38, 1)
-        dupes = getattr(wm, "_camera_dupe_count", 0)
-        dupe_note = " (same sec/ms frame)" if has_dupes else ""
-        put_line(f"DUPLICATE TIMESTAMP COUNT: {dupes}{dupe_note}", cam_color, 0.38, 1)
 
-    # 6. Vision Info
-    y_cur += 12
-    if not wm.brick['visible']:
-        reason = getattr(wm, "_vision_lost_reason", None)
-        if reason:
-            put_line(f"VISION: {reason}", (0, 0, 255), 0.38, 1)
-        else:
-            put_line("VISION: SEARCHING", (0, 0, 255), 0.38, 1)
-    
     y_cur += 8 # Spacer
 
     # 8. Extra Messages (Banners -> Moved to Sidebar)

@@ -1,0 +1,9 @@
+{
+    "test_id": 14,
+    "median_blur": 9,
+    "block_size": 41,
+    "c_param": 8,
+    "dist_score_factor": 15.0,
+    "score_threshold": 0.3,
+    "pnp_iterations": 100
+}

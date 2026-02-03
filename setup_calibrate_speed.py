@@ -43,12 +43,16 @@ def _load_model(path):
             model = DEFAULT_SPEED_MODEL
     hotkeys = model.get("hotkey_speed_scores") or {}
     score_map = model.get("score_power_pwm") or {}
+    score_seconds = model.get("speed_score_seconds") or {}
     if not hotkeys:
         hotkeys = DEFAULT_SPEED_MODEL["hotkey_speed_scores"]
     if not score_map:
         score_map = DEFAULT_SPEED_MODEL["score_power_pwm"]
+    if not score_seconds:
+        score_seconds = DEFAULT_SPEED_MODEL.get("speed_score_seconds") or {}
     model["hotkey_speed_scores"] = dict(hotkeys)
     model["score_power_pwm"] = dict(score_map)
+    model["speed_score_seconds"] = dict(score_seconds)
     return model
 
 
@@ -63,11 +67,20 @@ def _score_entry(score_map, score):
     return entry
 
 
-def _set_score_entry(score_map, score, power, pwm, duration_ms=None):
+def _set_score_entry(score_map, score, power, pwm):
     entry = {"power": round(float(power), 2), "pwm": int(pwm)}
-    if duration_ms is not None:
-        entry["duration_ms"] = int(duration_ms)
     score_map[str(int(score))] = entry
+
+
+def _score_duration_ms(score_seconds_map, score, default_ms):
+    raw = score_seconds_map.get(str(int(score)))
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        seconds = None
+    if seconds is None or seconds <= 0:
+        return int(default_ms)
+    return max(1, int(round(seconds * 1000.0)))
 
 
 def _power_to_pwm(power):
@@ -114,6 +127,7 @@ def main():
     model = _load_model(model_path)
     hotkeys = model["hotkey_speed_scores"]
     score_map = model["score_power_pwm"]
+    score_seconds_map = model["speed_score_seconds"]
     key_list = _ordered_hotkeys(hotkeys)
     if not key_list:
         print("No hotkeys found in the model.")
@@ -135,8 +149,8 @@ def main():
             score = entry.get("score", 0)
             score_entry = _score_entry(score_map, score)
             if not score_entry:
-                score_entry = {"power": 0.5, "pwm": 128, "duration_ms": robot.CMD_DURATION}
-                _set_score_entry(score_map, score, score_entry["power"], score_entry["pwm"], score_entry["duration_ms"])
+                score_entry = {"power": 0.5, "pwm": 128}
+                _set_score_entry(score_map, score, score_entry["power"], score_entry["pwm"])
                 _save_model(model_path, model)
 
             power = float(score_entry.get("power", 0.0))
@@ -153,19 +167,25 @@ def main():
                 idx = (idx + 1) % len(key_list)
                 continue
             if ch in ("d", "D"):
-                _run_demo(robot, cmd, pwm, args.duration, score_entry.get("duration_ms"))
+                _run_demo(
+                    robot,
+                    cmd,
+                    pwm,
+                    args.duration,
+                    _score_duration_ms(score_seconds_map, score, robot.CMD_DURATION),
+                )
                 continue
             if ch == "\x1b[A":  # up arrow
                 power = min(1.0, power + args.step)
                 pwm = _power_to_pwm(power)
-                _set_score_entry(score_map, score, power, pwm, score_entry.get("duration_ms"))
+                _set_score_entry(score_map, score, power, pwm)
                 _save_model(model_path, model)
                 print(f"Updated score {score}% -> power {power:.3f}, pwm {pwm}")
                 continue
             if ch == "\x1b[B":  # down arrow
                 power = max(0.0, power - args.step)
                 pwm = _power_to_pwm(power)
-                _set_score_entry(score_map, score, power, pwm, score_entry.get("duration_ms"))
+                _set_score_entry(score_map, score, power, pwm)
                 _save_model(model_path, model)
                 print(f"Updated score {score}% -> power {power:.3f}, pwm {pwm}")
                 continue

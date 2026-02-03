@@ -16,6 +16,7 @@ class Robot:
         self.SERIAL_PORT = '/dev/ttyCH341USB0' 
         self.BAUD_RATE = 115200
         self.ser = None
+        self._last_turn_cmd = None
         
         # --- PHYSICAL CONSTANTS (Single source: telemetry_robot) ---
         self.MIN_PWM = MIN_PWM
@@ -116,6 +117,7 @@ class Robot:
     def stop(self):
         # Stop everything. 'f 0' usually stops the base?
         # Let's send a stop for drive and lift to be sure.
+        self._last_turn_cmd = None
         self._send(f"f 0 {self.CMD_DURATION}\n")
         self._send(f"u 0 {self.CMD_DURATION}\n")
 

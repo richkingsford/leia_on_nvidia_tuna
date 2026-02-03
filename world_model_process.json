@@ -2,43 +2,24 @@
     "autobuild": {
         "control_hz": 20.0,
         "gate_stability_frames": 5,
-        "success_consecutive_frames": 3,
-        "success_majority_window": 5,
-        "success_majority_required": 3,
-        "success_visible_false_grace_s": 0.0,
-        "success_confidence_min": 0.85,
-        "confidence_log_min": 0.5,
-        "success_confirmation_s": 0.35,
-        "success_confirmation_frames": 4,
-        "success_confirmation_start_confidence": 0.5,
+        "success_visible_false_grace_s": 0.2,
         "failure_tighten_low_pct": 0.1,
         "failure_tighten_high_pct": 0.9,
         "start_gate_timeout_s": 8.0,
         "success_settle_s": 1.0,
-        "success_recheck_s": 1.0,
         "success_tail_window_s": 0.5,
         "max_phase_attempts": 1,
         "smooth_step_s": 1.0,
         "fail_pause_s": 0.35,
-        "demo_action_pause_s": 0.35,
-        "post_act_pause_s": 3.0,
+        "demo_action_pause_frames": 2,
+        "post_act_pause_frames": 3,
         "find_brick_slow_factor": 4.0,
         "visibility_lost_hold_s": 0.5,
-        "learned_policy_confidence_threshold": 0.4,
-        "success_frames_by_step": {
-            "FIND_BRICK": 3
-        },
-        "alignment_metrics": [
-            "angle_abs",
-            "xAxis_offset_abs",
-            "dist"
-        ]
+        "learned_policy_confidence_threshold": 0.4
     },
     "manual_training": {
         "log_rate_hz": 10,
         "command_rate_hz": 30,
-        "gear_1_speed": 0.32,
-        "gear_9_speed": 1.0,
         "heartbeat_timeout": 0.3,
         "stream_host": "127.0.0.1",
         "stream_port": 5000,
@@ -53,22 +34,21 @@
                     "min": true
                 }
             },
-            "movement_learnings": {
-                "cmd": "r",
-                "speed": 0.37
-            }
+            "alignment_metrics": [
+                "visible"
+            ]
         },
         "EXIT_WALL": {
             "scan_direction": "r",
+            "minActs": 1,
             "success_gates": {
                 "visible": {
                     "min": false
                 }
             },
-            "movement_learnings": {
-                "cmd": "r",
-                "speed": 0.73
-            }
+            "alignment_metrics": [
+                "visible"
+            ]
         },
         "FIND_BRICK": {
             "scan_direction": "r",
@@ -77,10 +57,9 @@
                     "min": true
                 }
             },
-            "movement_learnings": {
-                "cmd": "r",
-                "speed": 1.47
-            }
+            "alignment_metrics": [
+                "visible"
+            ]
         },
         "ALIGN_BRICK": {
             "gate_validation": {
@@ -109,9 +88,6 @@
                 }
             },
             "success_gates": {
-                "visible": {
-                    "min": true
-                },
                 "xAxis_offset_abs": {
                     "target": -2.24,
                     "tol": 1.5
@@ -120,25 +96,20 @@
                     "target": 81.38,
                     "tol": 1.5
                 }
-            }
+            },
+            "alignment_metrics": [
+                "xAxis_offset_abs",
+                "dist"
+            ]
         },
         "SCOOP": {
-            "movement_learnings": {
-                "cmd": "u",
-                "speed": 0.13
-            },
-            "nominalDemosOnly": true
+            "nominalDemosOnly": true,
+            "alignment_metrics": []
         },
         "FIND_WALL2": {
-            "movement_learnings": {
-                "cmd": "b",
-                "speed": 1.47
-            },
-            "success_gates": {
-                "visible": {
-                    "min": true
-                }
-            }
+            "alignment_metrics": [
+                "visible"
+            ]
         },
         "POSITION_BRICK": {
             "start_gates": {
@@ -147,13 +118,6 @@
                 }
             },
             "success_gates": {
-                "visible": {
-                    "min": true
-                },
-                "angle_abs": {
-                    "target": 0.21,
-                    "tol": 0.16
-                },
                 "xAxis_offset_abs": {
                     "target": -4.25,
                     "tol": 1.5
@@ -162,21 +126,19 @@
                     "target": 91.6,
                     "tol": 1.5
                 }
-            }
+            },
+            "alignment_metrics": [
+                "xAxis_offset_abs",
+                "dist"
+            ]
         },
         "PLACE": {
             "nominalDemosOnly": true,
-            "movement_learnings": {
-                "cmd": "l",
-                "speed": 0.98
-            }
+            "alignment_metrics": []
         },
         "RETREAT": {
             "nominalDemosOnly": true,
-            "movement_learnings": {
-                "cmd": "d",
-                "speed": 0.24
-            }
+            "alignment_metrics": []
         }
     }
 }
