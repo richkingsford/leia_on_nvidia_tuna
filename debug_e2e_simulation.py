@@ -446,7 +446,6 @@ def check_step_segment(
         ok = False
         logger.red(f"[{step_name}] Nominal step is missing replayable actions.")
 
-    valid_scores = set(telemetry_robot.SCORE_POWER_PWM.keys())
     for idx, action in enumerate(actions, start=1):
         cmd = action.get("cmd")
         score = action.get("speed_score")
@@ -457,9 +456,9 @@ def check_step_segment(
             else:
                 logger.yellow(f"[{step_name}] Action #{idx} ({cmd}) missing speedScore.")
             continue
-        if score not in valid_scores:
+        if not telemetry_robot.is_valid_speed_score(score):
             ok = False
-            logger.red(f"[{step_name}] Action #{idx} ({cmd}) uses undefined speedScore={score}.")
+            logger.red(f"[{step_name}] Action #{idx} ({cmd}) uses invalid speedScore={score} (expected 1-100).")
             continue
         speed, pwm, _, duration_ms = telemetry_robot.speed_power_pwm_for_cmd(cmd, score)
         if pwm <= 0 or speed <= 0 or duration_ms <= 0:

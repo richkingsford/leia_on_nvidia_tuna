@@ -15,7 +15,11 @@
         "post_act_pause_frames": 3,
         "find_brick_slow_factor": 4.0,
         "visibility_lost_hold_s": 0.5,
-        "learned_policy_confidence_threshold": 0.4
+        "learned_policy_confidence_threshold": 0.4,
+        "auto_cycle_move_score": 6,
+        "auto_cycle_move_s": 0.5,
+        "auto_cycle_check_score": 2,
+        "auto_cycle_check_s": 1.5
     },
     "manual_training": {
         "log_rate_hz": 10,
@@ -125,6 +129,7 @@
                     "min": true
                 }
             },
+            "loop_demo_acts": true,
             "alignment_metrics": [
                 "visible"
             ]

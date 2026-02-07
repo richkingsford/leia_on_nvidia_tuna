@@ -14,6 +14,8 @@ from helper_gate_utils import format_gatecheck_stream_lines, load_process_steps
 from helper_streaming import start_stream_server
 from helper_vision_aruco import ArucoBrickVision
 from helper_manual_config import load_manual_training_config
+from helper_micro_speed_adjust import micro_adjust_speed_score
+import telemetry_robot as telemetry_robot_module
 from telemetry_robot import (
     WorldModel,
     TelemetryLogger,
@@ -778,6 +780,7 @@ class AppState:
         self.active_speed = 0.0
         self.active_speed_score = None
         self.last_key_time = 0
+        self.micro_speed_state = {}
         
         # Job Status
         self.job_success = False
@@ -1071,6 +1074,47 @@ def control_loop(app_state):
             cmd = app_state.active_command
             speed = app_state.active_speed
             score = app_state.active_speed_score
+
+        brick = app_state.world.brick if isinstance(app_state.world.brick, dict) else {}
+        metric_x_mm = None
+        if brick.get("visible"):
+            metric_x_mm = brick.get("x_axis", brick.get("offset_x"))
+
+        min_turn_pwm = None
+        try:
+            min_turn_pwm = int(telemetry_robot_module.turn_pwm_floor())
+        except Exception:
+            min_turn_pwm = None
+
+        max_turn_pwm = None
+        try:
+            max_entry = telemetry_robot_module.SCORE_POWER_PWM.get(telemetry_robot_module.SPEED_SCORE_MAX)
+            if isinstance(max_entry, dict):
+                max_turn_pwm = int(max_entry.get("pwm"))
+        except Exception:
+            max_turn_pwm = None
+
+        adjust_msg = micro_adjust_speed_score(
+            app_state.micro_speed_state,
+            score_power_pwm=telemetry_robot_module.SCORE_POWER_PWM,
+            metric_value_mm=metric_x_mm,
+            active=bool(
+                cmd in ("l", "r")
+                and score == telemetry_robot_module.SPEED_SCORE_MIN
+                and speed > 0.0
+                and app_state.world.step_state == StepState.ALIGN_BRICK
+            ),
+            sequence_key=cmd,
+            acts=3,
+            threshold_mm=0.5,
+            increase_scale=1.01,
+            decrease_scale=0.99,
+            min_pwm=min_turn_pwm,
+            max_pwm=max_turn_pwm if max_turn_pwm is not None else 255,
+            metric_label="x_axis",
+        )
+        if adjust_msg:
+            log_line(adjust_msg)
         if cmd and speed > 0:
             atype = "unknown"
             if cmd == 'f': atype = "forward"

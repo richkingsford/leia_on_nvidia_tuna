@@ -8,9 +8,9 @@ PROCESS_MODEL_FILE = Path(__file__).resolve().parent / "world_model_process.json
 GATE_CHECKER_MODEL_FILE = Path(__file__).resolve().parent / "world_model_gate_checker.json"
 
 DEFAULT_GATE_CHECKER_CONFIG = {
-    "consecutive_required": 8,
-    "majority_window": 17,
-    "majority_required": 9,
+    "consecutive_required": 12,
+    "majority_window": 26,
+    "majority_required": 14,
 }
 
 

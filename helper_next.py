@@ -22,8 +22,10 @@ from telemetry_robot import (
 )
 
 VISIBILITY_LOST_CONFIRM_FRAMES = 3
+ALIGN_BRICK_TURN_SLOW_OFFSET_MM = 9.0
+ALIGN_BRICK_TURN_MED_SCORE = 2
 ALIGN_BRICK_TURN_FAST_SCORE = 3
-ALIGN_BRICK_TURN_FAST_OFFSET_MM = 9.0
+ALIGN_BRICK_TURN_FAST_OFFSET_MM = 16.0
 
 METRIC_DIRECTIONS = {
     "angle_abs": "low",
@@ -129,6 +131,7 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
     offsets = {}
     ratios = {}
     mm_errors = {}
+    x_axis_turn_error_mm = None
 
     def fallback_stats(metric):
         if metric == "xAxis_offset_abs":
@@ -220,6 +223,24 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
     progress = sum(progress_values) / len(progress_values) if progress_values else None
     x_axis_stats = success_metrics.get("xAxis_offset_abs") or fallback_stats("xAxis_offset_abs")
     x_axis_ok = metric_within_gate(x_axis_stats, x_axis)
+    dist_gap_mm = None
+    force_dist_focus = False
+    if obj_name == "ALIGN_BRICK":
+        try:
+            dist_gap_mm = abs(float(offsets.get("dist", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            dist_gap_mm = None
+        focus_dist = bool(getattr(world, "_align_focus_dist", False))
+        if dist_gap_mm is not None:
+            if dist_gap_mm > 150.0:
+                focus_dist = True
+            elif focus_dist and dist_gap_mm < 100.0:
+                focus_dist = False
+        try:
+            world._align_focus_dist = focus_dist
+        except Exception:
+            pass
+        force_dist_focus = focus_dist
     worst_metric = max(ratios, key=lambda m: ratios[m], default=None)
     worst_ratio = ratios.get(worst_metric, 0.0) if worst_metric else 0.0
 
@@ -292,7 +313,11 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
                     "offsets": offsets,
                 }
 
-    if worst_metric == "dist" and not x_axis_ok:
+    if force_dist_focus:
+        worst_metric = "dist"
+        worst_ratio = max(worst_ratio, ratios.get("dist", 1.0), 1.0)
+
+    if worst_metric == "dist" and not x_axis_ok and not force_dist_focus:
         worst_metric = "xAxis_offset_abs"
         worst_ratio = max(worst_ratio, ratios.get("xAxis_offset_abs", 1.0), 1.0)
 
@@ -329,6 +354,7 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
         target = stats.get("target")
         tol = stats.get("tol")
         signed_error = signed - target if target is not None and tol is not None else signed
+        x_axis_turn_error_mm = abs(signed_error)
         # Positive error should turn right, negative error should turn left.
         cmd = turn_cmd_from_signed_error(-signed_error)
         if abs(signed_error) < micro_offset_mm:
@@ -382,12 +408,19 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
         speed_score = SPEED_SCORE_DEFAULT
         speed_score = normalize_speed_score(speed_score)
 
-    # ALIGN_BRICK turn tuning:
-    # - offset magnitude above 9mm: use 3%
-    # - offset magnitude at/under 9mm: use 1%
+    # ALIGN_BRICK turn tuning (conservative near target):
+    # - |x_axis| <= 9mm: use 1%
+    # - 9mm < |x_axis| <= 16mm: use 2%
+    # - above 16mm: use 3%
     if cmd in ("l", "r"):
-        if obj_name == "ALIGN_BRICK" and abs(x_axis) > ALIGN_BRICK_TURN_FAST_OFFSET_MM:
-            speed_score = ALIGN_BRICK_TURN_FAST_SCORE
+        if obj_name == "ALIGN_BRICK":
+            mm_off = abs(x_axis)
+            if mm_off <= ALIGN_BRICK_TURN_SLOW_OFFSET_MM:
+                speed_score = SPEED_SCORE_MIN
+            elif mm_off <= ALIGN_BRICK_TURN_FAST_OFFSET_MM:
+                speed_score = ALIGN_BRICK_TURN_MED_SCORE
+            else:
+                speed_score = ALIGN_BRICK_TURN_FAST_SCORE
         else:
             speed_score = SPEED_SCORE_MIN
         speed_score = normalize_speed_score(speed_score)

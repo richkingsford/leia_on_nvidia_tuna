@@ -8,7 +8,16 @@ that your Arduino firmware expects (e.g., "f 200 50").
 import serial
 import time
 import sys
-from telemetry_robot import MIN_PWM, MAX_PWM, MIN_TURN_POWER, COMMAND_REMAP, ACT_DURATION_MS
+from telemetry_robot import (
+    MIN_PWM,
+    MAX_PWM,
+    MIN_TURN_POWER,
+    COMMAND_REMAP,
+    ACT_DURATION_MS,
+    power_to_pwm,
+    pwm_to_power,
+    turn_pwm_floor,
+)
 
 
 class Robot:
@@ -47,14 +56,22 @@ class Robot:
                 print(f"[ROBOT] Write Error: {e}")
 
     def normalize_speed(self, cmd_char, speed):
-        speed = abs(speed)
-        if cmd_char in ('l', 'r') and 0.0 < speed < self.MIN_TURN_POWER:
-            speed = self.MIN_TURN_POWER
+        try:
+            speed = abs(float(speed))
+        except (TypeError, ValueError):
+            return 0.0, 0
+        if cmd_char in ("l", "r") and 0.0 < speed < self.MIN_TURN_POWER:
+            speed = float(self.MIN_TURN_POWER)
         if speed < 0.05:
             return 0.0, 0
-        pwm = int(self.MIN_PWM + (self.MAX_PWM - self.MIN_PWM) * speed)
-        pwm = min(pwm, 255)
-        return speed, pwm
+        pwm = power_to_pwm(speed)
+        if pwm is None:
+            return 0.0, 0
+        pwm = int(pwm)
+        if cmd_char in ("l", "r") and pwm > 0:
+            pwm = max(int(turn_pwm_floor()), pwm)
+        power = pwm_to_power(pwm) or 0.0
+        return float(power), int(pwm)
 
     def send_command(self, cmd_char, speed, duration_ms=None):
         """
