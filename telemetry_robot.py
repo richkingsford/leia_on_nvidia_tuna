@@ -39,6 +39,9 @@ DEFAULT_ACT_DURATION_MS = 300
 
 ROBOT_MODEL_FILE = Path(__file__).resolve().parent / "world_model_robot.json"
 DEFAULT_SPEED_MODEL = {
+    "min_pwm": MIN_PWM,
+    "max_pwm": MAX_PWM,
+    "min_turn_power": MIN_TURN_POWER,
     "hotkey_speed_scores": {
         "w": {"cmd": "f", "score": 50},
         "s": {"cmd": "b", "score": 50},
@@ -55,7 +58,11 @@ DEFAULT_SPEED_MODEL = {
         "u": {"cmd": "u", "score": 50},
         "l": {"cmd": "d", "score": 50},
     },
-    "score_power_pwm": {
+    "score_power_pwm_drive": {
+        "1": {"power": 0.064, "pwm": 50},
+        "100": {"power": 1.0, "pwm": 255},
+    },
+    "score_power_pwm_turn": {
         "1": {"power": 0.064, "pwm": 50},
         "100": {"power": 1.0, "pwm": 255},
     },
@@ -71,6 +78,8 @@ DEFAULT_SPEED_MODEL = {
     },
     # Optional autonomous-only turn boost at score=1 (percent).
     "auto_turn_speed_boost_pct": 0.0,
+    # Optional autonomous micro-adjustment tuning by step/cmd.
+    "auto_micro_adjustments": {},
 }
 
 def _brick_module():
@@ -124,17 +133,30 @@ def normalize_speed_score(score, default=SPEED_SCORE_DEFAULT):
     return max(SPEED_SCORE_MIN, min(SPEED_SCORE_MAX, int(value)))
 
 
-def _power_to_pwm(power):
+def _power_to_pwm(power, *, min_pwm=None, max_pwm=None):
     try:
         p = float(power)
     except (TypeError, ValueError):
         return None
     p = max(0.0, min(1.0, p))
-    pwm = int(round(MIN_PWM + (MAX_PWM - MIN_PWM) * p))
+    try:
+        min_val = MIN_PWM if min_pwm is None else int(round(float(min_pwm)))
+    except (TypeError, ValueError):
+        min_val = int(MIN_PWM)
+    try:
+        max_val = MAX_PWM if max_pwm is None else int(round(float(max_pwm)))
+    except (TypeError, ValueError):
+        max_val = int(MAX_PWM)
+    min_val = max(0, min(255, int(min_val)))
+    max_val = max(0, min(255, int(max_val)))
+    if max_val < min_val:
+        min_val, max_val = max_val, min_val
+
+    pwm = int(round(min_val + (max_val - min_val) * p))
     return max(0, min(255, pwm))
 
 
-def _pwm_to_power(pwm):
+def _pwm_to_power(pwm, *, min_pwm=None, max_pwm=None):
     try:
         raw = float(pwm)
     except (TypeError, ValueError):
@@ -142,8 +164,21 @@ def _pwm_to_power(pwm):
     raw = max(0.0, min(255.0, raw))
     if raw <= 0.0:
         return 0.0
-    span = max(1.0, float(MAX_PWM - MIN_PWM))
-    p = (raw - MIN_PWM) / span
+    try:
+        min_val = MIN_PWM if min_pwm is None else int(round(float(min_pwm)))
+    except (TypeError, ValueError):
+        min_val = int(MIN_PWM)
+    try:
+        max_val = MAX_PWM if max_pwm is None else int(round(float(max_pwm)))
+    except (TypeError, ValueError):
+        max_val = int(MAX_PWM)
+    min_val = max(0, min(255, int(min_val)))
+    max_val = max(0, min(255, int(max_val)))
+    if max_val < min_val:
+        min_val, max_val = max_val, min_val
+
+    span = max(1.0, float(max_val - min_val))
+    p = (raw - float(min_val)) / span
     return max(0.0, min(1.0, p))
 
 
@@ -186,7 +221,7 @@ def interp_pwm_for_score(score, slow_pwm, fast_pwm):
     return clamp_pwm(pwm)
 
 
-def _coerce_score_power_pwm(raw, fallback):
+def _coerce_score_power_pwm(raw, fallback, *, min_pwm=None, max_pwm=None):
     if not isinstance(raw, dict):
         raw = fallback
     cleaned = {}
@@ -215,14 +250,14 @@ def _coerce_score_power_pwm(raw, fallback):
 
         # Keep power/pwm consistent. PWM is authoritative because hardware sends PWM.
         if pwm is not None and power is not None:
-            power = _pwm_to_power(pwm)
+            power = _pwm_to_power(pwm, min_pwm=min_pwm, max_pwm=max_pwm)
             pwm = max(0, min(255, int(pwm)))
         elif pwm is not None:
             pwm = max(0, min(255, int(pwm)))
-            power = _pwm_to_power(pwm)
+            power = _pwm_to_power(pwm, min_pwm=min_pwm, max_pwm=max_pwm)
         elif power is not None:
             power = max(0.0, min(1.0, float(power)))
-            pwm = _power_to_pwm(power)
+            pwm = _power_to_pwm(power, min_pwm=min_pwm, max_pwm=max_pwm)
         else:
             continue
 
@@ -291,14 +326,57 @@ def _load_speed_model(path):
                 loaded_from_file = True
         except (OSError, json.JSONDecodeError):
             model = DEFAULT_SPEED_MODEL
-    score_map = _coerce_score_power_pwm(model.get("score_power_pwm"), DEFAULT_SPEED_MODEL["score_power_pwm"])
-    if not score_map:
-        score_map = _coerce_score_power_pwm(DEFAULT_SPEED_MODEL["score_power_pwm"], {})
-    if SPEED_SCORE_MIN not in score_map or SPEED_SCORE_MAX not in score_map:
-        fallback = _coerce_score_power_pwm(DEFAULT_SPEED_MODEL["score_power_pwm"], {})
+
+    def _coerce_pwm(value, fallback):
+        if value is None:
+            return clamp_pwm(fallback)
+        try:
+            return clamp_pwm(int(round(float(value))))
+        except (TypeError, ValueError):
+            return clamp_pwm(fallback)
+
+    min_pwm = _coerce_pwm(model.get("min_pwm"), DEFAULT_SPEED_MODEL.get("min_pwm", MIN_PWM))
+    max_pwm = _coerce_pwm(model.get("max_pwm"), DEFAULT_SPEED_MODEL.get("max_pwm", MAX_PWM))
+    if max_pwm < min_pwm:
+        min_pwm, max_pwm = max_pwm, min_pwm
+
+    try:
+        min_turn_power = float(model.get("min_turn_power", DEFAULT_SPEED_MODEL.get("min_turn_power", MIN_TURN_POWER)))
+    except (TypeError, ValueError):
+        min_turn_power = float(DEFAULT_SPEED_MODEL.get("min_turn_power", MIN_TURN_POWER))
+    min_turn_power = max(0.0, min(1.0, float(min_turn_power)))
+
+    legacy_raw = model.get("score_power_pwm")
+
+    drive_fallback = DEFAULT_SPEED_MODEL.get("score_power_pwm_drive")
+    if not isinstance(drive_fallback, dict):
+        drive_fallback = {}
+    drive_raw = model.get("score_power_pwm_drive")
+    if not isinstance(drive_raw, dict) and isinstance(legacy_raw, dict):
+        drive_raw = legacy_raw
+    drive_map = _coerce_score_power_pwm(drive_raw, drive_fallback, min_pwm=min_pwm, max_pwm=max_pwm)
+    if not drive_map:
+        drive_map = _coerce_score_power_pwm(drive_fallback, {}, min_pwm=min_pwm, max_pwm=max_pwm)
+    if SPEED_SCORE_MIN not in drive_map or SPEED_SCORE_MAX not in drive_map:
+        fallback = _coerce_score_power_pwm(drive_fallback, {}, min_pwm=min_pwm, max_pwm=max_pwm)
         for key in (SPEED_SCORE_MIN, SPEED_SCORE_MAX):
-            if key not in score_map and key in fallback:
-                score_map[key] = dict(fallback[key])
+            if key not in drive_map and key in fallback:
+                drive_map[key] = dict(fallback[key])
+
+    turn_fallback = DEFAULT_SPEED_MODEL.get("score_power_pwm_turn")
+    if not isinstance(turn_fallback, dict):
+        turn_fallback = drive_fallback
+    turn_raw = model.get("score_power_pwm_turn")
+    if not isinstance(turn_raw, dict) and isinstance(legacy_raw, dict):
+        turn_raw = legacy_raw
+    turn_map = _coerce_score_power_pwm(turn_raw, turn_fallback, min_pwm=min_pwm, max_pwm=max_pwm)
+    if not turn_map:
+        turn_map = _coerce_score_power_pwm(turn_fallback, {}, min_pwm=min_pwm, max_pwm=max_pwm)
+    if SPEED_SCORE_MIN not in turn_map or SPEED_SCORE_MAX not in turn_map:
+        fallback = _coerce_score_power_pwm(turn_fallback, {}, min_pwm=min_pwm, max_pwm=max_pwm)
+        for key in (SPEED_SCORE_MIN, SPEED_SCORE_MAX):
+            if key not in turn_map and key in fallback:
+                turn_map[key] = dict(fallback[key])
 
     score_seconds = _coerce_score_seconds(
         model.get("speed_score_seconds"),
@@ -309,9 +387,10 @@ def _load_speed_model(path):
         for score_key, seconds in score_seconds.items()
     }
     for score_key, duration_ms in duration_ms_by_score.items():
-        entry = score_map.get(score_key)
-        if isinstance(entry, dict):
-            entry["duration_ms"] = int(duration_ms)
+        for entry_map in (drive_map, turn_map):
+            entry = entry_map.get(score_key)
+            if isinstance(entry, dict):
+                entry["duration_ms"] = int(duration_ms)
     hotkey_fallback = {} if loaded_from_file else DEFAULT_SPEED_MODEL["hotkey_speed_scores"]
     hotkeys = _coerce_hotkeys(model.get("hotkey_speed_scores"), hotkey_fallback, SPEED_SCORE_LEVELS)
     if not hotkeys and not loaded_from_file:
@@ -329,26 +408,42 @@ def _load_speed_model(path):
         auto_turn_speed_boost_pct = 0.0
     auto_turn_speed_boost_pct = max(0.0, min(100.0, auto_turn_speed_boost_pct))
 
+    auto_micro_adjustments = model.get("auto_micro_adjustments", DEFAULT_SPEED_MODEL.get("auto_micro_adjustments", {}))
+    if not isinstance(auto_micro_adjustments, dict):
+        auto_micro_adjustments = {}
+
     return (
         hotkeys,
-        score_map,
+        drive_map,
+        turn_map,
         duration_ms_by_score,
         turn_eff,
         cmd_remap,
         act_duration_ms,
         auto_turn_speed_boost_pct,
+        auto_micro_adjustments,
+        min_pwm,
+        max_pwm,
+        min_turn_power,
     )
 
 
 (
     HOTKEY_SPEED_SCORES,
-    SCORE_POWER_PWM,
+    SCORE_POWER_PWM_DRIVE,
+    SCORE_POWER_PWM_TURN,
     SPEED_SCORE_DURATION_MS,
     TURN_EFFICIENCY,
     COMMAND_REMAP,
     ACT_DURATION_MS,
     AUTO_TURN_SPEED_BOOST_PCT,
+    AUTO_MICRO_ADJUSTMENTS,
+    MIN_PWM,
+    MAX_PWM,
+    MIN_TURN_POWER,
 ) = _load_speed_model(ROBOT_MODEL_FILE)
+
+SCORE_POWER_PWM = SCORE_POWER_PWM_DRIVE
 
 
 def is_valid_speed_score(score):
@@ -359,9 +454,18 @@ def is_valid_speed_score(score):
     return SPEED_SCORE_MIN <= value <= SPEED_SCORE_MAX
 
 
-def _speed_pwm_endpoints():
-    low_entry = SCORE_POWER_PWM.get(SPEED_SCORE_MIN)
-    high_entry = SCORE_POWER_PWM.get(SPEED_SCORE_MAX)
+def score_power_pwm_for_cmd(cmd):
+    if cmd in ("l", "r"):
+        return SCORE_POWER_PWM_TURN if isinstance(SCORE_POWER_PWM_TURN, dict) else SCORE_POWER_PWM_DRIVE
+    if cmd in ("f", "b"):
+        return SCORE_POWER_PWM_DRIVE if isinstance(SCORE_POWER_PWM_DRIVE, dict) else SCORE_POWER_PWM_TURN
+    return SCORE_POWER_PWM_DRIVE if isinstance(SCORE_POWER_PWM_DRIVE, dict) else SCORE_POWER_PWM_TURN
+
+
+def _speed_pwm_endpoints(cmd):
+    score_map = score_power_pwm_for_cmd(cmd)
+    low_entry = score_map.get(SPEED_SCORE_MIN) if isinstance(score_map, dict) else None
+    high_entry = score_map.get(SPEED_SCORE_MAX) if isinstance(score_map, dict) else None
     low_pwm = low_entry.get("pwm") if isinstance(low_entry, dict) else None
     high_pwm = high_entry.get("pwm") if isinstance(high_entry, dict) else None
     try:
@@ -398,7 +502,7 @@ def _duration_ms_for_score(score):
 
 def speed_power_pwm_for_cmd(cmd, score):
     score = normalize_speed_score(score)
-    low_pwm, high_pwm = _speed_pwm_endpoints()
+    low_pwm, high_pwm = _speed_pwm_endpoints(cmd)
     if low_pwm is None or high_pwm is None:
         return 0.0, 0, score, int(ACT_DURATION_MS)
     pwm = interp_pwm_for_score(score, low_pwm, high_pwm)

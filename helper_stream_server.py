@@ -1,5 +1,6 @@
 import threading
 import time
+import socket
 from typing import Callable, Optional
 
 import cv2
@@ -12,7 +13,20 @@ DEFAULT_JPEG_QUALITY = 90
 
 
 def format_stream_url(host, port):
-    return f"http://{host}:{port}"
+    try:
+        port_val = int(port)
+    except (TypeError, ValueError):
+        port_val = 5000
+    host_raw = "" if host is None else str(host).strip()
+    if not host_raw or host_raw == "localhost":
+        host_raw = "127.0.0.1"
+    if host_raw == "0.0.0.0":
+        host_raw = "127.0.0.1"
+    elif host_raw in ("::", "[::]"):
+        host_raw = "::1"
+    if ":" in host_raw and not host_raw.startswith("["):
+        host_raw = f"[{host_raw}]"
+    return f"http://{host_raw}:{port_val}"
 
 
 class StreamServer:
@@ -33,7 +47,11 @@ class StreamServer:
         self.host = host
         self.port = port
         self.fps = max(1, int(fps))
-        self.jpeg_quality = int(jpeg_quality)
+        try:
+            jpeg_quality = int(jpeg_quality)
+        except (TypeError, ValueError):
+            jpeg_quality = DEFAULT_JPEG_QUALITY
+        self.jpeg_quality = max(1, min(100, int(jpeg_quality)))
         self.title = title
         self.header = header or title
         self.footer = footer
@@ -41,6 +59,7 @@ class StreamServer:
         self.sharpen = sharpen
         self._stop = threading.Event()
         self._thread = None
+        self._startup_error = None
 
         self.app = Flask(__name__)
 
@@ -56,14 +75,20 @@ class StreamServer:
             )
 
     def start(self):
+        def _run():
+            try:
+                self.app.run(
+                    host=self.host,
+                    port=self.port,
+                    debug=False,
+                    use_reloader=False,
+                    threaded=True,
+                )
+            except BaseException as exc:
+                self._startup_error = exc
+
         self._thread = threading.Thread(
-            target=self.app.run,
-            kwargs={
-                "host": self.host,
-                "port": self.port,
-                "debug": False,
-                "use_reloader": False,
-            },
+            target=_run,
             daemon=True,
         )
         self._thread.start()
@@ -71,6 +96,27 @@ class StreamServer:
 
     def stop(self):
         self._stop.set()
+
+    def wait_until_ready(self, timeout_s=1.0):
+        connect_url = format_stream_url(self.host, self.port)
+        # Strip scheme and brackets for socket connection.
+        connect_host = connect_url.split("://", 1)[-1].rsplit(":", 1)[0]
+        if connect_host.startswith("[") and connect_host.endswith("]"):
+            connect_host = connect_host[1:-1]
+        deadline = time.time() + max(0.0, float(timeout_s))
+        last_error = None
+        while time.time() < deadline:
+            if self._startup_error is not None:
+                raise RuntimeError("Stream server failed to start.") from self._startup_error
+            try:
+                with socket.create_connection((connect_host, int(self.port)), timeout=0.2):
+                    return True
+            except OSError as exc:
+                last_error = exc
+                time.sleep(0.05)
+        if self._startup_error is not None:
+            raise RuntimeError("Stream server failed to start.") from self._startup_error
+        raise TimeoutError(f"Stream server not reachable at {connect_url}.") from last_error
 
     def _index_html(self):
         width_attr = f' width="{self.img_width}"' if self.img_width else ""

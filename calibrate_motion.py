@@ -162,7 +162,7 @@ def save_motion_calibration(path, mm_per_tick, deg_per_tick, mast_mm_per_tick, s
                 "mm_per_tick": mm_per_tick,
                 "deg_per_tick": deg_per_tick,
                 "mm_per_tick_mast": mast_mm_per_tick,
-                "source": "setup_calibrate_motion.py",
+                "source": "calibrate_motion.py",
                 "timestamp": time.strftime("%Y%m%d_%H%M%S"),
                 "samples": len(samples),
             }

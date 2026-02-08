@@ -61,17 +61,25 @@ def run_autobuild(session_name=None, stream=True):
     if stream:
         stream_state = {"frame": None, "lock": threading.Lock()}
         world._stream_state = stream_state
-        stream_server, url = start_stream_server(
-            stream_state,
-            title="Robot Leia - Autobuild",
-            header="Robot Leia - Autobuild",
-            footer="Use the terminal for logs. Keep this window open to see the live feed.",
-            host=STREAM_HOST,
-            port=STREAM_PORT,
-            fps=STREAM_FPS,
-            jpeg_quality=STREAM_JPEG_QUALITY,
-        )
-        print(format_headline(f"[VISION] Stream started at {url}", COLOR_GREEN))
+        try:
+            stream_server, url = start_stream_server(
+                stream_state,
+                title="Robot Leia - Autobuild",
+                header="Robot Leia - Autobuild",
+                footer="Use the terminal for logs. Keep this window open to see the live feed.",
+                host=STREAM_HOST,
+                port=STREAM_PORT,
+                fps=STREAM_FPS,
+                jpeg_quality=STREAM_JPEG_QUALITY,
+            )
+        except Exception as exc:
+            stream_server = None
+            print(format_headline(f"[VISION] Stream failed to start: {exc}", COLOR_RED))
+        else:
+            actual_port = getattr(stream_server, "port", STREAM_PORT)
+            if actual_port != STREAM_PORT:
+                print(format_headline(f"[VISION] Stream port {STREAM_PORT} busy; using {actual_port}", COLOR_WHITE))
+            print(format_headline(f"[VISION] Stream started at {url}", COLOR_GREEN))
     else:
         print(format_headline("[VISION] Stream disabled", COLOR_WHITE))
 

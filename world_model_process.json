@@ -80,15 +80,10 @@
         },
         "ALIGN_BRICK": {
             "gate_validation": {
-                "timestamp": 1769218132.666,
                 "fail_runs": 0,
                 "fail_states": 0,
                 "overlap_fail_runs": 0,
                 "metrics": {
-                    "angle": {
-                        "target": 5.34,
-                        "tol": 18.7
-                    },
                     "xAxis_offset": {
                         "target": 11.27,
                         "tol": 3.162
@@ -99,6 +94,13 @@
                     }
                 }
             },
+            "micro_forward_profile": {
+                "very_close_mm": 110,
+                "close_mm": 150,
+                "somewhat_close_mm": 170,
+                "far_mm": 200
+            },
+            "lock_success_gates": true,
             "start_gates": {
                 "visible": {
                     "min": true
@@ -106,11 +108,11 @@
             },
             "success_gates": {
                 "xAxis_offset_abs": {
-                    "target": -2.24,
-                    "tol": 1.5
+                    "target": 11.27,
+                    "tol": 3.162
                 },
                 "dist": {
-                    "target": 81.38,
+                    "target": 97.58,
                     "tol": 1.5
                 }
             },

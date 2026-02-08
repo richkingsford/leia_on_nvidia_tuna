@@ -208,6 +208,8 @@ def trash_current_session(app_state):
     return log_path, True
 
 def run_auto_step(app_state, obj_enum):
+    step_key = normalize_step_label(obj_enum.value)
+    log_line(f"[AUTO] Attempting {step_key}...")
     logs = load_demo_logs(app_state.demos_dir)
     update_process_model_from_demos(logs, PROCESS_MODEL_FILE)
     refresh_autobuild_config(PROCESS_MODEL_FILE)
@@ -224,7 +226,6 @@ def run_auto_step(app_state, obj_enum):
     app_state.world.process_rules = process_rules
     app_state.world.rules = process_rules
 
-    step_key = normalize_step_label(obj_enum.value)
     app_state.world.step_state = obj_enum
 
     cfg = process_rules.get(step_key, {}) if process_rules else {}
@@ -234,10 +235,73 @@ def run_auto_step(app_state, obj_enum):
         log_line(f"[AUTO] No demo segment found for {step_key}.")
         return False
 
+    log_line(f"[AUTO] {step_key} demo={seg_type}")
+
+    try:
+        import telemetry_wall as telemetry_wall_module
+    except Exception:
+        telemetry_wall_module = None
+
+    start_desc, success_desc = format_gate_lines(cfg)
+    try:
+        brick_check = telemetry_brick.evaluate_start_gates(
+            app_state.world,
+            step_key,
+            {},
+            process_rules,
+        )
+    except Exception:
+        brick_check = None
+    try:
+        wall_env = getattr(app_state.world, "wall_envelope", None)
+        if telemetry_wall_module is not None and wall_env is not None:
+            wall_check = telemetry_wall_module.evaluate_start_gates(app_state.world, step_key, wall_env)
+        else:
+            wall_check = None
+    except Exception:
+        wall_check = None
+    try:
+        robot_check = telemetry_robot_module.evaluate_start_gates(
+            app_state.world,
+            step_key,
+            {},
+            process_rules,
+        )
+    except Exception:
+        robot_check = None
+
+    def _gate_ok(check):
+        return bool(getattr(check, "ok", False))
+
+    def _gate_reasons(check):
+        raw = getattr(check, "reasons", None)
+        if not raw:
+            return []
+        if isinstance(raw, list):
+            return [str(r) for r in raw if r]
+        return [str(raw)]
+
+    start_ok = _gate_ok(brick_check) and _gate_ok(wall_check) and _gate_ok(robot_check)
+    reason_parts = []
+    for label, check in (("brick", brick_check), ("wall", wall_check), ("robot", robot_check)):
+        if check is None or _gate_ok(check):
+            continue
+        reasons = _gate_reasons(check)
+        if reasons:
+            reason_parts.append(f"{label}: {', '.join(reasons)}")
+        else:
+            reason_parts.append(f"{label}: blocked")
+
+    status = "OK" if start_ok else "BLOCKED"
+    status_msg = f"[AUTO] {step_key} start gates: {status}"
+    if reason_parts:
+        status_msg += " — " + "; ".join(reason_parts)
+    if start_desc and start_desc != "none":
+        status_msg += f" (cfg: {start_desc})"
+    log_line(status_msg)
+
     quiet_align = step_key == "ALIGN_BRICK"
     if not quiet_align:
-        start_desc, success_desc = format_gate_lines(cfg)
-        log_line(f"[AUTO] {step_key} demo={seg_type} start gates: {start_desc}")
         log_line(f"[AUTO] {step_key} demo={seg_type} success gates: {success_desc}")
     if app_state.robot:
         app_state.robot.stop()
@@ -1086,9 +1150,13 @@ def control_loop(app_state):
         except Exception:
             min_turn_pwm = None
 
+        score_power_pwm_turn = getattr(telemetry_robot_module, "SCORE_POWER_PWM_TURN", None)
+        if not isinstance(score_power_pwm_turn, dict):
+            score_power_pwm_turn = telemetry_robot_module.SCORE_POWER_PWM
+
         max_turn_pwm = None
         try:
-            max_entry = telemetry_robot_module.SCORE_POWER_PWM.get(telemetry_robot_module.SPEED_SCORE_MAX)
+            max_entry = score_power_pwm_turn.get(telemetry_robot_module.SPEED_SCORE_MAX)
             if isinstance(max_entry, dict):
                 max_turn_pwm = int(max_entry.get("pwm"))
         except Exception:
@@ -1096,7 +1164,7 @@ def control_loop(app_state):
 
         adjust_msg = micro_adjust_speed_score(
             app_state.micro_speed_state,
-            score_power_pwm=telemetry_robot_module.SCORE_POWER_PWM,
+            score_power_pwm=score_power_pwm_turn,
             metric_value_mm=metric_x_mm,
             active=bool(
                 cmd in ("l", "r")
@@ -1110,7 +1178,7 @@ def control_loop(app_state):
             increase_scale=1.01,
             decrease_scale=0.99,
             min_pwm=min_turn_pwm,
-            max_pwm=max_turn_pwm if max_turn_pwm is not None else 255,
+            max_pwm=max_turn_pwm if max_turn_pwm is not None else telemetry_robot_module.MAX_PWM,
             metric_label="x_axis",
         )
         if adjust_msg:
@@ -1207,18 +1275,26 @@ if __name__ == "__main__":
     
     # Web Stream thread (optional)
     if args.stream:
-        stream_server, url = start_stream_server(
-            state.stream_state,
-            title="Robot Leia - Keyboard Training",
-            header="Robot Leia - Keyboard Training",
-            footer="Use the terminal for controls. Keep this window open to see the live feed.",
-            host=STREAM_HOST,
-            port=STREAM_PORT,
-            fps=STREAM_FPS,
-            jpeg_quality=STREAM_JPEG_QUALITY,
-        )
-        state.stream_enabled = True
-        log_line(f"[VISION] Stream started at {url}")
+        try:
+            stream_server, url = start_stream_server(
+                state.stream_state,
+                title="Robot Leia - Keyboard Training",
+                header="Robot Leia - Keyboard Training",
+                footer="Use the terminal for controls. Keep this window open to see the live feed.",
+                host=STREAM_HOST,
+                port=STREAM_PORT,
+                fps=STREAM_FPS,
+                jpeg_quality=STREAM_JPEG_QUALITY,
+            )
+        except Exception as exc:
+            state.stream_enabled = False
+            log_line(f"[VISION] Stream failed to start: {exc}")
+        else:
+            state.stream_enabled = True
+            actual_port = getattr(stream_server, "port", STREAM_PORT)
+            if actual_port != STREAM_PORT:
+                log_line(f"[VISION] Stream port {STREAM_PORT} busy; using {actual_port}")
+            log_line(f"[VISION] Stream started at {url}")
     else:
         state.stream_enabled = False
         log_line("[VISION] Stream disabled")

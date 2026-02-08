@@ -703,17 +703,26 @@ class CameraProcessor:
             cap.grab()
 
         if self.stream:
-            self.stream_server, stream_url = start_stream_server(
-                self.stream_state,
-                title="Robot Leia - Brick Detector",
-                header="Robot Leia - Brick Detector",
-                footer="Press Ctrl+C in terminal to stop.",
-                host=self.stream_host,
-                port=self.stream_port,
-                fps=self.stream_fps,
-                jpeg_quality=self.stream_jpeg_quality,
-            )
-            self.log.info("Livestream started at %s", stream_url)
+            try:
+                self.stream_server, stream_url = start_stream_server(
+                    self.stream_state,
+                    title="Robot Leia - Brick Detector",
+                    header="Robot Leia - Brick Detector",
+                    footer="Press Ctrl+C in terminal to stop.",
+                    host=self.stream_host,
+                    port=self.stream_port,
+                    fps=self.stream_fps,
+                    jpeg_quality=self.stream_jpeg_quality,
+                )
+            except Exception as exc:
+                self.stream_server = None
+                self.stream = False
+                self.log.exception("Livestream failed to start: %s", exc)
+            else:
+                actual_port = getattr(self.stream_server, "port", self.stream_port)
+                if actual_port != self.stream_port:
+                    self.log.warning("Livestream port %s busy; using %s", self.stream_port, actual_port)
+                self.log.info("Livestream started at %s", stream_url)
         else:
             self.log.info("Livestream disabled (--no-stream).")
 

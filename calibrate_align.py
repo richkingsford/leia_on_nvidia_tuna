@@ -47,6 +47,11 @@ LOG_FLUSH_EVERY_EVENTS = 50
 # Advanced Control Tunings
 BACKLASH_S = 0.08         
 COARSE_SCORE = 50         # Max coarse speed score (cap)
+RESET_MIN_AWAY_MM = 15.0
+RESET_MAX_AWAY_MM = 35.0
+RESET_SCORE = 1
+RESET_MAX_ACTS = 80
+RESET_OBSERVE_TIMEOUT_S = 1.5
 PRECISION_SCORE_BASE = 1   # Base slow score (we'll bump PWM ~15%)
 # Slow/observe speed scaling:
 # We previously bumped +15%; this bumps an additional +15% on top => 1.15 * 1.15 = 1.3225 (+32.25%).
@@ -79,6 +84,8 @@ class AlignCalibrator:
         self._unsaved_events = 0
         self._last_obs_offset_x = None
         self._last_obs_delta_offset_x = None
+        self._last_obs_dist = None
+        self._last_obs_delta_dist = None
         self.data_log = []
         self.learned_speed_score = LEARN_SPEED_START
         self.keepalive_dir = "l"
@@ -148,6 +155,7 @@ class AlignCalibrator:
 
     def log_act(self, cmd, mode, score=None, bump_pct=None, reason=None, extra=None):
         offset_x = self._last_obs_offset_x
+        dist = self._last_obs_dist
         err_mm = self._x_err_mm(offset_x)
         hw_cmd = None
         try:
@@ -163,6 +171,8 @@ class AlignCalibrator:
             "timestamp": time.time(),
             "offset_x": offset_x,
             "delta_offset_x": self._last_obs_delta_offset_x,
+            "dist": dist,
+            "delta_dist": self._last_obs_delta_dist,
             "x_err_mm": err_mm,
             "target_mm": X_TARGET_MM,
             "cmd": cmd,
@@ -176,6 +186,7 @@ class AlignCalibrator:
             event.update(extra)
         self._append_event(event)
         self.act_idx += 1
+        return event
 
     def send_coarse_command(self, cmd, score, reason=None, extra=None):
         sent = send_robot_command(
@@ -192,7 +203,7 @@ class AlignCalibrator:
         merged.update(sent)
         if isinstance(extra, dict):
             merged.update(extra)
-        self.log_act(cmd, mode="coarse", score=sent.get("score_model"), reason=reason, extra=merged)
+        return self.log_act(cmd, mode="coarse", score=sent.get("score_model"), reason=reason, extra=merged)
 
     def _precision_scaled_power(self, cmd, bump_pct=None):
         bump = self.precision_bump_pct if bump_pct is None else bump_pct
@@ -226,18 +237,45 @@ class AlignCalibrator:
         merged.update(sent)
         if isinstance(extra, dict):
             merged.update(extra)
-        self.log_act(cmd, mode="precision", bump_pct=bump_used, reason=reason, extra=merged)
+        return self.log_act(cmd, mode="precision", bump_pct=bump_used, reason=reason, extra=merged)
 
     def update_world(self, found, angle, dist, offset_x, conf, cam_h, above, below, frame):
         self.world.update_vision(found, dist, angle, conf, offset_x, cam_h, above, below)
-        try:
-            if self._last_obs_offset_x is None:
+        if found:
+            try:
+                offset_val = float(offset_x)
+            except (TypeError, ValueError):
+                offset_val = None
+            try:
+                dist_val = float(dist)
+            except (TypeError, ValueError):
+                dist_val = None
+
+            if offset_val is None:
+                self._last_obs_delta_offset_x = None
+            elif self._last_obs_offset_x is None:
                 self._last_obs_delta_offset_x = None
             else:
-                self._last_obs_delta_offset_x = float(offset_x) - float(self._last_obs_offset_x)
-        except (TypeError, ValueError):
+                try:
+                    self._last_obs_delta_offset_x = float(offset_val) - float(self._last_obs_offset_x)
+                except (TypeError, ValueError):
+                    self._last_obs_delta_offset_x = None
+
+            if dist_val is None:
+                self._last_obs_delta_dist = None
+            elif self._last_obs_dist is None:
+                self._last_obs_delta_dist = None
+            else:
+                try:
+                    self._last_obs_delta_dist = float(dist_val) - float(self._last_obs_dist)
+                except (TypeError, ValueError):
+                    self._last_obs_delta_dist = None
+
+            self._last_obs_offset_x = offset_val
+            self._last_obs_dist = dist_val
+        else:
             self._last_obs_delta_offset_x = None
-        self._last_obs_offset_x = offset_x
+            self._last_obs_delta_dist = None
         
         # Draw Overlay
         gate_summary, analytics = compute_stream_gate_summary(self.world, "ALIGN_BRICK", active=True)
@@ -248,6 +286,7 @@ class AlignCalibrator:
         extra = [
             f"X_OFF: {offset_x:+.1f}mm",
             f"X_ERR: {x_err:+.1f}mm",
+            f"DIST: {dist:.0f}mm" if found else "DIST: --",
             f"GATE: {status}"
         ]
         
@@ -270,8 +309,6 @@ class AlignCalibrator:
         poses = []
         start_t = time.time()
         while len(poses) < samples and (time.time() - start_t < timeout_s) and self.running:
-            if keepalive_dir is None:
-                keepalive_dir = self.keepalive_dir
             found, angle, dist, offset_x, conf, cam_h, above, below = self.vision.read()
             # Update world model for the livestream
             self.update_world(found, angle, dist, offset_x, conf, cam_h, above, below, self.vision.current_frame)
@@ -281,8 +318,23 @@ class AlignCalibrator:
             
             if found:
                 # Ensure we have a unique frame (or significantly different)
-                if not poses or abs(offset_x - poses[-1]["offset_x"]) > 0.1:
-                    poses.append({"offset_x": offset_x, "angle": angle})
+                try:
+                    off_val = float(offset_x)
+                except (TypeError, ValueError):
+                    off_val = None
+                try:
+                    dist_val = float(dist)
+                except (TypeError, ValueError):
+                    dist_val = None
+                if off_val is None or dist_val is None:
+                    time.sleep(OBSERVE_SLEEP_S)
+                    continue
+                if not poses:
+                    poses.append({"offset_x": off_val, "dist": dist_val, "angle": angle, "confidence": conf})
+                else:
+                    last = poses[-1]
+                    if abs(off_val - last.get("offset_x", off_val)) > 0.1 or abs(dist_val - last.get("dist", dist_val)) > 0.5:
+                        poses.append({"offset_x": off_val, "dist": dist_val, "angle": angle, "confidence": conf})
                 if len(poses) < samples:
                     time.sleep(OBSERVE_SLEEP_S) 
             else: 
@@ -293,8 +345,152 @@ class AlignCalibrator:
 
         # Average results
         avg_offset = statistics.mean([p["offset_x"] for p in poses])
+        avg_dist = statistics.mean([p["dist"] for p in poses])
         
-        return {"offset_x": avg_offset}
+        return {"offset_x": avg_offset, "dist": avg_dist}
+
+    def run_reset_phase(self):
+        """
+        Deliberate, vision-driven reset:
+          - Pick a random desired abs(x_err) away from the ALIGN gate target.
+          - Turn in a direction and validate via vision after each act.
+          - Log each reset act with before/after observations (offset + dist).
+        """
+        pose_start = self.get_stable_pose(samples=1, timeout_s=2.0)
+        if not pose_start:
+            return None
+
+        start_off = float(pose_start["offset_x"])
+        start_dist = float(pose_start.get("dist", 0.0))
+        start_err = float(self._x_err_mm(start_off))
+        desired_abs_err = float(random.uniform(RESET_MIN_AWAY_MM, RESET_MAX_AWAY_MM))
+
+        reset_dir = random.choice(["l", "r"])
+        self.keepalive_dir = reset_dir
+
+        self._append_event(
+            {
+                "type": "reset_start",
+                "run_id": self.run_id,
+                "trial": self.current_trial,
+                "timestamp": time.time(),
+                "start_offset_x": start_off,
+                "start_x_err_mm": start_err,
+                "start_abs_err_mm": abs(start_err),
+                "start_dist": start_dist,
+                "goal_abs_err_mm": desired_abs_err,
+                "reset_score": int(RESET_SCORE),
+                "reset_dir_initial": reset_dir,
+            }
+        )
+
+        reset_acts = 0
+        last_pose = pose_start
+        last_abs_err = abs(start_err)
+        dist_samples = [start_dist]
+        while self.running and reset_acts < int(RESET_MAX_ACTS):
+            # Observe BEFORE deciding the next act (no keepalive so we don't double-command).
+            pre = self.get_stable_pose(samples=1, timeout_s=RESET_OBSERVE_TIMEOUT_S)
+            if not pre:
+                print("  [RESET] Lost vision, attempting recovery...")
+                self.current_phase = "reset_recovery"
+                if not self.recovery_scan():
+                    self.current_phase = "reset"
+                    break
+                self.current_phase = "reset"
+                continue
+
+            off_before = float(pre["offset_x"])
+            dist_before = float(pre.get("dist", 0.0))
+            x_err_before = float(self._x_err_mm(off_before))
+            abs_err_before = abs(x_err_before)
+            dist_samples.append(dist_before)
+
+            last_pose = pre
+            last_abs_err = abs_err_before
+            if abs_err_before >= desired_abs_err:
+                break
+
+            extra = {
+                "goal_abs_err_mm": desired_abs_err,
+                "offset_x_before": off_before,
+                "x_err_mm_before": x_err_before,
+                "abs_err_mm_before": abs_err_before,
+                "dist_before": dist_before,
+                "reset_act_idx": int(reset_acts),
+            }
+            event = self.send_coarse_command(reset_dir, score=int(RESET_SCORE), reason="reset", extra=extra)
+            reset_acts += 1
+            time.sleep(max(0.02, float(BACKLASH_S)))
+
+            post = self.get_stable_pose(samples=1, timeout_s=RESET_OBSERVE_TIMEOUT_S)
+            if not post:
+                if isinstance(event, dict):
+                    event.update(
+                        {
+                            "obs_after_found": False,
+                            "result": "vision_lost_after_act",
+                        }
+                    )
+                print("  [RESET] Vision lost after act, attempting recovery...")
+                self.current_phase = "reset_recovery"
+                if not self.recovery_scan():
+                    self.current_phase = "reset"
+                    break
+                self.current_phase = "reset"
+                continue
+
+            off_after = float(post["offset_x"])
+            dist_after = float(post.get("dist", 0.0))
+            x_err_after = float(self._x_err_mm(off_after))
+            abs_err_after = abs(x_err_after)
+            dist_samples.append(dist_after)
+
+            if isinstance(event, dict):
+                event.update(
+                    {
+                        "obs_after_found": True,
+                        "offset_x_after": off_after,
+                        "x_err_mm_after": x_err_after,
+                        "abs_err_mm_after": abs_err_after,
+                        "dist_after": dist_after,
+                        "delta_offset_x_act": off_after - off_before,
+                        "delta_x_err_mm_act": x_err_after - x_err_before,
+                        "delta_abs_err_mm_act": abs_err_after - abs_err_before,
+                        "delta_dist_act": dist_after - dist_before,
+                    }
+                )
+
+            # Direction sanity: if we accidentally moved closer to the gate, flip.
+            if abs_err_after < abs_err_before:
+                reset_dir = "r" if reset_dir == "l" else "l"
+                self.keepalive_dir = reset_dir
+
+            last_pose = post
+            last_abs_err = abs_err_after
+            if abs_err_after >= desired_abs_err:
+                break
+
+        self._append_event(
+            {
+                "type": "reset_end",
+                "run_id": self.run_id,
+                "trial": self.current_trial,
+                "timestamp": time.time(),
+                "acts": int(reset_acts),
+                "goal_abs_err_mm": desired_abs_err,
+                "final_offset_x": float(last_pose.get("offset_x")) if last_pose else None,
+                "final_x_err_mm": float(self._x_err_mm(last_pose.get("offset_x"))) if last_pose else None,
+                "final_abs_err_mm": float(last_abs_err),
+                "dist_min": float(min(dist_samples)) if dist_samples else None,
+                "dist_max": float(max(dist_samples)) if dist_samples else None,
+                "dist_avg": float(statistics.mean(dist_samples)) if dist_samples else None,
+                "reset_dir_final": reset_dir,
+                "reset_score": int(RESET_SCORE),
+            }
+        )
+
+        return last_pose
 
     def recovery_scan(self, max_attempts=15):
         """Slowly scan nearby area to find the brick again."""
@@ -352,32 +548,12 @@ class AlignCalibrator:
             self.precision_stall_acts = 0
             print(f"\nTRIAL {i}/{NUM_TRIALS}")
             
-            # 1. SETUP: Randomized offset - Move to a specific random target
+            # 1. SETUP: Deliberate vision-driven reset away from the X gate target
             self.current_phase = "reset"
-            pose_start = self.get_stable_pose(samples=1, timeout_s=2.0)
-            if not pose_start: 
+            pose_reset = self.run_reset_phase()
+            if not pose_reset:
                 print("  [ERROR] Cannot find brick for reset setup.")
                 continue
-            
-            off_start = pose_start["offset_x"]
-            target_reset_off = random.uniform(15.0, 35.0) * random.choice([-1, 1])
-            reset_dir = 'r' if target_reset_off > off_start else 'l'
-            self.keepalive_dir = reset_dir
-            
-            print(f"  [RESET] Starting at {off_start:+.1f}mm. Moving to {target_reset_off:+.1f}mm target...")
-            
-            while self.running:
-                pose = self.get_stable_pose(samples=1, timeout_s=1.0, keepalive_dir=reset_dir)
-                if not pose: break
-                off_now = pose["offset_x"]
-                
-                # Check if we've reached or passed the target
-                if (reset_dir == 'r' and off_now >= target_reset_off) or \
-                   (reset_dir == 'l' and off_now <= target_reset_off):
-                    break
-                
-                self.send_precision_command(reset_dir, reason="reset")
-                time.sleep(0.04)
 
             # No robot.stop() here - we want to transition immediately into ALIGN
             

@@ -774,7 +774,12 @@ def send_robot_command_pwm(robot, world, step, cmd, power, pwm, duration_ms, spe
         pwm_val = int(round(pwm))
     except (TypeError, ValueError):
         pwm_val = 0
-    pwm_val = max(0, min(255, pwm_val))
+    try:
+        pwm_cap = int(round(float(getattr(telemetry_robot_module, "MAX_PWM", 255) or 255)))
+    except (TypeError, ValueError):
+        pwm_cap = 255
+    pwm_cap = max(0, min(255, pwm_cap))
+    pwm_val = max(0, min(pwm_cap, pwm_val))
     try:
         power_val = float(power)
     except (TypeError, ValueError):
@@ -809,6 +814,23 @@ def send_robot_command_pwm(robot, world, step, cmd, power, pwm, duration_ms, spe
 def send_robot_command(robot, world, step, cmd, speed, speed_score=None, auto_mode=False):
     if robot is None or cmd is None:
         return None
+    step_key = normalize_step_label(step)
+
+    def _coerce_micro_ms(value, fallback):
+        try:
+            ms = int(round(float(value)))
+        except (TypeError, ValueError):
+            ms = int(fallback)
+        return max(1, min(5000, ms))
+
+    def _smoothstep01(value):
+        try:
+            x = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        x = max(0.0, min(1.0, x))
+        return x * x * (3.0 - (2.0 * x))
+
     score_used = speed_score
     if score_used is None:
         if speed is None or speed <= 0:
@@ -817,11 +839,103 @@ def send_robot_command(robot, world, step, cmd, speed, speed_score=None, auto_mo
     if score_used is None:
         return None
     power, pwm, score_used, duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd(cmd, score_used)
+
+    if auto_mode and step_key == "ALIGN_BRICK" and cmd == "f":
+        micro = getattr(telemetry_robot_module, "AUTO_MICRO_ADJUSTMENTS", {}) or {}
+        step_micro = micro.get(step_key) if isinstance(micro, dict) else None
+        forward_micro = step_micro.get("forward") if isinstance(step_micro, dict) else None
+        if isinstance(forward_micro, dict):
+            creep_ms = _coerce_micro_ms(
+                forward_micro.get("creep_ms", 20),
+                20,
+            )
+            segment_ms = _coerce_micro_ms(
+                forward_micro.get("segment_ms", creep_ms),
+                creep_ms,
+            )
+        else:
+            creep_ms = None
+            segment_ms = None
+        if creep_ms is None or segment_ms is None:
+            forward_micro = None
+
+        thresholds = next_module.align_brick_micro_forward_profile(
+            getattr(world, "process_rules", None) if world is not None else None,
+            step_key,
+        )
+        dist_mm = None
+        if forward_micro is not None:
+            try:
+                dist_mm = float((world.brick or {}).get("dist"))
+            except (TypeError, ValueError, AttributeError):
+                dist_mm = None
+
+        creep_score = telemetry_robot_module.SPEED_SCORE_MIN
+        target_score = telemetry_robot_module.normalize_speed_score(score_used)
+        mid_score = telemetry_robot_module.normalize_speed_score(
+            int(round(creep_score + (target_score - creep_score) * 0.4))
+        )
+        segments = [(int(creep_score), int(creep_ms or 0))]
+        if forward_micro is not None:
+            dist_val = dist_mm if dist_mm is not None else float(thresholds["far_mm"])
+            very_close = float(thresholds["very_close_mm"])
+            close = float(thresholds["close_mm"])
+            somewhat_close = float(thresholds["somewhat_close_mm"])
+            far = float(thresholds["far_mm"])
+
+            seg2_factor = (dist_val - very_close) / max(1e-6, close - very_close)
+            # Use the same near-range ramp window for the final segment so the
+            # target score (shown in `SUG`) is actually reached even when we're
+            # still inside the "somewhat_close" band.
+            seg3_factor = (dist_val - very_close) / max(1e-6, close - very_close)
+            seg2_ms = int(round(float(segment_ms) * _smoothstep01(seg2_factor)))
+            seg3_ms = int(round(float(segment_ms) * _smoothstep01(seg3_factor)))
+            if seg2_ms > 0:
+                segments.append((int(mid_score), int(seg2_ms)))
+            if seg3_ms > 0:
+                segments.append((int(target_score), int(seg3_ms)))
+
+        sent_segments = []
+        if forward_micro is not None:
+            for seg_score, seg_ms in segments:
+                seg_ms = _coerce_micro_ms(seg_ms, creep_ms)
+                seg_power, seg_pwm, seg_score, _ = telemetry_robot_module.speed_power_pwm_for_cmd(cmd, seg_score)
+                meta = send_robot_command_pwm(
+                    robot,
+                    world,
+                    step,
+                    cmd,
+                    seg_power,
+                    seg_pwm,
+                    seg_ms,
+                    speed_score=int(seg_score),
+                )
+                if isinstance(meta, dict):
+                    sent_segments.append(meta)
+                time.sleep(float(seg_ms) / 1000.0)
+
+        if forward_micro is not None:
+            if not sent_segments:
+                return None
+
+            total_model_ms = sum(int(seg.get("duration_model_ms") or 0) for seg in sent_segments)
+            total_ms = sum(int(seg.get("duration_ms") or 0) for seg in sent_segments)
+            merged = dict(sent_segments[-1])
+            merged["segments"] = sent_segments
+            merged["duration_model_ms"] = int(total_model_ms)
+            merged["duration_ms"] = int(total_ms)
+            return merged
+
     if auto_mode and cmd in ("l", "r") and score_used == telemetry_robot_module.SPEED_SCORE_MIN:
         boost_pct = float(getattr(telemetry_robot_module, "AUTO_TURN_SPEED_BOOST_PCT", 0.0) or 0.0)
         if boost_pct > 0:
             boost_scale = 1.0 + (boost_pct / 100.0)
-            pwm = max(0, min(255, int(round(pwm * boost_scale))))
+            try:
+                pwm_cap = int(round(float(getattr(telemetry_robot_module, "MAX_PWM", 255) or 255)))
+            except (TypeError, ValueError):
+                pwm_cap = 255
+            pwm_cap = max(0, min(255, pwm_cap))
+            pwm = max(0, min(pwm_cap, int(round(pwm * boost_scale))))
             power = max(0.0, min(1.0, float(power) * boost_scale))
     return send_robot_command_pwm(robot, world, step, cmd, power, pwm, duration_ms, speed_score=score_used)
 
@@ -1390,15 +1504,23 @@ def update_process_model_from_demos(logs, path=PROCESS_MODEL_FILE):
     for obj in all_steps:
         cfg = steps.setdefault(obj, {})
 
+        lock_all_gates = bool(cfg.get("lock_gates")) if isinstance(cfg, dict) else False
+        lock_start_gates = lock_all_gates or (bool(cfg.get("lock_start_gates")) if isinstance(cfg, dict) else False)
+        lock_success_gates = lock_all_gates or (bool(cfg.get("lock_success_gates")) if isinstance(cfg, dict) else False)
+
         if obj in start_gates and not _no_start_gates_step(obj):
-            cfg["start_gates"] = start_gates[obj]
+            if not lock_start_gates or not isinstance(cfg.get("start_gates"), dict) or not cfg.get("start_gates"):
+                cfg["start_gates"] = start_gates[obj]
         else:
-            cfg.pop("start_gates", None)
+            if not lock_start_gates:
+                cfg.pop("start_gates", None)
 
         if obj in success_gates:
-            cfg["success_gates"] = success_gates[obj]
+            if not lock_success_gates or not isinstance(cfg.get("success_gates"), dict) or not cfg.get("success_gates"):
+                cfg["success_gates"] = success_gates[obj]
         else:
-            cfg.pop("success_gates", None)
+            if not lock_success_gates:
+                cfg.pop("success_gates", None)
         cfg.pop("fail_gates", None)
         visible_gate = cfg.get("success_gates", {}).get("visible", {})
 
@@ -2517,7 +2639,7 @@ def run_alignment_segment(
             if confirm_callback:
                 if not confirm_callback(world, vision):
                     return False, "confirm cancelled"
-            send_robot_command(
+            action_meta = send_robot_command(
                 robot,
                 world,
                 step,
@@ -2526,12 +2648,23 @@ def run_alignment_segment(
                 speed_score=analytics.get("speed_score"),
                 auto_mode=True,
             )
-            evt = MotionEvent(
-                cmd_to_motion_type(cmd),
-                int(speed * 255),
-                int(CONTROL_DT * 1000),
-            )
-            world.update_from_motion(evt)
+            segments = []
+            if isinstance(action_meta, dict) and isinstance(action_meta.get("segments"), list):
+                segments = [seg for seg in action_meta.get("segments") if isinstance(seg, dict)]
+            elif isinstance(action_meta, dict):
+                segments = [action_meta]
+            for seg in segments:
+                duration_ms = seg.get("duration_model_ms") or seg.get("duration_ms") or int(CONTROL_DT * 1000)
+                power_used = seg.get("power")
+                if power_used is None:
+                    power_used = speed
+                evt = MotionEvent(
+                    cmd_to_motion_type(cmd),
+                    int(float(power_used) * 255),
+                    int(duration_ms),
+                    speed_score=seg.get("score_effective") or seg.get("score_model"),
+                )
+                world.update_from_motion(evt)
             if next_module.success_gates_visible_only(world.process_rules or {}, step):
                 world._visible_speed_cycle = int(getattr(world, "_visible_speed_cycle", 0)) + 1
             if confirm_callback and robot:

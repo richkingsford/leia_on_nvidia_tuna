@@ -97,7 +97,7 @@ class Robot:
             pwm_val = int(round(pwm))
         except (TypeError, ValueError):
             pwm_val = 0
-        pwm_val = max(0, min(255, pwm_val))
+        pwm_val = max(0, min(int(self.MAX_PWM), pwm_val))
         duration = self.CMD_DURATION if duration_ms is None else int(duration_ms)
         if pwm_val <= 0:
             self._send(f"{real_hw_cmd} 0 {duration}\n")

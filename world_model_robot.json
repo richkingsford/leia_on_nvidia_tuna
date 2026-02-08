@@ -57,7 +57,20 @@
       "score": 50
     }
   },
-  "score_power_pwm": {
+  "min_pwm": 36,
+  "max_pwm": 255,
+  "min_turn_power": 0.064,
+  "score_power_pwm_drive": {
+    "1": {
+      "power": 0.4,
+      "pwm": 102
+    },
+    "100": {
+      "power": 1.0,
+      "pwm": 255
+    }
+  },
+  "score_power_pwm_turn": {
     "1": {
       "power": 0.3,
       "pwm": 102
@@ -71,15 +84,23 @@
     "1": 0.25,
     "100": 0.3
   },
-  "command_remap": {
-    "l": "r",
-    "r": "l",
-    "f": "b",
-    "b": "f"
-  },
-  "turn_efficiency": {
-    "l": 88.04,
-    "r": 59.25
-  },
-  "auto_turn_speed_boost_pct": 4.0
+    "command_remap": {
+        "l": "r",
+        "r": "l",
+        "f": "b",
+        "b": "f"
+    },
+    "turn_efficiency": {
+        "l": 88.04,
+        "r": 59.25
+    },
+    "auto_turn_speed_boost_pct": 4.0,
+    "auto_micro_adjustments": {
+        "ALIGN_BRICK": {
+            "forward": {
+                "creep_ms": 20,
+                "segment_ms": 25
+            }
+        }
+    }
 }

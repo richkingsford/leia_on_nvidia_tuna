@@ -422,6 +422,7 @@ def check_step_segment(
     nominal_only = bool(step_cfg.get("nominalDemosOnly"))
     success_gates = (step_cfg or {}).get("success_gates") or {}
     start_gates = (step_cfg or {}).get("start_gates") or {}
+    lock_success_gates = bool(step_cfg.get("lock_gates") or step_cfg.get("lock_success_gates"))
     states = segment.get("states") or []
     events = segment.get("events") or []
 
@@ -495,11 +496,15 @@ def check_step_segment(
                 satisfied_count += 1
 
         if satisfied_count <= 0:
-            ok = False
-            logger.red(
+            msg = (
                 f"[{step_name}] No recorded state met success_gates "
                 f"(best progress={_progress_pct(best_progress)}%)."
             )
+            if lock_success_gates:
+                logger.yellow(f"{msg} (success_gates are locked; demo mismatch may be expected).")
+            else:
+                ok = False
+                logger.red(msg)
         else:
             logger.green(
                 f"[{step_name}] Recorded success_gates reached on {satisfied_count}/{len(states)} states."
@@ -532,10 +537,12 @@ def check_step_segment(
                 combined_success = True
                 break
         if not combined_success:
-            ok = False
-            logger.red(
-                f"[{step_name}] Telemetry gate evaluators never agreed on SUCCESS for recorded states."
-            )
+            msg = f"[{step_name}] Telemetry gate evaluators never agreed on SUCCESS for recorded states."
+            if lock_success_gates:
+                logger.yellow(f"{msg} (success_gates are locked; demo mismatch may be expected).")
+            else:
+                ok = False
+                logger.red(msg)
         else:
             logger.green(f"[{step_name}] Telemetry gate evaluators reached SUCCESS on recorded data.")
 

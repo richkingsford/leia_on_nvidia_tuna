@@ -91,6 +91,104 @@ def turn_cmd_from_signed_error(signed_error):
     return None
 
 
+def _smoothstep01(value: float) -> float:
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    x = max(0.0, min(1.0, x))
+    return x * x * (3.0 - (2.0 * x))
+
+
+def _lerp(a: float, b: float, t: float) -> float:
+    return float(a) + (float(b) - float(a)) * float(t)
+
+
+def align_brick_micro_forward_profile(process_rules, step: str):
+    defaults = {
+        "very_close_mm": 110.0,
+        "close_mm": 150.0,
+        "somewhat_close_mm": 170.0,
+        "far_mm": 200.0,
+    }
+    if not isinstance(process_rules, dict):
+        return defaults
+    cfg = process_rules.get(step)
+    if not isinstance(cfg, dict):
+        return defaults
+    profile = cfg.get("micro_forward_profile")
+    if not isinstance(profile, dict):
+        return defaults
+
+    resolved = {}
+    for key, fallback in defaults.items():
+        raw = profile.get(key, fallback)
+        try:
+            resolved[key] = float(raw)
+        except (TypeError, ValueError):
+            resolved[key] = float(fallback)
+
+    ordered = sorted(
+        (
+            resolved["very_close_mm"],
+            resolved["close_mm"],
+            resolved["somewhat_close_mm"],
+            resolved["far_mm"],
+        )
+    )
+    return {
+        "very_close_mm": ordered[0],
+        "close_mm": ordered[1],
+        "somewhat_close_mm": ordered[2],
+        "far_mm": ordered[3],
+    }
+
+
+def align_brick_forward_speed_score(dist_mm: float, process_rules, step: str) -> int:
+    profile = align_brick_micro_forward_profile(process_rules, step)
+    very_close = float(profile["very_close_mm"])
+    close = float(profile["close_mm"])
+    somewhat_close = float(profile["somewhat_close_mm"])
+    far = float(profile["far_mm"])
+
+    try:
+        dist_val = float(dist_mm)
+    except (TypeError, ValueError):
+        dist_val = far
+
+    score_very_close = float(SPEED_SCORE_MIN)
+    score_far = min(float(SPEED_SCORE_MAX), float(SPEED_SCORE_DEFAULT) + 5.0)
+    score_close = max(score_very_close, round(score_far * 0.25))
+    score_somewhat = max(score_close, round(score_far * 0.55))
+
+    if dist_val <= very_close:
+        return int(SPEED_SCORE_MIN)
+    if close <= very_close:
+        return int(round(score_far))
+
+    if dist_val <= close:
+        t = (dist_val - very_close) / max(1e-6, close - very_close)
+        score = _lerp(score_very_close, score_close, _smoothstep01(t))
+        return normalize_speed_score(score)
+    if somewhat_close <= close:
+        return normalize_speed_score(score_somewhat)
+    if dist_val <= somewhat_close:
+        t = (dist_val - close) / max(1e-6, somewhat_close - close)
+        score = _lerp(score_close, score_somewhat, _smoothstep01(t))
+        return normalize_speed_score(score)
+    if far <= somewhat_close:
+        return normalize_speed_score(score_far)
+    if dist_val <= far:
+        t = (dist_val - somewhat_close) / max(1e-6, far - somewhat_close)
+        score = _lerp(score_somewhat, score_far, _smoothstep01(t))
+        return normalize_speed_score(score)
+    max_dist = max(far + 1.0, 500.0)
+    score_max = min(float(SPEED_SCORE_MAX), score_far + 20.0)
+    t = (dist_val - far) / max(1e-6, max_dist - far)
+    score = _lerp(score_far, score_max, _smoothstep01(t))
+    return normalize_speed_score(score)
+
+
 def compute_alignment_analytics(world, process_rules, learned_rules, step, duration_s=0.05):
     obj_name = _step_name(step)
     success_metrics = (process_rules or {}).get(obj_name, {}).get("success_gates") or {}
@@ -394,12 +492,7 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
             slow_mm = ALIGN_SPEED_SLOW_MM / 4.0
             fast_mm = ALIGN_SPEED_FAST_MM / 4.0
         if obj_name == "ALIGN_BRICK" and cmd == "f":
-            if mm_off is None:
-                speed_score = SPEED_SCORE_DEFAULT
-            elif mm_off <= slow_mm:
-                speed_score = SPEED_SCORE_MIN
-            else:
-                speed_score = SPEED_SCORE_DEFAULT
+            speed_score = align_brick_forward_speed_score(dist, process_rules, obj_name)
         else:
             speed_score = _score_from_mm(mm_off, slow_mm, fast_mm)
         speed_score = normalize_speed_score(speed_score)
