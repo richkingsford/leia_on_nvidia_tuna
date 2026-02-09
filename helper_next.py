@@ -84,16 +84,6 @@ def success_gates_visible_only(process_rules, step):
     return keys == {"visible"}
 
 
-def turn_cmd_from_signed_error(signed_error):
-    if signed_error is None:
-        return None
-    if signed_error > 0:
-        return "l"
-    if signed_error < 0:
-        return "r"
-    return None
-
-
 def _smoothstep01(value: float) -> float:
     try:
         x = float(value)
@@ -519,9 +509,6 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
         target = stats.get("target")
         tol = stats.get("tol")
         signed_error = signed - target if target is not None and tol is not None else signed
-        x_axis_turn_error_mm = abs(signed_error)
-        # Positive error should turn right, negative error should turn left.
-        cmd = turn_cmd_from_signed_error(-signed_error)
         if abs(signed_error) < micro_offset_mm:
             speed = min(speed, micro_speed)
         worst_metric = "xAxis_offset"
@@ -532,11 +519,6 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
         target = stats.get("target")
         tol = stats.get("tol")
         mag = abs(signed)
-        signed_error = mag - target if target is not None and tol is not None else signed
-        if signed_error >= 0:
-            cmd = "r" if signed > 0 else "l"
-        else:
-            cmd = "l" if signed > 0 else "r"
         if abs(signed) < micro_angle_deg:
             speed = min(speed, micro_speed)
         worst_metric = "angle"
@@ -547,9 +529,7 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
         speed_score = normalize_speed_score(speed_score)
     else:
         mm_off = None
-        if cmd in ("l", "r"):
-            mm_off = mm_errors.get("xAxis_offset")
-        elif cmd in ("f", "b"):
+        if cmd in ("f", "b"):
             mm_off = mm_errors.get("dist")
         if (mm_off is None or mm_off <= 0.0) and worst_metric == "angle":
             mm_off = None
@@ -566,23 +546,6 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
 
     if not visible_for_cmd:
         speed_score = SPEED_SCORE_DEFAULT
-        speed_score = normalize_speed_score(speed_score)
-
-    # ALIGN_BRICK turn tuning (conservative near target):
-    # - |x_axis| <= 9mm: use 1%
-    # - 9mm < |x_axis| <= 16mm: use 2%
-    # - above 16mm: use 3%
-    if cmd in ("l", "r"):
-        if obj_name == "ALIGN_BRICK":
-            mm_off = abs(x_axis)
-            if mm_off <= ALIGN_BRICK_TURN_SLOW_OFFSET_MM:
-                speed_score = SPEED_SCORE_MIN
-            elif mm_off <= ALIGN_BRICK_TURN_FAST_OFFSET_MM:
-                speed_score = ALIGN_BRICK_TURN_MED_SCORE
-            else:
-                speed_score = ALIGN_BRICK_TURN_FAST_SCORE
-        else:
-            speed_score = SPEED_SCORE_MIN
         speed_score = normalize_speed_score(speed_score)
 
     if cmd:
@@ -635,10 +598,6 @@ def offset_gap_phrase(offset_x):
     if side == "left":
         return "between the left side of the robot and the aruco marker"
     return "between the robot and the aruco marker"
-
-
-def offset_cmd_from_offset_x(offset_x):
-    return turn_cmd_from_signed_error(offset_x)
 
 
 def distance_marker_direction(dist, gates):
@@ -726,30 +685,6 @@ def distance_gap_value(dist, gates):
     return None
 
 
-def offset_correction_cmd(measurement, gates):
-    if not measurement:
-        return None
-    offset = measurement.get("offset_x")
-    if offset is None:
-        return None
-    stats = (gates or {}).get("xAxis_offset_abs") or {}
-    target = stats.get("target")
-    tol = stats.get("tol")
-    min_val = stats.get("min")
-    max_val = stats.get("max")
-    abs_offset = abs(offset)
-    if target is not None and tol is not None:
-        signed_error = offset - target
-        if abs(signed_error) > tol:
-            return turn_cmd_from_signed_error(-signed_error)
-        return None
-    if max_val is not None and abs_offset > max_val:
-        return turn_cmd_from_signed_error(-offset)
-    if min_val is not None and abs_offset < min_val:
-        return turn_cmd_from_signed_error(-offset)
-    return None
-
-
 def offset_gap_value(offset, gates):
     if offset is None:
         return None
@@ -771,9 +706,6 @@ def offset_gap_value(offset, gates):
 def suggested_minor_correction(brick, success_gates):
     if not brick or not brick.get("visible"):
         return None
-    cmd = offset_correction_cmd(brick, success_gates)
-    if cmd:
-        return "turn right" if cmd == "r" else "turn left"
     cmd = distance_correction_cmd(brick, success_gates)
     if cmd:
         return "forward" if cmd == "f" else "backward"

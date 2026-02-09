@@ -854,6 +854,12 @@ def _duration_used_ms_for_cmd(robot, cmd, duration_ms, *, auto_mode=False):
 def send_robot_command_pwm(robot, world, step, cmd, power, pwm, duration_ms, speed_score=None, auto_mode=False):
     if robot is None or cmd is None:
         return None
+    cmd_lower = str(cmd).lower()
+    if cmd_lower in ("l", "r"):
+        record_hold_display(world, step, "unknown command", duration_ms=duration_ms)
+        if hasattr(robot, "stop"):
+            robot.stop()
+        return None
     try:
         pwm_val = int(round(pwm))
     except (TypeError, ValueError):

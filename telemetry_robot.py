@@ -642,13 +642,8 @@ METRIC_DIRECTIONS = {
 }
 
 
-def resolve_scan_direction(process_rules, step, fallback="l"):
-    obj_name = _step_name(step)
-    rules = (process_rules or {}).get(obj_name, {})
-    scan_direction = rules.get("scan_direction")
-    if scan_direction in ("l", "r"):
-        return scan_direction
-    return fallback
+def resolve_scan_direction(process_rules, step, fallback=None):
+    return None
 
 
 def _target_tol_ok(value, stats, direction):

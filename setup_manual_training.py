@@ -1131,7 +1131,7 @@ def control_loop(app_state):
                 avg["brick_above"],
                 avg["brick_below"],
             )
-        refresh_brick_telemetry(app_state)
+        refresh_brick_telemetry(app_state, read_vision=False)
         
         # Track Motion
         with app_state.lock:
