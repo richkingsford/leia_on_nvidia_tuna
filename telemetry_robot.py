@@ -4,6 +4,7 @@
 Handles the World Model and Logging for Robot Leia.
 """
 import json
+import copy
 import math
 import os
 import threading
@@ -445,6 +446,47 @@ def _load_speed_model(path):
 
 SCORE_POWER_PWM = SCORE_POWER_PWM_DRIVE
 
+def _baseline_pwm_min(score_map):
+    if not isinstance(score_map, dict):
+        return 0
+    entry = score_map.get(SPEED_SCORE_MIN)
+    if not isinstance(entry, dict):
+        return 0
+    pwm = entry.get("pwm")
+    try:
+        pwm_val = int(round(float(pwm)))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(255, pwm_val))
+
+SCORE_POWER_PWM_DRIVE_BASE = {}
+SCORE_POWER_PWM_TURN_BASE = {}
+SPEED_SCORE_MIN_PWM_DRIVE_BASE = 0
+SPEED_SCORE_MIN_PWM_TURN_BASE = 0
+
+
+def refresh_speed_model_baseline(*, drive_map=None, turn_map=None):
+    """
+    Snapshot the current speed model as the baseline (used as a hard floor so
+    runtime micro-adjustments can never make the robot move slower than the
+    configured 1% speed score).
+    """
+    global SCORE_POWER_PWM_DRIVE_BASE
+    global SCORE_POWER_PWM_TURN_BASE
+    global SPEED_SCORE_MIN_PWM_DRIVE_BASE
+    global SPEED_SCORE_MIN_PWM_TURN_BASE
+
+    src_drive = drive_map if isinstance(drive_map, dict) else SCORE_POWER_PWM_DRIVE
+    src_turn = turn_map if isinstance(turn_map, dict) else SCORE_POWER_PWM_TURN
+    SCORE_POWER_PWM_DRIVE_BASE = copy.deepcopy(src_drive) if isinstance(src_drive, dict) else {}
+    SCORE_POWER_PWM_TURN_BASE = copy.deepcopy(src_turn) if isinstance(src_turn, dict) else {}
+    SPEED_SCORE_MIN_PWM_DRIVE_BASE = int(_baseline_pwm_min(SCORE_POWER_PWM_DRIVE_BASE))
+    SPEED_SCORE_MIN_PWM_TURN_BASE = int(_baseline_pwm_min(SCORE_POWER_PWM_TURN_BASE))
+    return SPEED_SCORE_MIN_PWM_DRIVE_BASE, SPEED_SCORE_MIN_PWM_TURN_BASE
+
+
+refresh_speed_model_baseline()
+
 
 def is_valid_speed_score(score):
     try:
@@ -460,6 +502,17 @@ def score_power_pwm_for_cmd(cmd):
     if cmd in ("f", "b"):
         return SCORE_POWER_PWM_DRIVE if isinstance(SCORE_POWER_PWM_DRIVE, dict) else SCORE_POWER_PWM_TURN
     return SCORE_POWER_PWM_DRIVE if isinstance(SCORE_POWER_PWM_DRIVE, dict) else SCORE_POWER_PWM_TURN
+
+
+def baseline_pwm_floor_for_cmd(cmd):
+    cmd = str(cmd) if cmd is not None else ""
+    if cmd in ("l", "r"):
+        floor = int(SPEED_SCORE_MIN_PWM_TURN_BASE or 0)
+        return max(int(turn_pwm_floor()), floor)
+    if cmd in ("f", "b"):
+        floor = int(SPEED_SCORE_MIN_PWM_DRIVE_BASE or 0)
+        return max(0, min(255, floor))
+    return 0
 
 
 def _speed_pwm_endpoints(cmd):
@@ -510,6 +563,8 @@ def speed_power_pwm_for_cmd(cmd, score):
         return 0.0, 0, score, int(ACT_DURATION_MS)
     if cmd in ("l", "r") and pwm > 0:
         pwm = max(turn_pwm_floor(), pwm)
+    if cmd in ("f", "b", "l", "r") and pwm > 0:
+        pwm = max(int(baseline_pwm_floor_for_cmd(cmd)), int(pwm))
     power = _pwm_to_power(pwm) or 0.0
     duration_ms = _duration_ms_for_score(score)
     return power, pwm, score, duration_ms

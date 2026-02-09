@@ -26,10 +26,13 @@ ALIGN_BRICK_TURN_SLOW_OFFSET_MM = 9.0
 ALIGN_BRICK_TURN_MED_SCORE = 2
 ALIGN_BRICK_TURN_FAST_SCORE = 3
 ALIGN_BRICK_TURN_FAST_OFFSET_MM = 16.0
+ALIGN_BRICK_X_AXIS_TOL_FAR_SCALE = 3.0
 
 METRIC_DIRECTIONS = {
     "angle_abs": "low",
-    "xAxis_offset_abs": "low",
+    # This metric is treated as a signed offset with a target +/- tol band.
+    # Use a non-one-sided direction so gate checks use abs(value-target) <= tol.
+    "xAxis_offset_abs": "band",
     "dist": "low",
     "visible": "high",
     "confidence": "high",
@@ -189,6 +192,26 @@ def align_brick_forward_speed_score(dist_mm: float, process_rules, step: str) ->
     return normalize_speed_score(score)
 
 
+def align_brick_x_axis_tol_scale(dist_mm: float, process_rules, step: str) -> float:
+    profile = align_brick_micro_forward_profile(process_rules, step)
+    close = float(profile["close_mm"])
+    far = float(profile["far_mm"])
+    max_scale = float(ALIGN_BRICK_X_AXIS_TOL_FAR_SCALE)
+
+    try:
+        dist_val = float(dist_mm)
+    except (TypeError, ValueError):
+        return 1.0
+
+    if dist_val <= close:
+        return 1.0
+    if far <= close:
+        return max_scale
+
+    t = (dist_val - close) / max(1e-6, far - close)
+    return float(_lerp(1.0, max_scale, _smoothstep01(t)))
+
+
 def compute_alignment_analytics(world, process_rules, learned_rules, step, duration_s=0.05):
     obj_name = _step_name(step)
     success_metrics = (process_rules or {}).get(obj_name, {}).get("success_gates") or {}
@@ -203,6 +226,21 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
     x_axis = float(x_axis)
     angle = float(brick.get("angle", 0.0) or 0.0)
     dist = float(brick.get("dist", 0.0) or 0.0)
+
+    # Auto-step ALIGN_BRICK micro-adjustments should never act blindly. If the
+    # brick isn't visible, HOLD and let vision settle/reacquire.
+    if obj_name == "ALIGN_BRICK" and not visible:
+        return {
+            "progress": None,
+            "worst_metric": None,
+            "cmd": None,
+            "speed": 0.0,
+            "duration_s": duration_s,
+            "x_axis": x_axis,
+            "angle": angle,
+            "dist": dist,
+            "offsets": {},
+        }
     if not visible and last_seen_time is not None and lost_frames < VISIBILITY_LOST_CONFIRM_FRAMES:
         visible_for_cmd = True
         last_x = getattr(world, "last_seen_x_axis", None)
@@ -230,6 +268,11 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
     ratios = {}
     mm_errors = {}
     x_axis_turn_error_mm = None
+    x_axis_tol_scale = 1.0
+    if obj_name == "ALIGN_BRICK":
+        x_axis_tol_scale = align_brick_x_axis_tol_scale(dist, process_rules, obj_name)
+        if x_axis_tol_scale < 1.0:
+            x_axis_tol_scale = 1.0
 
     def fallback_stats(metric):
         if metric == "xAxis_offset_abs":
@@ -242,6 +285,28 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
                 "max": float(getattr(world, "align_tol_dist_max", 500.0)),
             }
         return {}
+
+    def _effective_stats(metric, stats):
+        if metric != "xAxis_offset_abs":
+            return stats
+        if not isinstance(stats, dict):
+            return stats
+        if x_axis_tol_scale <= 1.0:
+            return stats
+        scaled = dict(stats)
+        tol = scaled.get("tol")
+        if tol is not None:
+            try:
+                scaled["tol"] = float(tol) * x_axis_tol_scale
+            except (TypeError, ValueError):
+                pass
+        max_val = scaled.get("max")
+        if max_val is not None:
+            try:
+                scaled["max"] = float(max_val) * x_axis_tol_scale
+            except (TypeError, ValueError):
+                pass
+        return scaled
 
     def metric_within_gate(stats, value):
         target = stats.get("target")
@@ -258,6 +323,7 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
 
     for metric, value in metrics.items():
         stats = success_metrics.get(metric) or fallback_stats(metric)
+        stats = _effective_stats(metric, stats)
         direction = metric_direction_for_step(metric, obj_name)
         if direction is None:
             continue
@@ -320,6 +386,7 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
 
     progress = sum(progress_values) / len(progress_values) if progress_values else None
     x_axis_stats = success_metrics.get("xAxis_offset_abs") or fallback_stats("xAxis_offset_abs")
+    x_axis_stats = _effective_stats("xAxis_offset_abs", x_axis_stats)
     x_axis_ok = metric_within_gate(x_axis_stats, x_axis)
     dist_gap_mm = None
     force_dist_focus = False

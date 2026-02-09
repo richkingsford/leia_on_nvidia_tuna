@@ -1,0 +1,67 @@
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+import telemetry_process
+import telemetry_robot
+
+
+class _DummyRobot:
+    def __init__(self):
+        self.sent = []
+        self._last_turn_cmd = "r"
+
+    def send_command_pwm(self, cmd, pwm, duration_ms=0):
+        self.sent.append((cmd, pwm, duration_ms))
+
+
+class TestTelemetryProcessAutoTurnDurationFloor(unittest.TestCase):
+    def test_auto_turn_duration_never_below_min_score_duration(self):
+        orig_drive = telemetry_robot.SCORE_POWER_PWM_DRIVE
+        orig_turn = telemetry_robot.SCORE_POWER_PWM_TURN
+        orig_duration = telemetry_robot.SPEED_SCORE_DURATION_MS
+        try:
+            telemetry_robot.SCORE_POWER_PWM_DRIVE = {
+                telemetry_robot.SPEED_SCORE_MIN: {"pwm": 80},
+                telemetry_robot.SPEED_SCORE_MAX: {"pwm": 200},
+            }
+            telemetry_robot.SCORE_POWER_PWM_TURN = {
+                telemetry_robot.SPEED_SCORE_MIN: {"pwm": 60},
+                telemetry_robot.SPEED_SCORE_MAX: {"pwm": 220},
+            }
+            telemetry_robot.SPEED_SCORE_DURATION_MS = {
+                telemetry_robot.SPEED_SCORE_MIN: 250,
+                telemetry_robot.SPEED_SCORE_MAX: 300,
+            }
+            telemetry_robot.refresh_speed_model_baseline()
+
+            robot = _DummyRobot()
+            meta = telemetry_process.send_robot_command_pwm(
+                robot,
+                world=None,
+                step="ALIGN_BRICK",
+                cmd="l",
+                power=0.0,
+                pwm=60,
+                duration_ms=250,
+                speed_score=telemetry_robot.SPEED_SCORE_MIN,
+                auto_mode=True,
+            )
+            self.assertIsInstance(meta, dict)
+            self.assertTrue(robot.sent)
+            cmd, _, duration_ms = robot.sent[-1]
+            self.assertEqual(cmd, "l")
+            self.assertEqual(duration_ms, 250)
+            self.assertEqual(meta.get("duration_ms"), 250)
+        finally:
+            telemetry_robot.SCORE_POWER_PWM_DRIVE = orig_drive
+            telemetry_robot.SCORE_POWER_PWM_TURN = orig_turn
+            telemetry_robot.SPEED_SCORE_DURATION_MS = orig_duration
+            telemetry_robot.refresh_speed_model_baseline()
+
+
+if __name__ == "__main__":
+    unittest.main()
+

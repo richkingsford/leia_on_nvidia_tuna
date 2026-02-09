@@ -62,7 +62,7 @@
   "min_turn_power": 0.064,
   "score_power_pwm_drive": {
     "1": {
-      "power": 0.4,
+      "power": 0.300,
       "pwm": 102
     },
     "100": {
@@ -72,8 +72,8 @@
   },
   "score_power_pwm_turn": {
     "1": {
-      "power": 0.3,
-      "pwm": 102
+      "power": 0.20,
+      "pwm": 90
     },
     "100": {
       "power": 1.0,

@@ -86,7 +86,7 @@
                 "metrics": {
                     "xAxis_offset": {
                         "target": 11.27,
-                        "tol": 3.162
+                        "tol": 1.581
                     },
                     "dist": {
                         "target": 79.65,
@@ -109,7 +109,7 @@
             "success_gates": {
                 "xAxis_offset_abs": {
                     "target": 11.27,
-                    "tol": 3.162
+                    "tol": 0.7
                 },
                 "dist": {
                     "target": 97.58,
@@ -145,7 +145,7 @@
             "success_gates": {
                 "xAxis_offset_abs": {
                     "target": -4.25,
-                    "tol": 1.5
+                    "tol": 0.7
                 },
                 "dist": {
                     "target": 91.6,

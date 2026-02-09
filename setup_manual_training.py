@@ -1146,9 +1146,12 @@ def control_loop(app_state):
 
         min_turn_pwm = None
         try:
-            min_turn_pwm = int(telemetry_robot_module.turn_pwm_floor())
+            min_turn_pwm = int(telemetry_robot_module.baseline_pwm_floor_for_cmd("l"))
         except Exception:
-            min_turn_pwm = None
+            try:
+                min_turn_pwm = int(telemetry_robot_module.turn_pwm_floor())
+            except Exception:
+                min_turn_pwm = None
 
         score_power_pwm_turn = getattr(telemetry_robot_module, "SCORE_POWER_PWM_TURN", None)
         if not isinstance(score_power_pwm_turn, dict):
@@ -1236,7 +1239,9 @@ def command_loop(app_state):
             with app_state.lock:
                 app_state.active_speed = 0.0
 
-        if cmd and speed > 0:
+        if cmd and score_used is not None and (
+            speed > 0 or score_used == telemetry_robot_module.SPEED_SCORE_MIN
+        ):
             send_robot_command(
                 app_state.robot,
                 app_state.world,

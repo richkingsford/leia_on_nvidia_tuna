@@ -78,6 +78,27 @@ class TestHelperNextAlignTurnSpeed(unittest.TestCase):
         self.assertIn(analytics.get("cmd"), ("l", "r"))
         self.assertEqual(analytics.get("speed_score"), telemetry_robot.normalize_speed_score(3))
 
+    def test_align_loosened_x_axis_tolerance_when_far_keeps_dist_priority_for_minor_x_error(self):
+        world = _DummyWorld(1.5, dist=420.0)  # slightly outside tol=1.0
+        rules = {
+            "ALIGN_BRICK": {
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 1.0},
+                    "dist": {"target": 400.0, "tol": 5.0},
+                }
+            }
+        }
+        analytics = helper_next.compute_alignment_analytics(
+            world,
+            rules,
+            learned_rules={},
+            step="ALIGN_BRICK",
+            duration_s=0.05,
+        )
+        self.assertEqual(analytics.get("worst_metric"), "dist")
+        self.assertEqual(analytics.get("cmd"), "f")
+        self.assertFalse(getattr(world, "_align_focus_dist", False))
+
     def test_align_prioritizes_dist_when_gap_exceeds_150mm_even_if_x_axis_off(self):
         world = _DummyWorld(20.0, dist=300.0)
         analytics = helper_next.compute_alignment_analytics(

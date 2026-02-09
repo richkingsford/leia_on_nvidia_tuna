@@ -75,6 +75,7 @@ MM_METRICS = {
     "lift_height",
 }
 MIN_MM_TOL = 1.5
+X_AXIS_OFFSET_ABS_TOL_MM = 0.7
 
 
 
@@ -731,8 +732,44 @@ def action_display_text(cmd, speed_score=None):
     score_suffix = f" {int(speed_score)}%" if speed_score is not None else ""
     return f"{str(cmd).upper()}{score_suffix}"
 
+def action_sent_display_text(cmd, speed_score=None, *, cmd_sent=None, pwm=None, duration_ms=None):
+    if not cmd:
+        return "HOLD"
+    cmd = str(cmd)
+    score_suffix = f" {int(speed_score)}%" if speed_score is not None else ""
+    parts = [f"{cmd.upper()}"]
+    if pwm is not None:
+        try:
+            pwm_val = int(round(float(pwm)))
+        except (TypeError, ValueError):
+            pwm_val = None
+        if pwm_val is not None:
+            parts.append(f"pwm{pwm_val}")
+    if duration_ms is not None:
+        try:
+            ms_val = int(round(float(duration_ms)))
+        except (TypeError, ValueError):
+            ms_val = None
+        if ms_val is not None:
+            parts.append(f"{ms_val}ms")
+    details = ""
+    if len(parts) > 1:
+        details = " (" + ", ".join(parts[1:]) + ")"
+    return f"{parts[0]}{score_suffix}{details}"
 
-def record_action_display(world, step, cmd, speed, speed_score=None):
+
+def record_action_display(
+    world,
+    step,
+    cmd,
+    speed,
+    speed_score=None,
+    *,
+    cmd_sent=None,
+    pwm=None,
+    duration_ms=None,
+    score_model=None,
+):
     if world is None or not cmd:
         return
     obj_key = normalize_step_label(step)
@@ -741,20 +778,67 @@ def record_action_display(world, step, cmd, speed, speed_score=None):
     world._last_action_cmd = cmd
     world._last_action_speed = speed
     world._last_action_score = speed_score
+    world._last_action_score_model = score_model
+    world._last_action_cmd_sent = cmd_sent
+    world._last_action_pwm = pwm
+    world._last_action_duration_ms = duration_ms
     world._last_action_display = action_display_text(cmd, speed_score)
+    world._last_action_sent_display = action_sent_display_text(
+        cmd,
+        speed_score,
+        cmd_sent=cmd_sent,
+        pwm=pwm,
+        duration_ms=duration_ms,
+    )
 
 
-def _duration_used_ms_for_cmd(robot, cmd, duration_ms):
+def record_hold_display(world, step, reason=None, *, duration_ms=0):
+    if world is None:
+        return
+    obj_key = normalize_step_label(step)
+    world._last_action_obj = obj_key
+    world._last_action_time = time.time()
+    world._last_action_cmd = None
+    world._last_action_speed = 0.0
+    world._last_action_score = None
+    world._last_action_score_model = None
+    world._last_action_cmd_sent = None
+    world._last_action_pwm = 0
+    try:
+        world._last_action_duration_ms = int(round(float(duration_ms)))
+    except (TypeError, ValueError):
+        world._last_action_duration_ms = 0
+    hold = "HOLD"
+    if reason:
+        hold = f"HOLD ({reason})"
+    world._last_action_display = hold
+    world._last_action_sent_display = hold
+
+
+def _duration_used_ms_for_cmd(robot, cmd, duration_ms, *, auto_mode=False):
     try:
         duration_used_ms = int(duration_ms)
     except (TypeError, ValueError):
         duration_used_ms = int(getattr(telemetry_robot_module, "ACT_DURATION_MS", 0) or 0)
-    if cmd in ("l", "r"):
+    if cmd in ("l", "r") and auto_mode:
         eff_scale = telemetry_robot_module.turn_duration_scale(cmd)
         duration_used_ms = max(1, int(round(duration_used_ms * eff_scale)))
         last_turn_cmd = getattr(robot, "_last_turn_cmd", None)
         if last_turn_cmd != cmd:
             duration_used_ms = max(1, int(round(duration_used_ms * 0.4)))
+        # Never allow autonomous micro-turns to be shorter than the configured
+        # minimum movement (1% score). Short bursts can be too weak to overcome
+        # static friction and appear much slower than the manual hotkeys.
+        try:
+            _, _, _, floor_ms = telemetry_robot_module.speed_power_pwm_for_cmd(
+                cmd,
+                getattr(telemetry_robot_module, "SPEED_SCORE_MIN", 1),
+            )
+            floor_ms = int(round(float(floor_ms)))
+        except Exception:
+            floor_ms = None
+        if floor_ms is not None and floor_ms > 0:
+            duration_used_ms = max(int(floor_ms), int(duration_used_ms))
         try:
             robot._last_turn_cmd = cmd
         except Exception:
@@ -767,7 +851,7 @@ def _duration_used_ms_for_cmd(robot, cmd, duration_ms):
     return int(duration_used_ms)
 
 
-def send_robot_command_pwm(robot, world, step, cmd, power, pwm, duration_ms, speed_score=None):
+def send_robot_command_pwm(robot, world, step, cmd, power, pwm, duration_ms, speed_score=None, auto_mode=False):
     if robot is None or cmd is None:
         return None
     try:
@@ -786,12 +870,43 @@ def send_robot_command_pwm(robot, world, step, cmd, power, pwm, duration_ms, spe
         power_val = 0.0
     power_val = max(0.0, min(1.0, power_val))
 
+    duration_used_ms = _duration_used_ms_for_cmd(robot, cmd, duration_ms, auto_mode=auto_mode)
+    cmd_remap = getattr(telemetry_robot_module, "COMMAND_REMAP", None)
+    if not isinstance(cmd_remap, dict):
+        cmd_remap = {}
+    cmd_sent = cmd_remap.get(cmd, cmd)
+
+    # Enforce a minimum non-zero PWM based on the configured 1% speed score.
+    if cmd in ("f", "b", "l", "r") and pwm_val > 0:
+        try:
+            _, floor_pwm, _, _ = telemetry_robot_module.speed_power_pwm_for_cmd(
+                cmd,
+                getattr(telemetry_robot_module, "SPEED_SCORE_MIN", 1),
+            )
+            floor_pwm = int(round(float(floor_pwm)))
+        except Exception:
+            floor_pwm = None
+        if floor_pwm is not None and floor_pwm > 0:
+            pwm_val = max(int(floor_pwm), int(pwm_val))
+
+    power_from_pwm = telemetry_robot_module.pwm_to_power(pwm_val)
+    if power_from_pwm is not None:
+        power_val = max(0.0, min(1.0, float(power_from_pwm)))
+
     _, score_effective = telemetry_robot_module.quantize_speed(cmd, speed=power_val)
     if score_effective is None:
         score_effective = speed_score
-    record_action_display(world, step, cmd, power_val, speed_score=score_effective)
-
-    duration_used_ms = _duration_used_ms_for_cmd(robot, cmd, duration_ms)
+    record_action_display(
+        world,
+        step,
+        cmd,
+        power_val,
+        speed_score=score_effective,
+        cmd_sent=cmd_sent,
+        pwm=pwm_val,
+        duration_ms=duration_used_ms,
+        score_model=speed_score,
+    )
     if hasattr(robot, "send_command_pwm"):
         robot.send_command_pwm(cmd, pwm_val, duration_ms=duration_used_ms)
     else:
@@ -885,15 +1000,36 @@ def send_robot_command(robot, world, step, cmd, speed, speed_score=None, auto_mo
 
             seg2_factor = (dist_val - very_close) / max(1e-6, close - very_close)
             # Use the same near-range ramp window for the final segment so the
-            # target score (shown in `SUG`) is actually reached even when we're
+            # target score (shown in `ACT`) is actually reached even when we're
             # still inside the "somewhat_close" band.
             seg3_factor = (dist_val - very_close) / max(1e-6, close - very_close)
             seg2_ms = int(round(float(segment_ms) * _smoothstep01(seg2_factor)))
             seg3_ms = int(round(float(segment_ms) * _smoothstep01(seg3_factor)))
             if seg2_ms > 0:
                 segments.append((int(mid_score), int(seg2_ms)))
-            if seg3_ms > 0:
+            # Always include the target score segment (we may extend it below).
+            if segments and int(segments[-1][0]) == int(target_score):
+                segments[-1] = (
+                    int(target_score),
+                    int(segments[-1][1]) + int(seg3_ms),
+                )
+            else:
                 segments.append((int(target_score), int(seg3_ms)))
+
+            # Ensure the micro-forward sequence lasts at least as long as the
+            # model duration for the requested score; very short bursts can fail
+            # to overcome static friction and appear as "no movement".
+            try:
+                min_total_ms = int(round(float(duration_ms)))
+            except (TypeError, ValueError):
+                min_total_ms = 0
+            min_total_ms = max(0, int(min_total_ms))
+            planned_total_ms = sum(max(0, int(ms)) for _, ms in segments)
+            if min_total_ms > 0 and planned_total_ms < min_total_ms and segments:
+                segments[-1] = (
+                    int(segments[-1][0]),
+                    int(segments[-1][1]) + int(min_total_ms - planned_total_ms),
+                )
 
         sent_segments = []
         if forward_micro is not None:
@@ -909,6 +1045,7 @@ def send_robot_command(robot, world, step, cmd, speed, speed_score=None, auto_mo
                     seg_pwm,
                     seg_ms,
                     speed_score=int(seg_score),
+                    auto_mode=auto_mode,
                 )
                 if isinstance(meta, dict):
                     sent_segments.append(meta)
@@ -937,7 +1074,17 @@ def send_robot_command(robot, world, step, cmd, speed, speed_score=None, auto_mo
             pwm_cap = max(0, min(255, pwm_cap))
             pwm = max(0, min(pwm_cap, int(round(pwm * boost_scale))))
             power = max(0.0, min(1.0, float(power) * boost_scale))
-    return send_robot_command_pwm(robot, world, step, cmd, power, pwm, duration_ms, speed_score=score_used)
+    return send_robot_command_pwm(
+        robot,
+        world,
+        step,
+        cmd,
+        power,
+        pwm,
+        duration_ms,
+        speed_score=score_used,
+        auto_mode=auto_mode,
+    )
 
 
 def step_uses_alignment_control(step, process_rules):
@@ -1446,6 +1593,27 @@ def refine_success_gates_with_failures(success_gates, fail_segments, step_rules=
     return success_gates
 
 
+def tighten_x_axis_success_tolerance(success_gates, *, tol_mm=X_AXIS_OFFSET_ABS_TOL_MM):
+    if not isinstance(success_gates, dict):
+        return success_gates
+    try:
+        tol_val = abs(float(tol_mm))
+    except (TypeError, ValueError):
+        return success_gates
+    if tol_val <= 0:
+        return success_gates
+    for obj, gates in success_gates.items():
+        if not isinstance(gates, dict):
+            continue
+        stats = gates.get("xAxis_offset_abs")
+        if not isinstance(stats, dict):
+            continue
+        stats["tol"] = round_value(tol_val)
+        stats.pop("min", None)
+        stats.pop("max", None)
+    return success_gates
+
+
 def update_process_model_from_demos(logs, path=PROCESS_MODEL_FILE):
     model = load_process_model(path)
     steps = model.get("steps")
@@ -1492,6 +1660,7 @@ def update_process_model_from_demos(logs, path=PROCESS_MODEL_FILE):
         fail_segments,
         step_rules,
     )
+    tighten_x_axis_success_tolerance(success_gates)
     for obj, stats in []:
         if obj not in success_gates:
             continue
@@ -2079,6 +2248,9 @@ def compute_stream_gate_summary(world, step, active=True):
         obj_name,
         duration_s=CONTROL_DT,
     )
+    align = (analytics or {}).get("align") if isinstance(analytics, dict) else None
+    if not isinstance(align, dict):
+        align = {}
     pct = None
     for name, val in analytics.get("gate_progress") or []:
         if normalize_step_label(name) == obj_name:
@@ -2092,43 +2264,72 @@ def compute_stream_gate_summary(world, step, active=True):
     for entry in _success_gate_entries(world, obj_name):
         metric_lines.append(_stream_success_gate_line(obj_name, entry))
 
-    suggested = analytics.get("suggestion") or "HOLD"
-    last_display = getattr(world, "_last_action_display", None)
-    last_obj = getattr(world, "_last_action_obj", None)
-    last_time = getattr(world, "_last_action_time", None)
-    robot_display = None
-    if last_display and last_obj == obj_name:
-        if last_time is None or (time.time() - last_time) <= ACTION_DISPLAY_TTL_S:
-            robot_display = last_display
-    cmd = analytics.get("cmd")
-    speed = analytics.get("speed") if cmd else None
+    suggested_cmd = None
+    suggested_score = None
+    cmd = align.get("cmd")
+    speed = align.get("speed") if cmd else None
     if cmd and speed is not None:
         success_ok, confidence = evaluate_gate_status(world, obj_name)
         speed = apply_pursuit_speed(speed)
         speed = apply_confidence_speed(speed, success_ok, confidence, world)
-        speed_score = analytics.get("speed_score")
+        speed_score = align.get("speed_score")
         speed, speed_score = telemetry_robot_module.quantize_speed(
             cmd,
             speed=speed,
             score=speed_score,
         )
-        suggested = action_display_text(cmd, speed_score)
-    if suggested == "HOLD":
+        suggested_cmd = cmd
+        suggested_score = speed_score
+
+    if suggested_cmd is None:
         scan_dir = (world.process_rules or {}).get(obj_name, {}).get("scan_direction")
         if scan_dir in ("l", "r"):
-            suggested = action_display_text(scan_dir, DEFAULT_SPEED_SCORE)
-    if suggested == "HOLD":
+            suggested_cmd = scan_dir
+            suggested_score = DEFAULT_SPEED_SCORE
+
+    if suggested_cmd is None:
+        suggested = "HOLD"
         reason = _hold_reason(world, obj_name, analytics)
         if reason:
             suggested = f"HOLD ({reason})"
+    else:
+        _, pwm, _, duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd(
+            suggested_cmd,
+            suggested_score,
+        )
+        suggested = action_sent_display_text(
+            suggested_cmd,
+            suggested_score,
+            pwm=pwm,
+            duration_ms=duration_ms,
+        )
     summary = [f"STEP: {obj_name}"]
     summary.extend(metric_lines)
-    if robot_display:
-        summary.append(f"ACT: {robot_display}")
-        if suggested and suggested != robot_display:
-            summary.append(f"SUG: {suggested}")
-    else:
-        summary.append(f"ACT: {suggested}")
+    sent_display = getattr(world, "_last_action_sent_display", None)
+    last_obj = getattr(world, "_last_action_obj", None)
+    last_time = getattr(world, "_last_action_time", None)
+    last_duration_ms = getattr(world, "_last_action_duration_ms", None)
+    act_display = suggested
+    if (
+        sent_display
+        and last_time is not None
+        and normalize_step_label(last_obj) == obj_name
+    ):
+        try:
+            age_s = float(time.time() - float(last_time))
+        except (TypeError, ValueError):
+            age_s = None
+        try:
+            duration_s = max(0.0, float(last_duration_ms) / 1000.0)
+        except (TypeError, ValueError):
+            duration_s = 0.0
+        # Stream updates are slower than control loop updates; keep the last sent act
+        # visible long enough to show up reliably in the overlay.
+        window_s = max(duration_s + 0.2, 0.75)
+        if age_s is not None and age_s <= window_s:
+            act_display = str(sent_display)
+
+    summary.append(f"ACT: {act_display}")
     return summary, analytics
 
 
@@ -2819,6 +3020,11 @@ def run_alignment_segment(
                 return True, "success gate"
         else:
             if robot:
+                if (
+                    normalize_step_label(step) == "ALIGN_BRICK"
+                    and not bool((getattr(world, "brick", None) or {}).get("visible"))
+                ):
+                    record_hold_display(world, step, _hold_reason(world, step, {"align": analytics}))
                 robot.stop()
             time.sleep(CONTROL_DT)
 
