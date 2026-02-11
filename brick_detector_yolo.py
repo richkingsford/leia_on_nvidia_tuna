@@ -17,23 +17,19 @@ Usage:
     #   from brick_detector_yolo import BrickDetector
 
 Dependencies:
-    pip install ultralytics opencv-contrib-python numpy
+    pip install opencv-contrib-python numpy
+
+    Note: ultralytics + PyTorch are only needed for training/export,
+    not for runtime inference. This module uses OpenCV DNN with an
+    ONNX-exported model, so no heavy ML frameworks are required.
 """
 
 import cv2
 import numpy as np
 import math
 import os
-import time
 import logging
 from pathlib import Path
-
-try:
-    from ultralytics import YOLO
-except ImportError:
-    raise ImportError(
-        "ultralytics not installed. Run: pip install ultralytics"
-    )
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -53,10 +49,16 @@ DEFAULT_FRAME_H = 480
 DEFAULT_FOCAL_PX = 450.0
 
 # YOLO model path (relative to this file)
-MODEL_PATH = Path(__file__).resolve().parent / "brick_yolo_v1.pt"
+MODEL_PATH = Path(__file__).resolve().parent / "brick_yolo_v1.onnx"
 
 # Detection confidence threshold
 CONF_THRESHOLD = 0.25
+
+# NMS IoU threshold
+NMS_THRESHOLD = 0.45
+
+# YOLO input size (model was exported at 640x640)
+YOLO_INPUT_SIZE = 640
 
 
 class BrickDetector:
@@ -66,6 +68,9 @@ class BrickDetector:
 
     Provides the same read() interface expected by telemetry_brick.py
     and autobuild.py.
+
+    Uses OpenCV DNN with an ONNX-exported YOLOv8-nano model — no
+    PyTorch or ultralytics required at runtime.
     """
 
     def __init__(self, debug=True, save_folder=None, speed_optimize=False,
@@ -87,15 +92,15 @@ class BrickDetector:
         if self.save_folder and not os.path.exists(self.save_folder):
             os.makedirs(self.save_folder, exist_ok=True)
 
-        # Load YOLO model
+        # Load ONNX model via OpenCV DNN
         mpath = Path(model_path) if model_path else MODEL_PATH
         if not mpath.exists():
             raise FileNotFoundError(
-                f"YOLO model not found at {mpath}. "
-                f"Place brick_yolo_v1.pt next to this script."
+                f"YOLO ONNX model not found at {mpath}. "
+                f"Place brick_yolo_v1.onnx next to this script."
             )
-        self.model = YOLO(str(mpath))
-        self.log.info("Loaded YOLO model from %s", mpath)
+        self.net = cv2.dnn.readNetFromONNX(str(mpath))
+        self.log.info("Loaded YOLO ONNX model from %s", mpath)
 
         # Camera setup — try indices 0-3
         self.cap = None
@@ -126,6 +131,108 @@ class BrickDetector:
         self._prev_dist = None
         self._prev_offset = None
         self._smooth_alpha = 0.6  # EMA weight for new values
+
+    # ------------------------------------------------------------------
+    # ONNX inference helpers
+    # ------------------------------------------------------------------
+
+    def _letterbox(self, frame):
+        """Resize frame to YOLO_INPUT_SIZE maintaining aspect ratio with padding."""
+        h, w = frame.shape[:2]
+        scale = min(YOLO_INPUT_SIZE / w, YOLO_INPUT_SIZE / h)
+        new_w, new_h = int(w * scale), int(h * scale)
+        resized = cv2.resize(frame, (new_w, new_h))
+
+        pad_top = (YOLO_INPUT_SIZE - new_h) // 2
+        pad_bottom = YOLO_INPUT_SIZE - new_h - pad_top
+        pad_left = (YOLO_INPUT_SIZE - new_w) // 2
+        pad_right = YOLO_INPUT_SIZE - new_w - pad_left
+
+        padded = cv2.copyMakeBorder(
+            resized, pad_top, pad_bottom, pad_left, pad_right,
+            cv2.BORDER_CONSTANT, value=(114, 114, 114)
+        )
+        return padded, scale, pad_left, pad_top
+
+    def _detect(self, frame):
+        """
+        Run YOLO ONNX inference on a frame.
+
+        Returns:
+            list of (x1, y1, x2, y2, confidence) tuples in original
+            frame coordinates.
+        """
+        h_frame, w_frame = frame.shape[:2]
+
+        # Letterbox to 640x640
+        padded, scale, pad_left, pad_top = self._letterbox(frame)
+
+        # Create blob: normalize [0,1], BGR→RGB
+        blob = cv2.dnn.blobFromImage(
+            padded, 1 / 255.0, (YOLO_INPUT_SIZE, YOLO_INPUT_SIZE),
+            swapRB=True, crop=False
+        )
+
+        # Forward pass
+        self.net.setInput(blob)
+        output = self.net.forward()  # shape: (1, 5, 8400)
+
+        # Transpose to (8400, 5) — each row: [cx, cy, w, h, conf]
+        output = output[0].T
+
+        # Filter by confidence
+        confs = output[:, 4]
+        mask = confs > CONF_THRESHOLD
+        output = output[mask]
+        confs = confs[mask]
+
+        if len(output) == 0:
+            return []
+
+        # Prepare boxes for NMS — cv2.dnn.NMSBoxes expects [x, y, w, h]
+        boxes_for_nms = []
+        for cx, cy, w, h, _ in output:
+            boxes_for_nms.append([
+                float(cx - w / 2),
+                float(cy - h / 2),
+                float(w),
+                float(h),
+            ])
+
+        indices = cv2.dnn.NMSBoxes(
+            boxes_for_nms, confs.tolist(),
+            CONF_THRESHOLD, NMS_THRESHOLD
+        )
+
+        if len(indices) == 0:
+            return []
+
+        bricks = []
+        for i in indices:
+            idx = int(i) if np.ndim(i) == 0 else int(i[0])
+            cx, cy, bw, bh = output[idx, :4]
+            conf = float(confs[idx])
+
+            # Undo letterbox: map from 640x640 padded space → original frame
+            x1 = (cx - bw / 2 - pad_left) / scale
+            y1 = (cy - bh / 2 - pad_top) / scale
+            x2 = (cx + bw / 2 - pad_left) / scale
+            y2 = (cy + bh / 2 - pad_top) / scale
+
+            # Clamp to frame bounds
+            x1 = max(0, int(x1))
+            y1 = max(0, int(y1))
+            x2 = min(w_frame, int(x2))
+            y2 = min(h_frame, int(y2))
+
+            if x2 > x1 and y2 > y1:
+                bricks.append((x1, y1, x2, y2, conf))
+
+        return bricks
+
+    # ------------------------------------------------------------------
+    # Brick geometry estimation (unchanged from original)
+    # ------------------------------------------------------------------
 
     def _estimate_angle(self, frame, x1, y1, x2, y2):
         """Estimate brick rotation angle from the detected bounding box region."""
@@ -168,6 +275,10 @@ class BrickDetector:
             return new_val
         return self._smooth_alpha * new_val + (1 - self._smooth_alpha) * prev_val
 
+    # ------------------------------------------------------------------
+    # Main interface
+    # ------------------------------------------------------------------
+
     def read(self):
         """
         Capture a frame and detect bricks.
@@ -197,16 +308,8 @@ class BrickDetector:
         self.frame_w = w_frame
         self.frame_h = h_frame
 
-        # Run YOLO inference
-        results = self.model(frame, conf=CONF_THRESHOLD, verbose=False)
-
-        # Collect all brick detections
-        bricks = []
-        for r in results:
-            for box in r.boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                conf = float(box.conf[0])
-                bricks.append((x1, y1, x2, y2, conf))
+        # Run YOLO ONNX inference
+        bricks = self._detect(frame)
 
         if not bricks:
             self._prev_angle = None
@@ -270,14 +373,7 @@ class BrickDetector:
         self.frame_w = w_frame
         self.frame_h = h_frame
 
-        results = self.model(frame, conf=CONF_THRESHOLD, verbose=False)
-
-        bricks = []
-        for r in results:
-            for box in r.boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                conf = float(box.conf[0])
-                bricks.append((x1, y1, x2, y2, conf))
+        bricks = self._detect(frame)
 
         if not bricks:
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
@@ -352,8 +448,12 @@ class BrickDetector:
 
     def release(self):
         """Release camera resources."""
-        if self.cap:
+        if getattr(self, "cap", None):
             self.cap.release()
+
+    def close(self):
+        """Release camera resources."""
+        self.release()
 
     def __del__(self):
         self.release()
