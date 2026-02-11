@@ -525,7 +525,8 @@ def update_stream_frame(app_state):
         )
         if analytics:
             app_state.brick_highlight_metric = analytics.get("highlight_metric")
-        draw_telemetry_overlay(
+        stream_lines = []
+        frame = draw_telemetry_overlay(
             frame,
             app_state.world,
             show_prompt=False,
@@ -536,11 +537,14 @@ def update_stream_frame(app_state):
             loop_id=getattr(app_state.world, "loop_id", None),
             gate_summary=gate_summary if gate_summary is not None else [],
             gate_checker_summary=gate_checker_summary,
+            draw_text=False,
+            line_sink=stream_lines,
         )
         app_state.current_frame = frame
     if app_state.stream_state:
         with app_state.stream_state["lock"]:
             app_state.stream_state["frame"] = frame
+            app_state.stream_state["text_lines"] = stream_lines
 
 
 def make_auto_observer(app_state):

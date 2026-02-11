@@ -1,11 +1,12 @@
 import threading
 import time
 import socket
+import logging
 from typing import Callable, Optional
 
 import cv2
 import numpy as np
-from flask import Flask, Response
+from flask import Flask, Response, jsonify
 
 DEFAULT_STREAM_HOST = "127.0.0.1"
 DEFAULT_STREAM_FPS = 10
@@ -33,6 +34,7 @@ class StreamServer:
     def __init__(
         self,
         frame_provider: Callable[[], Optional[np.ndarray]],
+        text_provider: Optional[Callable[[], Optional[list]]] = None,
         host: str = DEFAULT_STREAM_HOST,
         port: int = 5000,
         fps: int = DEFAULT_STREAM_FPS,
@@ -44,6 +46,7 @@ class StreamServer:
         sharpen: bool = False,
     ):
         self.frame_provider = frame_provider
+        self.text_provider = text_provider
         self.host = host
         self.port = port
         self.fps = max(1, int(fps))
@@ -62,6 +65,8 @@ class StreamServer:
         self._startup_error = None
 
         self.app = Flask(__name__)
+        logging.getLogger("werkzeug").setLevel(logging.ERROR)
+        self.app.logger.disabled = True
 
         @self.app.route("/")
         def index():
@@ -73,6 +78,18 @@ class StreamServer:
                 self._generate_frames(),
                 mimetype="multipart/x-mixed-replace; boundary=frame",
             )
+
+        @self.app.route("/text")
+        def text_feed():
+            lines = []
+            if self.text_provider is not None:
+                try:
+                    payload = self.text_provider()
+                except Exception:
+                    payload = None
+                if isinstance(payload, list):
+                    lines = payload
+            return jsonify({"lines": lines})
 
     def start(self):
         def _run():
@@ -121,6 +138,24 @@ class StreamServer:
     def _index_html(self):
         width_attr = f' width="{self.img_width}"' if self.img_width else ""
         footer_html = f"<p>{self.footer}</p>" if self.footer else ""
+        if self.text_provider is None:
+            return (
+                "<html><head><title>"
+                f"{self.title}"
+                "</title>"
+                "<style>"
+                "body{background:#1a1a1a;color:#eee;font-family:sans-serif;"
+                "text-align:center;margin-top:40px;}"
+                ".stream{display:inline-block;border:4px solid #333;border-radius:8px;"
+                "overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,0.35);}" 
+                "img{image-rendering:auto;}"
+                "h1{color:#f0ad4e;}"
+                "</style>"
+                "</head><body>"
+                f"<h1>{self.header}</h1>"
+                f"<div class='stream'><img src='/video_feed'{width_attr}></div>"
+                f"{footer_html}</body></html>"
+            )
         return (
             "<html><head><title>"
             f"{self.title}"
@@ -128,15 +163,54 @@ class StreamServer:
             "<style>"
             "body{background:#1a1a1a;color:#eee;font-family:sans-serif;"
             "text-align:center;margin-top:40px;}"
+            ".layout{display:flex;justify-content:center;gap:20px;align-items:flex-start;"
+            "margin-top:20px;}"
+            ".sidebar{min-width:260px;max-width:360px;background:#111;border:1px solid #333;"
+            "border-radius:8px;padding:12px;text-align:left;box-shadow:0 6px 20px rgba(0,0,0,0.35);}"
+            ".telemetry{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;"
+            "font-size:13px;line-height:1.4;white-space:pre;user-select:text;}"
             ".stream{display:inline-block;border:4px solid #333;border-radius:8px;"
-            "overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,0.35);}"
+            "overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,0.35);}" 
             "img{image-rendering:auto;}"
             "h1{color:#f0ad4e;}"
             "</style>"
             "</head><body>"
             f"<h1>{self.header}</h1>"
+            "<div class='layout'>"
+            "<div class='sidebar'><div id='telemetry' class='telemetry'></div></div>"
             f"<div class='stream'><img src='/video_feed'{width_attr}></div>"
-            f"{footer_html}</body></html>"
+            "</div>"
+            f"{footer_html}"
+            "<script>"
+            "const telemetryEl = document.getElementById('telemetry');"
+            "const esc = (s) => String(s)"
+            ".replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')"
+            ".replace(/\"/g,'&quot;').replace(/'/g,'&#39;');"
+            "const renderLine = (line) => {"
+            "if (line && Array.isArray(line.segments)) {"
+            "return '<div>' + line.segments.map(seg => {"
+            "const color = seg.color || '#ffffff';"
+            "return '<span style=\"color:' + color + '\">' + esc(seg.text || '') + '</span>';"
+            "}).join('') + '</div>';"
+            "}"
+            "const color = (line && line.color) ? line.color : '#ffffff';"
+            "const text = (line && line.text) ? String(line.text) : '';"
+            "if (!text) { return '<div>&nbsp;</div>'; }"
+            "return '<div style=\"color:' + color + '\">' + esc(text) + '</div>';"
+            "};"
+            "const refresh = async () => {"
+            "try {"
+            "const res = await fetch('/text', {cache:'no-store'});"
+            "if (!res.ok) return;"
+            "const data = await res.json();"
+            "const lines = Array.isArray(data.lines) ? data.lines : [];"
+            "telemetryEl.innerHTML = lines.map(renderLine).join('');"
+            "} catch (e) { /* ignore */ }"
+            "};"
+            "setInterval(refresh, 250);"
+            "refresh();"
+            "</script>"
+            "</body></html>"
         )
 
     def _generate_frames(self):

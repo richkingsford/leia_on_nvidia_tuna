@@ -15,6 +15,16 @@ def build_stream_provider(state, frame_key="frame", lock_key="lock"):
     return _provider
 
 
+def build_text_provider(state, text_key="text_lines", lock_key="lock"):
+    def _provider():
+        lock = state.get(lock_key)
+        if lock is None:
+            return state.get(text_key)
+        with lock:
+            return state.get(text_key)
+    return _provider
+
+
 def start_stream_server(
     state,
     title,
@@ -79,6 +89,7 @@ def start_stream_server(
             continue
         server = StreamServer(
             build_stream_provider(state),
+            text_provider=build_text_provider(state),
             host=host,
             port=port_candidate,
             fps=fps,

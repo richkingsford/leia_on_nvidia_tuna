@@ -1430,6 +1430,7 @@ class TelemetryLogger:
 
 # --- SHARED VISUALIZATION ---
 import cv2
+import numpy as np
 
 def draw_telemetry_overlay(
     frame,
@@ -1446,6 +1447,10 @@ def draw_telemetry_overlay(
     header_lines=None,
     gate_summary=None,
     gate_checker_summary=None,
+    sidebar_mode=False,
+    sidebar_width=240,
+    draw_text=True,
+    line_sink=None,
 ):
     """
     Simplified HUD renderer.
@@ -1461,6 +1466,18 @@ def draw_telemetry_overlay(
     WHITE = (255, 255, 255)
     ORANGE = (0, 165, 255)
     YELLOW = (0, 255, 255)
+
+    def _bgr_to_hex(color):
+        if not isinstance(color, (tuple, list)) or len(color) < 3:
+            return "#ffffff"
+        try:
+            b, g, r = (int(color[0]), int(color[1]), int(color[2]))
+        except (TypeError, ValueError):
+            return "#ffffff"
+        r = max(0, min(255, r))
+        g = max(0, min(255, g))
+        b = max(0, min(255, b))
+        return f"#{r:02x}{g:02x}{b:02x}"
     
     # 0. Center Alignment Line
     cal_offset = 0
@@ -1472,9 +1489,16 @@ def draw_telemetry_overlay(
     cv2.line(frame, (int(w//2 + cal_offset), 0), (int(w//2 + cal_offset), h), (60, 60, 60), 1)
 
     # 1. Background Panel (Left Side)
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (0, 0), (220, h), (0, 0, 0), -1)
-    cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+    if sidebar_mode:
+        panel_w = max(200, int(sidebar_width))
+        panel = np.zeros((h, panel_w, 3), dtype=frame.dtype)
+        text_surface = panel
+    else:
+        if draw_text:
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (0, 0), (220, h), (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+        text_surface = frame
     
     # 2. Text Setup
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -1488,20 +1512,34 @@ def draw_telemetry_overlay(
         nonlocal y_cur
         if thickness is not None:
             th = thickness
-        cv2.putText(frame, txt, (x_base, y_cur), font, s, c, th)
+        if line_sink is not None:
+            line_sink.append({"text": str(txt), "color": _bgr_to_hex(c)})
+        if draw_text:
+            cv2.putText(text_surface, txt, (x_base, y_cur), font, s, c, th)
         y_cur += line_h
 
     def put_line_segments(segments, s=scale, th=thickness):
         nonlocal y_cur
         x_cur = x_base
+        if line_sink is not None:
+            payload = []
+            for seg in segments:
+                if not isinstance(seg, (tuple, list)) or not seg:
+                    continue
+                seg_text = str(seg[0])
+                seg_color = seg[1] if len(seg) > 1 else WHITE
+                payload.append({"text": seg_text, "color": _bgr_to_hex(seg_color)})
+            if payload:
+                line_sink.append({"segments": payload})
         for seg in segments:
             if not isinstance(seg, (tuple, list)) or not seg:
                 continue
             txt = str(seg[0])
             color = seg[1] if len(seg) > 1 else WHITE
-            cv2.putText(frame, txt, (x_cur, y_cur), font, s, color, th)
-            (txt_w, _), _ = cv2.getTextSize(txt, font, s, th)
-            x_cur += txt_w
+            if draw_text:
+                cv2.putText(text_surface, txt, (x_cur, y_cur), font, s, color, th)
+                (txt_w, _), _ = cv2.getTextSize(txt, font, s, th)
+                x_cur += txt_w
         y_cur += line_h
 
     # 3. MERGED STATE & PROMPT - REMOVED per user request
@@ -1509,22 +1547,27 @@ def draw_telemetry_overlay(
 
     # 3b. Header lines (Step/Success/Suggested act)
     if header_lines:
+        put_line("", WHITE, 0.35, 1)
         for line in header_lines:
             put_line(str(line), WHITE, 0.45, 1)
+        put_line("", WHITE, 0.35, 1)
         y_cur += 5
 
     # 4. Reminders
     if reminders:
+        put_line("", WHITE, 0.35, 1)
         put_line("--- REMINDERS ---", WHITE, 0.35, 1)
         if isinstance(reminders, list):
             for msg in reminders:
                 put_line(str(msg), WHITE, 0.35, 1)
         else:
             put_line(str(reminders), WHITE, 0.35, 1)
+        put_line("", WHITE, 0.35, 1)
         y_cur += 5
 
     # 4b. Success Gates (summary or current step only)
     if gate_summary is not None:
+        put_line("", WHITE, 0.35, 1)
         put_line("--- SUCCESS GATES ---", WHITE, 0.35, 1)
         if gate_summary:
             for line in gate_summary:
@@ -1540,8 +1583,10 @@ def draw_telemetry_overlay(
                     put_line(str(line), WHITE, 0.35, 1)
         else:
             put_line("(idle)", WHITE, 0.35, 1)
+        put_line("", WHITE, 0.35, 1)
         y_cur += 5
     elif gate_progress is not None:
+        put_line("", WHITE, 0.35, 1)
         if loop_id is not None:
             put_line(f"LOOP ID: {loop_id}", WHITE, 0.35, 1)
             y_cur += 3
@@ -1575,10 +1620,12 @@ def draw_telemetry_overlay(
                         put_line(f"  {suggestion}", sug_color, 0.35, 1)
         else:
             put_line("(none)", WHITE, 0.35, 1)
+        put_line("", WHITE, 0.35, 1)
         y_cur += 5
 
     # 4c. Gate Checker (compact truth confirmation status)
     if gate_checker_summary is not None:
+        put_line("", WHITE, 0.35, 1)
         put_line("--- GATE CHECKER ---", WHITE, 0.35, 1)
         lines = []
         if isinstance(gate_checker_summary, (list, tuple)):
@@ -1596,9 +1643,11 @@ def draw_telemetry_overlay(
         for line in lines:
             color = RED if (line.startswith("DUPES:") and has_dupes) else WHITE
             put_line(line, color, 0.35, 1)
+        put_line("", WHITE, 0.35, 1)
         y_cur += 5
 
     # 5. Position Info
+    put_line("", WHITE, 0.35, 1)
     put_line("--- BRICK[0] TELEMETRY ---", WHITE, 0.35, 1)
     visible_now = bool(wm.brick.get("visible"))
     x_axis = wm.brick.get("x_axis", wm.brick.get("offset_x", 0.0))
@@ -1632,13 +1681,15 @@ def draw_telemetry_overlay(
         below_txt = "-"
     put_line(f"BRICK ABOVE: {above_txt}", WHITE, 0.38, 1)
     put_line(f"BRICK_BELOW: {below_txt}", WHITE, 0.38, 1)
+    put_line("", WHITE, 0.35, 1)
     
     y_cur += 5
+    put_line("", WHITE, 0.35, 1)
     put_line("--- LEIA TELEMETRY ---", WHITE, 0.35, 1)
-    put_line(f"X:      {wm.x:.1f} mm", (200, 200, 255), 0.38, 1)
-    put_line(f"Y:      {wm.y:.1f} mm", (200, 200, 255), 0.38, 1)
-    put_line(f"THETA:  {wm.theta:.1f} deg", (200, 200, 255), 0.38, 1)
-    put_line(f"LIFT:   {wm.lift_height:.0f} mm", (200, 200, 255), 0.38, 1)
+    put_line(f"X:      {wm.x:.1f} mm", WHITE, 0.38, 1)
+    put_line(f"Y:      {wm.y:.1f} mm", WHITE, 0.38, 1)
+    put_line(f"THETA:  {wm.theta:.1f} deg", WHITE, 0.38, 1)
+    put_line(f"LIFT:   {wm.lift_height:.0f} mm", WHITE, 0.38, 1)
     cam_times = getattr(wm, "_camera_frame_times", [])
     if cam_times:
         has_dupes = getattr(wm, "_camera_dupe_ms", False)
@@ -1647,6 +1698,7 @@ def draw_telemetry_overlay(
         fps_str = f"{fps:.1f}" if isinstance(fps, (int, float)) else "-"
         cam_note = " (repeated ms stamp)" if has_dupes else ""
         put_line(f"CAMERA: {fps_str} fps{cam_note}", cam_color, 0.38, 1)
+    put_line("", WHITE, 0.35, 1)
 
     y_cur += 8 # Spacer
 
@@ -1658,4 +1710,11 @@ def draw_telemetry_overlay(
 
     # 9. GEAR Display
     if gear:
-        cv2.putText(frame, f"GEAR: {gear}", (x_base, h - 35), font, 0.4, WHITE, 2)
+        if line_sink is not None:
+            line_sink.append({"text": f"GEAR: {gear}", "color": _bgr_to_hex(WHITE)})
+        if draw_text:
+            cv2.putText(text_surface, f"GEAR: {gear}", (x_base, h - 35), font, 0.4, WHITE, 2)
+
+    if sidebar_mode:
+        return cv2.hconcat([text_surface, frame])
+    return frame
