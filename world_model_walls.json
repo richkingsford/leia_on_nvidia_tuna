@@ -16,6 +16,11 @@
             "success_metrics": [
                 "visible"
             ]
+        },
+        "FIND_WALL2": {
+            "success_metrics": [
+                "visible"
+            ]
         }
     }
 }

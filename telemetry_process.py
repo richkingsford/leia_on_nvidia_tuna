@@ -379,6 +379,7 @@ class MotionStep:
     speed: float
     duration_s: float
     label: str
+    speed_score: int = None
 
 def select_tail_states(states, window_s=SUCCESS_TAIL_WINDOW_S, max_count=SUCCESS_TAIL_COUNT):
     if not states:
@@ -685,6 +686,8 @@ def format_control_action_line(cmd, speed, reason=None):
         suffix = f" ({reason_str})" if reason_str else ""
         return f"[ACT] holding position{suffix}"
 
+    display_cmd = _remap_cmd_for_display(cmd)
+
     # Action Description
     action_map = {
         "f": "move forward",
@@ -694,7 +697,7 @@ def format_control_action_line(cmd, speed, reason=None):
         "u": "lift mast",
         "d": "lower mast",
     }
-    action = action_map.get(cmd, "move")
+    action = action_map.get(display_cmd, "move")
     
     # Power Level
     level = "Major" if speed >= 0.24 else "Minor"
@@ -735,9 +738,9 @@ def action_display_text(cmd, speed_score=None):
 def action_sent_display_text(cmd, speed_score=None, *, cmd_sent=None, pwm=None, duration_ms=None):
     if not cmd:
         return "HOLD"
-    cmd = str(cmd)
+    cmd_display = str(cmd_sent) if cmd_sent is not None else str(cmd)
     score_suffix = f" {int(speed_score)}%" if speed_score is not None else ""
-    parts = [f"{cmd.upper()}"]
+    parts = [f"{cmd_display.upper()}"]
     if pwm is not None:
         try:
             pwm_val = int(round(float(pwm)))
@@ -773,6 +776,7 @@ def record_action_display(
     if world is None or not cmd:
         return
     obj_key = normalize_step_label(step)
+    display_cmd = cmd_sent if cmd_sent is not None else cmd
     world._last_action_obj = obj_key
     world._last_action_time = time.time()
     world._last_action_cmd = cmd
@@ -782,7 +786,7 @@ def record_action_display(
     world._last_action_cmd_sent = cmd_sent
     world._last_action_pwm = pwm
     world._last_action_duration_ms = duration_ms
-    world._last_action_display = action_display_text(cmd, speed_score)
+    world._last_action_display = action_display_text(display_cmd, speed_score)
     world._last_action_sent_display = action_sent_display_text(
         cmd,
         speed_score,
@@ -813,6 +817,87 @@ def record_hold_display(world, step, reason=None, *, duration_ms=0):
         hold = f"HOLD ({reason})"
     world._last_action_display = hold
     world._last_action_sent_display = hold
+
+
+def _capture_sent_action_snapshot(world):
+    if world is None:
+        return None
+    snapshot = {}
+    sent_display = getattr(world, "_last_action_sent_display", None)
+    if sent_display:
+        snapshot["sent_display"] = str(sent_display)
+    sent_step = normalize_step_label(getattr(world, "_last_action_obj", None))
+    if sent_step:
+        snapshot["sent_step"] = sent_step
+    wire_text = getattr(world, "_last_action_wire", None)
+    if wire_text:
+        snapshot["wire_text"] = str(wire_text)
+    wire_step = normalize_step_label(getattr(world, "_last_action_wire_step", None))
+    if wire_step:
+        snapshot["wire_step"] = wire_step
+    sent_time = getattr(world, "_last_action_time", None)
+    wire_time = getattr(world, "_last_action_wire_time", None)
+    if sent_time is not None:
+        try:
+            snapshot["sent_time"] = float(sent_time)
+        except (TypeError, ValueError):
+            pass
+    if wire_time is not None:
+        try:
+            snapshot["wire_time"] = float(wire_time)
+        except (TypeError, ValueError):
+            pass
+    return snapshot if snapshot else None
+
+
+def _snapshot_event_time(snapshot):
+    if not isinstance(snapshot, dict):
+        return None
+    candidates = []
+    for key in ("sent_time", "wire_time"):
+        value = snapshot.get(key)
+        if value is None:
+            continue
+        try:
+            candidates.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    if not candidates:
+        return None
+    return max(candidates)
+
+
+def _format_sent_snapshot_value(snapshot, obj_name):
+    sent_value = "(none)"
+    if isinstance(snapshot, dict):
+        sent_display = snapshot.get("sent_display")
+        sent_step = normalize_step_label(snapshot.get("sent_step"))
+        wire_text = snapshot.get("wire_text")
+        wire_step = normalize_step_label(snapshot.get("wire_step"))
+        if sent_display:
+            sent_value = str(sent_display)
+            if sent_step and sent_step != obj_name:
+                sent_value = f"{sent_value} [{sent_step}]"
+        if wire_text:
+            wire_value = str(wire_text)
+            if wire_step and wire_step != obj_name:
+                wire_value = f"{wire_value} [{wire_step}]"
+            if sent_value == "(none)":
+                sent_value = f"(none) [wire: {wire_value}]"
+            else:
+                sent_value = f"{sent_value} [wire: {wire_value}]"
+    return sent_value
+
+
+def _remap_cmd_for_display(cmd):
+    if not cmd:
+        return cmd
+    cmd_remap = getattr(telemetry_robot_module, "COMMAND_REMAP", None)
+    if isinstance(cmd_remap, dict):
+        remapped = cmd_remap.get(cmd)
+        if remapped:
+            return remapped
+    return cmd
 
 
 def _duration_used_ms_for_cmd(robot, cmd, duration_ms, *, auto_mode=False):
@@ -854,12 +939,6 @@ def _duration_used_ms_for_cmd(robot, cmd, duration_ms, *, auto_mode=False):
 def send_robot_command_pwm(robot, world, step, cmd, power, pwm, duration_ms, speed_score=None, auto_mode=False):
     if robot is None or cmd is None:
         return None
-    cmd_lower = str(cmd).lower()
-    if cmd_lower in ("l", "r"):
-        record_hold_display(world, step, "unknown command", duration_ms=duration_ms)
-        if hasattr(robot, "stop"):
-            robot.stop()
-        return None
     try:
         pwm_val = int(round(pwm))
     except (TypeError, ValueError):
@@ -895,10 +974,33 @@ def send_robot_command_pwm(robot, world, step, cmd, power, pwm, duration_ms, spe
         if floor_pwm is not None and floor_pwm > 0:
             pwm_val = max(int(floor_pwm), int(pwm_val))
 
+    send_result = None
+    if hasattr(robot, "send_command_pwm"):
+        send_result = robot.send_command_pwm(cmd, pwm_val, duration_ms=duration_used_ms)
+    else:
+        send_result = robot.send_command(cmd, power_val, duration_ms=duration_used_ms)
+    if isinstance(send_result, dict):
+        cmd_sent = send_result.get("cmd_sent") or cmd_sent
+        try:
+            pwm_val = int(round(float(send_result.get("pwm"))))
+        except (TypeError, ValueError):
+            pass
+        try:
+            duration_used_ms = int(round(float(send_result.get("duration_ms"))))
+        except (TypeError, ValueError):
+            pass
+
+    if world is not None:
+        wire_text = getattr(robot, "last_command", None)
+        if not wire_text:
+            wire_text = f"{cmd_sent} {int(pwm_val)} {int(duration_used_ms)}"
+        world._last_action_wire = str(wire_text)
+        world._last_action_wire_step = normalize_step_label(step)
+        world._last_action_wire_time = time.time()
+
     power_from_pwm = telemetry_robot_module.pwm_to_power(pwm_val)
     if power_from_pwm is not None:
         power_val = max(0.0, min(1.0, float(power_from_pwm)))
-
     _, score_effective = telemetry_robot_module.quantize_speed(cmd, speed=power_val)
     if score_effective is None:
         score_effective = speed_score
@@ -913,16 +1015,13 @@ def send_robot_command_pwm(robot, world, step, cmd, power, pwm, duration_ms, spe
         duration_ms=duration_used_ms,
         score_model=speed_score,
     )
-    if hasattr(robot, "send_command_pwm"):
-        robot.send_command_pwm(cmd, pwm_val, duration_ms=duration_used_ms)
-    else:
-        robot.send_command(cmd, power_val, duration_ms=duration_used_ms)
 
     try:
         duration_model_ms = int(duration_ms)
     except (TypeError, ValueError):
         duration_model_ms = duration_used_ms
     return {
+        "cmd_sent": cmd_sent,
         "power": power_val,
         "pwm": pwm_val,
         "duration_model_ms": int(duration_model_ms),
@@ -1340,6 +1439,16 @@ def _no_start_gates_step(step):
     return _find_or_exit_step(step)
 
 
+def step_requires_start_gates(step, process_rules=None):
+    step_key = normalize_step_label(step)
+    if _no_start_gates_step(step_key):
+        return False
+    cfg = (process_rules or {}).get(step_key, {})
+    if isinstance(cfg, dict) and cfg.get("require_start_gates") is False:
+        return False
+    return True
+
+
 def success_gate_metrics_for_step(metrics, step, step_rules=None):
     obj_key = normalize_step_label(step)
     rules = (step_rules or {}).get(obj_key, {})
@@ -1749,7 +1858,13 @@ def build_motion_sequence(events):
             duration_s = default_duration_s
         if speed <= 0:
             continue
-        steps.append(MotionStep(cmd, speed, duration_s, cmd_name))
+        score_val = None
+        if speed_score is not None:
+            try:
+                score_val = int(speed_score)
+            except (TypeError, ValueError):
+                score_val = None
+        steps.append(MotionStep(cmd, speed, duration_s, cmd_name, speed_score=score_val))
     return steps
 
 
@@ -1759,7 +1874,11 @@ def merge_motion_steps(steps, speed_tol=0.02):
     merged = [steps[0]]
     for step in steps[1:]:
         last = merged[-1]
-        if step.cmd == last.cmd and abs(step.speed - last.speed) <= speed_tol:
+        if (
+            step.cmd == last.cmd
+            and step.speed_score == last.speed_score
+            and abs(step.speed - last.speed) <= speed_tol
+        ):
             last.duration_s += step.duration_s
         else:
             merged.append(step)
@@ -1832,7 +1951,15 @@ def smooth_motion_steps(steps, speed_score=DEFAULT_SPEED_SCORE, step_s=SMOOTH_ST
                 continue
             base_speed = default_speed_for_cmd(step.cmd, speed_score)
             capped_speed = min(base_speed, max_speed_for_cmd(step.cmd))
-            smooth.append(MotionStep(step.cmd, capped_speed, duration, step.label))
+            smooth.append(
+                MotionStep(
+                    step.cmd,
+                    capped_speed,
+                    duration,
+                    step.label,
+                    speed_score=step.speed_score,
+                )
+            )
     return smooth
 
 
@@ -2137,9 +2264,11 @@ def _gate_requirement_text(stats):
     min_val = stats.get("min")
     max_val = stats.get("max")
     if isinstance(min_val, bool):
-        return f"={_fmt_gate_value(min_val)}"
+        op = ">=" if min_val else "<="
+        return f"{op}{_fmt_gate_value(min_val)}"
     if isinstance(max_val, bool):
-        return f"={_fmt_gate_value(max_val)}"
+        op = "<=" if max_val is False else ">="
+        return f"{op}{_fmt_gate_value(max_val)}"
     target = stats.get("target")
     tol = stats.get("tol")
     if target is not None and tol is not None:
@@ -2151,6 +2280,142 @@ def _gate_requirement_text(stats):
     if max_val is not None:
         return f"<={_fmt_gate_value(max_val)}"
     return ""
+
+
+def _auto_gate_snapshot_text(world, step, *, include_requirements):
+    entries = _success_gate_entries(world, step)
+    if not entries:
+        return "none"
+    parts = []
+    for entry in entries:
+        metric = entry.get("metric")
+        if not metric:
+            continue
+        if metric == "visible":
+            value = entry.get("effective_visible")
+            if value is None:
+                value = entry.get("raw_visible")
+            if value is None:
+                value = entry.get("value")
+            value = bool(value) if value is not None else None
+        else:
+            value = entry.get("value")
+        value_text = "n/a" if value is None else _fmt_gate_value(value)
+        item = f"{metric}={value_text}"
+        if include_requirements:
+            requirement = _gate_requirement_text(entry.get("stats") or {})
+            if requirement:
+                item += f" ({requirement})"
+        parts.append(item)
+    return ", ".join(parts) if parts else "none"
+
+
+def _current_success_ok(world, step):
+    process_rules = world.process_rules or {}
+    telemetry_rules = {}
+    lite_brick_ok = _evaluate_lite_gate_brick_success(world, step, process_rules)
+    if lite_brick_ok is None:
+        world._gatecheck_mode = "traditional"
+        world._gatecheck_lite_required = 0
+        world._gatecheck_lite_collected = 0
+        visibility_grace_s = _visibility_grace_s(world, step)
+        brick_success = telemetry_brick.evaluate_success_gates(
+            world,
+            step,
+            telemetry_rules,
+            process_rules,
+            visibility_grace_s=visibility_grace_s,
+        )
+        brick_ok = bool(brick_success.ok)
+    else:
+        brick_ok = bool(lite_brick_ok)
+    wall_ok = bool(telemetry_wall.evaluate_success_gates(world, step, world.wall_envelope).ok)
+    robot_ok = bool(telemetry_robot_module.evaluate_success_gates(world, step, telemetry_rules, process_rules).ok)
+    return brick_ok and wall_ok and robot_ok
+
+
+def _format_auto_step_diagnostic(world, step, action_text, pre_gate_text, success_override=None):
+    if success_override is None:
+        post_success_ok = _current_success_ok(world, step)
+    else:
+        post_success_ok = bool(success_override)
+    post_gate_text = _auto_gate_snapshot_text(world, step, include_requirements=False)
+    verdict = "meeting" if post_success_ok else "NOT meeting"
+    return (
+        f"[AUTO] Did NOT see success gates ({pre_gate_text}), so I {action_text}; "
+        f"resulting in {verdict} the success gates ({post_gate_text})."
+    )
+
+
+def _store_auto_step_diagnostic(world, step, line, sent_snapshot=None):
+    if world is None:
+        return
+    world._last_auto_step_diag_line = str(line)
+    world._last_auto_step_diag_step = normalize_step_label(step)
+    world._last_auto_step_diag_time = time.time()
+    world._last_auto_step_diag_sent = sent_snapshot if isinstance(sent_snapshot, dict) else None
+
+
+def clear_pending_auto_step_diagnostic(world):
+    if world is None:
+        return
+    world._pending_auto_step_diag = None
+
+
+def queue_auto_step_diagnostic(world, step, action_text, pre_gate_text, *, sent_snapshot=None):
+    if world is None:
+        return
+    world._pending_auto_step_diag = {
+        "step": normalize_step_label(step),
+        "action_text": str(action_text),
+        "pre_gate_text": str(pre_gate_text or "none"),
+        "frame_id": int(getattr(world, "_frame_id", 0) or 0),
+        "timestamp": time.time(),
+        "sent_snapshot": sent_snapshot if isinstance(sent_snapshot, dict) else None,
+    }
+
+
+def flush_auto_step_diagnostic(world, step=None, *, force=False, emit=True):
+    pending = getattr(world, "_pending_auto_step_diag", None)
+    if not isinstance(pending, dict):
+        return None
+    current_frame_id = int(getattr(world, "_frame_id", 0) or 0)
+    pending_frame_id = int(pending.get("frame_id", 0) or 0)
+    if not force and current_frame_id <= pending_frame_id:
+        return None
+    pending_step = pending.get("step") or normalize_step_label(step) or step
+    action_text = pending.get("action_text") or "HOLD"
+    pre_gate_text = pending.get("pre_gate_text") or "none"
+    sent_snapshot = pending.get("sent_snapshot")
+    line = _format_auto_step_diagnostic(world, pending_step, action_text, pre_gate_text)
+    if emit:
+        print(line)
+    _store_auto_step_diagnostic(world, pending_step, line, sent_snapshot=sent_snapshot)
+    clear_pending_auto_step_diagnostic(world)
+    return line
+
+
+def emit_auto_step_diagnostic(
+    world,
+    step,
+    action_text,
+    pre_gate_text,
+    *,
+    emit=True,
+    success_override=None,
+    sent_snapshot=None,
+):
+    line = _format_auto_step_diagnostic(
+        world,
+        step,
+        action_text,
+        pre_gate_text,
+        success_override=success_override,
+    )
+    if emit:
+        print(line)
+    _store_auto_step_diagnostic(world, step, line, sent_snapshot=sent_snapshot)
+    return line
 
 
 def _gate_entry_matches(metric, value, stats, direction):
@@ -2257,15 +2522,6 @@ def compute_stream_gate_summary(world, step, active=True):
     align = (analytics or {}).get("align") if isinstance(analytics, dict) else None
     if not isinstance(align, dict):
         align = {}
-    pct = None
-    for name, val in analytics.get("gate_progress") or []:
-        if normalize_step_label(name) == obj_name:
-            pct = val
-            break
-    if pct is None:
-        success_check = telemetry_brick.evaluate_success_gates(world, obj_name, world.learned_rules or {}, world.process_rules)
-        pct = 100.0 if success_check.ok else 0.0
-    pct_display = int(max(0.0, min(100.0, pct)))
     metric_lines = []
     for entry in _success_gate_entries(world, obj_name):
         metric_lines.append(_stream_success_gate_line(obj_name, entry))
@@ -2299,6 +2555,7 @@ def compute_stream_gate_summary(world, step, active=True):
         if reason:
             suggested = f"HOLD ({reason})"
     else:
+        suggested_cmd_sent = _remap_cmd_for_display(suggested_cmd)
         _, pwm, _, duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd(
             suggested_cmd,
             suggested_score,
@@ -2306,42 +2563,76 @@ def compute_stream_gate_summary(world, step, active=True):
         suggested = action_sent_display_text(
             suggested_cmd,
             suggested_score,
+            cmd_sent=suggested_cmd_sent,
             pwm=pwm,
             duration_ms=duration_ms,
         )
     summary = [f"STEP: {obj_name}"]
     summary.extend(metric_lines)
-    sent_display = getattr(world, "_last_action_sent_display", None)
-    last_obj = getattr(world, "_last_action_obj", None)
-    last_time = getattr(world, "_last_action_time", None)
-    last_duration_ms = getattr(world, "_last_action_duration_ms", None)
-    act_display = suggested
-    if (
-        sent_display
-        and last_time is not None
-        and normalize_step_label(last_obj) == obj_name
-    ):
+    diag_line = getattr(world, "_last_auto_step_diag_line", None)
+    diag_step = normalize_step_label(getattr(world, "_last_auto_step_diag_step", None))
+    diag_time = getattr(world, "_last_auto_step_diag_time", None)
+    diag_sent_snapshot = getattr(world, "_last_auto_step_diag_sent", None)
+    diag_fresh = False
+    if diag_line and diag_step == obj_name:
         try:
-            age_s = float(time.time() - float(last_time))
+            age_s = float(time.time() - float(diag_time))
         except (TypeError, ValueError):
             age_s = None
-        try:
-            duration_s = max(0.0, float(last_duration_ms) / 1000.0)
-        except (TypeError, ValueError):
-            duration_s = 0.0
-        # Stream updates are slower than control loop updates; keep the last sent act
-        # visible long enough to show up reliably in the overlay.
-        window_s = max(duration_s + 0.2, 0.75)
-        if age_s is not None and age_s <= window_s:
-            act_display = str(sent_display)
+        diag_fresh = age_s is None or age_s <= 8.0
+    sent_snapshot = _capture_sent_action_snapshot(world)
+    if (
+        diag_line
+        and diag_step == obj_name
+        and diag_fresh
+        and isinstance(diag_sent_snapshot, dict)
+    ):
+        current_event_time = _snapshot_event_time(sent_snapshot)
+        diag_event_time = _snapshot_event_time(diag_sent_snapshot)
+        if (
+            current_event_time is None
+            or diag_event_time is None
+            or current_event_time <= (diag_event_time + 1e-6)
+        ):
+            sent_snapshot = dict(diag_sent_snapshot)
+    sent_value = _format_sent_snapshot_value(sent_snapshot, obj_name)
 
-    summary.append(f"ACT: {act_display}")
+    summary.append(f"SENT: {sent_value}")
+    summary.append(f"NEXT: {suggested}")
+    if diag_line and diag_step == obj_name and diag_fresh:
+        line_text = str(diag_line)
+        if line_text.startswith("[AUTO] "):
+            line_text = line_text[len("[AUTO] "):]
+        summary.append(f"AUTO: {line_text}")
     return summary, analytics
+
+
+def _gate_progress_pct(world, step):
+    obj_name = normalize_step_label(step)
+    if not obj_name:
+        obj_name = str(step)
+    analytics = telemetry_brick.compute_brick_analytics(
+        world,
+        world.process_rules or {},
+        world.learned_rules or {},
+        obj_name,
+        duration_s=CONTROL_DT,
+    )
+    pct = None
+    for name, val in analytics.get("gate_progress") or []:
+        if normalize_step_label(name) == obj_name:
+            pct = val
+            break
+    if pct is None:
+        return None
+    return int(max(0.0, min(100.0, pct)))
 
 
 def update_stream_frame(world, vision):
     stream_state = getattr(world, "_stream_state", None)
     if stream_state is None or vision.current_frame is None:
+        return
+    if stream_state.get("skip_telemetry_process"):
         return
     gate_summary, analytics = compute_stream_gate_summary(
         world,
@@ -2418,12 +2709,18 @@ def wait_for_frame_settle(world, vision, required_frames, log=False):
     )
 
 
-def post_act_analysis(world, vision, step=None, log=True):
+def post_act_settle_pause(world, vision):
+    if POST_ACT_PAUSE_FRAMES <= 0:
+        return
+    # Push an immediate frame before waiting for additional fresh frames.
+    update_stream_frame(world, vision)
+    wait_for_frame_settle(world, vision, POST_ACT_PAUSE_FRAMES, log=False)
+
+
+def post_act_analysis(world, vision, step=None, log=True, *, include_pause=True):
     last_frame = refresh_world_after_action(world, vision, log=log)
-    if POST_ACT_PAUSE_FRAMES > 0:
-        # Push an immediate frame before waiting for additional fresh frames.
-        update_stream_frame(world, vision)
-        wait_for_frame_settle(world, vision, POST_ACT_PAUSE_FRAMES, log=False)
+    if include_pause:
+        post_act_settle_pause(world, vision)
     return last_frame
 
 
@@ -2593,6 +2890,11 @@ def wait_for_start_gates(
     observer=None,
     allow_success=True,
 ):
+    step_key = normalize_step_label(step)
+    if not step_requires_start_gates(step_key, getattr(world, "process_rules", None)):
+        if log:
+            print(format_headline(f"[START] {step_key} start gates skipped", COLOR_WHITE))
+        return "start"
     start_time = time.time()
     stable = 0
     success_tracker = new_success_tracker(step, world.process_rules)
@@ -2762,6 +3064,7 @@ def run_alignment_segment(
         world._visible_speed_cycle = 0
 
     success_tracker = new_success_tracker(step, world.process_rules)
+    clear_pending_auto_step_diagnostic(world)
     last_cmd = None
     last_reason = None
     last_speed = None
@@ -2843,6 +3146,7 @@ def run_alignment_segment(
 
         if cmd:
             pre_frame_id = getattr(world, "_frame_id", 0)
+            pre_gate_text = _auto_gate_snapshot_text(world, step, include_requirements=True)
             if confirm_callback:
                 if not confirm_callback(world, vision):
                     return False, "confirm cancelled"
@@ -2855,6 +3159,15 @@ def run_alignment_segment(
                 speed_score=analytics.get("speed_score"),
                 auto_mode=True,
             )
+            cmd_sent = cmd
+            score_effective = speed_score
+            if isinstance(action_meta, dict):
+                cmd_sent = action_meta.get("cmd_sent") or cmd_sent
+                score_effective = action_meta.get("score_effective")
+                if score_effective is None:
+                    score_effective = action_meta.get("score_model", speed_score)
+            action_detail = action_display_text(cmd_sent, score_effective)
+            sent_snapshot = _capture_sent_action_snapshot(world)
             segments = []
             if isinstance(action_meta, dict) and isinstance(action_meta.get("segments"), list):
                 segments = [seg for seg in action_meta.get("segments") if isinstance(seg, dict)]
@@ -2876,8 +3189,14 @@ def run_alignment_segment(
                 world._visible_speed_cycle = int(getattr(world, "_visible_speed_cycle", 0)) + 1
             if confirm_callback and robot:
                 robot.stop()
-            last_action_frame = post_act_analysis(world, vision, step=step, log=not align_silent)
-            if run_full_gatecheck_after_act(
+            last_action_frame = post_act_analysis(
+                world,
+                vision,
+                step=step,
+                log=not align_silent,
+                include_pause=False,
+            )
+            success_hit = run_full_gatecheck_after_act(
                 world,
                 vision,
                 step,
@@ -2885,7 +3204,17 @@ def run_alignment_segment(
                 phase="align",
                 log=not align_silent,
                 observer=observer,
-            ):
+            )
+            emit_auto_step_diagnostic(
+                world,
+                step,
+                action_detail,
+                pre_gate_text,
+                emit=not align_silent,
+                success_override=success_hit,
+                sent_snapshot=sent_snapshot,
+            )
+            if success_hit:
                 if robot:
                     robot.stop()
                 if not align_silent:
@@ -2893,6 +3222,7 @@ def run_alignment_segment(
                     print_gate_summary_line(world, success_tracker)
                     print_success_events(world, step)
                 return True, "success gate"
+            post_act_settle_pause(world, vision)
             post_frame_id = getattr(world, "_frame_id", 0)
             if post_frame_id <= pre_frame_id:
                 print(format_headline("[WARN] No new frame observed after action", COLOR_RED))
@@ -2987,10 +3317,11 @@ def run_alignment_segment(
             last_speed = speed
 
         if cmd:
+            pre_gate_text = _auto_gate_snapshot_text(world, step, include_requirements=True)
             if confirm_callback:
                 if not confirm_callback(world, vision):
                     return False, "confirm cancelled"
-            send_robot_command(
+            action_meta = send_robot_command(
                 robot,
                 world,
                 step,
@@ -2999,6 +3330,15 @@ def run_alignment_segment(
                 speed_score=analytics.get("speed_score"),
                 auto_mode=True,
             )
+            cmd_sent = cmd
+            score_effective = speed_score
+            if isinstance(action_meta, dict):
+                cmd_sent = action_meta.get("cmd_sent") or cmd_sent
+                score_effective = action_meta.get("score_effective")
+                if score_effective is None:
+                    score_effective = action_meta.get("score_model", speed_score)
+            action_detail = action_display_text(cmd_sent, score_effective)
+            sent_snapshot = _capture_sent_action_snapshot(world)
             evt = MotionEvent(
                 cmd_to_motion_type(cmd),
                 int(speed * 255),
@@ -3009,8 +3349,14 @@ def run_alignment_segment(
                 world._visible_speed_cycle = int(getattr(world, "_visible_speed_cycle", 0)) + 1
             if confirm_callback and robot:
                 robot.stop()
-            post_act_analysis(world, vision, step=step, log=not align_silent)
-            if run_full_gatecheck_after_act(
+            post_act_analysis(
+                world,
+                vision,
+                step=step,
+                log=not align_silent,
+                include_pause=False,
+            )
+            success_hit = run_full_gatecheck_after_act(
                 world,
                 vision,
                 step,
@@ -3018,12 +3364,23 @@ def run_alignment_segment(
                 phase="settle",
                 log=not align_silent,
                 observer=observer,
-            ):
+            )
+            emit_auto_step_diagnostic(
+                world,
+                step,
+                action_detail,
+                pre_gate_text,
+                emit=not align_silent,
+                success_override=success_hit,
+                sent_snapshot=sent_snapshot,
+            )
+            if success_hit:
                 if not align_silent:
                     print(format_headline(f"[SUCCESS] {step} criteria met", COLOR_GREEN))
                     print_gate_summary_line(world, settle_tracker)
                     print_success_events(world, step)
                 return True, "success gate"
+            post_act_settle_pause(world, vision)
         else:
             if robot:
                 if (
@@ -3052,7 +3409,18 @@ def replay_segment(
     events = segment.get("events") or []
     base_steps = build_motion_sequence(events)
     raw_steps = merge_motion_steps(base_steps)
-    steps = smooth_motion_steps(raw_steps)
+    cfg = {}
+    if isinstance(getattr(world, "process_rules", None), dict):
+        cfg = world.process_rules.get(normalize_step_label(step), {}) or {}
+    loop_demo_acts = bool(isinstance(cfg, dict) and cfg.get("loop_demo_acts"))
+    max_speed_score = None
+    if isinstance(cfg, dict) and cfg.get("max_speed_score") is not None:
+        try:
+            max_speed_score = int(cfg.get("max_speed_score"))
+        except (TypeError, ValueError):
+            max_speed_score = None
+    demo_actions = nominal_actions_from_events(events)
+    steps = raw_steps if loop_demo_acts else smooth_motion_steps(raw_steps)
     if step_uses_alignment_control(step, world.process_rules):
         return run_alignment_segment(
             segment,
@@ -3118,14 +3486,17 @@ def replay_segment(
                         speed_score=score,
                         auto_mode=True,
                     )
+                    cmd_sent = cmd
                     score_effective = score
-                    if isinstance(action_meta, dict) and action_meta.get("score_effective") is not None:
-                        score_effective = action_meta.get("score_effective")
+                    if isinstance(action_meta, dict):
+                        cmd_sent = action_meta.get("cmd_sent") or cmd_sent
+                        if action_meta.get("score_effective") is not None:
+                            score_effective = action_meta.get("score_effective")
                     world._last_action_obj = normalize_step_label(step)
                     world._last_action_time = time.time()
                     world._last_action_display = (
                         f"DEMO {idx}/{total_actions}: "
-                        f"{action_display_text(cmd, score_effective)}"
+                        f"{action_display_text(cmd_sent, score_effective)}"
                     )
                     evt = MotionEvent(
                         cmd_to_motion_type(cmd),
@@ -3157,6 +3528,8 @@ def replay_segment(
     step_key = step
     required_acts_for_success = step_min_acts(step_key, world.process_rules)
     required_action_prefix_s = min_acts_prefix_duration(events, required_acts_for_success)
+    if not step_is_nominal_only(step, world.process_rules):
+        required_action_prefix_s = 0.0
     success_checks_enabled = required_action_prefix_s <= 0.0
     replay_action_start_time = None
     target_visible = success_visible_target(world, step_key)
@@ -3189,21 +3562,118 @@ def replay_segment(
 
     allow_early_exit = True
 
-    cfg = {}
-    if isinstance(getattr(world, "process_rules", None), dict):
-        cfg = world.process_rules.get(normalize_step_label(step_key), {}) or {}
-    loop_demo_acts = bool(isinstance(cfg, dict) and cfg.get("loop_demo_acts"))
-
     success_tracker = new_success_tracker(step, world.process_rules)
+    clear_pending_auto_step_diagnostic(world)
     last_action = None
     last_cmd = default_step.cmd
     last_speed_base = default_step.speed
+
+    if loop_demo_acts and demo_actions:
+        while True:
+            for action in demo_actions:
+                cmd = action.get("cmd")
+                if not cmd:
+                    if robot:
+                        robot.stop()
+                    time.sleep(CONTROL_DT)
+                    continue
+                score = action.get("speed_score")
+                if score is None:
+                    score = move_score
+                if max_speed_score is not None:
+                    score = min(int(max_speed_score), int(score))
+                action_duration_s = max(0.001, float(action.get("duration_s") or CONTROL_DT))
+                pre_gate_text = _auto_gate_snapshot_text(world, step_key, include_requirements=True)
+                action_meta = send_robot_command(
+                    robot,
+                    world,
+                    step_key,
+                    cmd,
+                    0.0,
+                    speed_score=score,
+                    auto_mode=True,
+                )
+                pwm = None
+                duration_ms = int(action_duration_s * 1000)
+                cmd_sent = None
+                if isinstance(action_meta, dict):
+                    active_speed = float(action_meta.get("power", 0.0) or 0.0)
+                    score_effective = action_meta.get("score_effective")
+                    if score_effective is None:
+                        score_effective = action_meta.get("score_model", score)
+                    pwm = action_meta.get("pwm")
+                    cmd_sent = action_meta.get("cmd_sent")
+                    duration_ms = int(
+                        action_meta.get("duration_model_ms")
+                        or action_meta.get("duration_ms")
+                        or duration_ms
+                    )
+                else:
+                    active_speed = 0.0
+                    score_effective = score
+                record_action_display(
+                    world,
+                    step_key,
+                    cmd,
+                    active_speed,
+                    speed_score=score_effective,
+                    cmd_sent=cmd_sent,
+                    pwm=pwm,
+                    duration_ms=duration_ms,
+                    score_model=score,
+                )
+                sent_snapshot = _capture_sent_action_snapshot(world)
+                world._last_action_line = format_control_action_line(
+                    cmd,
+                    active_speed,
+                    f"demo {int(score_effective)}%",
+                )
+                evt = MotionEvent(
+                    cmd_to_motion_type(cmd),
+                    int(active_speed * 255),
+                    int(action_duration_s * 1000),
+                )
+                world.update_from_motion(evt)
+                if observer:
+                    observer("action", world, vision, cmd, active_speed, "demo replay")
+                time.sleep(action_duration_s)
+                post_act_analysis(world, vision, step=step_key, log=True, include_pause=False)
+                success_hit = run_full_gatecheck_after_act(
+                    world,
+                    vision,
+                    step_key,
+                    success_tracker,
+                    phase="replay",
+                    log=True,
+                    observer=observer,
+                )
+                detail = action_display_text(cmd_sent or cmd, score_effective)
+                emit_auto_step_diagnostic(
+                    world,
+                    step_key,
+                    detail,
+                    pre_gate_text,
+                    emit=True,
+                    success_override=success_hit,
+                    sent_snapshot=sent_snapshot,
+                )
+                if success_hit:
+                    if robot:
+                        robot.stop()
+                    print(format_headline(f"[SUCCESS] {step_key} criteria met 🎉", COLOR_GREEN))
+                    print_gate_summary_line(world, success_tracker)
+                    print_success_events(world, step_key)
+                    return True, "success gate"
+                post_act_settle_pause(world, vision)
+            if not loop_demo_acts:
+                break
 
     while True:
         last_action = None
         for motion_step in steps:
             if motion_step.label != last_action:
                 update_world_from_vision(world, vision)
+                flush_auto_step_diagnostic(world, step_key, emit=True)
                 if observer:
                     observer("frame", world, vision, None, None, None)
                 world._last_action_line = format_control_action_line(
@@ -3221,6 +3691,7 @@ def replay_segment(
                 if replay_action_start_time is None:
                     replay_action_start_time = now
                 update_world_from_vision(world, vision)
+                flush_auto_step_diagnostic(world, step_key, emit=True)
                 if observer:
                     observer("frame", world, vision, None, None, None)
 
@@ -3236,6 +3707,11 @@ def replay_segment(
                 forcing_check = now < float(force_check_until or 0.0)
                 phase = auto_cycle_phase(replay_action_elapsed_s, force_check=forcing_check)
                 desired_score = move_score if phase == "move" else check_score
+                if motion_step.speed_score is not None:
+                    desired_score = motion_step.speed_score
+                    phase = "demo"
+                if max_speed_score is not None:
+                    desired_score = min(int(max_speed_score), int(desired_score))
 
                 # If we're seeing positive evidence, stay in slow/check mode while we confirm/refute.
                 if allow_early_exit and can_check_success and fresh_frame and phase == "check":
@@ -3259,6 +3735,7 @@ def replay_segment(
 
                 cmd = motion_step.cmd
                 if cmd:
+                    pre_gate_text = _auto_gate_snapshot_text(world, step_key, include_requirements=True)
                     action_meta = send_robot_command(
                         robot,
                         world,
@@ -3273,9 +3750,12 @@ def replay_segment(
                         score_effective = action_meta.get("score_effective")
                         if score_effective is None:
                             score_effective = action_meta.get("score_model", desired_score)
+                        cmd_sent = action_meta.get("cmd_sent") or cmd
                     else:
                         active_speed = 0.0
                         score_effective = desired_score
+                        cmd_sent = cmd
+                    sent_snapshot = _capture_sent_action_snapshot(world)
                     world._last_action_line = format_control_action_line(
                         cmd,
                         active_speed,
@@ -3289,11 +3769,19 @@ def replay_segment(
                     world.update_from_motion(evt)
                     if observer:
                         observer("action", world, vision, cmd, active_speed, "replay")
+                    queue_auto_step_diagnostic(
+                        world,
+                        step_key,
+                        action_display_text(cmd_sent, score_effective),
+                        pre_gate_text,
+                        sent_snapshot=sent_snapshot,
+                    )
                 else:
                     if robot:
                         robot.stop()
                 time.sleep(CONTROL_DT)
             if step_success_met:
+                flush_auto_step_diagnostic(world, step_key, force=True, emit=True)
                 if robot:
                     robot.stop()
                 print(format_headline(f"[SUCCESS] {step_key} criteria met 🎉", COLOR_GREEN))
@@ -3313,6 +3801,7 @@ def replay_segment(
         if replay_action_start_time is None:
             replay_action_start_time = now
         update_world_from_vision(world, vision)
+        flush_auto_step_diagnostic(world, step_key, emit=True)
         if observer:
             observer("frame", world, vision, None, None, None)
         replay_action_elapsed_s = now - replay_action_start_time
@@ -3338,6 +3827,7 @@ def replay_segment(
                 phase="settle",
             )
             if success_met:
+                flush_auto_step_diagnostic(world, step_key, force=True, emit=True)
                 print(format_headline(f"[SUCCESS] {step_key} criteria met 🎉", COLOR_GREEN))
                 print_gate_summary_line(world, settle_tracker)
                 print_success_events(world, step_key)
@@ -3348,6 +3838,7 @@ def replay_segment(
                 desired_score = check_score
 
         if last_cmd:
+            pre_gate_text = _auto_gate_snapshot_text(world, step_key, include_requirements=True)
             action_meta = send_robot_command(
                 robot,
                 world,
@@ -3362,9 +3853,12 @@ def replay_segment(
                 score_effective = action_meta.get("score_effective")
                 if score_effective is None:
                     score_effective = action_meta.get("score_model", desired_score)
+                cmd_sent = action_meta.get("cmd_sent") or last_cmd
             else:
                 active_speed = 0.0
                 score_effective = desired_score
+                cmd_sent = last_cmd
+            sent_snapshot = _capture_sent_action_snapshot(world)
             world._last_action_line = format_control_action_line(
                 last_cmd,
                 active_speed,
@@ -3378,6 +3872,13 @@ def replay_segment(
             world.update_from_motion(evt)
             if observer:
                 observer("action", world, vision, last_cmd, active_speed, "replay")
+            queue_auto_step_diagnostic(
+                world,
+                step_key,
+                action_display_text(cmd_sent, score_effective),
+                pre_gate_text,
+                sent_snapshot=sent_snapshot,
+            )
         else:
             if robot:
                 robot.stop()
@@ -3390,6 +3891,7 @@ def replay_segment(
             if replay_action_start_time is None:
                 replay_action_start_time = now
             update_world_from_vision(world, vision)
+            flush_auto_step_diagnostic(world, step_key, emit=True)
             if observer:
                 observer("frame", world, vision, None, None, None)
 
@@ -3416,6 +3918,7 @@ def replay_segment(
                     phase="tail",
                 )
                 if success_met:
+                    flush_auto_step_diagnostic(world, step_key, force=True, emit=True)
                     if robot:
                         robot.stop()
                     print(format_headline(f"[SUCCESS] {step_key} criteria met 🎉", COLOR_GREEN))
@@ -3428,6 +3931,7 @@ def replay_segment(
                     desired_score = check_score
 
             if last_cmd:
+                pre_gate_text = _auto_gate_snapshot_text(world, step_key, include_requirements=True)
                 action_meta = send_robot_command(
                     robot,
                     world,
@@ -3442,9 +3946,12 @@ def replay_segment(
                     score_effective = action_meta.get("score_effective")
                     if score_effective is None:
                         score_effective = action_meta.get("score_model", desired_score)
+                    cmd_sent = action_meta.get("cmd_sent") or last_cmd
                 else:
                     active_speed = 0.0
                     score_effective = desired_score
+                    cmd_sent = last_cmd
+                sent_snapshot = _capture_sent_action_snapshot(world)
                 world._last_action_line = format_control_action_line(
                     last_cmd,
                     active_speed,
@@ -3458,10 +3965,18 @@ def replay_segment(
                 world.update_from_motion(evt)
                 if observer:
                     observer("action", world, vision, last_cmd, active_speed, "replay")
+                queue_auto_step_diagnostic(
+                    world,
+                    step_key,
+                    action_display_text(cmd_sent, score_effective),
+                    pre_gate_text,
+                    sent_snapshot=sent_snapshot,
+                )
             else:
                 if robot:
                     robot.stop()
             time.sleep(CONTROL_DT)
 
+    flush_auto_step_diagnostic(world, step_key, force=True, emit=True)
     pause_after_fail(robot)
     return False, "success gate not reached"

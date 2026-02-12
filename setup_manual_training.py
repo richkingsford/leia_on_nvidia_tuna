@@ -6,6 +6,8 @@ import time
 import tty
 import termios
 import statistics
+import subprocess
+import shutil
 from pathlib import Path
 
 from helper_robot_control import Robot
@@ -13,6 +15,7 @@ from helper_demo_log_utils import load_demo_logs, normalize_step_label, prune_lo
 from helper_gate_utils import format_gatecheck_stream_lines, load_process_steps
 from helper_streaming import start_stream_server
 from helper_vision_aruco import ArucoBrickVision
+from brick_detector_yolo import BrickDetector as YoloBrickDetector
 from helper_manual_config import load_manual_training_config
 from helper_micro_speed_adjust import micro_adjust_speed_score
 import telemetry_robot as telemetry_robot_module
@@ -27,7 +30,14 @@ from telemetry_robot import (
     step_sequence,
     quantize_speed,
 )
-from telemetry_process import compute_stream_gate_summary, send_robot_command
+from telemetry_process import (
+    build_motion_sequence,
+    compute_stream_gate_summary,
+    merge_motion_steps,
+    nominal_actions_from_events,
+    send_robot_command,
+    step_requires_start_gates,
+)
 from autobuild import (
     collect_segments,
     CONTROL_DT,
@@ -115,6 +125,10 @@ BRICK_STUDY_STD_LOW_DEG = 2.0
 BRICK_STUDY_STD_HIGH_MM = 8.0
 BRICK_STUDY_STD_HIGH_DEG = 4.0
 
+_DEFAULT_VISION_MODE = str(_MANUAL_CONFIG.get("brick_vision", "aruco")).strip().lower()
+if _DEFAULT_VISION_MODE not in {"aruco", "yolo"}:
+    _DEFAULT_VISION_MODE = "aruco"
+
 STEP_CODES = {str(idx + 1): obj for idx, obj in enumerate(DEMO_STEPS)}
 
 STEP_NAMES = {obj.value.lower(): obj for obj in DEMO_STEPS}
@@ -161,6 +175,25 @@ def step_label(obj_enum):
 
 def log_line(message):
     print(str(message).strip(), flush=True)
+
+
+def _running_under_debugger():
+    return sys.gettrace() is not None
+
+
+def _open_stream_in_chrome(url):
+    if not url:
+        return False
+    for candidate in ("google-chrome", "chromium", "chromium-browser"):
+        chrome = shutil.which(candidate)
+        if chrome:
+            subprocess.Popen(
+                [chrome, "--new-window", url],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+    return False
 
 def open_new_log(app_state):
     timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -236,6 +269,29 @@ def run_auto_step(app_state, obj_enum):
         return False
 
     log_line(f"[AUTO] {step_key} demo={seg_type}")
+    events = segment.get("events") or []
+    actions = nominal_actions_from_events(events)
+    steps = merge_motion_steps(build_motion_sequence(events))
+    if actions:
+        log_line(f"[AUTO] {step_key} demo acts:")
+        for idx, action in enumerate(actions, start=1):
+            cmd = (action.get("cmd") or "-").upper()
+            score = action.get("speed_score")
+            duration_s = float(action.get("duration_s") or 0.0)
+            score_text = f"score={int(score)}" if score is not None else "score=?"
+            log_line(f"[AUTO]   {idx}. {cmd} {score_text} dur={duration_s:.2f}s")
+    else:
+        log_line(f"[AUTO] {step_key} demo acts: none")
+    if steps:
+        log_line(f"[AUTO] {step_key} parsed steps:")
+        for idx, step in enumerate(steps, start=1):
+            cmd = (step.cmd or "-").upper() if hasattr(step, "cmd") else "-"
+            score = getattr(step, "speed_score", None)
+            duration_s = float(getattr(step, "duration_s", 0.0) or 0.0)
+            score_text = f"score={int(score)}" if score is not None else "score=?"
+            log_line(f"[AUTO]   {idx}. {cmd} {score_text} dur={duration_s:.2f}s")
+    else:
+        log_line(f"[AUTO] {step_key} parsed steps: none")
 
     try:
         import telemetry_wall as telemetry_wall_module
@@ -243,62 +299,69 @@ def run_auto_step(app_state, obj_enum):
         telemetry_wall_module = None
 
     start_desc, success_desc = format_gate_lines(cfg)
-    try:
-        brick_check = telemetry_brick.evaluate_start_gates(
-            app_state.world,
-            step_key,
-            {},
-            process_rules,
-        )
-    except Exception:
-        brick_check = None
-    try:
-        wall_env = getattr(app_state.world, "wall_envelope", None)
-        if telemetry_wall_module is not None and wall_env is not None:
-            wall_check = telemetry_wall_module.evaluate_start_gates(app_state.world, step_key, wall_env)
-        else:
+    skip_start_gates = not step_requires_start_gates(step_key, process_rules)
+    if skip_start_gates:
+        status_msg = f"[AUTO] {step_key} start gates: SKIPPED (find/exit step)"
+        if start_desc and start_desc != "none":
+            status_msg += f" (cfg ignored: {start_desc})"
+        log_line(status_msg)
+    else:
+        try:
+            brick_check = telemetry_brick.evaluate_start_gates(
+                app_state.world,
+                step_key,
+                {},
+                process_rules,
+            )
+        except Exception:
+            brick_check = None
+        try:
+            wall_env = getattr(app_state.world, "wall_envelope", None)
+            if telemetry_wall_module is not None and wall_env is not None:
+                wall_check = telemetry_wall_module.evaluate_start_gates(app_state.world, step_key, wall_env)
+            else:
+                wall_check = None
+        except Exception:
             wall_check = None
-    except Exception:
-        wall_check = None
-    try:
-        robot_check = telemetry_robot_module.evaluate_start_gates(
-            app_state.world,
-            step_key,
-            {},
-            process_rules,
-        )
-    except Exception:
-        robot_check = None
+        try:
+            robot_check = telemetry_robot_module.evaluate_start_gates(
+                app_state.world,
+                step_key,
+                {},
+                process_rules,
+            )
+        except Exception:
+            robot_check = None
 
-    def _gate_ok(check):
-        return bool(getattr(check, "ok", False))
+        def _gate_ok(check):
+            return bool(getattr(check, "ok", False))
 
-    def _gate_reasons(check):
-        raw = getattr(check, "reasons", None)
-        if not raw:
-            return []
-        if isinstance(raw, list):
-            return [str(r) for r in raw if r]
-        return [str(raw)]
+        def _gate_reasons(check):
+            raw = getattr(check, "reasons", None)
+            if not raw:
+                return []
+            if isinstance(raw, list):
+                return [str(r) for r in raw if r]
+            return [str(raw)]
 
-    start_ok = _gate_ok(brick_check) and _gate_ok(wall_check) and _gate_ok(robot_check)
-    reason_parts = []
-    for label, check in (("brick", brick_check), ("wall", wall_check), ("robot", robot_check)):
-        if check is None or _gate_ok(check):
-            continue
-        reasons = _gate_reasons(check)
-        if reasons:
-            reason_parts.append(f"{label}: {', '.join(reasons)}")
-        else:
-            reason_parts.append(f"{label}: blocked")
+        start_ok = _gate_ok(brick_check) and _gate_ok(wall_check) and _gate_ok(robot_check)
+        reason_parts = []
+        for label, check in (("brick", brick_check), ("wall", wall_check), ("robot", robot_check)):
+            if check is None or _gate_ok(check):
+                continue
+            reasons = _gate_reasons(check)
+            if reasons:
+                reason_parts.append(f"{label}: {', '.join(reasons)}")
+            else:
+                reason_parts.append(f"{label}: blocked")
 
-    status = "OK" if start_ok else "BLOCKED"
-    status_msg = f"[AUTO] {step_key} start gates: {status}"
-    if reason_parts:
-        status_msg += " — " + "; ".join(reason_parts)
-    if start_desc and start_desc != "none":
-        status_msg += f" (cfg: {start_desc})"
-    log_line(status_msg)
+        status = "OK" if start_ok else "BLOCKED"
+        status_msg = f"[AUTO] {step_key} start gates: {status}"
+        if reason_parts:
+            status_msg += " — " + "; ".join(reason_parts)
+        if start_desc and start_desc != "none":
+            status_msg += f" (cfg: {start_desc})"
+        log_line(status_msg)
 
     quiet_align = step_key == "ALIGN_BRICK"
     if not quiet_align:
@@ -376,6 +439,46 @@ def update_brick_analytics(app_state):
         app_state.step_suggestions = [("ALIGN_BRICK", suggestion)]
     else:
         app_state.step_suggestions = []
+
+
+def _latest_demo_mtime(demos_dir):
+    latest = 0.0
+    try:
+        for path in Path(demos_dir).glob("*.json"):
+            try:
+                latest = max(latest, float(path.stat().st_mtime))
+            except OSError:
+                continue
+    except OSError:
+        return 0.0
+    return latest
+
+
+def refresh_world_model_from_demos(app_state, force=False, min_interval_s=0.5):
+    now = time.time()
+    if not force and (now - app_state.last_config_check) < min_interval_s:
+        return
+    app_state.last_config_check = now
+
+    demo_mtime = _latest_demo_mtime(app_state.demos_dir)
+    try:
+        process_mtime = float(PROCESS_MODEL_FILE.stat().st_mtime)
+    except OSError:
+        process_mtime = 0.0
+    latest_mtime = max(demo_mtime, process_mtime)
+    if not force and latest_mtime <= app_state.config_mtime:
+        return
+
+    logs = load_demo_logs(app_state.demos_dir)
+    update_process_model_from_demos(logs, PROCESS_MODEL_FILE)
+    refresh_autobuild_config(PROCESS_MODEL_FILE)
+    model = load_process_model(PROCESS_MODEL_FILE)
+    process_rules = model.get("steps") if isinstance(model, dict) else {}
+    if not isinstance(process_rules, dict):
+        process_rules = {}
+    app_state.world.process_rules = process_rules
+    app_state.world.rules = process_rules
+    app_state.config_mtime = latest_mtime
 
 def refresh_brick_telemetry(app_state, read_vision=True):
     if read_vision:
@@ -658,10 +761,9 @@ def parse_text_command(text):
 
 def print_command_help(app_state=None):
     log_line("[CMD] Enter command mode with ':'")
-    codes = ", ".join(
-        f"{idx + 1}={obj.value.lower()}" for idx, obj in enumerate(DEMO_STEPS)
-    )
-    log_line(f"[CMD] Step codes: {codes}")
+    log_line("[CMD] Step codes:")
+    for idx, obj in enumerate(DEMO_STEPS):
+        log_line(f"[CMD]   {idx + 1}={obj.value.lower()}")
     log_line("[CMD] Attempt codes: f=fail, s=success, r=recover, n=nominal")
     log_line("[CMD] Example: :4s (scoop success), :4n (scoop nominal)")
     log_line("[CMD] Auto mode: press step number to auto-run.")
@@ -893,7 +995,11 @@ class AppState:
         self.step_suggestions = []
         self.brick_highlight_metric = None
         self.brick_frame_buffer = []
-        self.stream_state = {"frame": None, "lock": threading.Lock()}
+        self.stream_state = {
+            "frame": None,
+            "lock": threading.Lock(),
+            "skip_telemetry_process": True,
+        }
         self.stream_enabled = False
         # Allow telemetry_process helpers to push frames directly during auto-run pauses.
         self.world._stream_state = self.stream_state
@@ -1065,10 +1171,16 @@ def stream_refresh_loop(app_state):
             time.sleep(dt - elapsed)
 
 
-def control_loop(app_state):
+def build_vision(vision_mode, yolo_model_path=None):
+    if vision_mode == "yolo":
+        return YoloBrickDetector(debug=True, model_path=yolo_model_path)
+    return ArucoBrickVision(debug=True)
+
+
+def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
     app_state.robot = Robot()
     # speed_optimize=False so we get the debug markers drawn on the frame
-    app_state.vision = ArucoBrickVision(debug=True)
+    app_state.vision = build_vision(vision_mode, yolo_model_path=yolo_model_path)
     print_command_help(app_state)
 
     if app_state.stream_enabled:
@@ -1082,6 +1194,7 @@ def control_loop(app_state):
     
     while app_state.running:
         loop_start = time.time()
+        refresh_world_model_from_demos(app_state)
         auto_obj = None
         with app_state.lock:
             if app_state.auto_request and not app_state.auto_running:
@@ -1265,6 +1378,17 @@ def command_loop(app_state):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--brick-vision",
+        choices=["aruco", "yolo"],
+        default=_DEFAULT_VISION_MODE,
+        help="Brick vision model to use (aruco or yolo)",
+    )
+    parser.add_argument(
+        "--yolo-model",
+        default=None,
+        help="Path to YOLO ONNX model (only used with --brick-vision yolo)",
+    )
     parser.add_argument("--stream", dest="stream", action="store_true",
                         help="Enable livestreaming")
     parser.add_argument("--no-stream", dest="stream", action="store_false",
@@ -1277,6 +1401,7 @@ if __name__ == "__main__":
         update_process_model_from_demos(logs, PROCESS_MODEL_FILE)
 
     state = AppState()
+    refresh_world_model_from_demos(state, force=True)
     
     # Keyboard thread
     kb_t = threading.Thread(target=keyboard_thread, args=(state,), daemon=True)
@@ -1304,6 +1429,8 @@ if __name__ == "__main__":
             if actual_port != STREAM_PORT:
                 log_line(f"[VISION] Stream port {STREAM_PORT} busy; using {actual_port}")
             log_line(f"[VISION] Stream started at {url}")
+            if _running_under_debugger():
+                _open_stream_in_chrome(url)
     else:
         state.stream_enabled = False
         log_line("[VISION] Stream disabled")
@@ -1311,7 +1438,7 @@ if __name__ == "__main__":
     log_line("[CTRL] Drive: W/S 50%, R/F 1%, T/G 100%. Turn: A/D 50%, Q/E 1%, Z/C 100%. Lift: U/L 50%. F action, ':' command, m auto, 1 trash log, Q quit")
     
     try:
-        control_loop(state)
+        control_loop(state, vision_mode=args.brick_vision, yolo_model_path=args.yolo_model)
     except KeyboardInterrupt:
         pass
     finally:

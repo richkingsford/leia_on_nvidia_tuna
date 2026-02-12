@@ -36,9 +36,25 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
         )
         self.assertTrue(robot.sent)
         self.assertEqual(getattr(world, "_last_action_cmd", None), "l")
+        cmd_display = getattr(world, "_last_action_cmd_sent", None) or "l"
         expected_score = telemetry_robot.quantize_speed("l", speed=getattr(world, "_last_action_speed", 0.0))[1]
-        expected = telemetry_process.action_display_text("l", expected_score)
+        expected = telemetry_process.action_display_text(cmd_display, expected_score)
         self.assertEqual(getattr(world, "_last_action_display", None), expected)
+
+    def test_format_control_action_line_uses_effective_sent_direction(self):
+        cmd = "f"
+        cmd_display = telemetry_process._remap_cmd_for_display(cmd)
+        line = telemetry_process.format_control_action_line(cmd, 0.3, "align")
+        expected_phrase_by_cmd = {
+            "f": "move forward",
+            "b": "move backward",
+            "l": "turn left",
+            "r": "turn right",
+            "u": "lift mast",
+            "d": "lower mast",
+        }
+        expected_phrase = expected_phrase_by_cmd.get(cmd_display, "move")
+        self.assertIn(expected_phrase, line)
 
 
 if __name__ == "__main__":

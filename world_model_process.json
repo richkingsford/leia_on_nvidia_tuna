@@ -126,17 +126,29 @@
             "alignment_metrics": []
         },
         "FIND_WALL2": {
+            "scan_direction": "r",
             "success_gates": {
                 "visible": {
                     "min": true
                 }
             },
             "loop_demo_acts": true,
+            "max_speed_score": 20,
             "alignment_metrics": [
                 "visible"
             ]
         },
         "POSITION_BRICK": {
+            "micro_forward_profile": {
+                "very_close_mm": 110,
+                "close_mm": 150,
+                "somewhat_close_mm": 170,
+                "far_mm": 200
+            },
+            "alignment_metrics": [
+                "xAxis_offset_abs",
+                "dist"
+            ],
             "start_gates": {
                 "visible": {
                     "min": true
@@ -144,18 +156,14 @@
             },
             "success_gates": {
                 "xAxis_offset_abs": {
-                    "target": -4.25,
+                    "target": -2.31,
                     "tol": 0.7
                 },
                 "dist": {
-                    "target": 91.6,
+                    "target": 48.55,
                     "tol": 1.5
                 }
-            },
-            "alignment_metrics": [
-                "xAxis_offset_abs",
-                "dist"
-            ]
+            }
         },
         "PLACE": {
             "nominalDemosOnly": true,
