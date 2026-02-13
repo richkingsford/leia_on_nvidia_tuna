@@ -643,6 +643,27 @@ METRIC_DIRECTIONS = {
 
 
 def resolve_scan_direction(process_rules, step, fallback=None):
+    step_key = _step_name(step)
+    cfg = {}
+    if isinstance(process_rules, dict):
+        raw_cfg = process_rules.get(step_key)
+        if isinstance(raw_cfg, dict):
+            cfg = raw_cfg
+
+    scan_dir = cfg.get("scan_direction")
+    if isinstance(scan_dir, str):
+        scan_key = scan_dir.strip().lower()
+        if scan_key in ("l", "left"):
+            return "l"
+        if scan_key in ("r", "right"):
+            return "r"
+
+    if isinstance(fallback, str):
+        fallback_key = fallback.strip().lower()
+        if fallback_key in ("l", "left"):
+            return "l"
+        if fallback_key in ("r", "right"):
+            return "r"
     return None
 
 
@@ -788,7 +809,6 @@ class StepState(Enum):
     FIND_WALL2 = "FIND_WALL2"
     POSITION_BRICK = "POSITION_BRICK"
     PLACE = "PLACE"
-    RETREAT = "RETREAT"
 
 def _cmd_for_action_type(action_type):
     return {
@@ -1451,6 +1471,7 @@ def draw_telemetry_overlay(
     sidebar_width=240,
     draw_text=True,
     line_sink=None,
+    show_center_line=True,
 ):
     """
     Simplified HUD renderer.
@@ -1480,13 +1501,15 @@ def draw_telemetry_overlay(
         return f"#{r:02x}{g:02x}{b:02x}"
     
     # 0. Center Alignment Line
-    cal_offset = 0
-    if WORLD_MODEL_BRICK_FILE.exists():
-        try:
-            with open(WORLD_MODEL_BRICK_FILE, 'r') as f:
-                cal_offset = json.load(f).get('calibration', {}).get('camera_center_offset_px', 0)
-        except: pass
-    cv2.line(frame, (int(w//2 + cal_offset), 0), (int(w//2 + cal_offset), h), (60, 60, 60), 1)
+    if show_center_line:
+        cal_offset = 0
+        if WORLD_MODEL_BRICK_FILE.exists():
+            try:
+                with open(WORLD_MODEL_BRICK_FILE, 'r') as f:
+                    cal_offset = json.load(f).get('calibration', {}).get('camera_center_offset_px', 0)
+            except:
+                pass
+        cv2.line(frame, (int(w//2 + cal_offset), 0), (int(w//2 + cal_offset), h), (60, 60, 60), 1)
 
     # 1. Background Panel (Left Side)
     if sidebar_mode:

@@ -30,8 +30,8 @@ class TestHelperNextAlignTurnSpeed(unittest.TestCase):
             }
         }
 
-    def test_align_turn_uses_1pct_when_abs_x_axis_at_or_below_9mm(self):
-        world = _DummyWorld(4.0)
+    def test_align_turn_uses_1pct_when_x_axis_gap_below_1p5mm(self):
+        world = _DummyWorld(-0.6)
         analytics = helper_next.compute_alignment_analytics(
             world,
             self._rules(),
@@ -42,8 +42,8 @@ class TestHelperNextAlignTurnSpeed(unittest.TestCase):
         self.assertIn(analytics.get("cmd"), ("l", "r"))
         self.assertEqual(analytics.get("speed_score"), telemetry_robot.normalize_speed_score(1))
 
-    def test_align_turn_uses_1pct_when_abs_x_axis_is_9mm(self):
-        world = _DummyWorld(9.0)
+    def test_align_turn_uses_1pct_when_x_axis_gap_between_0p5_and_2mm(self):
+        world = _DummyWorld(-0.2)  # target=-2.0 => gap=1.8mm
         analytics = helper_next.compute_alignment_analytics(
             world,
             self._rules(),
@@ -54,8 +54,8 @@ class TestHelperNextAlignTurnSpeed(unittest.TestCase):
         self.assertIn(analytics.get("cmd"), ("l", "r"))
         self.assertEqual(analytics.get("speed_score"), telemetry_robot.normalize_speed_score(1))
 
-    def test_align_turn_uses_2pct_when_abs_x_axis_between_9_and_16mm(self):
-        world = _DummyWorld(10.0)
+    def test_align_turn_uses_1pct_when_x_axis_gap_below_4mm_near_dist_gate(self):
+        world = _DummyWorld(1.0, dist=80.0)
         analytics = helper_next.compute_alignment_analytics(
             world,
             self._rules(),
@@ -64,10 +64,34 @@ class TestHelperNextAlignTurnSpeed(unittest.TestCase):
             duration_s=0.05,
         )
         self.assertIn(analytics.get("cmd"), ("l", "r"))
-        self.assertEqual(analytics.get("speed_score"), telemetry_robot.normalize_speed_score(2))
+        self.assertEqual(analytics.get("speed_score"), telemetry_robot.normalize_speed_score(1))
 
-    def test_align_turn_uses_3pct_when_abs_x_axis_above_16mm(self):
-        world = _DummyWorld(20.0)
+    def test_align_turn_uses_1pct_when_x_axis_gap_is_exactly_2mm(self):
+        world = _DummyWorld(0.0)  # target=-2.0 => gap=2.0mm
+        analytics = helper_next.compute_alignment_analytics(
+            world,
+            self._rules(),
+            learned_rules={},
+            step="ALIGN_BRICK",
+            duration_s=0.05,
+        )
+        self.assertIn(analytics.get("cmd"), ("l", "r"))
+        self.assertEqual(analytics.get("speed_score"), telemetry_robot.normalize_speed_score(1))
+
+    def test_align_turn_uses_1pct_when_x_axis_gap_is_exactly_4mm_near_dist_gate(self):
+        world = _DummyWorld(2.0, dist=80.0)  # target=-2.0 => gap=4.0mm
+        analytics = helper_next.compute_alignment_analytics(
+            world,
+            self._rules(),
+            learned_rules={},
+            step="ALIGN_BRICK",
+            duration_s=0.05,
+        )
+        self.assertIn(analytics.get("cmd"), ("l", "r"))
+        self.assertEqual(analytics.get("speed_score"), telemetry_robot.normalize_speed_score(1))
+
+    def test_align_turn_uses_3pct_when_x_axis_gap_is_above_12mm_and_below_20mm(self):
+        world = _DummyWorld(11.0, dist=90.0)  # target=-2.0 => gap=13mm
         analytics = helper_next.compute_alignment_analytics(
             world,
             self._rules(),
@@ -77,6 +101,30 @@ class TestHelperNextAlignTurnSpeed(unittest.TestCase):
         )
         self.assertIn(analytics.get("cmd"), ("l", "r"))
         self.assertEqual(analytics.get("speed_score"), telemetry_robot.normalize_speed_score(3))
+
+    def test_align_turn_uses_5pct_when_x_axis_gap_below_50mm(self):
+        world = _DummyWorld(25.0, dist=100.0)
+        analytics = helper_next.compute_alignment_analytics(
+            world,
+            self._rules(),
+            learned_rules={},
+            step="ALIGN_BRICK",
+            duration_s=0.05,
+        )
+        self.assertIn(analytics.get("cmd"), ("l", "r"))
+        self.assertEqual(analytics.get("speed_score"), telemetry_robot.normalize_speed_score(5))
+
+    def test_align_turn_uses_fallback_when_x_axis_gap_at_or_above_50mm(self):
+        world = _DummyWorld(60.0, dist=100.0)
+        analytics = helper_next.compute_alignment_analytics(
+            world,
+            self._rules(),
+            learned_rules={},
+            step="ALIGN_BRICK",
+            duration_s=0.05,
+        )
+        self.assertIn(analytics.get("cmd"), ("l", "r"))
+        self.assertEqual(analytics.get("speed_score"), telemetry_robot.normalize_speed_score(6))
 
     def test_align_loosened_x_axis_tolerance_when_far_keeps_dist_priority_for_minor_x_error(self):
         world = _DummyWorld(1.5, dist=420.0)  # slightly outside tol=1.0
@@ -98,6 +146,18 @@ class TestHelperNextAlignTurnSpeed(unittest.TestCase):
         self.assertEqual(analytics.get("worst_metric"), "dist")
         self.assertEqual(analytics.get("cmd"), "f")
         self.assertFalse(getattr(world, "_align_focus_dist", False))
+
+    def test_align_prefers_dist_cmd_when_dist_is_more_egregious_than_x_axis(self):
+        world = _DummyWorld(20.0, dist=120.0)
+        analytics = helper_next.compute_alignment_analytics(
+            world,
+            self._rules(),
+            learned_rules={},
+            step="ALIGN_BRICK",
+            duration_s=0.05,
+        )
+        self.assertEqual(analytics.get("worst_metric"), "dist")
+        self.assertEqual(analytics.get("cmd"), "f")
 
     def test_align_prioritizes_dist_when_gap_exceeds_150mm_even_if_x_axis_off(self):
         world = _DummyWorld(20.0, dist=300.0)
@@ -136,7 +196,7 @@ class TestHelperNextAlignTurnSpeed(unittest.TestCase):
         self.assertEqual(analytics.get("worst_metric"), "dist")
         self.assertTrue(getattr(world, "_align_focus_dist", False))
 
-        world.brick["dist"] = 170.0  # gap ~90mm: release focus and return to x-axis priority
+        world.brick["dist"] = 170.0  # gap ~90mm: dist is still more egregious than x-axis
         analytics = helper_next.compute_alignment_analytics(
             world,
             self._rules(),
@@ -144,9 +204,362 @@ class TestHelperNextAlignTurnSpeed(unittest.TestCase):
             step="ALIGN_BRICK",
             duration_s=0.05,
         )
-        self.assertEqual(analytics.get("worst_metric"), "xAxis_offset")
-        self.assertIn(analytics.get("cmd"), ("l", "r"))
+        self.assertEqual(analytics.get("worst_metric"), "dist")
+        self.assertEqual(analytics.get("cmd"), "f")
         self.assertFalse(getattr(world, "_align_focus_dist", False))
+
+    def test_align_speed_score_never_exceeds_hard_cap(self):
+        world = _DummyWorld(0.0, dist=500.0)
+        rules = {
+            "ALIGN_BRICK": {
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 1.0},
+                    "dist": {"target": 40.0, "tol": 1.0},
+                }
+            }
+        }
+        analytics = helper_next.compute_alignment_analytics(
+            world,
+            rules,
+            learned_rules={},
+            step="ALIGN_BRICK",
+            duration_s=0.05,
+        )
+        self.assertEqual(analytics.get("cmd"), "f")
+        self.assertLessEqual(int(analytics.get("speed_score") or 0), 20)
+
+    def test_position_brick_respects_step_max_speed_score(self):
+        world = _DummyWorld(0.0, dist=220.0)
+        rules = {
+            "POSITION_BRICK": {
+                "max_speed_score": 10,
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 0.7},
+                    "dist": {"target": 48.0, "tol": 1.5},
+                },
+            }
+        }
+        analytics = helper_next.compute_alignment_analytics(
+            world,
+            rules,
+            learned_rules={},
+            step="POSITION_BRICK",
+            duration_s=0.05,
+        )
+        self.assertEqual(analytics.get("cmd"), "f")
+        self.assertLessEqual(int(analytics.get("speed_score") or 0), 10)
+
+    def test_position_brick_uses_5pct_when_dist_below_80mm(self):
+        world = _DummyWorld(0.0, dist=79.0)
+        rules = {
+            "POSITION_BRICK": {
+                "max_speed_score": 10,
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 0.7},
+                    "dist": {"target": 48.0, "tol": 1.5},
+                },
+            }
+        }
+        analytics = helper_next.compute_alignment_analytics(
+            world,
+            rules,
+            learned_rules={},
+            step="POSITION_BRICK",
+            duration_s=0.05,
+        )
+        self.assertEqual(analytics.get("cmd"), "f")
+        self.assertEqual(int(analytics.get("speed_score") or 0), 5)
+
+    def test_position_brick_uses_1pct_when_dist_below_60mm(self):
+        world = _DummyWorld(0.0, dist=59.0)
+        rules = {
+            "POSITION_BRICK": {
+                "max_speed_score": 10,
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 0.7},
+                    "dist": {"target": 48.0, "tol": 1.5},
+                },
+            }
+        }
+        analytics = helper_next.compute_alignment_analytics(
+            world,
+            rules,
+            learned_rules={},
+            step="POSITION_BRICK",
+            duration_s=0.05,
+        )
+        self.assertEqual(analytics.get("cmd"), "f")
+        self.assertEqual(
+            int(analytics.get("speed_score") or 0),
+            telemetry_robot.normalize_speed_score(1),
+        )
+
+    def test_position_brick_turn_uses_1pct_when_x_axis_gap_below_1p5mm(self):
+        world = _DummyWorld(1.0, dist=48.0)
+        rules = {
+            "POSITION_BRICK": {
+                "max_speed_score": 10,
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 0.7},
+                    "dist": {"target": 48.0, "tol": 1.5},
+                },
+            }
+        }
+        analytics = helper_next.compute_alignment_analytics(
+            world,
+            rules,
+            learned_rules={},
+            step="POSITION_BRICK",
+            duration_s=0.05,
+        )
+        self.assertIn(analytics.get("cmd"), ("l", "r"))
+        self.assertEqual(
+            int(analytics.get("speed_score") or 0),
+            telemetry_robot.normalize_speed_score(1),
+        )
+
+    def test_position_brick_turn_uses_1pct_when_x_axis_gap_between_0p5_and_2mm(self):
+        world = _DummyWorld(1.8, dist=48.0)
+        rules = {
+            "POSITION_BRICK": {
+                "max_speed_score": 10,
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 0.7},
+                    "dist": {"target": 48.0, "tol": 1.5},
+                },
+            }
+        }
+        analytics = helper_next.compute_alignment_analytics(
+            world,
+            rules,
+            learned_rules={},
+            step="POSITION_BRICK",
+            duration_s=0.05,
+        )
+        self.assertIn(analytics.get("cmd"), ("l", "r"))
+        self.assertEqual(
+            int(analytics.get("speed_score") or 0),
+            telemetry_robot.normalize_speed_score(1),
+        )
+
+    def test_position_brick_turn_uses_1pct_when_x_axis_gap_below_4mm_near_dist_gate(self):
+        world = _DummyWorld(3.0, dist=48.0)
+        rules = {
+            "POSITION_BRICK": {
+                "max_speed_score": 10,
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 0.7},
+                    "dist": {"target": 48.0, "tol": 1.5},
+                },
+            }
+        }
+        analytics = helper_next.compute_alignment_analytics(
+            world,
+            rules,
+            learned_rules={},
+            step="POSITION_BRICK",
+            duration_s=0.05,
+        )
+        self.assertIn(analytics.get("cmd"), ("l", "r"))
+        self.assertEqual(
+            int(analytics.get("speed_score") or 0),
+            telemetry_robot.normalize_speed_score(1),
+        )
+
+    def test_position_brick_turn_uses_1pct_when_x_axis_gap_is_exactly_2mm(self):
+        world = _DummyWorld(2.0, dist=48.0)
+        rules = {
+            "POSITION_BRICK": {
+                "max_speed_score": 10,
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 0.7},
+                    "dist": {"target": 48.0, "tol": 1.5},
+                },
+            }
+        }
+        analytics = helper_next.compute_alignment_analytics(
+            world,
+            rules,
+            learned_rules={},
+            step="POSITION_BRICK",
+            duration_s=0.05,
+        )
+        self.assertIn(analytics.get("cmd"), ("l", "r"))
+        self.assertEqual(
+            int(analytics.get("speed_score") or 0),
+            telemetry_robot.normalize_speed_score(1),
+        )
+
+    def test_position_brick_turn_uses_1pct_when_x_axis_gap_is_exactly_4mm_near_dist_gate(self):
+        world = _DummyWorld(4.0, dist=48.0)
+        rules = {
+            "POSITION_BRICK": {
+                "max_speed_score": 10,
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 0.7},
+                    "dist": {"target": 48.0, "tol": 1.5},
+                },
+            }
+        }
+        analytics = helper_next.compute_alignment_analytics(
+            world,
+            rules,
+            learned_rules={},
+            step="POSITION_BRICK",
+            duration_s=0.05,
+        )
+        self.assertIn(analytics.get("cmd"), ("l", "r"))
+        self.assertEqual(
+            int(analytics.get("speed_score") or 0),
+            telemetry_robot.normalize_speed_score(1),
+        )
+
+    def test_position_brick_turn_uses_3pct_when_x_axis_gap_below_20mm(self):
+        world = _DummyWorld(19.0, dist=70.0)
+        rules = {
+            "POSITION_BRICK": {
+                "max_speed_score": 10,
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 0.7},
+                    "dist": {"target": 48.0, "tol": 1.5},
+                },
+            }
+        }
+        analytics = helper_next.compute_alignment_analytics(
+            world,
+            rules,
+            learned_rules={},
+            step="POSITION_BRICK",
+            duration_s=0.05,
+        )
+        self.assertIn(analytics.get("cmd"), ("l", "r"))
+        self.assertEqual(int(analytics.get("speed_score") or 0), 3)
+
+    def test_position_brick_turn_uses_5pct_when_x_axis_gap_below_50mm(self):
+        world = _DummyWorld(49.0, dist=70.0)
+        rules = {
+            "POSITION_BRICK": {
+                "max_speed_score": 10,
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 0.7},
+                    "dist": {"target": 48.0, "tol": 1.5},
+                },
+            }
+        }
+        analytics = helper_next.compute_alignment_analytics(
+            world,
+            rules,
+            learned_rules={},
+            step="POSITION_BRICK",
+            duration_s=0.05,
+        )
+        self.assertIn(analytics.get("cmd"), ("l", "r"))
+        self.assertEqual(int(analytics.get("speed_score") or 0), 5)
+
+    def test_align_and_position_share_turn_gap_speed_bands(self):
+        world = _DummyWorld(19.0, dist=70.0)
+        rules = {
+            "ALIGN_BRICK": {
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 0.7},
+                    "dist": {"target": 48.0, "tol": 1.5},
+                }
+            },
+            "POSITION_BRICK": {
+                "max_speed_score": 10,
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 0.7},
+                    "dist": {"target": 48.0, "tol": 1.5},
+                },
+            },
+        }
+        align = helper_next.compute_alignment_analytics(
+            world,
+            rules,
+            learned_rules={},
+            step="ALIGN_BRICK",
+            duration_s=0.05,
+        )
+        position = helper_next.compute_alignment_analytics(
+            world,
+            rules,
+            learned_rules={},
+            step="POSITION_BRICK",
+            duration_s=0.05,
+        )
+        self.assertIn(align.get("cmd"), ("l", "r"))
+        self.assertIn(position.get("cmd"), ("l", "r"))
+        self.assertEqual(int(align.get("speed_score") or 0), 3)
+        self.assertEqual(int(position.get("speed_score") or 0), 3)
+
+    def test_align_turn_caps_to_2pct_when_dist_gate_is_near(self):
+        world = _DummyWorld(19.0, dist=80.0)  # dist target in _rules is 80.0
+        analytics = helper_next.compute_alignment_analytics(
+            world,
+            self._rules(),
+            learned_rules={},
+            step="ALIGN_BRICK",
+            duration_s=0.05,
+        )
+        self.assertIn(analytics.get("cmd"), ("l", "r"))
+        self.assertEqual(int(analytics.get("speed_score") or 0), 2)
+
+    def test_position_turn_caps_to_2pct_when_dist_gate_is_near(self):
+        world = _DummyWorld(19.0, dist=48.0)
+        rules = {
+            "POSITION_BRICK": {
+                "max_speed_score": 10,
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 0.7},
+                    "dist": {"target": 48.0, "tol": 1.5},
+                },
+            }
+        }
+        analytics = helper_next.compute_alignment_analytics(
+            world,
+            rules,
+            learned_rules={},
+            step="POSITION_BRICK",
+            duration_s=0.05,
+        )
+        self.assertIn(analytics.get("cmd"), ("l", "r"))
+        self.assertEqual(int(analytics.get("speed_score") or 0), 2)
+
+    def test_align_and_position_share_dist_gap_speed_bands(self):
+        world = _DummyWorld(0.0, dist=79.0)
+        rules = {
+            "ALIGN_BRICK": {
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 0.7},
+                    "dist": {"target": 48.0, "tol": 1.5},
+                }
+            },
+            "POSITION_BRICK": {
+                "max_speed_score": 10,
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 0.7},
+                    "dist": {"target": 48.0, "tol": 1.5},
+                },
+            },
+        }
+        align = helper_next.compute_alignment_analytics(
+            world,
+            rules,
+            learned_rules={},
+            step="ALIGN_BRICK",
+            duration_s=0.05,
+        )
+        position = helper_next.compute_alignment_analytics(
+            world,
+            rules,
+            learned_rules={},
+            step="POSITION_BRICK",
+            duration_s=0.05,
+        )
+        self.assertEqual(align.get("cmd"), "f")
+        self.assertEqual(position.get("cmd"), "f")
+        self.assertEqual(int(align.get("speed_score") or 0), 5)
+        self.assertEqual(int(position.get("speed_score") or 0), 5)
 
 
 if __name__ == "__main__":

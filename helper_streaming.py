@@ -25,6 +25,27 @@ def build_text_provider(state, text_key="text_lines", lock_key="lock"):
     return _provider
 
 
+def build_bool_getter(state, key, lock_key="lock", default=True):
+    def _getter():
+        lock = state.get(lock_key)
+        if lock is None:
+            return bool(state.get(key, default))
+        with lock:
+            return bool(state.get(key, default))
+    return _getter
+
+
+def build_bool_setter(state, key, lock_key="lock"):
+    def _setter(value):
+        lock = state.get(lock_key)
+        if lock is None:
+            state[key] = bool(value)
+            return
+        with lock:
+            state[key] = bool(value)
+    return _setter
+
+
 def start_stream_server(
     state,
     title,
@@ -69,6 +90,8 @@ def start_stream_server(
 
     if "lock" not in state:
         state["lock"] = threading.Lock()
+    if "show_center_line" not in state:
+        state["show_center_line"] = True
 
     try:
         start_port = int(port)
@@ -99,6 +122,8 @@ def start_stream_server(
             footer=footer,
             img_width=img_width,
             sharpen=sharpen,
+            show_center_line_getter=build_bool_getter(state, "show_center_line"),
+            show_center_line_setter=build_bool_setter(state, "show_center_line"),
         )
         server.start()
         try:

@@ -45,8 +45,7 @@ class Robot:
             self.ser = serial.Serial(self.SERIAL_PORT, self.BAUD_RATE, timeout=1)
             time.sleep(2) 
             self.ser.reset_input_buffer()
-            print("[ROBOT] Connected.")
-            print(f"[ROBOT] command_remap={self._command_remap()}")
+            self._command_remap()
         except Exception as e:
             print(f"[ROBOT] ERROR: {e}")
             sys.exit(1)

@@ -61,6 +61,8 @@ class TestManualHotkeySpeedScoreMin(unittest.TestCase):
             self.assertEqual(duration_ms, 250)
             self.assertEqual(meta_drive.get("duration_ms"), 250)
 
+            # Sequential same-direction turn should use the full model duration.
+            robot._last_turn_cmd = "l"
             meta_turn = telemetry_process.send_robot_command(
                 robot,
                 world,
@@ -76,6 +78,58 @@ class TestManualHotkeySpeedScoreMin(unittest.TestCase):
             self.assertEqual(pwm, 60)
             self.assertEqual(duration_ms, 250)
             self.assertEqual(meta_turn.get("duration_ms"), 250)
+        finally:
+            telemetry_robot.SCORE_POWER_PWM_DRIVE = orig_drive
+            telemetry_robot.SCORE_POWER_PWM_TURN = orig_turn
+            telemetry_robot.SPEED_SCORE_DURATION_MS = orig_duration
+            telemetry_robot.refresh_speed_model_baseline()
+
+    def test_manual_first_turn_uses_half_duration_of_sequential_turn(self):
+        orig_drive = telemetry_robot.SCORE_POWER_PWM_DRIVE
+        orig_turn = telemetry_robot.SCORE_POWER_PWM_TURN
+        orig_duration = telemetry_robot.SPEED_SCORE_DURATION_MS
+        try:
+            telemetry_robot.SCORE_POWER_PWM_DRIVE = {
+                telemetry_robot.SPEED_SCORE_MIN: {"pwm": 80},
+                telemetry_robot.SPEED_SCORE_MAX: {"pwm": 200},
+            }
+            telemetry_robot.SCORE_POWER_PWM_TURN = {
+                telemetry_robot.SPEED_SCORE_MIN: {"pwm": 60},
+                telemetry_robot.SPEED_SCORE_MAX: {"pwm": 220},
+            }
+            telemetry_robot.SPEED_SCORE_DURATION_MS = {
+                telemetry_robot.SPEED_SCORE_MIN: 250,
+                telemetry_robot.SPEED_SCORE_MAX: 300,
+            }
+            telemetry_robot.refresh_speed_model_baseline()
+
+            world = _DummyWorld()
+            robot = _DummyRobot()
+
+            first = telemetry_process.send_robot_command(
+                robot,
+                world,
+                step="MANUAL",
+                cmd="l",
+                speed=0.0,
+                speed_score=telemetry_robot.SPEED_SCORE_MIN,
+                auto_mode=False,
+            )
+            second = telemetry_process.send_robot_command(
+                robot,
+                world,
+                step="MANUAL",
+                cmd="l",
+                speed=0.0,
+                speed_score=telemetry_robot.SPEED_SCORE_MIN,
+                auto_mode=False,
+            )
+            self.assertIsInstance(first, dict)
+            self.assertIsInstance(second, dict)
+            first_ms = int(first.get("duration_ms") or 0)
+            second_ms = int(second.get("duration_ms") or 0)
+            self.assertEqual(first_ms, 125)
+            self.assertEqual(second_ms, 250)
         finally:
             telemetry_robot.SCORE_POWER_PWM_DRIVE = orig_drive
             telemetry_robot.SCORE_POWER_PWM_TURN = orig_turn

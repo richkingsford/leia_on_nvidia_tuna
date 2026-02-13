@@ -50,7 +50,6 @@ DEFAULT_STEP_ORDER = [
     "FIND_WALL2",
     "POSITION_BRICK",
     "PLACE",
-    "RETREAT",
 ]
 
 

@@ -6,7 +6,8 @@ from typing import Callable, Optional
 
 import cv2
 import numpy as np
-from flask import Flask, Response, jsonify
+from flask import Flask, Response, jsonify, request
+from flask import cli as flask_cli
 
 DEFAULT_STREAM_HOST = "127.0.0.1"
 DEFAULT_STREAM_FPS = 10
@@ -44,6 +45,8 @@ class StreamServer:
         footer: Optional[str] = None,
         img_width: Optional[int] = None,
         sharpen: bool = False,
+        show_center_line_getter: Optional[Callable[[], bool]] = None,
+        show_center_line_setter: Optional[Callable[[bool], None]] = None,
     ):
         self.frame_provider = frame_provider
         self.text_provider = text_provider
@@ -56,10 +59,12 @@ class StreamServer:
             jpeg_quality = DEFAULT_JPEG_QUALITY
         self.jpeg_quality = max(1, min(100, int(jpeg_quality)))
         self.title = title
-        self.header = header or title
+        self.header = title if header is None else header
         self.footer = footer
         self.img_width = img_width
         self.sharpen = sharpen
+        self.show_center_line_getter = show_center_line_getter
+        self.show_center_line_setter = show_center_line_setter
         self._stop = threading.Event()
         self._thread = None
         self._startup_error = None
@@ -91,9 +96,34 @@ class StreamServer:
                     lines = payload
             return jsonify({"lines": lines})
 
+        @self.app.route("/stream_prefs", methods=["GET", "POST"])
+        def stream_prefs():
+            if request.method == "POST" and self.show_center_line_setter is not None:
+                payload = request.get_json(silent=True) or {}
+                flag = self._coerce_bool(payload.get("show_center_line"), default=True)
+                try:
+                    self.show_center_line_setter(flag)
+                except Exception:
+                    pass
+
+            show_center_line = True
+            if self.show_center_line_getter is not None:
+                try:
+                    show_center_line = bool(self.show_center_line_getter())
+                except Exception:
+                    show_center_line = True
+            return jsonify(
+                {
+                    "show_center_line": bool(show_center_line),
+                    "editable": self.show_center_line_setter is not None,
+                }
+            )
+
     def start(self):
         def _run():
             try:
+                # Silence Flask's startup banner (e.g. "* Serving Flask app ...").
+                flask_cli.show_server_banner = lambda *args, **kwargs: None
                 self.app.run(
                     host=self.host,
                     port=self.port,
@@ -137,7 +167,43 @@ class StreamServer:
 
     def _index_html(self):
         width_attr = f' width="{self.img_width}"' if self.img_width else ""
+        header_html = f"<h1>{self.header}</h1>" if self.header else ""
         footer_html = f"<p>{self.footer}</p>" if self.footer else ""
+        controls_html = ""
+        controls_script = ""
+        if self.show_center_line_getter is not None or self.show_center_line_setter is not None:
+            controls_html = (
+                "<div class='controls'>"
+                "<label><input type='checkbox' id='showCenterLine' checked> Show center line</label>"
+                "</div>"
+            )
+            controls_script = (
+                "<script>"
+                "const centerLineToggle = document.getElementById('showCenterLine');"
+                "if (centerLineToggle) {"
+                "const syncCenterLine = async () => {"
+                "try {"
+                "const res = await fetch('/stream_prefs', {cache:'no-store'});"
+                "if (!res.ok) return;"
+                "const data = await res.json();"
+                "centerLineToggle.checked = !!data.show_center_line;"
+                "centerLineToggle.disabled = !data.editable;"
+                "} catch (e) { /* ignore */ }"
+                "};"
+                "centerLineToggle.addEventListener('change', async () => {"
+                "try {"
+                "await fetch('/stream_prefs', {"
+                "method:'POST',"
+                "headers:{'Content-Type':'application/json'},"
+                "body:JSON.stringify({show_center_line:centerLineToggle.checked})"
+                "});"
+                "} catch (e) { /* ignore */ }"
+                "syncCenterLine();"
+                "});"
+                "syncCenterLine();"
+                "}"
+                "</script>"
+            )
         if self.text_provider is None:
             return (
                 "<html><head><title>"
@@ -150,11 +216,15 @@ class StreamServer:
                 "overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,0.35);}" 
                 "img{image-rendering:auto;}"
                 "h1{color:#f0ad4e;}"
+                ".controls{margin:0 auto 12px auto;}"
                 "</style>"
                 "</head><body>"
-                f"<h1>{self.header}</h1>"
+                f"{header_html}"
+                f"{controls_html}"
                 f"<div class='stream'><img src='/video_feed'{width_attr}></div>"
-                f"{footer_html}</body></html>"
+                f"{footer_html}"
+                f"{controls_script}"
+                "</body></html>"
             )
         return (
             "<html><head><title>"
@@ -174,9 +244,11 @@ class StreamServer:
             "overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,0.35);}" 
             "img{image-rendering:auto;}"
             "h1{color:#f0ad4e;}"
+            ".controls{margin:0 auto 12px auto;}"
             "</style>"
             "</head><body>"
-            f"<h1>{self.header}</h1>"
+            f"{header_html}"
+            f"{controls_html}"
             "<div class='layout'>"
             "<div class='sidebar'><div id='telemetry' class='telemetry'></div></div>"
             f"<div class='stream'><img src='/video_feed'{width_attr}></div>"
@@ -211,6 +283,7 @@ class StreamServer:
             "setInterval(refresh, 100);"
             "refresh();"
             "</script>"
+            f"{controls_script}"
             "</body></html>"
         )
 
@@ -269,3 +342,17 @@ class StreamServer:
     def _apply_sharpen(frame):
         kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
         return cv2.filter2D(frame, -1, kernel)
+
+    @staticmethod
+    def _coerce_bool(value, default=True):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+        return bool(default)

@@ -32,9 +32,11 @@ from telemetry_robot import (
 )
 from telemetry_process import (
     build_motion_sequence,
+    consume_auto_step_action_stats,
     compute_stream_gate_summary,
     merge_motion_steps,
     nominal_actions_from_events,
+    reset_auto_step_action_stats,
     send_robot_command,
     step_requires_start_gates,
 )
@@ -107,6 +109,12 @@ STREAM_JPEG_QUALITY = int(_MANUAL_CONFIG.get("stream_jpeg_quality", 85))
 DEMOS_DIR = Path(__file__).resolve().parent / "demos"
 PROCESS_MODEL_FILE = Path(__file__).resolve().parent / "world_model_process.json"
 DEMO_STEPS = step_sequence()
+CTRL_HELP_LINE = (
+    "[CTRL] Drive: W/S 50%, R/F 1%, T/G 100%. Turn: A/D 50%, Q/E 1%, Z/C 100%. "
+    "Lift: U/L 50%. F action, ':' command, m auto, y edit hotkey vars, 1 trash log, Q quit"
+)
+ANSI_ORANGE_BRIGHT = "\033[38;5;208m"
+ANSI_RESET = "\033[0m"
 
 MM_METRICS = {
     "xAxis_offset_abs",
@@ -177,8 +185,197 @@ def log_line(message):
     print(str(message).strip(), flush=True)
 
 
-def _running_under_debugger():
-    return sys.gettrace() is not None
+def prompt_line(prompt):
+    fd_term = sys.stdin.fileno()
+    old_attr = termios.tcgetattr(fd_term)
+    try:
+        attr = termios.tcgetattr(fd_term)
+        attr[3] |= termios.ECHO | termios.ICANON
+        termios.tcsetattr(fd_term, termios.TCSANOW, attr)
+        try:
+            return input(prompt)
+        except (EOFError, KeyboardInterrupt):
+            return ""
+    finally:
+        termios.tcsetattr(fd_term, termios.TCSANOW, old_attr)
+        try:
+            termios.tcflush(sys.stdin, termios.TCIFLUSH)
+        except Exception:
+            pass
+
+
+def _parse_hotkey_var_triplet(raw):
+    text = str(raw or "").strip()
+    parts = text.replace(",", " ").split()
+    if len(parts) != 3:
+        return None
+    try:
+        pwm = int(round(float(parts[0])))
+        power = float(parts[1])
+        duration_ms = int(round(float(parts[2])))
+    except (TypeError, ValueError):
+        return None
+    return pwm, power, duration_ms
+
+
+def _manual_hotkey_duration_ms(app_state, cmd, duration_ms):
+    try:
+        base_ms = int(round(float(duration_ms)))
+    except (TypeError, ValueError):
+        base_ms = int(getattr(telemetry_robot_module, "ACT_DURATION_MS", 300) or 300)
+    base_ms = max(1, base_ms)
+    if cmd not in ("l", "r"):
+        return base_ms
+    robot = getattr(app_state, "robot", None)
+    last_turn_cmd = getattr(robot, "_last_turn_cmd", None) if robot is not None else None
+    if last_turn_cmd != cmd:
+        return max(1, int(round(base_ms * 0.5)))
+    return base_ms
+
+
+def _update_speed_model_vars_for_hotkey(cmd, score, pwm, power, duration_ms):
+    score_key = telemetry_robot_module.normalize_speed_score(score)
+    pwm_clamped = telemetry_robot_module.clamp_pwm(pwm)
+    try:
+        power_clamped = max(0.0, min(1.0, float(power)))
+    except (TypeError, ValueError):
+        power_clamped = telemetry_robot_module.pwm_to_power(pwm_clamped) or 0.0
+    duration_clamped = max(1, int(round(float(duration_ms))))
+
+    if cmd in ("l", "r"):
+        score_map = telemetry_robot_module.SCORE_POWER_PWM_TURN
+        map_key = "score_power_pwm_turn"
+    else:
+        score_map = telemetry_robot_module.SCORE_POWER_PWM_DRIVE
+        map_key = "score_power_pwm_drive"
+
+    if not isinstance(score_map, dict):
+        return False, "Speed map unavailable."
+
+    entry = score_map.get(score_key)
+    if not isinstance(entry, dict):
+        entry = {}
+        score_map[score_key] = entry
+    entry["pwm"] = int(pwm_clamped)
+    entry["power"] = float(power_clamped)
+    entry["duration_ms"] = int(duration_clamped)
+
+    duration_map = getattr(telemetry_robot_module, "SPEED_SCORE_DURATION_MS", None)
+    if isinstance(duration_map, dict):
+        duration_map[score_key] = int(duration_clamped)
+    if score_key == int(getattr(telemetry_robot_module, "SPEED_SCORE_DEFAULT", 50)):
+        telemetry_robot_module.ACT_DURATION_MS = int(duration_clamped)
+
+    try:
+        telemetry_robot_module.refresh_speed_model_baseline()
+    except Exception:
+        pass
+
+    model_path = getattr(telemetry_robot_module, "ROBOT_MODEL_FILE", None)
+    if not isinstance(model_path, Path):
+        return False, "Robot model path unavailable."
+
+    try:
+        if model_path.exists():
+            try:
+                model = json.loads(model_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                model = {}
+        else:
+            model = {}
+        if not isinstance(model, dict):
+            model = {}
+
+        section = model.get(map_key)
+        if not isinstance(section, dict):
+            section = {}
+            model[map_key] = section
+        score_text = str(int(score_key))
+        section_entry = section.get(score_text)
+        if not isinstance(section_entry, dict):
+            section_entry = {}
+            section[score_text] = section_entry
+        section_entry["pwm"] = int(pwm_clamped)
+        section_entry["power"] = float(power_clamped)
+
+        speed_seconds = model.get("speed_score_seconds")
+        if not isinstance(speed_seconds, dict):
+            speed_seconds = {}
+            model["speed_score_seconds"] = speed_seconds
+        speed_seconds[score_text] = round(float(duration_clamped) / 1000.0, 3)
+
+        model_path.write_text(json.dumps(model, indent=2) + "\n")
+    except OSError as exc:
+        return False, f"Failed to persist world model: {exc}"
+
+    return True, None
+
+
+def maybe_prompt_hotkey_var_update(app_state, cmd, score, *, enter_edit=False):
+    try:
+        _, pwm, score_used, duration_model_ms = telemetry_robot_module.speed_power_pwm_for_cmd(cmd, score)
+        power = telemetry_robot_module.pwm_to_power(pwm)
+    except Exception as exc:
+        log_line(f"[HOTKEY] Failed to read speed vars: {exc}")
+        return None
+
+    if power is None:
+        power = 0.0
+    duration_used_ms = _manual_hotkey_duration_ms(app_state, cmd, duration_model_ms)
+    if not enter_edit:
+        log_line(
+            f"[HOTKEY] {str(cmd).upper()} {int(score_used)}% "
+            f"(pwm={int(pwm)}, power={float(power):.3f}, {int(duration_used_ms)}ms) "
+            f"- press y to edit vars"
+        )
+        return int(score_used)
+
+    log_line(
+        f"[HOTKEY] Editing {str(cmd).upper()} {int(score_used)}% "
+        f"(current pwm={int(pwm)}, power={float(power):.3f}, {int(duration_used_ms)}ms)"
+    )
+
+    while app_state.running:
+        raw = prompt_line(
+            "[HOTKEY] Type 3 numbers in this exact order: pwm power duration_ms: "
+        )
+        parsed = _parse_hotkey_var_triplet(raw)
+        if parsed is None:
+            log_line("[HOTKEY] Invalid input. Enter exactly 3 numbers: pwm power duration_ms")
+            continue
+        pwm_new, power_new, duration_new = parsed
+        ok, err = _update_speed_model_vars_for_hotkey(cmd, score_used, pwm_new, power_new, duration_new)
+        if not ok:
+            log_line(f"[HOTKEY] Update failed: {err}")
+            return
+        log_line(
+            f"[HOTKEY] Updated world model for {str(cmd).upper()} {int(score_used)}% "
+            f"-> (pwm={int(pwm_new)}, power={float(power_new):.3f}, {int(duration_new)}ms)"
+        )
+        return int(score_used)
+    return int(score_used)
+
+
+def format_step_codes_line():
+    parts = [f"{idx + 1}={obj.value.lower()}" for idx, obj in enumerate(DEMO_STEPS)]
+    return "[CMD] Step codes: " + ", ".join(parts)
+
+
+def step_code_for_obj(obj_enum):
+    for code, obj in STEP_CODES.items():
+        if obj == obj_enum:
+            return code
+    return normalize_step_label(getattr(obj_enum, "value", obj_enum))
+
+
+def stream_footer_html():
+    lines = []
+    keys_line = format_hotkey_speeds()
+    if keys_line:
+        lines.append(keys_line)
+    lines.append(format_step_codes_line())
+    lines.append(CTRL_HELP_LINE)
+    return "<br>".join(lines)
 
 
 def _open_stream_in_chrome(url):
@@ -363,11 +560,11 @@ def run_auto_step(app_state, obj_enum):
             status_msg += f" (cfg: {start_desc})"
         log_line(status_msg)
 
-    quiet_align = step_key == "ALIGN_BRICK"
-    if not quiet_align:
-        log_line(f"[AUTO] {step_key} demo={seg_type} success gates: {success_desc}")
+    quiet_align = False
+    log_line(f"[AUTO] {step_key} demo={seg_type} success gates: {success_desc}")
     if app_state.robot:
         app_state.robot.stop()
+    reset_auto_step_action_stats(app_state.world, step_key)
     observer = make_auto_observer(app_state)
     confirm_callback = None
     ok, reason = replay_segment(
@@ -384,9 +581,20 @@ def run_auto_step(app_state, obj_enum):
     if ok:
         reason_text = reason.replace("_", " ") if isinstance(reason, str) else "success criteria met"
         log_line(f"[AUTO] {step_key} complete — {reason_text}.")
+        act_stats = consume_auto_step_action_stats(app_state.world, step_key)
+        acts_total = int((act_stats or {}).get("total") or 0)
+        acts_closer = int((act_stats or {}).get("closer") or 0)
+        acts_backward = int((act_stats or {}).get("backward") or 0)
+        acts_unchanged = int((act_stats or {}).get("unchanged") or 0)
+        acts_unknown = int((act_stats or {}).get("unknown") or 0)
+        step_code = step_code_for_obj(obj_enum)
+        log_line(
+            f"ACHIEVED step {step_code} in {acts_total} acts. "
+            f"{acts_closer} got us closer, {acts_backward} took us backwards, "
+            f"{acts_unchanged} were unchanged, and {acts_unknown} were unclear."
+        )
     else:
-        if not quiet_align:
-            log_line(f"[AUTO] {step_key} failed ({reason}).")
+        log_line(f"[AUTO] {step_key} failed ({reason}).")
     return ok
 
 
@@ -642,6 +850,7 @@ def update_stream_frame(app_state):
             gate_checker_summary=gate_checker_summary,
             draw_text=False,
             line_sink=stream_lines,
+            show_center_line=bool(app_state.stream_state.get("show_center_line", True)),
         )
         app_state.current_frame = frame
     if app_state.stream_state:
@@ -761,17 +970,15 @@ def parse_text_command(text):
 
 def print_command_help(app_state=None):
     log_line("[CMD] Enter command mode with ':'")
-    log_line("[CMD] Step codes:")
-    for idx, obj in enumerate(DEMO_STEPS):
-        log_line(f"[CMD]   {idx + 1}={obj.value.lower()}")
     log_line("[CMD] Attempt codes: f=fail, s=success, r=recover, n=nominal")
     log_line("[CMD] Example: :4s (scoop success), :4n (scoop nominal)")
     log_line("[CMD] Auto mode: press step number to auto-run.")
     log_line("[CMD] Auto-run: press step number.")
+    log_line("[CMD] Hotkey tuning: press a movement hotkey, then press y to edit that hotkey's vars.")
     log_line("[CMD] End attempt: press ':' to finish and return to the command prompt.")
-    hotkey_line = format_hotkey_speeds()
-    if hotkey_line:
-        log_line(hotkey_line)
+    log_line("[CMD] Step codes:")
+    for idx, obj in enumerate(DEMO_STEPS):
+        log_line(f"[CMD]   {idx + 1}={obj.value.lower()}")
 
 
 def format_hotkey_speeds():
@@ -951,6 +1158,7 @@ class AppState:
         self.active_speed_score = None
         self.last_key_time = 0
         self.micro_speed_state = {}
+        self.hotkey_edit_target = None
         
         # Job Status
         self.job_success = False
@@ -999,6 +1207,7 @@ class AppState:
             "frame": None,
             "lock": threading.Lock(),
             "skip_telemetry_process": True,
+            "show_center_line": True,
         }
         self.stream_enabled = False
         # Allow telemetry_process helpers to push frames directly during auto-run pauses.
@@ -1031,6 +1240,7 @@ def keyboard_thread(app_state):
             auto_confirm_needed = app_state.auto_confirm_needed
 
         messages = []
+        pending_hotkey_action = None
         if ch == 'Q':
             with app_state.lock:
                 app_state.last_key_time = time.time()
@@ -1137,6 +1347,19 @@ def keyboard_thread(app_state):
                 app_state.active_speed = 0.0
                 app_state.active_speed_score = None
             messages.append("[AUTO] Select a step code to run autonomously (press 'm' again to cancel).")
+        elif ch_lower == 'y':
+            with app_state.lock:
+                app_state.last_key_time = time.time()
+                target = app_state.hotkey_edit_target if isinstance(app_state.hotkey_edit_target, dict) else None
+            if not isinstance(target, dict):
+                messages.append("[HOTKEY] Press a movement hotkey first, then press y to edit its vars.")
+            else:
+                cmd = target.get("cmd")
+                score = target.get("score")
+                if cmd is None or score is None:
+                    messages.append("[HOTKEY] No valid hotkey action to edit yet.")
+                else:
+                    maybe_prompt_hotkey_var_update(app_state, cmd, score, enter_edit=True)
         else:
             with app_state.lock:
                 app_state.last_key_time = time.time()
@@ -1144,10 +1367,28 @@ def keyboard_thread(app_state):
                 action = manual_key_action(ch_lower)
                 if action:
                     cmd, score = action
-                    app_state.active_command = cmd
-                    app_state.active_speed_score = score
+                    app_state.active_command = None
+                    app_state.active_speed = 0.0
+                    app_state.active_speed_score = None
+                    pending_hotkey_action = (cmd, score)
                 elif ch_lower in ('h', '?'):
                     print_command_help(app_state)
+
+        if pending_hotkey_action and app_state.running:
+            cmd, score = pending_hotkey_action
+            with app_state.lock:
+                app_state.last_key_time = time.time()
+                app_state.active_command = cmd
+                app_state.active_speed_score = score
+            # Execute the hotkey act first, then offer var editing for that act.
+            time.sleep(1.0 / max(COMMAND_RATE_HZ, 1e-3))
+            score_used = maybe_prompt_hotkey_var_update(app_state, cmd, score, enter_edit=False)
+            with app_state.lock:
+                app_state.hotkey_edit_target = {
+                    "cmd": cmd,
+                    "score": int(score_used) if score_used is not None else int(score),
+                    "timestamp": time.time(),
+                }
 
         for msg in messages:
             log_line(msg)
@@ -1181,7 +1422,6 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
     app_state.robot = Robot()
     # speed_optimize=False so we get the debug markers drawn on the frame
     app_state.vision = build_vision(vision_mode, yolo_model_path=yolo_model_path)
-    print_command_help(app_state)
 
     if app_state.stream_enabled:
         stream_t = threading.Thread(target=stream_refresh_loop, args=(app_state,), daemon=True)
@@ -1335,6 +1575,10 @@ def command_loop(app_state):
     while app_state.running:
         loop_start = time.time()
         with app_state.lock:
+            if app_state.auto_running or app_state.auto_request is not None:
+                app_state.active_command = None
+                app_state.active_speed = 0.0
+                app_state.active_speed_score = None
             if time.time() - app_state.last_key_time > HEARTBEAT_TIMEOUT:
                 app_state.active_command = None
                 app_state.active_speed = 0.0
@@ -1402,6 +1646,7 @@ if __name__ == "__main__":
 
     state = AppState()
     refresh_world_model_from_demos(state, force=True)
+    print_command_help(state)
     
     # Keyboard thread
     kb_t = threading.Thread(target=keyboard_thread, args=(state,), daemon=True)
@@ -1412,9 +1657,9 @@ if __name__ == "__main__":
         try:
             stream_server, url = start_stream_server(
                 state.stream_state,
-                title="Robot Leia - Keyboard Training",
-                header="Robot Leia - Keyboard Training",
-                footer="Use the terminal for controls. Keep this window open to see the live feed.",
+                title="Keyboard Training Livestream",
+                header="",
+                footer=stream_footer_html(),
                 host=STREAM_HOST,
                 port=STREAM_PORT,
                 fps=STREAM_FPS,
@@ -1428,14 +1673,11 @@ if __name__ == "__main__":
             actual_port = getattr(stream_server, "port", STREAM_PORT)
             if actual_port != STREAM_PORT:
                 log_line(f"[VISION] Stream port {STREAM_PORT} busy; using {actual_port}")
-            log_line(f"[VISION] Stream started at {url}")
-            if _running_under_debugger():
-                _open_stream_in_chrome(url)
+            log_line(f"[VISION] Stream started at {ANSI_ORANGE_BRIGHT}{url}{ANSI_RESET}")
+            _open_stream_in_chrome("http://127.0.0.1:5000/")
     else:
         state.stream_enabled = False
         log_line("[VISION] Stream disabled")
-
-    log_line("[CTRL] Drive: W/S 50%, R/F 1%, T/G 100%. Turn: A/D 50%, Q/E 1%, Z/C 100%. Lift: U/L 50%. F action, ':' command, m auto, 1 trash log, Q quit")
     
     try:
         control_loop(state, vision_mode=args.brick_vision, yolo_model_path=args.yolo_model)

@@ -1,160 +1,73 @@
 {
-    "autobuild": {
-        "control_hz": 20.0,
-        "gate_stability_frames": 5,
-        "success_visible_false_grace_s": 0.2,
-        "failure_tighten_low_pct": 0.1,
-        "failure_tighten_high_pct": 0.9,
-        "start_gate_timeout_s": 8.0,
-        "success_settle_s": 1.0,
-        "success_tail_window_s": 0.5,
-        "max_phase_attempts": 1,
-        "smooth_step_s": 1.0,
-        "fail_pause_s": 0.35,
-        "demo_action_pause_frames": 2,
-        "post_act_pause_frames": 3,
-        "find_brick_slow_factor": 4.0,
-        "visibility_lost_hold_s": 0.5,
-        "learned_policy_confidence_threshold": 0.4,
-        "auto_cycle_move_score": 6,
-        "auto_cycle_move_s": 0.5,
-        "auto_cycle_check_score": 2,
-        "auto_cycle_check_s": 1.5
-    },
-    "manual_training": {
-        "log_rate_hz": 10,
-        "command_rate_hz": 30,
-        "heartbeat_timeout": 0.3,
-        "stream_host": "127.0.0.1",
-        "stream_port": 5000,
-        "stream_fps": 10,
-        "stream_jpeg_quality": 85
-    },
-    "lite_gate_check": {
-        "default_unique_smoothed_frames": 3,
-        "steps": {
-            "ALIGN_BRICK": {
-                "enabled": true,
-                "unique_smoothed_frames": 3
-            },
-            "POSITION_BRICK": {
-                "enabled": true,
-                "unique_smoothed_frames": 3
-            }
-        }
-    },
     "steps": {
         "FIND_WALL": {
-            "scan_direction": "r",
             "success_gates": {
                 "visible": {
                     "min": true
                 }
             },
-            "alignment_metrics": [
+            "success_metrics": [
                 "visible"
             ]
         },
         "EXIT_WALL": {
-            "scan_direction": "r",
-            "minActs": 1,
             "success_gates": {
                 "visible": {
                     "min": false
                 }
-            },
-            "alignment_metrics": [
-                "visible"
-            ]
+            }
         },
         "FIND_BRICK": {
-            "scan_direction": "r",
             "success_gates": {
                 "visible": {
                     "min": true
                 }
-            },
-            "alignment_metrics": [
-                "visible"
-            ]
+            }
         },
         "ALIGN_BRICK": {
-            "gate_validation": {
-                "fail_runs": 0,
-                "fail_states": 0,
-                "overlap_fail_runs": 0,
-                "metrics": {
-                    "xAxis_offset": {
-                        "target": 11.27,
-                        "tol": 1.581
-                    },
-                    "dist": {
-                        "target": 79.65,
-                        "tol": 9.911
-                    }
-                }
-            },
-            "micro_forward_profile": {
-                "very_close_mm": 110,
-                "close_mm": 150,
-                "somewhat_close_mm": 170,
-                "far_mm": 200
-            },
-            "lock_success_gates": true,
             "start_gates": {
                 "visible": {
                     "min": true
                 }
             },
             "success_gates": {
+                "visible": {
+                    "min": true
+                },
                 "xAxis_offset_abs": {
-                    "target": 11.27,
+                    "target": -1.44,
                     "tol": 0.7
                 },
                 "dist": {
-                    "target": 97.58,
+                    "target": 97.96,
                     "tol": 1.5
                 }
-            },
-            "alignment_metrics": [
-                "xAxis_offset_abs",
-                "dist"
-            ]
+            }
         },
         "SCOOP": {
-            "nominalDemosOnly": true,
-            "alignment_metrics": []
+            "nominalDemosOnly": true
         },
         "FIND_WALL2": {
-            "scan_direction": "r",
             "success_gates": {
                 "visible": {
                     "min": true
                 }
             },
-            "loop_demo_acts": true,
-            "max_speed_score": 20,
-            "alignment_metrics": [
+            "success_metrics": [
                 "visible"
             ]
         },
         "POSITION_BRICK": {
-            "micro_forward_profile": {
-                "very_close_mm": 110,
-                "close_mm": 150,
-                "somewhat_close_mm": 170,
-                "far_mm": 200
-            },
-            "alignment_metrics": [
-                "xAxis_offset_abs",
-                "dist"
-            ],
+            "max_speed_score": 10,
             "start_gates": {
                 "visible": {
                     "min": true
                 }
             },
             "success_gates": {
+                "visible": {
+                    "min": true
+                },
                 "xAxis_offset_abs": {
                     "target": -2.31,
                     "tol": 0.7
@@ -166,12 +79,7 @@
             }
         },
         "PLACE": {
-            "nominalDemosOnly": true,
-            "alignment_metrics": []
-        },
-        "RETREAT": {
-            "nominalDemosOnly": true,
-            "alignment_metrics": []
+            "nominalDemosOnly": true
         }
     }
 }

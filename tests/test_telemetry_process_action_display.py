@@ -18,7 +18,16 @@ class _DummyRobot:
 
 
 class _DummyWorld:
-    pass
+    def __init__(self):
+        self.brick = {
+            "visible": True,
+            "dist": 200.0,
+            "angle": 0.0,
+            "x_axis": 0.0,
+            "offset_x": 0.0,
+            "confidence": 90.0,
+        }
+        self.process_rules = {}
 
 
 class TestTelemetryProcessActionDisplay(unittest.TestCase):
@@ -55,6 +64,38 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
         }
         expected_phrase = expected_phrase_by_cmd.get(cmd_display, "move")
         self.assertIn(expected_phrase, line)
+
+    def test_send_robot_command_auto_mode_caps_score_to_25(self):
+        world = _DummyWorld()
+        robot = _DummyRobot()
+        meta = telemetry_process.send_robot_command(
+            robot,
+            world,
+            step="ALIGN_BRICK",
+            cmd="f",
+            speed=0.0,
+            speed_score=80,
+            auto_mode=True,
+        )
+        self.assertIsInstance(meta, dict)
+        self.assertLessEqual(int(meta.get("score_model") or 0), 25)
+        self.assertLessEqual(int(meta.get("score_effective") or 0), 25)
+
+    def test_send_robot_command_auto_mode_caps_find_steps_to_25(self):
+        world = _DummyWorld()
+        robot = _DummyRobot()
+        meta = telemetry_process.send_robot_command(
+            robot,
+            world,
+            step="FIND_WALL",
+            cmd="r",
+            speed=0.0,
+            speed_score=80,
+            auto_mode=True,
+        )
+        self.assertIsInstance(meta, dict)
+        self.assertLessEqual(int(meta.get("score_model") or 0), 25)
+        self.assertLessEqual(int(meta.get("score_effective") or 0), 25)
 
 
 if __name__ == "__main__":

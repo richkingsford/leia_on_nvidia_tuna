@@ -22,11 +22,28 @@ from telemetry_robot import (
 )
 
 VISIBILITY_LOST_CONFIRM_FRAMES = 3
-ALIGN_BRICK_TURN_SLOW_OFFSET_MM = 9.0
-ALIGN_BRICK_TURN_MED_SCORE = 2
-ALIGN_BRICK_TURN_FAST_SCORE = 3
-ALIGN_BRICK_TURN_FAST_OFFSET_MM = 16.0
+AUTO_SPEED_SCORE_HARD_MAX = 20
 ALIGN_BRICK_X_AXIS_TOL_FAR_SCALE = 3.0
+ALIGN_STEPS_SHARED_DIST_SCORE_BANDS = (
+    (60.0, int(SPEED_SCORE_MIN)),
+    (80.0, 5),
+)
+ALIGN_STEPS_SHARED_TURN_SCORE_BANDS = (
+    (2.0, int(SPEED_SCORE_MIN)),
+    (4.0, 2),
+    (20.0, 3),
+    (50.0, 5),
+)
+# If turn x-gap is within +/-12mm, always use 1% to reduce ping-pong.
+ALIGN_STEPS_SHARED_TURN_FORCE_1_SCORE_GAP_MM = 12.0
+# Extra turn-speed cap when distance is already near its success gate.
+# This keeps ALIGN_BRICK (step 4) and POSITION_BRICK (step 7) from
+# overshooting left/right while they are close to final placement depth.
+# Near dist + modest x-axis error should bias toward 1% to prevent ping-pong.
+ALIGN_STEPS_SHARED_TURN_NEAR_DIST_MM = 8.0
+ALIGN_STEPS_SHARED_TURN_NEAR_DIST_X_GAP_1_SCORE_MM = 7.0
+ALIGN_STEPS_SHARED_TURN_NEAR_DIST_CAP_SCORE = 2
+ALIGN_STEPS_SHARED_TURN_FALLBACK_SCORE = 6
 
 METRIC_DIRECTIONS = {
     "angle_abs": "low",
@@ -73,6 +90,82 @@ def _score_from_mm(mm_off, slow_mm, fast_mm):
     if mm_off >= fast_mm:
         return SPEED_SCORE_MAX
     return SPEED_SCORE_DEFAULT
+
+
+def _banded_gap_speed_score(
+    value,
+    bands,
+    fallback_score: int,
+    *,
+    use_abs=False,
+    inclusive_upper=False,
+):
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return int(fallback_score)
+    if use_abs:
+        numeric = abs(numeric)
+    for upper_bound, score in bands or ():
+        try:
+            bound = float(upper_bound)
+        except (TypeError, ValueError):
+            continue
+        if numeric < bound or (inclusive_upper and numeric == bound):
+            return int(score)
+    return int(fallback_score)
+
+
+def align_steps_dist_speed_score(dist_mm: float, fallback_score: int) -> int:
+    return _banded_gap_speed_score(
+        dist_mm,
+        ALIGN_STEPS_SHARED_DIST_SCORE_BANDS,
+        fallback_score,
+    )
+
+
+def _turn_score_cap_for_dist_gate_error(dist_gate_error_mm, x_axis_gap_mm):
+    if dist_gate_error_mm is None:
+        return None
+    try:
+        dist_err = abs(float(dist_gate_error_mm))
+    except (TypeError, ValueError):
+        return None
+    if dist_err > float(ALIGN_STEPS_SHARED_TURN_NEAR_DIST_MM):
+        return None
+    try:
+        x_gap = abs(float(x_axis_gap_mm))
+    except (TypeError, ValueError):
+        x_gap = None
+    if x_gap is not None and x_gap <= float(ALIGN_STEPS_SHARED_TURN_NEAR_DIST_X_GAP_1_SCORE_MM):
+        return int(SPEED_SCORE_MIN)
+    return int(ALIGN_STEPS_SHARED_TURN_NEAR_DIST_CAP_SCORE)
+
+
+def align_steps_turn_speed_score(
+    x_axis_gap_mm: float,
+    fallback_score: int,
+    *,
+    dist_gate_error_mm=None,
+) -> int:
+    try:
+        x_gap_abs = abs(float(x_axis_gap_mm))
+    except (TypeError, ValueError):
+        x_gap_abs = None
+    if x_gap_abs is not None and x_gap_abs < float(ALIGN_STEPS_SHARED_TURN_FORCE_1_SCORE_GAP_MM):
+        return int(SPEED_SCORE_MIN)
+
+    score = _banded_gap_speed_score(
+        x_axis_gap_mm,
+        ALIGN_STEPS_SHARED_TURN_SCORE_BANDS,
+        fallback_score,
+        use_abs=True,
+        inclusive_upper=True,
+    )
+    cap = _turn_score_cap_for_dist_gate_error(dist_gate_error_mm, x_axis_gap_mm)
+    if cap is not None:
+        score = min(int(score), int(cap))
+    return int(score)
 
 
 def success_gates_visible_only(process_rules, step):
@@ -205,6 +298,7 @@ def align_brick_x_axis_tol_scale(dist_mm: float, process_rules, step: str) -> fl
 def compute_alignment_analytics(world, process_rules, learned_rules, step, duration_s=0.05):
     obj_name = _step_name(step)
     success_metrics = (process_rules or {}).get(obj_name, {}).get("success_gates") or {}
+    step_cfg = (process_rules or {}).get(obj_name, {}) or {}
     brick = world.brick or {}
     visible = bool(brick.get("visible"))
     visible_for_cmd = visible
@@ -248,6 +342,12 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
         "angle_abs": abs(angle),
         "dist": dist,
     }
+    active_metrics = list(metrics.keys())
+    if isinstance(success_metrics, dict) and success_metrics:
+        gated_metrics = [metric for metric in active_metrics if metric in success_metrics]
+        if gated_metrics:
+            active_metrics = gated_metrics
+    x_axis_active = "xAxis_offset_abs" in active_metrics
     signed_values = {
         "xAxis_offset_abs": x_axis,
         "angle_abs": angle,
@@ -311,7 +411,8 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
             return False
         return True
 
-    for metric, value in metrics.items():
+    for metric in active_metrics:
+        value = metrics.get(metric)
         stats = success_metrics.get(metric) or fallback_stats(metric)
         stats = _effective_stats(metric, stats)
         direction = metric_direction_for_step(metric, obj_name)
@@ -375,9 +476,12 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
             offsets["dist"] = signed_error
 
     progress = sum(progress_values) / len(progress_values) if progress_values else None
-    x_axis_stats = success_metrics.get("xAxis_offset_abs") or fallback_stats("xAxis_offset_abs")
-    x_axis_stats = _effective_stats("xAxis_offset_abs", x_axis_stats)
-    x_axis_ok = metric_within_gate(x_axis_stats, x_axis)
+    if x_axis_active:
+        x_axis_stats = success_metrics.get("xAxis_offset_abs") or fallback_stats("xAxis_offset_abs")
+        x_axis_stats = _effective_stats("xAxis_offset_abs", x_axis_stats)
+        x_axis_ok = metric_within_gate(x_axis_stats, x_axis)
+    else:
+        x_axis_ok = True
     dist_gap_mm = None
     force_dist_focus = False
     if obj_name == "ALIGN_BRICK":
@@ -452,7 +556,7 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
             }.get(fallback_metric)
             worst_ratio = 1.0
         else:
-            if not x_axis_ok:
+            if x_axis_active and not x_axis_ok:
                 worst_metric = "xAxis_offset_abs"
                 worst_ratio = max(ratios.get("xAxis_offset_abs", 1.0), 1.0)
             else:
@@ -471,10 +575,6 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
     if force_dist_focus:
         worst_metric = "dist"
         worst_ratio = max(worst_ratio, ratios.get("dist", 1.0), 1.0)
-
-    if worst_metric == "dist" and not x_axis_ok and not force_dist_focus:
-        worst_metric = "xAxis_offset_abs"
-        worst_ratio = max(worst_ratio, ratios.get("xAxis_offset_abs", 1.0), 1.0)
 
     min_speed = ALIGN_MIN_SPEED
     max_speed = ALIGN_MAX_SPEED
@@ -509,19 +609,32 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
         target = stats.get("target")
         tol = stats.get("tol")
         signed_error = signed - target if target is not None and tol is not None else signed
+        x_axis_turn_error_mm = abs(float(signed_error))
+        if signed_error > 0.0:
+            cmd = "r"
+        elif signed_error < 0.0:
+            cmd = "l"
+        else:
+            cmd = None
         if abs(signed_error) < micro_offset_mm:
             speed = min(speed, micro_speed)
-        worst_metric = "xAxis_offset"
+        worst_metric = "xAxis_offset_abs"
 
-    elif worst_metric == "angle":
+    elif worst_metric in ("angle", "angle_abs"):
         signed = signed_values.get("angle", 0.0)
-        stats = success_metrics.get("angle") or fallback_stats("angle")
+        stats = success_metrics.get("angle_abs") or fallback_stats("angle_abs")
         target = stats.get("target")
         tol = stats.get("tol")
-        mag = abs(signed)
+        signed_error = signed - target if target is not None and tol is not None else signed
+        if signed_error > 0.0:
+            cmd = "l"
+        elif signed_error < 0.0:
+            cmd = "r"
+        else:
+            cmd = None
         if abs(signed) < micro_angle_deg:
             speed = min(speed, micro_speed)
-        worst_metric = "angle"
+        worst_metric = "angle_abs"
 
     visible_only = success_gates_visible_only(process_rules, obj_name)
     if visible_only:
@@ -531,7 +644,7 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
         mm_off = None
         if cmd in ("f", "b"):
             mm_off = mm_errors.get("dist")
-        if (mm_off is None or mm_off <= 0.0) and worst_metric == "angle":
+        if (mm_off is None or mm_off <= 0.0) and worst_metric == "angle_abs":
             mm_off = None
         slow_mm = ALIGN_SPEED_SLOW_MM
         fast_mm = ALIGN_SPEED_FAST_MM
@@ -539,7 +652,18 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
             slow_mm = ALIGN_SPEED_SLOW_MM / 4.0
             fast_mm = ALIGN_SPEED_FAST_MM / 4.0
         if obj_name == "ALIGN_BRICK" and cmd == "f":
-            speed_score = align_brick_forward_speed_score(dist, process_rules, obj_name)
+            base_score = align_brick_forward_speed_score(dist, process_rules, obj_name)
+            speed_score = align_steps_dist_speed_score(dist, base_score)
+        elif obj_name == "POSITION_BRICK" and cmd in ("f", "b"):
+            base_score = _score_from_mm(mm_off, slow_mm, fast_mm)
+            speed_score = align_steps_dist_speed_score(dist, base_score)
+        elif obj_name in ("ALIGN_BRICK", "POSITION_BRICK") and cmd in ("l", "r") and x_axis_turn_error_mm is not None:
+            dist_gate_error_mm = mm_errors.get("dist")
+            speed_score = align_steps_turn_speed_score(
+                x_axis_turn_error_mm,
+                ALIGN_STEPS_SHARED_TURN_FALLBACK_SCORE,
+                dist_gate_error_mm=dist_gate_error_mm,
+            )
         else:
             speed_score = _score_from_mm(mm_off, slow_mm, fast_mm)
         speed_score = normalize_speed_score(speed_score)
@@ -547,6 +671,15 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
     if not visible_for_cmd:
         speed_score = SPEED_SCORE_DEFAULT
         speed_score = normalize_speed_score(speed_score)
+    max_speed_score = None
+    if isinstance(step_cfg, dict) and step_cfg.get("max_speed_score") is not None:
+        try:
+            max_speed_score = normalize_speed_score(step_cfg.get("max_speed_score"))
+        except (TypeError, ValueError):
+            max_speed_score = None
+    if max_speed_score is not None:
+        speed_score = min(int(speed_score), int(max_speed_score))
+    speed_score = min(int(speed_score), int(AUTO_SPEED_SCORE_HARD_MAX))
 
     if cmd:
         speed = manual_speed_for_cmd(cmd, speed_score)
