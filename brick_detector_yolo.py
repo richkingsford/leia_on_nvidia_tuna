@@ -52,7 +52,7 @@ DEFAULT_FOCAL_PX = 450.0
 MODEL_PATH = Path(__file__).resolve().parent / "brick_yolo_v2.onnx"
 
 # Detection confidence threshold
-CONF_THRESHOLD = 0.25
+CONF_THRESHOLD = 0.15
 
 # NMS IoU threshold
 NMS_THRESHOLD = 0.45
@@ -130,7 +130,7 @@ class BrickDetector:
         self._prev_angle = None
         self._prev_dist = None
         self._prev_offset = None
-        self._smooth_alpha = 0.6  # EMA weight for new values
+        self._smooth_alpha = 0.3  # EMA weight for new values (lower = smoother)
 
     # ------------------------------------------------------------------
     # ONNX inference helpers
