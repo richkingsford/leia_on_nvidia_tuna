@@ -133,9 +133,109 @@ BRICK_STUDY_STD_LOW_DEG = 2.0
 BRICK_STUDY_STD_HIGH_MM = 8.0
 BRICK_STUDY_STD_HIGH_DEG = 4.0
 
-_DEFAULT_VISION_MODE = str(_MANUAL_CONFIG.get("brick_vision", "aruco")).strip().lower()
-if _DEFAULT_VISION_MODE not in {"aruco", "yolo"}:
-    _DEFAULT_VISION_MODE = "aruco"
+VISION_MODE_ARUCO = "aruco"
+VISION_MODE_MARKERLESS = "yolo"
+STREAM_VISION_MODE_OPTIONS = [
+    (VISION_MODE_ARUCO, "AruCo Markers"),
+    (VISION_MODE_MARKERLESS, "Markerless"),
+]
+MARKERLESS_PROFILE_BALANCED = "balanced"
+MARKERLESS_PROFILE_OPTIONS = [
+    ("balanced", "Balanced (0.15 conf / 0.30 smooth)"),
+    ("sensitive", "Sensitive (0.10 conf / 0.20 smooth)"),
+    ("aggressive", "Aggressive (0.05 conf / 0.15 smooth)"),
+    ("rescue", "Rescue (0.001 conf / 0.10 smooth)"),
+    ("stable", "Stable (0.20 conf / 0.40 smooth)"),
+    ("legacy", "Legacy (0.25 conf / 0.60 smooth)"),
+]
+MARKERLESS_PROFILE_PRESETS = {
+    "balanced": {
+        "conf_threshold": 0.15,
+        "smooth_alpha": 0.30,
+        "nms_threshold": 0.45,
+    },
+    "sensitive": {
+        "conf_threshold": 0.10,
+        "smooth_alpha": 0.20,
+        "nms_threshold": 0.45,
+    },
+    "aggressive": {
+        "conf_threshold": 0.05,
+        "smooth_alpha": 0.15,
+        "nms_threshold": 0.45,
+    },
+    "rescue": {
+        "conf_threshold": 0.001,
+        "smooth_alpha": 0.10,
+        "nms_threshold": 0.45,
+    },
+    "stable": {
+        "conf_threshold": 0.20,
+        "smooth_alpha": 0.40,
+        "nms_threshold": 0.45,
+    },
+    "legacy": {
+        "conf_threshold": 0.25,
+        "smooth_alpha": 0.60,
+        "nms_threshold": 0.45,
+    },
+}
+_VISION_MODE_ALIASES = {
+    "aruco": VISION_MODE_ARUCO,
+    "yolo": VISION_MODE_MARKERLESS,
+    "markerless": VISION_MODE_MARKERLESS,
+}
+
+
+def normalize_vision_mode(value, fallback=VISION_MODE_ARUCO):
+    key = str(value or "").strip().lower()
+    mode = _VISION_MODE_ALIASES.get(key)
+    if mode:
+        return mode
+    fallback_key = str(fallback or "").strip().lower()
+    fallback_mode = _VISION_MODE_ALIASES.get(fallback_key)
+    if fallback_mode:
+        return fallback_mode
+    return VISION_MODE_ARUCO
+
+
+_DEFAULT_VISION_MODE = normalize_vision_mode(_MANUAL_CONFIG.get("brick_vision", VISION_MODE_ARUCO))
+_DEFAULT_MARKERLESS_PROFILE = str(
+    _MANUAL_CONFIG.get("markerless_profile", MARKERLESS_PROFILE_BALANCED)
+).strip().lower()
+if _DEFAULT_MARKERLESS_PROFILE not in MARKERLESS_PROFILE_PRESETS:
+    _DEFAULT_MARKERLESS_PROFILE = MARKERLESS_PROFILE_BALANCED
+
+
+def _vision_mode_cli_value(mode):
+    mode_norm = normalize_vision_mode(mode)
+    if mode_norm == VISION_MODE_MARKERLESS:
+        return VISION_MODE_MARKERLESS
+    return VISION_MODE_ARUCO
+
+
+def normalize_markerless_profile(value, fallback=MARKERLESS_PROFILE_BALANCED):
+    key = str(value or "").strip().lower()
+    if key in MARKERLESS_PROFILE_PRESETS:
+        return key
+    fallback_key = str(fallback or "").strip().lower()
+    if fallback_key in MARKERLESS_PROFILE_PRESETS:
+        return fallback_key
+    return MARKERLESS_PROFILE_BALANCED
+
+
+def markerless_profile_settings(profile):
+    profile_key = normalize_markerless_profile(profile, fallback=_DEFAULT_MARKERLESS_PROFILE)
+    settings = MARKERLESS_PROFILE_PRESETS.get(profile_key) or MARKERLESS_PROFILE_PRESETS[MARKERLESS_PROFILE_BALANCED]
+    return profile_key, settings
+
+
+def markerless_profile_label(profile):
+    profile_key = normalize_markerless_profile(profile, fallback=_DEFAULT_MARKERLESS_PROFILE)
+    for value, label in MARKERLESS_PROFILE_OPTIONS:
+        if value == profile_key:
+            return label
+    return profile_key
 
 STEP_CODES = {str(idx + 1): obj for idx, obj in enumerate(DEMO_STEPS)}
 
@@ -738,6 +838,56 @@ def _average_frames(frames):
     }
 
 
+def _markerless_average_frames(frames):
+    found_frames = [frame for frame in frames if frame.get("found")]
+    if not found_frames:
+        return None
+
+    def median(values):
+        return statistics.median(values) if values else 0.0
+
+    def mean(values):
+        return (sum(values) / len(values)) if values else 0.0
+
+    def majority(values):
+        return sum(1 for value in values if value) >= (len(values) / 2.0)
+
+    return {
+        "found": True,
+        "dist": median([frame["dist"] for frame in found_frames]),
+        "angle": median([frame["angle"] for frame in found_frames]),
+        "offset_x": median([frame["offset_x"] for frame in found_frames]),
+        "conf": mean([frame["conf"] for frame in found_frames]),
+        "cam_h": mean([frame["cam_h"] for frame in found_frames]),
+        "brick_above": majority([frame["brick_above"] for frame in found_frames]),
+        "brick_below": majority([frame["brick_below"] for frame in found_frames]),
+    }
+
+
+def evaluate_markerless_frames(frames):
+    if len(frames) < BRICK_STUDY_FRAMES:
+        return None
+    found_count = sum(1 for frame in frames if frame.get("found"))
+    if found_count <= 0:
+        return {
+            "confidence": 0,
+            "message": "0% confidence (no markerless detections in the latest 4 frames)",
+            "average": None,
+            "reset": True,
+        }
+    average = _markerless_average_frames(frames)
+    confidence = int(round(100 * found_count / BRICK_STUDY_FRAMES))
+    return {
+        "confidence": confidence,
+        "message": (
+            f"{confidence}% confidence ({found_count}/{BRICK_STUDY_FRAMES} "
+            "markerless frames found a brick)"
+        ),
+        "average": average,
+        "reset": True,
+    }
+
+
 def evaluate_brick_frames(frames):
     if len(frames) < BRICK_STUDY_FRAMES:
         return None
@@ -816,10 +966,61 @@ def evaluate_brick_frames(frames):
     }
 
 
+def markerless_stream_debug_lines(app_state, vision):
+    active_mode = _stream_state_vision_mode(app_state, _DEFAULT_VISION_MODE)
+    if normalize_vision_mode(active_mode) != VISION_MODE_MARKERLESS:
+        return None
+
+    profile = _stream_state_markerless_profile(app_state, _DEFAULT_MARKERLESS_PROFILE)
+    profile_text = markerless_profile_label(profile)
+    model_name = "-"
+    model_path = getattr(vision, "model_path", None)
+    if model_path:
+        model_name = Path(str(model_path)).name or str(model_path)
+
+    status = str(getattr(vision, "last_status", "searching")).strip() or "searching"
+    raw_count = getattr(vision, "last_raw_prediction_count", None)
+    candidate_count = getattr(vision, "last_candidate_count", None)
+    nms_count = getattr(vision, "last_nms_count", None)
+    top_conf = getattr(vision, "last_primary_confidence", None)
+    raw_max_conf = getattr(vision, "last_max_confidence", None)
+    conf_threshold = getattr(vision, "conf_threshold", None)
+    smooth_alpha = getattr(vision, "_smooth_alpha", None)
+    input_size = getattr(vision, "input_size", None)
+
+    raw_text = str(int(raw_count)) if isinstance(raw_count, (int, float)) else "-"
+    candidate_text = str(int(candidate_count)) if isinstance(candidate_count, (int, float)) else "-"
+    nms_text = str(int(nms_count)) if isinstance(nms_count, (int, float)) else "-"
+    if isinstance(top_conf, (int, float)):
+        top_conf_text = f"{max(0.0, min(1.0, float(top_conf))) * 100.0:.0f}%"
+    else:
+        top_conf_text = "-"
+    if isinstance(raw_max_conf, (int, float)):
+        raw_max_conf_text = f"{max(0.0, min(1.0, float(raw_max_conf))) * 100.0:.2f}%"
+    else:
+        raw_max_conf_text = "-"
+    if isinstance(conf_threshold, (int, float)):
+        threshold_text = f"{max(0.0, min(1.0, float(conf_threshold))) * 100.0:.2f}%"
+    else:
+        threshold_text = "-"
+    if isinstance(smooth_alpha, (int, float)):
+        smooth_text = f"{max(0.0, min(1.0, float(smooth_alpha))):.2f}"
+    else:
+        smooth_text = "-"
+    input_text = f"{int(input_size)}" if isinstance(input_size, (int, float)) else "-"
+
+    return [
+        f"[ML] PROFILE: {profile_text} | MODEL: {model_name}",
+        f"[ML] SEARCH: {status} | RAW:{raw_text} >THR:{candidate_text} NMS:{nms_text}",
+        f"[ML] TOP CONF: {top_conf_text} | MAX RAW: {raw_max_conf_text} | MIN CONF: {threshold_text} | SMOOTH: {smooth_text} | INPUT: {input_text}px",
+    ]
+
+
 def update_stream_frame(app_state):
-    if app_state.vision.current_frame is None:
+    vision = app_state.vision
+    if vision is None or vision.current_frame is None:
         return
-    frame = app_state.vision.current_frame.copy()
+    frame = vision.current_frame.copy()
     with app_state.lock:
         step_suggestions = []
         if app_state.step_suggestions:
@@ -836,6 +1037,7 @@ def update_stream_frame(app_state):
         )
         if analytics:
             app_state.brick_highlight_metric = analytics.get("highlight_metric")
+        markerless_lines = markerless_stream_debug_lines(app_state, vision)
         stream_lines = []
         frame = draw_telemetry_overlay(
             frame,
@@ -851,6 +1053,7 @@ def update_stream_frame(app_state):
             draw_text=False,
             line_sink=stream_lines,
             show_center_line=bool(app_state.stream_state.get("show_center_line", True)),
+            brick_extra_lines=markerless_lines,
         )
         app_state.current_frame = frame
     if app_state.stream_state:
@@ -1208,6 +1411,8 @@ class AppState:
             "lock": threading.Lock(),
             "skip_telemetry_process": True,
             "show_center_line": True,
+            "vision_mode": _DEFAULT_VISION_MODE,
+            "markerless_profile": _DEFAULT_MARKERLESS_PROFILE,
         }
         self.stream_enabled = False
         # Allow telemetry_process helpers to push frames directly during auto-run pauses.
@@ -1413,15 +1618,123 @@ def stream_refresh_loop(app_state):
 
 
 def build_vision(vision_mode, yolo_model_path=None):
-    if vision_mode == "yolo":
+    mode = normalize_vision_mode(vision_mode)
+    if mode == VISION_MODE_MARKERLESS:
         return YoloBrickDetector(debug=True, model_path=yolo_model_path)
     return ArucoBrickVision(debug=True)
 
 
+def _stream_state_vision_mode(app_state, fallback):
+    stream_state = app_state.stream_state if isinstance(app_state.stream_state, dict) else None
+    if not stream_state:
+        return normalize_vision_mode(fallback, fallback=fallback)
+    lock = stream_state.get("lock")
+    if lock is None:
+        value = stream_state.get("vision_mode", fallback)
+    else:
+        with lock:
+            value = stream_state.get("vision_mode", fallback)
+    return normalize_vision_mode(value, fallback=fallback)
+
+
+def _set_stream_state_vision_mode(app_state, mode):
+    stream_state = app_state.stream_state if isinstance(app_state.stream_state, dict) else None
+    if not stream_state:
+        return
+    lock = stream_state.get("lock")
+    mode_norm = normalize_vision_mode(mode, fallback=VISION_MODE_ARUCO)
+    if lock is None:
+        stream_state["vision_mode"] = mode_norm
+        return
+    with lock:
+        stream_state["vision_mode"] = mode_norm
+
+
+def _stream_state_markerless_profile(app_state, fallback):
+    stream_state = app_state.stream_state if isinstance(app_state.stream_state, dict) else None
+    if not stream_state:
+        return normalize_markerless_profile(fallback, fallback=fallback)
+    lock = stream_state.get("lock")
+    if lock is None:
+        value = stream_state.get("markerless_profile", fallback)
+    else:
+        with lock:
+            value = stream_state.get("markerless_profile", fallback)
+    return normalize_markerless_profile(value, fallback=fallback)
+
+
+def _set_stream_state_markerless_profile(app_state, profile):
+    stream_state = app_state.stream_state if isinstance(app_state.stream_state, dict) else None
+    if not stream_state:
+        return
+    lock = stream_state.get("lock")
+    profile_norm = normalize_markerless_profile(profile, fallback=_DEFAULT_MARKERLESS_PROFILE)
+    if lock is None:
+        stream_state["markerless_profile"] = profile_norm
+        return
+    with lock:
+        stream_state["markerless_profile"] = profile_norm
+
+
+def _apply_markerless_profile(app_state, vision, profile):
+    profile_key, settings = markerless_profile_settings(profile)
+    _set_stream_state_markerless_profile(app_state, profile_key)
+    if not isinstance(vision, YoloBrickDetector):
+        return profile_key, settings, False
+
+    confidence = settings.get("conf_threshold")
+    smooth_alpha = settings.get("smooth_alpha")
+    nms_threshold = settings.get("nms_threshold")
+    if hasattr(vision, "set_runtime_tuning"):
+        vision.set_runtime_tuning(
+            confidence=confidence,
+            smoothing_alpha=smooth_alpha,
+            nms_threshold=nms_threshold,
+        )
+    else:
+        if confidence is not None:
+            vision.conf_threshold = float(confidence)
+        if smooth_alpha is not None:
+            vision._smooth_alpha = float(smooth_alpha)
+        if nms_threshold is not None:
+            vision.nms_threshold = float(nms_threshold)
+    for attr in ("_prev_angle", "_prev_dist", "_prev_offset"):
+        if hasattr(vision, attr):
+            setattr(vision, attr, None)
+    return profile_key, settings, True
+
+
+def _vision_mode_label(mode):
+    if normalize_vision_mode(mode) == VISION_MODE_MARKERLESS:
+        return "Markerless"
+    return "AruCo Markers"
+
+
 def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
     app_state.robot = Robot()
+    active_vision_mode = normalize_vision_mode(vision_mode)
+    active_markerless_profile = _stream_state_markerless_profile(app_state, _DEFAULT_MARKERLESS_PROFILE)
+    _set_stream_state_vision_mode(app_state, active_vision_mode)
+    _set_stream_state_markerless_profile(app_state, active_markerless_profile)
     # speed_optimize=False so we get the debug markers drawn on the frame
-    app_state.vision = build_vision(vision_mode, yolo_model_path=yolo_model_path)
+    app_state.vision = build_vision(active_vision_mode, yolo_model_path=yolo_model_path)
+    profile_key, profile_settings, profile_applied = _apply_markerless_profile(
+        app_state,
+        app_state.vision,
+        active_markerless_profile,
+    )
+    active_markerless_profile = profile_key
+    log_line(
+        f"[VISION] Active mode: {_vision_mode_label(active_vision_mode)} "
+        f"(--vision {_vision_mode_cli_value(active_vision_mode)})"
+    )
+    if active_vision_mode == VISION_MODE_MARKERLESS and profile_applied:
+        log_line(
+            "[VISION] Markerless config: "
+            f"{markerless_profile_label(active_markerless_profile)} "
+            f"(min_conf={float(profile_settings.get('conf_threshold', 0.15)):.2f}, "
+            f"smooth={float(profile_settings.get('smooth_alpha', 0.30)):.2f})"
+        )
 
     if app_state.stream_enabled:
         stream_t = threading.Thread(target=stream_refresh_loop, args=(app_state,), daemon=True)
@@ -1434,6 +1747,74 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
     
     while app_state.running:
         loop_start = time.time()
+        requested_markerless_profile = _stream_state_markerless_profile(
+            app_state,
+            active_markerless_profile,
+        )
+        if requested_markerless_profile != active_markerless_profile:
+            active_markerless_profile = requested_markerless_profile
+            if active_vision_mode == VISION_MODE_MARKERLESS and app_state.vision is not None:
+                profile_key, profile_settings, profile_applied = _apply_markerless_profile(
+                    app_state,
+                    app_state.vision,
+                    active_markerless_profile,
+                )
+                active_markerless_profile = profile_key
+                if profile_applied:
+                    with app_state.lock:
+                        app_state.brick_frame_buffer = []
+                    log_line(
+                        "[VISION] Markerless config: "
+                        f"{markerless_profile_label(active_markerless_profile)} "
+                        f"(min_conf={float(profile_settings.get('conf_threshold', 0.15)):.2f}, "
+                        f"smooth={float(profile_settings.get('smooth_alpha', 0.30)):.2f})"
+                    )
+        requested_vision_mode = _stream_state_vision_mode(app_state, active_vision_mode)
+        if requested_vision_mode != active_vision_mode:
+            previous_vision = app_state.vision
+            try:
+                if previous_vision is not None:
+                    previous_vision.close()
+            except Exception:
+                pass
+            try:
+                new_vision = build_vision(requested_vision_mode, yolo_model_path=yolo_model_path)
+            except Exception as exc:
+                restored_vision = None
+                try:
+                    restored_vision = build_vision(active_vision_mode, yolo_model_path=yolo_model_path)
+                    _apply_markerless_profile(app_state, restored_vision, active_markerless_profile)
+                except Exception as restore_exc:
+                    log_line(f"[VISION] Failed to restore {_vision_mode_label(active_vision_mode)}: {restore_exc}")
+                app_state.vision = restored_vision
+                _set_stream_state_vision_mode(app_state, active_vision_mode)
+                log_line(
+                    f"[VISION] Failed to switch to {_vision_mode_label(requested_vision_mode)}: {exc}"
+                )
+            else:
+                app_state.vision = new_vision
+                active_vision_mode = requested_vision_mode
+                profile_key, profile_settings, profile_applied = _apply_markerless_profile(
+                    app_state,
+                    app_state.vision,
+                    active_markerless_profile,
+                )
+                active_markerless_profile = profile_key
+                with app_state.lock:
+                    app_state.brick_frame_buffer = []
+                _set_stream_state_vision_mode(app_state, active_vision_mode)
+                log_line(
+                    f"[VISION] Switched to {_vision_mode_label(active_vision_mode)} "
+                    f"(--vision {_vision_mode_cli_value(active_vision_mode)})."
+                )
+                if active_vision_mode == VISION_MODE_MARKERLESS and profile_applied:
+                    log_line(
+                        "[VISION] Markerless config: "
+                        f"{markerless_profile_label(active_markerless_profile)} "
+                        f"(min_conf={float(profile_settings.get('conf_threshold', 0.15)):.2f}, "
+                        f"smooth={float(profile_settings.get('smooth_alpha', 0.30)):.2f})"
+                    )
+
         refresh_world_model_from_demos(app_state)
         auto_obj = None
         with app_state.lock:
@@ -1446,7 +1827,10 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
                 app_state.active_speed_score = None
 
         if auto_obj:
-            run_auto_step(app_state, auto_obj)
+            if app_state.vision is None:
+                log_line("[VISION] Auto-step skipped: no active vision backend.")
+            else:
+                run_auto_step(app_state, auto_obj)
             with app_state.lock:
                 app_state.auto_running = False
                 app_state.active_command = None
@@ -1455,7 +1839,11 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
             continue
             
         # 1. Vision
-        found, angle, dist, offset_x, conf, cam_h, brick_above, brick_below = app_state.vision.read()
+        vision = app_state.vision
+        if vision is None:
+            time.sleep(dt)
+            continue
+        found, angle, dist, offset_x, conf, cam_h, brick_above, brick_below = vision.read()
         
         # 2. Telemetry Update
         study = None
@@ -1473,7 +1861,10 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
             if len(app_state.brick_frame_buffer) > BRICK_STUDY_FRAMES:
                 app_state.brick_frame_buffer.pop(0)
 
-            study = evaluate_brick_frames(app_state.brick_frame_buffer)
+            if isinstance(vision, YoloBrickDetector):
+                study = evaluate_markerless_frames(app_state.brick_frame_buffer)
+            else:
+                study = evaluate_brick_frames(app_state.brick_frame_buffer)
             if study and study.get("reset"):
                 app_state.brick_frame_buffer = []
         if study and study.get("average"):
@@ -1624,14 +2015,22 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--brick-vision",
-        choices=["aruco", "yolo"],
+        "--vision",
+        dest="brick_vision",
+        choices=["aruco", "yolo", "markerless"],
         default=_DEFAULT_VISION_MODE,
-        help="Brick vision model to use (aruco or yolo)",
+        help="Brick vision model to use (aruco/yolo; markerless is an alias for yolo)",
     )
     parser.add_argument(
         "--yolo-model",
         default=None,
-        help="Path to YOLO ONNX model (only used with --brick-vision yolo)",
+        help="Path to YOLO ONNX model (used with --brick-vision yolo or --vision yolo)",
+    )
+    parser.add_argument(
+        "--markerless-profile",
+        choices=[value for value, _label in MARKERLESS_PROFILE_OPTIONS],
+        default=_DEFAULT_MARKERLESS_PROFILE,
+        help="Markerless tuning profile (applies when vision mode is yolo/markerless)",
     )
     parser.add_argument("--stream", dest="stream", action="store_true",
                         help="Enable livestreaming")
@@ -1639,12 +2038,19 @@ if __name__ == "__main__":
                         help="Disable livestreaming")
     parser.set_defaults(stream=True)
     args = parser.parse_args()
+    vision_mode = normalize_vision_mode(args.brick_vision, fallback=_DEFAULT_VISION_MODE)
+    markerless_profile = normalize_markerless_profile(
+        args.markerless_profile,
+        fallback=_DEFAULT_MARKERLESS_PROFILE,
+    )
 
     logs = load_demo_logs(DEMOS_DIR)
     if logs:
         update_process_model_from_demos(logs, PROCESS_MODEL_FILE)
 
     state = AppState()
+    _set_stream_state_vision_mode(state, vision_mode)
+    _set_stream_state_markerless_profile(state, markerless_profile)
     refresh_world_model_from_demos(state, force=True)
     print_command_help(state)
     
@@ -1664,6 +2070,8 @@ if __name__ == "__main__":
                 port=STREAM_PORT,
                 fps=STREAM_FPS,
                 jpeg_quality=STREAM_JPEG_QUALITY,
+                vision_mode_options=STREAM_VISION_MODE_OPTIONS,
+                markerless_profile_options=MARKERLESS_PROFILE_OPTIONS,
             )
         except Exception as exc:
             state.stream_enabled = False
@@ -1680,7 +2088,7 @@ if __name__ == "__main__":
         log_line("[VISION] Stream disabled")
     
     try:
-        control_loop(state, vision_mode=args.brick_vision, yolo_model_path=args.yolo_model)
+        control_loop(state, vision_mode=vision_mode, yolo_model_path=args.yolo_model)
     except KeyboardInterrupt:
         pass
     finally:

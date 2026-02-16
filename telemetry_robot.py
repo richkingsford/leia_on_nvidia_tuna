@@ -1472,6 +1472,7 @@ def draw_telemetry_overlay(
     draw_text=True,
     line_sink=None,
     show_center_line=True,
+    brick_extra_lines=None,
 ):
     """
     Simplified HUD renderer.
@@ -1704,6 +1705,12 @@ def draw_telemetry_overlay(
         below_txt = "-"
     put_line(f"BRICK ABOVE: {above_txt}", WHITE, 0.38, 1)
     put_line(f"BRICK_BELOW: {below_txt}", WHITE, 0.38, 1)
+    if brick_extra_lines:
+        for line in brick_extra_lines:
+            if isinstance(line, (tuple, list)) and len(line) >= 2:
+                put_line(str(line[0]), line[1], 0.35, 1)
+            else:
+                put_line(str(line), WHITE, 0.35, 1)
     put_line("", WHITE, 0.35, 1)
     
     y_cur += 5

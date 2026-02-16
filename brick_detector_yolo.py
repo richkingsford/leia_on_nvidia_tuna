@@ -101,6 +101,20 @@ class BrickDetector:
             )
         self.net = cv2.dnn.readNetFromONNX(str(mpath))
         self.log.info("Loaded YOLO ONNX model from %s", mpath)
+        self.model_path = str(mpath)
+        self.model_name = mpath.name
+        self.conf_threshold = float(CONF_THRESHOLD)
+        self.nms_threshold = float(NMS_THRESHOLD)
+        self.input_size = int(YOLO_INPUT_SIZE)
+        self.last_raw_prediction_count = 0
+        self.last_candidate_count = 0
+        self.last_nms_count = 0
+        self.last_primary_confidence = 0.0
+        self.last_max_confidence = 0.0
+        self.last_status = "idle"
+        # Keep debug view readable when low confidence rescue profiles are active.
+        self.debug_show_all_candidates = False
+        self.debug_max_boxes = 1
 
         # Camera setup — try indices 0-3
         self.cap = None
@@ -131,6 +145,31 @@ class BrickDetector:
         self._prev_dist = None
         self._prev_offset = None
         self._smooth_alpha = 0.3  # EMA weight for new values (lower = smoother)
+
+    def set_runtime_tuning(self, confidence=None, smoothing_alpha=None, nms_threshold=None):
+        if confidence is not None:
+            try:
+                conf_val = float(confidence)
+                self.conf_threshold = max(0.0, min(1.0, conf_val))
+            except (TypeError, ValueError):
+                pass
+        if smoothing_alpha is not None:
+            try:
+                alpha_val = float(smoothing_alpha)
+                self._smooth_alpha = max(0.0, min(1.0, alpha_val))
+            except (TypeError, ValueError):
+                pass
+        if nms_threshold is not None:
+            try:
+                nms_val = float(nms_threshold)
+                self.nms_threshold = max(0.0, min(1.0, nms_val))
+            except (TypeError, ValueError):
+                pass
+        return {
+            "conf_threshold": float(getattr(self, "conf_threshold", CONF_THRESHOLD)),
+            "smooth_alpha": float(getattr(self, "_smooth_alpha", 0.3)),
+            "nms_threshold": float(getattr(self, "nms_threshold", NMS_THRESHOLD)),
+        }
 
     # ------------------------------------------------------------------
     # ONNX inference helpers
@@ -179,14 +218,20 @@ class BrickDetector:
 
         # Transpose to (8400, 5) — each row: [cx, cy, w, h, conf]
         output = output[0].T
+        self.last_raw_prediction_count = int(output.shape[0]) if output.ndim == 2 else 0
 
         # Filter by confidence
+        conf_threshold = float(getattr(self, "conf_threshold", CONF_THRESHOLD))
+        nms_threshold = float(getattr(self, "nms_threshold", NMS_THRESHOLD))
         confs = output[:, 4]
-        mask = confs > CONF_THRESHOLD
+        self.last_max_confidence = float(np.max(confs)) if confs.size else 0.0
+        mask = confs > conf_threshold
         output = output[mask]
         confs = confs[mask]
+        self.last_candidate_count = int(len(output))
 
         if len(output) == 0:
+            self.last_nms_count = 0
             return []
 
         # Prepare boxes for NMS — cv2.dnn.NMSBoxes expects [x, y, w, h]
@@ -201,8 +246,9 @@ class BrickDetector:
 
         indices = cv2.dnn.NMSBoxes(
             boxes_for_nms, confs.tolist(),
-            CONF_THRESHOLD, NMS_THRESHOLD
+            conf_threshold, nms_threshold
         )
+        self.last_nms_count = int(len(indices)) if indices is not None else 0
 
         if len(indices) == 0:
             return []
@@ -291,7 +337,7 @@ class BrickDetector:
             angle (float): Brick rotation angle in degrees
             dist (float): Estimated distance to brick in mm
             offset_x (float): Horizontal offset from camera center in mm
-            confidence (float): Detection confidence (0-1)
+            confidence (float): Detection confidence (0-100)
             cam_height (float): Estimated camera height (0 if unknown)
             brick_above (bool): Whether a brick is detected above current
             brick_below (bool): Whether a brick is detected below current
@@ -299,6 +345,8 @@ class BrickDetector:
         ret, frame = self.cap.read()
         if not ret or frame is None:
             self.log.warning("Frame capture failed")
+            self.last_status = "camera read failed"
+            self.last_primary_confidence = 0.0
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
         self.raw_frame = frame.copy()
@@ -315,11 +363,16 @@ class BrickDetector:
             self._prev_angle = None
             self._prev_dist = None
             self._prev_offset = None
+            self.last_status = "searching"
+            self.last_primary_confidence = 0.0
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
         # Pick the highest-confidence brick as primary target
         bricks.sort(key=lambda b: b[4], reverse=True)
         x1, y1, x2, y2, conf = bricks[0]
+        self.last_status = "target locked"
+        self.last_primary_confidence = float(conf)
+        conf_pct = float(conf) * 100.0
 
         # Angle estimation
         raw_angle = self._estimate_angle(frame, x1, y1, x2, y2)
@@ -358,7 +411,7 @@ class BrickDetector:
         if self.debug:
             self._draw_debug(frame, bricks, angle, dist, offset_x, conf)
 
-        return (True, angle, dist, offset_x, conf, cam_height,
+        return (True, angle, dist, offset_x, conf_pct, cam_height,
                 brick_above, brick_below)
 
     def read_frame(self, frame):
@@ -376,10 +429,15 @@ class BrickDetector:
         bricks = self._detect(frame)
 
         if not bricks:
+            self.last_status = "searching"
+            self.last_primary_confidence = 0.0
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
         bricks.sort(key=lambda b: b[4], reverse=True)
         x1, y1, x2, y2, conf = bricks[0]
+        self.last_status = "target locked"
+        self.last_primary_confidence = float(conf)
+        conf_pct = float(conf) * 100.0
 
         raw_angle = self._estimate_angle(frame, x1, y1, x2, y2)
         angle = self._smooth(raw_angle, self._prev_angle)
@@ -412,12 +470,18 @@ class BrickDetector:
         if self.debug:
             self._draw_debug(frame, bricks, angle, dist, offset_x, conf)
 
-        return (True, angle, dist, offset_x, conf, cam_height,
+        return (True, angle, dist, offset_x, conf_pct, cam_height,
                 brick_above, brick_below)
 
     def _draw_debug(self, frame, bricks, angle, dist, offset_x, conf):
         """Draw detection visualization on frame."""
-        for i, (x1, y1, x2, y2, c) in enumerate(bricks):
+        if self.debug_show_all_candidates:
+            draw_boxes = list(bricks)
+        else:
+            max_boxes = max(1, int(getattr(self, "debug_max_boxes", 1) or 1))
+            draw_boxes = list(bricks[:max_boxes])
+
+        for i, (x1, y1, x2, y2, c) in enumerate(draw_boxes):
             color = (0, 255, 0) if i == 0 else (0, 200, 200)
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 

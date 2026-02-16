@@ -46,6 +46,76 @@ def build_bool_setter(state, key, lock_key="lock"):
     return _setter
 
 
+def build_choice_getter(state, key, choices, lock_key="lock", default=None):
+    allowed = {str(choice).strip().lower() for choice in (choices or []) if str(choice).strip()}
+    default_value = str(default).strip().lower() if default is not None else None
+    if default_value not in allowed:
+        default_value = next(iter(allowed), "")
+
+    def _getter():
+        lock = state.get(lock_key)
+        if lock is None:
+            raw = state.get(key, default_value)
+        else:
+            with lock:
+                raw = state.get(key, default_value)
+        value = str(raw).strip().lower() if raw is not None else default_value
+        if value not in allowed:
+            return default_value
+        return value
+
+    return _getter
+
+
+def build_choice_setter(state, key, choices, lock_key="lock"):
+    allowed = {str(choice).strip().lower() for choice in (choices or []) if str(choice).strip()}
+
+    def _setter(value):
+        mode = str(value).strip().lower() if value is not None else ""
+        if mode not in allowed:
+            return
+        lock = state.get(lock_key)
+        if lock is None:
+            state[key] = mode
+            return
+        with lock:
+            state[key] = mode
+
+    return _setter
+
+
+def _normalize_choice_options(options):
+    normalized = []
+    if not options:
+        return normalized
+    for item in options:
+        value = None
+        label = None
+        if isinstance(item, dict):
+            value = item.get("value")
+            label = item.get("label")
+        elif isinstance(item, (tuple, list)) and len(item) >= 2:
+            value = item[0]
+            label = item[1]
+        if value is None:
+            continue
+        value_norm = str(value).strip().lower()
+        if not value_norm:
+            continue
+        label_norm = str(label).strip() if label is not None else value_norm
+        if not label_norm:
+            label_norm = value_norm
+        normalized.append((value_norm, label_norm))
+    seen_modes = set()
+    deduped = []
+    for value, label in normalized:
+        if value in seen_modes:
+            continue
+        deduped.append((value, label))
+        seen_modes.add(value)
+    return deduped
+
+
 def start_stream_server(
     state,
     title,
@@ -59,6 +129,10 @@ def start_stream_server(
     sharpen=True,
     port_tries=10,
     ready_timeout_s=3.0,
+    vision_mode_options=None,
+    vision_mode_key="vision_mode",
+    markerless_profile_options=None,
+    markerless_profile_key="markerless_profile",
 ):
     def _port_available(host, port):
         host_raw = "" if host is None else str(host).strip()
@@ -93,6 +167,49 @@ def start_stream_server(
     if "show_center_line" not in state:
         state["show_center_line"] = True
 
+    normalized_vision_mode_options = _normalize_choice_options(vision_mode_options)
+    normalized_markerless_profile_options = _normalize_choice_options(markerless_profile_options)
+
+    vision_mode_getter = None
+    vision_mode_setter = None
+    if normalized_vision_mode_options:
+        allowed_modes = [value for value, _label in normalized_vision_mode_options]
+        default_mode = allowed_modes[0]
+        current_mode = str(state.get(vision_mode_key, default_mode)).strip().lower()
+        if current_mode not in allowed_modes:
+            state[vision_mode_key] = default_mode
+        vision_mode_getter = build_choice_getter(
+            state,
+            vision_mode_key,
+            allowed_modes,
+            default=default_mode,
+        )
+        vision_mode_setter = build_choice_setter(
+            state,
+            vision_mode_key,
+            allowed_modes,
+        )
+
+    markerless_profile_getter = None
+    markerless_profile_setter = None
+    if normalized_markerless_profile_options:
+        allowed_profiles = [value for value, _label in normalized_markerless_profile_options]
+        default_profile = allowed_profiles[0]
+        current_profile = str(state.get(markerless_profile_key, default_profile)).strip().lower()
+        if current_profile not in allowed_profiles:
+            state[markerless_profile_key] = default_profile
+        markerless_profile_getter = build_choice_getter(
+            state,
+            markerless_profile_key,
+            allowed_profiles,
+            default=default_profile,
+        )
+        markerless_profile_setter = build_choice_setter(
+            state,
+            markerless_profile_key,
+            allowed_profiles,
+        )
+
     try:
         start_port = int(port)
     except (TypeError, ValueError):
@@ -124,6 +241,12 @@ def start_stream_server(
             sharpen=sharpen,
             show_center_line_getter=build_bool_getter(state, "show_center_line"),
             show_center_line_setter=build_bool_setter(state, "show_center_line"),
+            vision_mode_getter=vision_mode_getter,
+            vision_mode_setter=vision_mode_setter,
+            vision_mode_options=normalized_vision_mode_options,
+            markerless_profile_getter=markerless_profile_getter,
+            markerless_profile_setter=markerless_profile_setter,
+            markerless_profile_options=normalized_markerless_profile_options,
         )
         server.start()
         try:

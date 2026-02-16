@@ -2,6 +2,7 @@ import threading
 import time
 import socket
 import logging
+import html
 from typing import Callable, Optional
 
 import cv2
@@ -47,6 +48,12 @@ class StreamServer:
         sharpen: bool = False,
         show_center_line_getter: Optional[Callable[[], bool]] = None,
         show_center_line_setter: Optional[Callable[[bool], None]] = None,
+        vision_mode_getter: Optional[Callable[[], str]] = None,
+        vision_mode_setter: Optional[Callable[[str], None]] = None,
+        vision_mode_options: Optional[list] = None,
+        markerless_profile_getter: Optional[Callable[[], str]] = None,
+        markerless_profile_setter: Optional[Callable[[str], None]] = None,
+        markerless_profile_options: Optional[list] = None,
     ):
         self.frame_provider = frame_provider
         self.text_provider = text_provider
@@ -65,6 +72,16 @@ class StreamServer:
         self.sharpen = sharpen
         self.show_center_line_getter = show_center_line_getter
         self.show_center_line_setter = show_center_line_setter
+        self.vision_mode_getter = vision_mode_getter
+        self.vision_mode_setter = vision_mode_setter
+        self.vision_mode_options = self._normalize_options(vision_mode_options)
+        if (self.vision_mode_getter is not None or self.vision_mode_setter is not None) and not self.vision_mode_options:
+            self.vision_mode_options = [("aruco", "AruCo Markers"), ("yolo", "Markerless")]
+        self._vision_mode_allowed = {value for value, _label in self.vision_mode_options}
+        self.markerless_profile_getter = markerless_profile_getter
+        self.markerless_profile_setter = markerless_profile_setter
+        self.markerless_profile_options = self._normalize_options(markerless_profile_options)
+        self._markerless_profile_allowed = {value for value, _label in self.markerless_profile_options}
         self._stop = threading.Event()
         self._thread = None
         self._startup_error = None
@@ -98,13 +115,28 @@ class StreamServer:
 
         @self.app.route("/stream_prefs", methods=["GET", "POST"])
         def stream_prefs():
-            if request.method == "POST" and self.show_center_line_setter is not None:
-                payload = request.get_json(silent=True) or {}
-                flag = self._coerce_bool(payload.get("show_center_line"), default=True)
-                try:
-                    self.show_center_line_setter(flag)
-                except Exception:
-                    pass
+            payload = request.get_json(silent=True) or {}
+            if request.method == "POST":
+                if self.show_center_line_setter is not None and "show_center_line" in payload:
+                    flag = self._coerce_bool(payload.get("show_center_line"), default=True)
+                    try:
+                        self.show_center_line_setter(flag)
+                    except Exception:
+                        pass
+                if self.vision_mode_setter is not None and "vision_mode" in payload:
+                    mode = self._coerce_vision_mode(payload.get("vision_mode"))
+                    if mode is not None:
+                        try:
+                            self.vision_mode_setter(mode)
+                        except Exception:
+                            pass
+                if self.markerless_profile_setter is not None and "markerless_profile" in payload:
+                    profile = self._coerce_markerless_profile(payload.get("markerless_profile"))
+                    if profile is not None:
+                        try:
+                            self.markerless_profile_setter(profile)
+                        except Exception:
+                            pass
 
             show_center_line = True
             if self.show_center_line_getter is not None:
@@ -112,10 +144,43 @@ class StreamServer:
                     show_center_line = bool(self.show_center_line_getter())
                 except Exception:
                     show_center_line = True
+
+            vision_mode = self.vision_mode_options[0][0] if self.vision_mode_options else None
+            if self.vision_mode_getter is not None:
+                try:
+                    mode = self._coerce_vision_mode(self.vision_mode_getter())
+                    if mode is not None:
+                        vision_mode = mode
+                except Exception:
+                    pass
+
+            vision_mode_options_payload = [
+                {"value": value, "label": label}
+                for value, label in self.vision_mode_options
+            ]
+            markerless_profile = self.markerless_profile_options[0][0] if self.markerless_profile_options else None
+            if self.markerless_profile_getter is not None:
+                try:
+                    profile = self._coerce_markerless_profile(self.markerless_profile_getter())
+                    if profile is not None:
+                        markerless_profile = profile
+                except Exception:
+                    pass
+            markerless_profile_options_payload = [
+                {"value": value, "label": label}
+                for value, label in self.markerless_profile_options
+            ]
             return jsonify(
                 {
                     "show_center_line": bool(show_center_line),
                     "editable": self.show_center_line_setter is not None,
+                    "show_center_line_editable": self.show_center_line_setter is not None,
+                    "vision_mode": vision_mode,
+                    "vision_mode_editable": self.vision_mode_setter is not None,
+                    "vision_mode_options": vision_mode_options_payload,
+                    "markerless_profile": markerless_profile,
+                    "markerless_profile_editable": self.markerless_profile_setter is not None,
+                    "markerless_profile_options": markerless_profile_options_payload,
                 }
             )
 
@@ -171,37 +236,120 @@ class StreamServer:
         footer_html = f"<p>{self.footer}</p>" if self.footer else ""
         controls_html = ""
         controls_script = ""
-        if self.show_center_line_getter is not None or self.show_center_line_setter is not None:
-            controls_html = (
-                "<div class='controls'>"
-                "<label><input type='checkbox' id='showCenterLine' checked> Show center line</label>"
-                "</div>"
-            )
+        has_center_line_control = self.show_center_line_getter is not None or self.show_center_line_setter is not None
+        has_vision_mode_control = bool(self.vision_mode_options) and (
+            self.vision_mode_getter is not None or self.vision_mode_setter is not None
+        )
+        has_markerless_profile_control = bool(self.markerless_profile_options) and (
+            self.markerless_profile_getter is not None or self.markerless_profile_setter is not None
+        )
+        if has_center_line_control or has_vision_mode_control or has_markerless_profile_control:
+            controls_parts = ["<div class='controls'>"]
+            if has_center_line_control:
+                controls_parts.append(
+                    "<label class='control-item'><input type='checkbox' id='showCenterLine' checked> Show center line</label>"
+                )
+            if has_vision_mode_control:
+                radio_parts = []
+                for value, label in self.vision_mode_options:
+                    value_escaped = html.escape(str(value), quote=True)
+                    label_escaped = html.escape(str(label))
+                    radio_parts.append(
+                        "<label class='control-item'>"
+                        f"<input type='radio' name='visionMode' value='{value_escaped}'> {label_escaped}"
+                        "</label>"
+                    )
+                controls_parts.append("<div class='vision-mode'>" + "".join(radio_parts) + "</div>")
+            if has_markerless_profile_control:
+                option_parts = []
+                for value, label in self.markerless_profile_options:
+                    value_escaped = html.escape(str(value), quote=True)
+                    label_escaped = html.escape(str(label))
+                    option_parts.append(f"<option value='{value_escaped}'>{label_escaped}</option>")
+                controls_parts.append(
+                    "<label class='control-item'>"
+                    "Markerless Config: "
+                    "<select id='markerlessProfile' class='control-select'>"
+                    + "".join(option_parts)
+                    + "</select>"
+                    "</label>"
+                )
+            controls_parts.append("</div>")
+            controls_html = "".join(controls_parts)
+
             controls_script = (
                 "<script>"
                 "const centerLineToggle = document.getElementById('showCenterLine');"
-                "if (centerLineToggle) {"
-                "const syncCenterLine = async () => {"
-                "try {"
-                "const res = await fetch('/stream_prefs', {cache:'no-store'});"
-                "if (!res.ok) return;"
-                "const data = await res.json();"
-                "centerLineToggle.checked = !!data.show_center_line;"
-                "centerLineToggle.disabled = !data.editable;"
-                "} catch (e) { /* ignore */ }"
+                "const visionModeInputs = Array.from(document.querySelectorAll(\"input[name='visionMode']\"));"
+                "const markerlessProfileSelect = document.getElementById('markerlessProfile');"
+                "const setVisionMode = (mode, editable) => {"
+                "if (!visionModeInputs.length) return;"
+                "let matched = false;"
+                "visionModeInputs.forEach((input) => {"
+                "const isMatch = mode !== null && mode !== undefined && input.value === String(mode);"
+                "input.checked = isMatch;"
+                "if (isMatch) matched = true;"
+                "input.disabled = !editable;"
+                "});"
+                "if (!matched && visionModeInputs.length) {"
+                "visionModeInputs[0].checked = true;"
+                "}"
                 "};"
-                "centerLineToggle.addEventListener('change', async () => {"
+                "const setMarkerlessProfile = (profile, editable) => {"
+                "if (!markerlessProfileSelect) return;"
+                "if (profile !== null && profile !== undefined) {"
+                "markerlessProfileSelect.value = String(profile);"
+                "}"
+                "markerlessProfileSelect.disabled = !editable;"
+                "};"
+                "const postPrefs = async (payload) => {"
                 "try {"
                 "await fetch('/stream_prefs', {"
                 "method:'POST',"
                 "headers:{'Content-Type':'application/json'},"
-                "body:JSON.stringify({show_center_line:centerLineToggle.checked})"
+                "body:JSON.stringify(payload)"
                 "});"
                 "} catch (e) { /* ignore */ }"
-                "syncCenterLine();"
-                "});"
-                "syncCenterLine();"
+                "};"
+                "const syncPrefs = async () => {"
+                "try {"
+                "const res = await fetch('/stream_prefs', {cache:'no-store'});"
+                "if (!res.ok) return;"
+                "const data = await res.json();"
+                "if (centerLineToggle) {"
+                "const centerEditable = (data.show_center_line_editable !== undefined)"
+                "? !!data.show_center_line_editable : !!data.editable;"
+                "centerLineToggle.checked = !!data.show_center_line;"
+                "centerLineToggle.disabled = !centerEditable;"
                 "}"
+                "if (visionModeInputs.length) {"
+                "setVisionMode(data.vision_mode, !!data.vision_mode_editable);"
+                "}"
+                "if (markerlessProfileSelect) {"
+                "setMarkerlessProfile(data.markerless_profile, !!data.markerless_profile_editable);"
+                "}"
+                "} catch (e) { /* ignore */ }"
+                "};"
+                "if (centerLineToggle) {"
+                "centerLineToggle.addEventListener('change', async () => {"
+                "await postPrefs({show_center_line:centerLineToggle.checked});"
+                "syncPrefs();"
+                "});"
+                "}"
+                "visionModeInputs.forEach((input) => {"
+                "input.addEventListener('change', async () => {"
+                "if (!input.checked) return;"
+                "await postPrefs({vision_mode:input.value});"
+                "syncPrefs();"
+                "});"
+                "});"
+                "if (markerlessProfileSelect) {"
+                "markerlessProfileSelect.addEventListener('change', async () => {"
+                "await postPrefs({markerless_profile:markerlessProfileSelect.value});"
+                "syncPrefs();"
+                "});"
+                "}"
+                "syncPrefs();"
                 "</script>"
             )
         if self.text_provider is None:
@@ -216,7 +364,11 @@ class StreamServer:
                 "overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,0.35);}" 
                 "img{image-rendering:auto;}"
                 "h1{color:#f0ad4e;}"
-                ".controls{margin:0 auto 12px auto;}"
+                ".controls{margin:0 auto 12px auto;display:inline-flex;gap:12px;"
+                "align-items:center;justify-content:center;flex-wrap:wrap;}"
+                ".control-item{white-space:nowrap;}"
+                ".vision-mode{display:inline-flex;gap:12px;align-items:center;}"
+                ".control-select{margin-left:6px;}"
                 "</style>"
                 "</head><body>"
                 f"{header_html}"
@@ -244,7 +396,11 @@ class StreamServer:
             "overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,0.35);}" 
             "img{image-rendering:auto;}"
             "h1{color:#f0ad4e;}"
-            ".controls{margin:0 auto 12px auto;}"
+            ".controls{margin:0 auto 12px auto;display:inline-flex;gap:12px;"
+            "align-items:center;justify-content:center;flex-wrap:wrap;}"
+            ".control-item{white-space:nowrap;}"
+            ".vision-mode{display:inline-flex;gap:12px;align-items:center;}"
+            ".control-select{margin-left:6px;}"
             "</style>"
             "</head><body>"
             f"{header_html}"
@@ -356,3 +512,50 @@ class StreamServer:
             if lowered in {"0", "false", "no", "off"}:
                 return False
         return bool(default)
+
+    def _coerce_vision_mode(self, value):
+        if not self._vision_mode_allowed:
+            return None
+        if value is None:
+            return None
+        candidate = str(value).strip().lower()
+        if candidate in self._vision_mode_allowed:
+            return candidate
+        return None
+
+    def _coerce_markerless_profile(self, value):
+        if not self._markerless_profile_allowed:
+            return None
+        if value is None:
+            return None
+        candidate = str(value).strip().lower()
+        if candidate in self._markerless_profile_allowed:
+            return candidate
+        return None
+
+    @staticmethod
+    def _normalize_options(options):
+        if not options:
+            return []
+        normalized = []
+        seen = set()
+        for item in options:
+            value = None
+            label = None
+            if isinstance(item, dict):
+                value = item.get("value")
+                label = item.get("label")
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                value = item[0]
+                label = item[1]
+            if value is None:
+                continue
+            value_norm = str(value).strip().lower()
+            if not value_norm or value_norm in seen:
+                continue
+            label_norm = str(label).strip() if label is not None else value_norm
+            if not label_norm:
+                label_norm = value_norm
+            normalized.append((value_norm, label_norm))
+            seen.add(value_norm)
+        return normalized
