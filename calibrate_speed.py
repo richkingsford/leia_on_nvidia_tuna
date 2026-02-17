@@ -21,6 +21,8 @@ CMD_LABELS = {
 
 SPEED_MAP_KEY_DRIVE = "score_power_pwm_drive"
 SPEED_MAP_KEY_TURN = "score_power_pwm_turn"
+SPEED_MAP_KEY_TURN_LEFT = "score_power_pwm_turn_left"
+SPEED_MAP_KEY_TURN_RIGHT = "score_power_pwm_turn_right"
 
 
 def _get_key():
@@ -62,11 +64,17 @@ def _load_model(path):
     legacy_map = model.get("score_power_pwm")
     drive_map = model.get(SPEED_MAP_KEY_DRIVE) or {}
     turn_map = model.get(SPEED_MAP_KEY_TURN) or {}
+    turn_left_map = model.get(SPEED_MAP_KEY_TURN_LEFT) or {}
+    turn_right_map = model.get(SPEED_MAP_KEY_TURN_RIGHT) or {}
     if isinstance(legacy_map, dict):
         if not drive_map:
             drive_map = legacy_map
         if not turn_map:
             turn_map = legacy_map
+        if not turn_left_map:
+            turn_left_map = turn_map
+        if not turn_right_map:
+            turn_right_map = turn_map
 
     if not hotkeys:
         hotkeys = DEFAULT_SPEED_MODEL["hotkey_speed_scores"]
@@ -74,6 +82,20 @@ def _load_model(path):
         drive_map = DEFAULT_SPEED_MODEL.get(SPEED_MAP_KEY_DRIVE) or {}
     if not turn_map:
         turn_map = DEFAULT_SPEED_MODEL.get(SPEED_MAP_KEY_TURN) or {}
+    if not turn_left_map:
+        turn_left_map = (
+            DEFAULT_SPEED_MODEL.get(SPEED_MAP_KEY_TURN_LEFT)
+            or turn_map
+            or DEFAULT_SPEED_MODEL.get(SPEED_MAP_KEY_TURN)
+            or {}
+        )
+    if not turn_right_map:
+        turn_right_map = (
+            DEFAULT_SPEED_MODEL.get(SPEED_MAP_KEY_TURN_RIGHT)
+            or turn_map
+            or DEFAULT_SPEED_MODEL.get(SPEED_MAP_KEY_TURN)
+            or {}
+        )
     if not score_seconds:
         score_seconds = DEFAULT_SPEED_MODEL.get("speed_score_seconds") or {}
 
@@ -85,6 +107,8 @@ def _load_model(path):
     model["hotkey_speed_scores"] = dict(hotkeys)
     model[SPEED_MAP_KEY_DRIVE] = dict(drive_map)
     model[SPEED_MAP_KEY_TURN] = dict(turn_map)
+    model[SPEED_MAP_KEY_TURN_LEFT] = dict(turn_left_map)
+    model[SPEED_MAP_KEY_TURN_RIGHT] = dict(turn_right_map)
     model["speed_score_seconds"] = dict(score_seconds)
     model["min_pwm"] = int(min_pwm)
     model["max_pwm"] = int(max_pwm)
@@ -185,11 +209,19 @@ def _print_minmax_menu(model_path, cmd_remap, cmd_speed, *, speed_map_key, speed
 
 
 def _speed_map_key_for_cmd(cmd):
-    return SPEED_MAP_KEY_TURN if cmd in ("l", "r") else SPEED_MAP_KEY_DRIVE
+    if cmd == "l":
+        return SPEED_MAP_KEY_TURN_LEFT
+    if cmd == "r":
+        return SPEED_MAP_KEY_TURN_RIGHT
+    return SPEED_MAP_KEY_DRIVE
 
 
 def _speed_map_label_for_cmd(cmd):
-    return "turn (l/r)" if cmd in ("l", "r") else "drive (f/b)"
+    if cmd == "l":
+        return "turn-left (l)"
+    if cmd == "r":
+        return "turn-right (r)"
+    return "drive (f/b)"
 
 
 def main():
@@ -227,6 +259,14 @@ def main():
     if not isinstance(turn_map, dict):
         turn_map = {}
         model[SPEED_MAP_KEY_TURN] = turn_map
+    turn_left_map = model.get(SPEED_MAP_KEY_TURN_LEFT) if isinstance(model, dict) else None
+    if not isinstance(turn_left_map, dict):
+        turn_left_map = dict(turn_map)
+        model[SPEED_MAP_KEY_TURN_LEFT] = turn_left_map
+    turn_right_map = model.get(SPEED_MAP_KEY_TURN_RIGHT) if isinstance(model, dict) else None
+    if not isinstance(turn_right_map, dict):
+        turn_right_map = dict(turn_map)
+        model[SPEED_MAP_KEY_TURN_RIGHT] = turn_right_map
 
     drive_slow_pwm = _default_pwm_from_score(drive_map, 1, min_pwm, max_pwm)
     drive_fast_pwm = _default_pwm_from_score(drive_map, 100, max_pwm, max_pwm)
@@ -234,11 +274,17 @@ def main():
         drive_slow_pwm, drive_fast_pwm = drive_fast_pwm, drive_slow_pwm
     endpoints_drive = {1: drive_slow_pwm, 100: drive_fast_pwm}
 
-    turn_slow_pwm = _default_pwm_from_score(turn_map, 1, min_pwm, max_pwm)
-    turn_fast_pwm = _default_pwm_from_score(turn_map, 100, max_pwm, max_pwm)
-    if turn_fast_pwm < turn_slow_pwm:
-        turn_slow_pwm, turn_fast_pwm = turn_fast_pwm, turn_slow_pwm
-    endpoints_turn = {1: turn_slow_pwm, 100: turn_fast_pwm}
+    turn_left_slow_pwm = _default_pwm_from_score(turn_left_map, 1, min_pwm, max_pwm)
+    turn_left_fast_pwm = _default_pwm_from_score(turn_left_map, 100, max_pwm, max_pwm)
+    if turn_left_fast_pwm < turn_left_slow_pwm:
+        turn_left_slow_pwm, turn_left_fast_pwm = turn_left_fast_pwm, turn_left_slow_pwm
+    endpoints_turn_left = {1: turn_left_slow_pwm, 100: turn_left_fast_pwm}
+
+    turn_right_slow_pwm = _default_pwm_from_score(turn_right_map, 1, min_pwm, max_pwm)
+    turn_right_fast_pwm = _default_pwm_from_score(turn_right_map, 100, max_pwm, max_pwm)
+    if turn_right_fast_pwm < turn_right_slow_pwm:
+        turn_right_slow_pwm, turn_right_fast_pwm = turn_right_fast_pwm, turn_right_slow_pwm
+    endpoints_turn_right = {1: turn_right_slow_pwm, 100: turn_right_fast_pwm}
 
     base_step_pwm = max(1, _coerce_int(args.pwm_step, 1))
 
@@ -252,7 +298,12 @@ def main():
         while True:
             speed_map_key = _speed_map_key_for_cmd(demo_cmd)
             speed_map_label = _speed_map_label_for_cmd(demo_cmd)
-            endpoints = endpoints_turn if speed_map_key == SPEED_MAP_KEY_TURN else endpoints_drive
+            if speed_map_key == SPEED_MAP_KEY_TURN_LEFT:
+                endpoints = endpoints_turn_left
+            elif speed_map_key == SPEED_MAP_KEY_TURN_RIGHT:
+                endpoints = endpoints_turn_right
+            else:
+                endpoints = endpoints_drive
 
             cmd_speed = {"slow_pwm": endpoints[1], "fast_pwm": endpoints[100]}
             _print_minmax_menu(
@@ -342,7 +393,12 @@ def main():
                 step_pwm = base_step_pwm
                 next_map_key = _speed_map_key_for_cmd(demo_cmd)
                 if next_map_key != prev_map_key:
-                    endpoints = endpoints_turn if next_map_key == SPEED_MAP_KEY_TURN else endpoints_drive
+                    if next_map_key == SPEED_MAP_KEY_TURN_LEFT:
+                        endpoints = endpoints_turn_left
+                    elif next_map_key == SPEED_MAP_KEY_TURN_RIGHT:
+                        endpoints = endpoints_turn_right
+                    else:
+                        endpoints = endpoints_drive
                     pwm = int(endpoints[target_score])
                 continue
             print(f"Unknown key: {ch!r}")

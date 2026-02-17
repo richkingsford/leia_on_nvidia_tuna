@@ -37,6 +37,14 @@ SPEED_SCORE_DEFAULT = 50
 SPEED_SCORE_MAX = 100
 SPEED_SCORE_LEVELS = tuple(range(SPEED_SCORE_MIN, SPEED_SCORE_MAX + 1))
 DEFAULT_ACT_DURATION_MS = 300
+SPEED_MAP_KEY_DRIVE = "score_power_pwm_drive"
+SPEED_MAP_KEY_TURN = "score_power_pwm_turn"
+SPEED_MAP_KEY_TURN_LEFT = "score_power_pwm_turn_left"
+SPEED_MAP_KEY_TURN_RIGHT = "score_power_pwm_turn_right"
+SPEED_SECONDS_KEY = "speed_score_seconds"
+SPEED_SECONDS_KEY_TURN = "speed_score_seconds_turn"
+SPEED_SECONDS_KEY_TURN_LEFT = "speed_score_seconds_turn_left"
+SPEED_SECONDS_KEY_TURN_RIGHT = "speed_score_seconds_turn_right"
 
 ROBOT_MODEL_FILE = Path(__file__).resolve().parent / "world_model_robot.json"
 DEFAULT_SPEED_MODEL = {
@@ -59,17 +67,40 @@ DEFAULT_SPEED_MODEL = {
         "u": {"cmd": "u", "score": 50},
         "l": {"cmd": "d", "score": 50},
     },
-    "score_power_pwm_drive": {
+    SPEED_MAP_KEY_DRIVE: {
         "1": {"power": 0.064, "pwm": 50},
         "100": {"power": 1.0, "pwm": 255},
     },
-    "score_power_pwm_turn": {
+    SPEED_MAP_KEY_TURN: {
+        "1": {"power": 0.064, "pwm": 50},
+        "100": {"power": 1.0, "pwm": 255},
+    },
+    # Directional turn maps (preferred). Kept separate because L/R motors can
+    # respond differently at identical requested scores.
+    SPEED_MAP_KEY_TURN_LEFT: {
+        "1": {"power": 0.064, "pwm": 50},
+        "100": {"power": 1.0, "pwm": 255},
+    },
+    SPEED_MAP_KEY_TURN_RIGHT: {
         "1": {"power": 0.064, "pwm": 50},
         "100": {"power": 1.0, "pwm": 255},
     },
     # Optional duration override by score (seconds).
     # If present in world_model_robot.json, these values override duration_ms.
-    "speed_score_seconds": {
+    SPEED_SECONDS_KEY: {
+        "1": 0.30,
+        "100": 0.30,
+    },
+    # Optional directional duration overrides by score (seconds).
+    SPEED_SECONDS_KEY_TURN: {
+        "1": 0.30,
+        "100": 0.30,
+    },
+    SPEED_SECONDS_KEY_TURN_LEFT: {
+        "1": 0.30,
+        "100": 0.30,
+    },
+    SPEED_SECONDS_KEY_TURN_RIGHT: {
         "1": 0.30,
         "100": 0.30,
     },
@@ -349,10 +380,10 @@ def _load_speed_model(path):
 
     legacy_raw = model.get("score_power_pwm")
 
-    drive_fallback = DEFAULT_SPEED_MODEL.get("score_power_pwm_drive")
+    drive_fallback = DEFAULT_SPEED_MODEL.get(SPEED_MAP_KEY_DRIVE)
     if not isinstance(drive_fallback, dict):
         drive_fallback = {}
-    drive_raw = model.get("score_power_pwm_drive")
+    drive_raw = model.get(SPEED_MAP_KEY_DRIVE)
     if not isinstance(drive_raw, dict) and isinstance(legacy_raw, dict):
         drive_raw = legacy_raw
     drive_map = _coerce_score_power_pwm(drive_raw, drive_fallback, min_pwm=min_pwm, max_pwm=max_pwm)
@@ -364,10 +395,10 @@ def _load_speed_model(path):
             if key not in drive_map and key in fallback:
                 drive_map[key] = dict(fallback[key])
 
-    turn_fallback = DEFAULT_SPEED_MODEL.get("score_power_pwm_turn")
+    turn_fallback = DEFAULT_SPEED_MODEL.get(SPEED_MAP_KEY_TURN)
     if not isinstance(turn_fallback, dict):
         turn_fallback = drive_fallback
-    turn_raw = model.get("score_power_pwm_turn")
+    turn_raw = model.get(SPEED_MAP_KEY_TURN)
     if not isinstance(turn_raw, dict) and isinstance(legacy_raw, dict):
         turn_raw = legacy_raw
     turn_map = _coerce_score_power_pwm(turn_raw, turn_fallback, min_pwm=min_pwm, max_pwm=max_pwm)
@@ -379,19 +410,91 @@ def _load_speed_model(path):
             if key not in turn_map and key in fallback:
                 turn_map[key] = dict(fallback[key])
 
-    score_seconds = _coerce_score_seconds(
-        model.get("speed_score_seconds"),
-        DEFAULT_SPEED_MODEL.get("speed_score_seconds"),
+    # Directional turn maps (preferred). Fall back to shared turn map if absent.
+    directional_turn_maps = bool(
+        isinstance(model.get(SPEED_MAP_KEY_TURN_LEFT), dict)
+        or isinstance(model.get(SPEED_MAP_KEY_TURN_RIGHT), dict)
     )
-    duration_ms_by_score = {
-        score_key: max(1, int(round(seconds * 1000.0)))
-        for score_key, seconds in score_seconds.items()
-    }
+
+    turn_left_raw = model.get(SPEED_MAP_KEY_TURN_LEFT)
+    if not isinstance(turn_left_raw, dict):
+        turn_left_raw = turn_raw if isinstance(turn_raw, dict) else legacy_raw
+    turn_left_map = _coerce_score_power_pwm(turn_left_raw, turn_map, min_pwm=min_pwm, max_pwm=max_pwm)
+    if not turn_left_map:
+        turn_left_map = _coerce_score_power_pwm(turn_map, {}, min_pwm=min_pwm, max_pwm=max_pwm)
+    if SPEED_SCORE_MIN not in turn_left_map or SPEED_SCORE_MAX not in turn_left_map:
+        fallback = _coerce_score_power_pwm(turn_map, {}, min_pwm=min_pwm, max_pwm=max_pwm)
+        for key in (SPEED_SCORE_MIN, SPEED_SCORE_MAX):
+            if key not in turn_left_map and key in fallback:
+                turn_left_map[key] = dict(fallback[key])
+
+    turn_right_raw = model.get(SPEED_MAP_KEY_TURN_RIGHT)
+    if not isinstance(turn_right_raw, dict):
+        turn_right_raw = turn_raw if isinstance(turn_raw, dict) else legacy_raw
+    turn_right_map = _coerce_score_power_pwm(turn_right_raw, turn_map, min_pwm=min_pwm, max_pwm=max_pwm)
+    if not turn_right_map:
+        turn_right_map = _coerce_score_power_pwm(turn_map, {}, min_pwm=min_pwm, max_pwm=max_pwm)
+    if SPEED_SCORE_MIN not in turn_right_map or SPEED_SCORE_MAX not in turn_right_map:
+        fallback = _coerce_score_power_pwm(turn_map, {}, min_pwm=min_pwm, max_pwm=max_pwm)
+        for key in (SPEED_SCORE_MIN, SPEED_SCORE_MAX):
+            if key not in turn_right_map and key in fallback:
+                turn_right_map[key] = dict(fallback[key])
+
+    score_seconds = _coerce_score_seconds(
+        model.get(SPEED_SECONDS_KEY),
+        DEFAULT_SPEED_MODEL.get(SPEED_SECONDS_KEY),
+    )
+    score_seconds_turn = _coerce_score_seconds(
+        model.get(SPEED_SECONDS_KEY_TURN),
+        score_seconds,
+    )
+    directional_turn_duration_maps = bool(
+        isinstance(model.get(SPEED_SECONDS_KEY_TURN_LEFT), dict)
+        or isinstance(model.get(SPEED_SECONDS_KEY_TURN_RIGHT), dict)
+    )
+    score_seconds_turn_left = _coerce_score_seconds(
+        model.get(SPEED_SECONDS_KEY_TURN_LEFT),
+        score_seconds_turn,
+    )
+    score_seconds_turn_right = _coerce_score_seconds(
+        model.get(SPEED_SECONDS_KEY_TURN_RIGHT),
+        score_seconds_turn,
+    )
+
+    if not score_seconds_turn:
+        score_seconds_turn = dict(score_seconds)
+    if not score_seconds_turn_left:
+        score_seconds_turn_left = dict(score_seconds_turn)
+    if not score_seconds_turn_right:
+        score_seconds_turn_right = dict(score_seconds_turn)
+
+    def _duration_ms_map(score_seconds_raw):
+        return {
+            score_key: max(1, int(round(float(seconds) * 1000.0)))
+            for score_key, seconds in score_seconds_raw.items()
+        }
+
+    duration_ms_by_score = _duration_ms_map(score_seconds)
+    duration_ms_by_score_turn = _duration_ms_map(score_seconds_turn)
+    duration_ms_by_score_turn_left = _duration_ms_map(score_seconds_turn_left)
+    duration_ms_by_score_turn_right = _duration_ms_map(score_seconds_turn_right)
+
     for score_key, duration_ms in duration_ms_by_score.items():
-        for entry_map in (drive_map, turn_map):
-            entry = entry_map.get(score_key)
-            if isinstance(entry, dict):
-                entry["duration_ms"] = int(duration_ms)
+        entry = drive_map.get(score_key)
+        if isinstance(entry, dict):
+            entry["duration_ms"] = int(duration_ms)
+    for score_key, duration_ms in duration_ms_by_score_turn.items():
+        entry = turn_map.get(score_key)
+        if isinstance(entry, dict):
+            entry["duration_ms"] = int(duration_ms)
+    for score_key, duration_ms in duration_ms_by_score_turn_left.items():
+        entry = turn_left_map.get(score_key)
+        if isinstance(entry, dict):
+            entry["duration_ms"] = int(duration_ms)
+    for score_key, duration_ms in duration_ms_by_score_turn_right.items():
+        entry = turn_right_map.get(score_key)
+        if isinstance(entry, dict):
+            entry["duration_ms"] = int(duration_ms)
     hotkey_fallback = {} if loaded_from_file else DEFAULT_SPEED_MODEL["hotkey_speed_scores"]
     hotkeys = _coerce_hotkeys(model.get("hotkey_speed_scores"), hotkey_fallback, SPEED_SCORE_LEVELS)
     if not hotkeys and not loaded_from_file:
@@ -417,7 +520,14 @@ def _load_speed_model(path):
         hotkeys,
         drive_map,
         turn_map,
+        turn_left_map,
+        turn_right_map,
+        directional_turn_maps,
         duration_ms_by_score,
+        duration_ms_by_score_turn,
+        duration_ms_by_score_turn_left,
+        duration_ms_by_score_turn_right,
+        directional_turn_duration_maps,
         turn_eff,
         cmd_remap,
         act_duration_ms,
@@ -433,7 +543,14 @@ def _load_speed_model(path):
     HOTKEY_SPEED_SCORES,
     SCORE_POWER_PWM_DRIVE,
     SCORE_POWER_PWM_TURN,
+    SCORE_POWER_PWM_TURN_LEFT,
+    SCORE_POWER_PWM_TURN_RIGHT,
+    USE_DIRECTIONAL_TURN_MAPS,
     SPEED_SCORE_DURATION_MS,
+    SPEED_SCORE_DURATION_MS_TURN,
+    SPEED_SCORE_DURATION_MS_TURN_LEFT,
+    SPEED_SCORE_DURATION_MS_TURN_RIGHT,
+    USE_DIRECTIONAL_TURN_DURATION_MAPS,
     TURN_EFFICIENCY,
     COMMAND_REMAP,
     ACT_DURATION_MS,
@@ -443,6 +560,9 @@ def _load_speed_model(path):
     MAX_PWM,
     MIN_TURN_POWER,
 ) = _load_speed_model(ROBOT_MODEL_FILE)
+
+_SCORE_POWER_PWM_TURN_LOADED_ID = id(SCORE_POWER_PWM_TURN)
+_SPEED_SCORE_DURATION_MS_LOADED_ID = id(SPEED_SCORE_DURATION_MS)
 
 SCORE_POWER_PWM = SCORE_POWER_PWM_DRIVE
 
@@ -461,11 +581,27 @@ def _baseline_pwm_min(score_map):
 
 SCORE_POWER_PWM_DRIVE_BASE = {}
 SCORE_POWER_PWM_TURN_BASE = {}
+SCORE_POWER_PWM_TURN_LEFT_BASE = {}
+SCORE_POWER_PWM_TURN_RIGHT_BASE = {}
 SPEED_SCORE_MIN_PWM_DRIVE_BASE = 0
 SPEED_SCORE_MIN_PWM_TURN_BASE = 0
+SPEED_SCORE_MIN_PWM_TURN_LEFT_BASE = 0
+SPEED_SCORE_MIN_PWM_TURN_RIGHT_BASE = 0
 
 
-def refresh_speed_model_baseline(*, drive_map=None, turn_map=None):
+def _safe_floor_max(*values):
+    floors = []
+    for value in values:
+        try:
+            v = int(round(float(value)))
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            floors.append(v)
+    return max(floors) if floors else 0
+
+
+def refresh_speed_model_baseline(*, drive_map=None, turn_map=None, turn_left_map=None, turn_right_map=None):
     """
     Snapshot the current speed model as the baseline (used as a hard floor so
     runtime micro-adjustments can never make the robot move slower than the
@@ -473,15 +609,44 @@ def refresh_speed_model_baseline(*, drive_map=None, turn_map=None):
     """
     global SCORE_POWER_PWM_DRIVE_BASE
     global SCORE_POWER_PWM_TURN_BASE
+    global SCORE_POWER_PWM_TURN_LEFT_BASE
+    global SCORE_POWER_PWM_TURN_RIGHT_BASE
     global SPEED_SCORE_MIN_PWM_DRIVE_BASE
     global SPEED_SCORE_MIN_PWM_TURN_BASE
+    global SPEED_SCORE_MIN_PWM_TURN_LEFT_BASE
+    global SPEED_SCORE_MIN_PWM_TURN_RIGHT_BASE
 
     src_drive = drive_map if isinstance(drive_map, dict) else SCORE_POWER_PWM_DRIVE
     src_turn = turn_map if isinstance(turn_map, dict) else SCORE_POWER_PWM_TURN
+    src_turn_left = turn_left_map if isinstance(turn_left_map, dict) else SCORE_POWER_PWM_TURN_LEFT
+    src_turn_right = turn_right_map if isinstance(turn_right_map, dict) else SCORE_POWER_PWM_TURN_RIGHT
+
+    legacy_override = (
+        isinstance(SCORE_POWER_PWM_TURN, dict)
+        and id(SCORE_POWER_PWM_TURN) != _SCORE_POWER_PWM_TURN_LOADED_ID
+    )
+    if (not bool(USE_DIRECTIONAL_TURN_MAPS)) or legacy_override:
+        src_turn_left = src_turn
+        src_turn_right = src_turn
+
+    if not isinstance(src_turn_left, dict):
+        src_turn_left = src_turn
+    if not isinstance(src_turn_right, dict):
+        src_turn_right = src_turn
+
     SCORE_POWER_PWM_DRIVE_BASE = copy.deepcopy(src_drive) if isinstance(src_drive, dict) else {}
     SCORE_POWER_PWM_TURN_BASE = copy.deepcopy(src_turn) if isinstance(src_turn, dict) else {}
+    SCORE_POWER_PWM_TURN_LEFT_BASE = copy.deepcopy(src_turn_left) if isinstance(src_turn_left, dict) else {}
+    SCORE_POWER_PWM_TURN_RIGHT_BASE = copy.deepcopy(src_turn_right) if isinstance(src_turn_right, dict) else {}
     SPEED_SCORE_MIN_PWM_DRIVE_BASE = int(_baseline_pwm_min(SCORE_POWER_PWM_DRIVE_BASE))
     SPEED_SCORE_MIN_PWM_TURN_BASE = int(_baseline_pwm_min(SCORE_POWER_PWM_TURN_BASE))
+    SPEED_SCORE_MIN_PWM_TURN_LEFT_BASE = int(_baseline_pwm_min(SCORE_POWER_PWM_TURN_LEFT_BASE))
+    SPEED_SCORE_MIN_PWM_TURN_RIGHT_BASE = int(_baseline_pwm_min(SCORE_POWER_PWM_TURN_RIGHT_BASE))
+    SPEED_SCORE_MIN_PWM_TURN_BASE = _safe_floor_max(
+        SPEED_SCORE_MIN_PWM_TURN_BASE,
+        SPEED_SCORE_MIN_PWM_TURN_LEFT_BASE,
+        SPEED_SCORE_MIN_PWM_TURN_RIGHT_BASE,
+    )
     return SPEED_SCORE_MIN_PWM_DRIVE_BASE, SPEED_SCORE_MIN_PWM_TURN_BASE
 
 
@@ -496,8 +661,31 @@ def is_valid_speed_score(score):
     return SPEED_SCORE_MIN <= value <= SPEED_SCORE_MAX
 
 
+def _legacy_turn_map_overridden():
+    legacy = SCORE_POWER_PWM_TURN
+    if not isinstance(legacy, dict):
+        return False
+    return id(legacy) != _SCORE_POWER_PWM_TURN_LOADED_ID
+
+
+def _legacy_duration_map_overridden():
+    legacy = SPEED_SCORE_DURATION_MS
+    if not isinstance(legacy, dict):
+        return False
+    return id(legacy) != _SPEED_SCORE_DURATION_MS_LOADED_ID
+
+
 def score_power_pwm_for_cmd(cmd):
     if cmd in ("l", "r"):
+        # Backward compatibility: tests and tools may monkeypatch the legacy
+        # shared turn map. If that happens, honor it for both directions.
+        if _legacy_turn_map_overridden():
+            return SCORE_POWER_PWM_TURN
+        if bool(USE_DIRECTIONAL_TURN_MAPS):
+            if cmd == "l" and isinstance(SCORE_POWER_PWM_TURN_LEFT, dict):
+                return SCORE_POWER_PWM_TURN_LEFT
+            if cmd == "r" and isinstance(SCORE_POWER_PWM_TURN_RIGHT, dict):
+                return SCORE_POWER_PWM_TURN_RIGHT
         return SCORE_POWER_PWM_TURN if isinstance(SCORE_POWER_PWM_TURN, dict) else SCORE_POWER_PWM_DRIVE
     if cmd in ("f", "b"):
         return SCORE_POWER_PWM_DRIVE if isinstance(SCORE_POWER_PWM_DRIVE, dict) else SCORE_POWER_PWM_TURN
@@ -506,8 +694,11 @@ def score_power_pwm_for_cmd(cmd):
 
 def baseline_pwm_floor_for_cmd(cmd):
     cmd = str(cmd) if cmd is not None else ""
-    if cmd in ("l", "r"):
-        floor = int(SPEED_SCORE_MIN_PWM_TURN_BASE or 0)
+    if cmd == "l":
+        floor = _safe_floor_max(SPEED_SCORE_MIN_PWM_TURN_LEFT_BASE, SPEED_SCORE_MIN_PWM_TURN_BASE)
+        return max(int(turn_pwm_floor()), int(floor))
+    if cmd == "r":
+        floor = _safe_floor_max(SPEED_SCORE_MIN_PWM_TURN_RIGHT_BASE, SPEED_SCORE_MIN_PWM_TURN_BASE)
         return max(int(turn_pwm_floor()), floor)
     if cmd in ("f", "b"):
         floor = int(SPEED_SCORE_MIN_PWM_DRIVE_BASE or 0)
@@ -532,16 +723,33 @@ def _speed_pwm_endpoints(cmd):
     return low_pwm, high_pwm
 
 
-def _duration_ms_for_score(score):
+def _duration_map_for_cmd(cmd):
+    # Backward compatibility: if callers monkeypatch the shared map, honor it.
+    if _legacy_duration_map_overridden():
+        return SPEED_SCORE_DURATION_MS
+    if cmd in ("l", "r"):
+        if bool(USE_DIRECTIONAL_TURN_DURATION_MAPS):
+            if cmd == "l" and isinstance(SPEED_SCORE_DURATION_MS_TURN_LEFT, dict):
+                return SPEED_SCORE_DURATION_MS_TURN_LEFT
+            if cmd == "r" and isinstance(SPEED_SCORE_DURATION_MS_TURN_RIGHT, dict):
+                return SPEED_SCORE_DURATION_MS_TURN_RIGHT
+        if isinstance(SPEED_SCORE_DURATION_MS_TURN, dict) and SPEED_SCORE_DURATION_MS_TURN:
+            return SPEED_SCORE_DURATION_MS_TURN
+        return SPEED_SCORE_DURATION_MS
+    return SPEED_SCORE_DURATION_MS
+
+
+def _duration_ms_for_score(cmd, score):
     score = normalize_speed_score(score)
-    exact = SPEED_SCORE_DURATION_MS.get(score)
+    duration_map = _duration_map_for_cmd(cmd)
+    exact = duration_map.get(score) if isinstance(duration_map, dict) else None
     if exact is not None:
         try:
             return max(1, int(round(exact)))
         except (TypeError, ValueError):
             pass
-    low = SPEED_SCORE_DURATION_MS.get(SPEED_SCORE_MIN)
-    high = SPEED_SCORE_DURATION_MS.get(SPEED_SCORE_MAX)
+    low = duration_map.get(SPEED_SCORE_MIN) if isinstance(duration_map, dict) else None
+    high = duration_map.get(SPEED_SCORE_MAX) if isinstance(duration_map, dict) else None
     if low is None or high is None:
         return int(ACT_DURATION_MS)
     try:
@@ -566,7 +774,7 @@ def speed_power_pwm_for_cmd(cmd, score):
     if cmd in ("f", "b", "l", "r") and pwm > 0:
         pwm = max(int(baseline_pwm_floor_for_cmd(cmd)), int(pwm))
     power = _pwm_to_power(pwm) or 0.0
-    duration_ms = _duration_ms_for_score(score)
+    duration_ms = _duration_ms_for_score(cmd, score)
     return power, pwm, score, duration_ms
 
 

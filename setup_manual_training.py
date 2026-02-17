@@ -18,6 +18,11 @@ from helper_vision_aruco import ArucoBrickVision
 from brick_detector_yolo import BrickDetector as YoloBrickDetector
 from helper_manual_config import load_manual_training_config
 from helper_micro_speed_adjust import micro_adjust_speed_score
+from helper_mini_x_axis_calibrate import (
+    MINI_TRIALS_DEFAULT as MINI_X_AXIS_TRIALS_DEFAULT,
+    RUN_LOG_FILE_DEFAULT as MINI_X_AXIS_LOG_DEFAULT,
+    run_mini_x_axis_calibration,
+)
 import telemetry_robot as telemetry_robot_module
 from telemetry_robot import (
     WorldModel,
@@ -206,6 +211,20 @@ _DEFAULT_MARKERLESS_PROFILE = str(
 if _DEFAULT_MARKERLESS_PROFILE not in MARKERLESS_PROFILE_PRESETS:
     _DEFAULT_MARKERLESS_PROFILE = MARKERLESS_PROFILE_BALANCED
 
+AUTO_MINI_X_AXIS_ENABLED = bool(_MANUAL_CONFIG.get("auto_mini_x_axis_enabled", True))
+AUTO_MINI_X_AXIS_STEPS = {"ALIGN_BRICK", "POSITION_BRICK"}
+try:
+    AUTO_MINI_X_AXIS_TRIALS = int(_MANUAL_CONFIG.get("auto_mini_x_axis_trials", MINI_X_AXIS_TRIALS_DEFAULT))
+except (TypeError, ValueError):
+    AUTO_MINI_X_AXIS_TRIALS = int(MINI_X_AXIS_TRIALS_DEFAULT)
+AUTO_MINI_X_AXIS_TRIALS = max(1, int(AUTO_MINI_X_AXIS_TRIALS))
+try:
+    AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS = float(_MANUAL_CONFIG.get("auto_mini_x_axis_min_interval_hours", 12.0))
+except (TypeError, ValueError):
+    AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS = 12.0
+AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS = max(0.0, float(AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS))
+AUTO_MINI_X_AXIS_LOG = Path(_MANUAL_CONFIG.get("auto_mini_x_axis_log", str(MINI_X_AXIS_LOG_DEFAULT)))
+
 
 def _vision_mode_cli_value(mode):
     mode_norm = normalize_vision_mode(mode)
@@ -342,12 +361,26 @@ def _update_speed_model_vars_for_hotkey(cmd, score, pwm, power, duration_ms):
         power_clamped = telemetry_robot_module.pwm_to_power(pwm_clamped) or 0.0
     duration_clamped = max(1, int(round(float(duration_ms))))
 
-    if cmd in ("l", "r"):
+    if cmd == "l":
+        score_map = getattr(telemetry_robot_module, "SCORE_POWER_PWM_TURN_LEFT", None)
+        if not isinstance(score_map, dict):
+            score_map = telemetry_robot_module.SCORE_POWER_PWM_TURN
+        map_key = getattr(telemetry_robot_module, "SPEED_MAP_KEY_TURN_LEFT", "score_power_pwm_turn_left")
+        duration_key = getattr(telemetry_robot_module, "SPEED_SECONDS_KEY_TURN_LEFT", "speed_score_seconds_turn_left")
+    elif cmd == "r":
+        score_map = getattr(telemetry_robot_module, "SCORE_POWER_PWM_TURN_RIGHT", None)
+        if not isinstance(score_map, dict):
+            score_map = telemetry_robot_module.SCORE_POWER_PWM_TURN
+        map_key = getattr(telemetry_robot_module, "SPEED_MAP_KEY_TURN_RIGHT", "score_power_pwm_turn_right")
+        duration_key = getattr(telemetry_robot_module, "SPEED_SECONDS_KEY_TURN_RIGHT", "speed_score_seconds_turn_right")
+    elif cmd in ("l", "r"):
         score_map = telemetry_robot_module.SCORE_POWER_PWM_TURN
-        map_key = "score_power_pwm_turn"
+        map_key = getattr(telemetry_robot_module, "SPEED_MAP_KEY_TURN", "score_power_pwm_turn")
+        duration_key = getattr(telemetry_robot_module, "SPEED_SECONDS_KEY_TURN", "speed_score_seconds_turn")
     else:
         score_map = telemetry_robot_module.SCORE_POWER_PWM_DRIVE
-        map_key = "score_power_pwm_drive"
+        map_key = getattr(telemetry_robot_module, "SPEED_MAP_KEY_DRIVE", "score_power_pwm_drive")
+        duration_key = getattr(telemetry_robot_module, "SPEED_SECONDS_KEY", "speed_score_seconds")
 
     if not isinstance(score_map, dict):
         return False, "Speed map unavailable."
@@ -398,10 +431,10 @@ def _update_speed_model_vars_for_hotkey(cmd, score, pwm, power, duration_ms):
         section_entry["pwm"] = int(pwm_clamped)
         section_entry["power"] = float(power_clamped)
 
-        speed_seconds = model.get("speed_score_seconds")
+        speed_seconds = model.get(duration_key)
         if not isinstance(speed_seconds, dict):
             speed_seconds = {}
-            model["speed_score_seconds"] = speed_seconds
+            model[duration_key] = speed_seconds
         speed_seconds[score_text] = round(float(duration_clamped) / 1000.0, 3)
 
         model_path.write_text(json.dumps(model, indent=2) + "\n")
@@ -540,6 +573,30 @@ def trash_current_session(app_state):
 def run_auto_step(app_state, obj_enum):
     step_key = normalize_step_label(obj_enum.value)
     log_line(f"[AUTO] Attempting {step_key}...")
+
+    if step_key in AUTO_MINI_X_AXIS_STEPS:
+        if not AUTO_MINI_X_AXIS_ENABLED:
+            log_line(f"[AUTO] {step_key} mini x-axis calibration disabled by config.")
+        elif app_state.robot is None or app_state.vision is None:
+            log_line(f"[AUTO] {step_key} mini x-axis calibration skipped (robot/vision unavailable).")
+        else:
+            mini_result = run_mini_x_axis_calibration(
+                robot=app_state.robot,
+                vision=app_state.vision,
+                step_key=step_key,
+                trials=AUTO_MINI_X_AXIS_TRIALS,
+                log_path=AUTO_MINI_X_AXIS_LOG,
+                min_interval_hours=AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS,
+                log_fn=log_line,
+            )
+            if not bool(mini_result.get("ok")):
+                log_line(
+                    f"[AUTO] {step_key} mini x-axis calibration failed; continuing with demo replay "
+                    f"({mini_result.get('error')})."
+                )
+            with app_state.lock:
+                app_state.brick_frame_buffer = []
+
     logs = load_demo_logs(app_state.demos_dir)
     update_process_model_from_demos(logs, PROCESS_MODEL_FILE)
     refresh_autobuild_config(PROCESS_MODEL_FILE)
@@ -1892,16 +1949,23 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
         if brick.get("visible"):
             metric_x_mm = brick.get("x_axis", brick.get("offset_x"))
 
+        turn_cmd = cmd if cmd in ("l", "r") else "l"
         min_turn_pwm = None
         try:
-            min_turn_pwm = int(telemetry_robot_module.baseline_pwm_floor_for_cmd("l"))
+            min_turn_pwm = int(telemetry_robot_module.baseline_pwm_floor_for_cmd(turn_cmd))
         except Exception:
             try:
                 min_turn_pwm = int(telemetry_robot_module.turn_pwm_floor())
             except Exception:
                 min_turn_pwm = None
 
-        score_power_pwm_turn = getattr(telemetry_robot_module, "SCORE_POWER_PWM_TURN", None)
+        score_power_pwm_turn = None
+        try:
+            score_power_pwm_turn = telemetry_robot_module.score_power_pwm_for_cmd(turn_cmd)
+        except Exception:
+            score_power_pwm_turn = None
+        if not isinstance(score_power_pwm_turn, dict):
+            score_power_pwm_turn = getattr(telemetry_robot_module, "SCORE_POWER_PWM_TURN", None)
         if not isinstance(score_power_pwm_turn, dict):
             score_power_pwm_turn = telemetry_robot_module.SCORE_POWER_PWM
 

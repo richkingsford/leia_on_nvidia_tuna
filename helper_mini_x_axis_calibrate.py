@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """
-calibrate_x_axis.py
--------------------
-Compartmentalized experiment to learn turn speed-scores that close the brick X-axis gap
-for ALIGN_BRICK without overshoot events.
-
-Overshoot definition (experiment-local):
-  - The X error crosses the target (sign flips) beyond a small deadzone.
+helper_mini_x_axis_calibrate.py
+--------------------------------
+Mini X-axis turn calibration helper used before auto ALIGN_BRICK / POSITION_BRICK
+steps to keep 1% L/R turns stable after power cycles.
 """
 
 from __future__ import annotations
@@ -34,6 +31,7 @@ from telemetry_robot import WorldModel, StepState, draw_telemetry_overlay
 
 NUM_TRIALS_DEFAULT = 10
 STREAM_PORT_DEFAULT = 5000
+MINI_TRIALS_DEFAULT = 1
 
 RUN_LOG_FILE_DEFAULT = Path(__file__).resolve().parent.parent / "world_model_x_axis.json"
 ROBOT_MODEL_FILE_DEFAULT = Path(
@@ -42,6 +40,15 @@ ROBOT_MODEL_FILE_DEFAULT = Path(
 WORLD_MODEL_X_AXIS_SECTION_KEY = "x_axis_turn_calibration"
 WORLD_MODEL_SPEED_SECONDS_TURN_LEFT_KEY = "speed_score_seconds_turn_left"
 WORLD_MODEL_SPEED_SECONDS_TURN_RIGHT_KEY = "speed_score_seconds_turn_right"
+WORLD_MODEL_SPEED_SECONDS_TURN_META_KEY = "speed_score_seconds_turn_meta"
+WORLD_MODEL_AUTO_MINI_LAST_RUN_TS_KEY = "mini_x_axis_last_run_epoch_s"
+WORLD_MODEL_AUTO_MINI_LAST_RUN_ISO_KEY = "mini_x_axis_last_run_iso_utc"
+WORLD_MODEL_AUTO_MINI_LAST_RUN_STEP_KEY = "mini_x_axis_last_run_step"
+WORLD_MODEL_AUTO_MINI_LAST_RUN_OK_KEY = "mini_x_axis_last_run_ok"
+WORLD_MODEL_AUTO_MINI_LAST_RUN_CONFIDENT_KEY = "mini_x_axis_last_run_confident"
+WORLD_MODEL_AUTO_MINI_LAST_RUN_DURATION_S_KEY = "mini_x_axis_last_run_seconds"
+WORLD_MODEL_AUTO_MINI_MIN_INTERVAL_HOURS_KEY = "mini_x_axis_min_interval_hours"
+AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS_DEFAULT = 12.0
 
 # Learning / control knobs
 ALPHA = 0.25
@@ -98,19 +105,10 @@ TURN_REVERSAL_SETTLE_S = 0.5
 CONF_MIN_TRIALS = 6
 CONF_MIN_OBS_PER_DIR = 6
 CONF_SUBTLE_HIT_RATE = 0.85
-# Final validation trial: run once without exploration/adaptation updates.
-NO_EXPERIMENT_TRIAL_INDEX = 10
 
 # Vision recovery: replay inverse of recent acts and check vision after each.
 RECOVERY_MAX_INVERSE_ACTS = 3
 RECOVERY_CHECK_TIMEOUT_S = 1.0
-# If inverse replay fails, escalate to alternating stronger search turns.
-RECOVERY_ESCALATION_MAX_ACTS = 6
-RECOVERY_ESCALATION_SCORE = RESET_SCORE
-RECOVERY_ESCALATION_DURATION_SCALE = 1.0
-
-# Abort run early when reset repeatedly cannot reacquire vision.
-MAX_CONSECUTIVE_RESET_FAILED_VISION = 3
 
 
 def _coerce_float(value, fallback):
@@ -330,6 +328,9 @@ class XAxisCalibrator:
         stream_port: int,
         log_path: Path,
         x_axis_sign: float,
+        robot=None,
+        vision=None,
+        enable_stream: bool = True,
     ):
         requested_trials = int(num_trials)
         self.num_trials = int(max(1, requested_trials))
@@ -339,8 +340,10 @@ class XAxisCalibrator:
 
         self.x_gate_metric, self.x_target_mm, self.x_tol_mm = _load_x_gate_from_process()
 
-        self.robot = Robot()
-        self.vision = ArucoBrickVision(debug=False)
+        self._owns_robot = robot is None
+        self._owns_vision = vision is None
+        self.robot = robot if robot is not None else Robot()
+        self.vision = vision if vision is not None else ArucoBrickVision(debug=False)
         self.world = WorldModel()
         self.world.step_state = StepState.ALIGN_BRICK
 
@@ -368,10 +371,11 @@ class XAxisCalibrator:
         self.current_frame = None
         self.running = True
 
-        self.server = StreamServer(self._get_frame, port=int(stream_port))
-        self.server.start()
-
-        print(f"[X-AXIS] Livestream: {format_stream_url('127.0.0.1', int(stream_port))}")
+        self.server = None
+        if bool(enable_stream):
+            self.server = StreamServer(self._get_frame, port=int(stream_port))
+            self.server.start()
+            print(f"[X-AXIS] Livestream: {format_stream_url('127.0.0.1', int(stream_port))}")
         print(
             f"[X-AXIS] Gate ({self.x_gate_metric}): target {self.x_target_mm:+.2f}mm tol {self.x_tol_mm:.2f}mm "
             f"(sign {self.x_axis_sign:+.0f})"
@@ -599,8 +603,6 @@ class XAxisCalibrator:
             }
         )
         recovered_pose = None
-        escalation_used = False
-        escalation_acts_attempted = 0
         for idx, step in enumerate(plan, start=1):
             sent = self._send_turn(
                 step["cmd"],
@@ -634,77 +636,6 @@ class XAxisCalibrator:
                 recovered_pose = pose
                 break
 
-        if recovered_pose is None and int(RECOVERY_ESCALATION_MAX_ACTS) > 0:
-            escalation_used = True
-            seed_cmd = self._inverse_turn_cmd(self._last_turn_cmd_sent)
-            if seed_cmd not in ("l", "r"):
-                seed_cmd = "r"
-            esc_plan = []
-            cmd = str(seed_cmd)
-            for _ in range(int(RECOVERY_ESCALATION_MAX_ACTS)):
-                esc_plan.append(
-                    {
-                        "cmd": str(cmd),
-                        "score": int(max(1, min(MAX_COARSE_SCORE, int(RECOVERY_ESCALATION_SCORE)))),
-                        "duration_scale": float(max(0.20, min(3.0, float(RECOVERY_ESCALATION_DURATION_SCALE)))),
-                    }
-                )
-                cmd = "l" if cmd == "r" else "r"
-
-            self.log.append(
-                {
-                    "type": "recovery_escalation_start",
-                    "run_id": self.run_id,
-                    "trial": self.current_trial,
-                    "timestamp": time.time(),
-                    "source_phase": str(source_phase),
-                    "plan": esc_plan,
-                }
-            )
-            for idx, step in enumerate(esc_plan, start=1):
-                sent = self._send_turn(
-                    step["cmd"],
-                    int(step["score"]),
-                    duration_scale=float(step["duration_scale"]),
-                    phase="recovery",
-                    record_history=False,
-                )
-                escalation_acts_attempted = int(idx)
-                time.sleep(CONTROL_SLEEP_S)
-                pose = self._get_pose(samples=1, timeout_s=float(RECOVERY_CHECK_TIMEOUT_S))
-                found = pose is not None
-                self.log.append(
-                    {
-                        "type": "recovery_escalation_act",
-                        "run_id": self.run_id,
-                        "trial": self.current_trial,
-                        "timestamp": time.time(),
-                        "index": int(idx),
-                        "total": int(len(esc_plan)),
-                        "cmd": str(step["cmd"]),
-                        "score": int(step["score"]),
-                        "duration_scale": float(step["duration_scale"]),
-                        "found_after_act": bool(found),
-                        "offset_x": (float(pose["offset_x"]) if found else None),
-                        "sent": sent if isinstance(sent, dict) else None,
-                    }
-                )
-                if found:
-                    recovered_pose = pose
-                    break
-
-            self.log.append(
-                {
-                    "type": "recovery_escalation_end",
-                    "run_id": self.run_id,
-                    "trial": self.current_trial,
-                    "timestamp": time.time(),
-                    "source_phase": str(source_phase),
-                    "recovered": bool(recovered_pose is not None),
-                    "acts_attempted": int(escalation_acts_attempted),
-                }
-            )
-
         self.log.append(
             {
                 "type": "recovery_end",
@@ -714,8 +645,6 @@ class XAxisCalibrator:
                 "source_phase": str(source_phase),
                 "recovered": bool(recovered_pose is not None),
                 "acts_attempted": int(len(plan)),
-                "escalation_used": bool(escalation_used),
-                "escalation_acts_attempted": int(escalation_acts_attempted),
             }
         )
         self.current_phase = prev_phase
@@ -1358,11 +1287,6 @@ class XAxisCalibrator:
                     "turn_reversal_settle_s": TURN_REVERSAL_SETTLE_S,
                     "recovery_max_inverse_acts": RECOVERY_MAX_INVERSE_ACTS,
                     "recovery_check_timeout_s": RECOVERY_CHECK_TIMEOUT_S,
-                    "recovery_escalation_max_acts": RECOVERY_ESCALATION_MAX_ACTS,
-                    "recovery_escalation_score": RECOVERY_ESCALATION_SCORE,
-                    "recovery_escalation_duration_scale": RECOVERY_ESCALATION_DURATION_SCALE,
-                    "max_consecutive_reset_failed_vision": MAX_CONSECUTIVE_RESET_FAILED_VISION,
-                    "no_experiment_trial_index": NO_EXPERIMENT_TRIAL_INDEX,
                     "confidence_min_trials": CONF_MIN_TRIALS,
                     "confidence_min_obs_per_dir": CONF_MIN_OBS_PER_DIR,
                     "confidence_min_subtle_rate": CONF_SUBTLE_HIT_RATE,
@@ -1524,22 +1448,11 @@ class XAxisCalibrator:
     def run(self):
         self._append_meta()
         confidence_trials: list[dict] = []
-        consecutive_reset_failed_vision = 0
 
         for trial in range(1, self.num_trials + 1):
             if not self.running:
                 break
             self.current_trial = int(trial)
-            no_experiment_mode = bool(int(trial) == int(NO_EXPERIMENT_TRIAL_INDEX))
-            if no_experiment_mode:
-                print(
-                    f"[X-AXIS] Trial {trial}/{self.num_trials} NO-EXPERIMENT validation "
-                    "(exploration/adaptation disabled)."
-                )
-                try:
-                    input("[X-AXIS] Press Enter to execute trial 10 validation...")
-                except EOFError:
-                    print("[X-AXIS] No stdin available; continuing without Enter prompt.")
             self.act_idx = 0
             self._last_turn_cmd_for_trial = None
             self._last_turn_cmd_sent = None
@@ -1548,7 +1461,7 @@ class XAxisCalibrator:
                 history.clear()
             probe_summary = {}
 
-            epsilon = 0.0 if no_experiment_mode else max(0.08, 0.45 * (0.85 ** float(trial - 1)))
+            epsilon = max(0.08, 0.45 * (0.85 ** float(trial - 1)))
             self.log.append(
                 {
                     "type": "trial_start",
@@ -1556,7 +1469,6 @@ class XAxisCalibrator:
                     "trial": self.current_trial,
                     "timestamp": time.time(),
                     "epsilon": float(epsilon),
-                    "no_experiment": bool(no_experiment_mode),
                     "policy_best_scores": self.policy.snapshot_best_scores(),
                 }
             )
@@ -1586,65 +1498,25 @@ class XAxisCalibrator:
                         "probe_summary": {},
                     }
                 )
-                consecutive_reset_failed_vision += 1
-                if consecutive_reset_failed_vision >= int(MAX_CONSECUTIVE_RESET_FAILED_VISION):
-                    self.log.append(
-                        {
-                            "type": "run_early_stop",
-                            "run_id": self.run_id,
-                            "trial": self.current_trial,
-                            "timestamp": time.time(),
-                            "reason": "consecutive_reset_failed_vision",
-                            "consecutive_reset_failed_vision": int(consecutive_reset_failed_vision),
-                            "threshold": int(MAX_CONSECUTIVE_RESET_FAILED_VISION),
-                        },
-                        force=True,
-                    )
-                    print(
-                        "[X-AXIS] Early stop: "
-                        f"{consecutive_reset_failed_vision} consecutive reset_failed_vision "
-                        f"(threshold {int(MAX_CONSECUTIVE_RESET_FAILED_VISION)})."
-                    )
-                    break
                 continue
-            consecutive_reset_failed_vision = 0
 
             self.current_phase = "probe"
-            if no_experiment_mode:
-                for probe_cmd in ("l", "r"):
-                    notch_locked = int(self.turn_notch_by_cmd.get(probe_cmd, 0))
-                    score, duration_scale, notch = self._score_duration_for_notch(notch_locked)
-                    probe_summary[probe_cmd] = {
-                        "notch": int(notch),
-                        "step_mm": None,
-                        "score": int(score),
-                        "duration_scale": float(duration_scale),
-                        "target_min_mm": float(STEP_TARGET_MIN_MM),
-                        "target_max_mm": float(STEP_TARGET_MAX_MM),
-                        "target_err_max_mm": None,
-                        "locked": True,
-                    }
-                    print(
-                        f"[X-AXIS] Trial {trial} probe {probe_cmd.upper()}: "
-                        f"locked notch {notch:+d} -> {score}% @ {duration_scale:.2f}x (no scan)"
-                    )
-            else:
-                for probe_cmd in ("l", "r"):
-                    notch, step_mm, score, duration_scale, target_min_mm, target_max_mm, target_err_max_mm = self._probe_turn_notch(probe_cmd)
-                    probe_summary[probe_cmd] = {
-                        "notch": int(notch),
-                        "step_mm": float(step_mm),
-                        "score": int(score),
-                        "duration_scale": float(duration_scale),
-                        "target_min_mm": float(target_min_mm),
-                        "target_max_mm": float(target_max_mm),
-                        "target_err_max_mm": float(target_err_max_mm),
-                    }
-                    print(
-                        f"[X-AXIS] Trial {trial} probe {probe_cmd.upper()}: "
-                        f"notch {notch:+d} -> {score}% @ {duration_scale:.2f}x "
-                        f"(step {step_mm:.2f}mm vs target {target_min_mm:.2f}-{target_max_mm:.2f}mm)"
-                    )
+            for probe_cmd in ("l", "r"):
+                notch, step_mm, score, duration_scale, target_min_mm, target_max_mm, target_err_max_mm = self._probe_turn_notch(probe_cmd)
+                probe_summary[probe_cmd] = {
+                    "notch": int(notch),
+                    "step_mm": float(step_mm),
+                    "score": int(score),
+                    "duration_scale": float(duration_scale),
+                    "target_min_mm": float(target_min_mm),
+                    "target_max_mm": float(target_max_mm),
+                    "target_err_max_mm": float(target_err_max_mm),
+                }
+                print(
+                    f"[X-AXIS] Trial {trial} probe {probe_cmd.upper()}: "
+                    f"notch {notch:+d} -> {score}% @ {duration_scale:.2f}x "
+                    f"(step {step_mm:.2f}mm vs target {target_min_mm:.2f}-{target_max_mm:.2f}mm)"
+                )
             self.log.append(
                 {
                     "type": "trial_probe_end",
@@ -1652,7 +1524,6 @@ class XAxisCalibrator:
                     "trial": self.current_trial,
                     "timestamp": time.time(),
                     "probe_summary": probe_summary,
-                    "no_experiment": bool(no_experiment_mode),
                 }
             )
 
@@ -1698,80 +1569,75 @@ class XAxisCalibrator:
                     if overshoot:
                         overshoot_events += 1
 
-                    if not no_experiment_mode:
-                        improvement = float(pending.abs_err_mm - abs_err)
-                        reward = float(improvement) - float(ACT_PENALTY)
-                        if overshoot:
-                            reward -= float(OVERSHOOT_PENALTY)
+                    improvement = float(pending.abs_err_mm - abs_err)
+                    reward = float(improvement) - float(ACT_PENALTY)
+                    if overshoot:
+                        reward -= float(OVERSHOOT_PENALTY)
 
-                        delta_step_mm = abs(float(offset_x) - float(pending.offset_x))
-                        step_penalty = 0.0
-                        notch_before = pending.notch if pending.micro_mode else None
-                        notch_after = notch_before
-                        target_min_step, target_max_step, _ = self._step_target_band(pending.abs_err_mm)
-                        if pending.micro_mode:
+                    delta_step_mm = abs(float(offset_x) - float(pending.offset_x))
+                    step_penalty = 0.0
+                    notch_before = pending.notch if pending.micro_mode else None
+                    notch_after = notch_before
+                    target_min_step, target_max_step, _ = self._step_target_band(pending.abs_err_mm)
+                    if pending.micro_mode:
+                        if delta_step_mm < float(target_min_step):
+                            step_penalty = (float(target_min_step) - float(delta_step_mm)) * float(
+                                STEP_REWARD_PENALTY_PER_MM
+                            )
+                        elif delta_step_mm > float(target_max_step):
+                            step_penalty = (float(delta_step_mm) - float(target_max_step)) * float(
+                                STEP_REWARD_PENALTY_PER_MM
+                            )
+                        reward -= float(step_penalty)
+                        if pending.cmd in self.turn_step_mm_by_cmd:
+                            self.turn_step_mm_by_cmd[pending.cmd].append(float(delta_step_mm))
+
+                        if pending.notch is not None:
+                            next_notch = int(pending.notch)
                             if delta_step_mm < float(target_min_step):
-                                step_penalty = (float(target_min_step) - float(delta_step_mm)) * float(
-                                    STEP_REWARD_PENALTY_PER_MM
-                                )
+                                next_notch += 1
                             elif delta_step_mm > float(target_max_step):
-                                step_penalty = (float(delta_step_mm) - float(target_max_step)) * float(
-                                    STEP_REWARD_PENALTY_PER_MM
+                                next_notch -= 1
+                            next_notch = max(int(TURN_NOTCH_MIN), min(int(TURN_NOTCH_MAX), int(next_notch)))
+                            notch_after = int(next_notch)
+                            if next_notch != int(pending.notch):
+                                self.turn_notch_by_cmd[pending.cmd] = int(next_notch)
+                                self.log.append(
+                                    {
+                                        "type": "turn_notch_adjust",
+                                        "run_id": self.run_id,
+                                        "trial": self.current_trial,
+                                        "phase": self.current_phase,
+                                        "act": pending.act,
+                                        "timestamp": time.time(),
+                                        "cmd": pending.cmd,
+                                        "delta_step_mm": float(delta_step_mm),
+                                        "target_min_mm": float(target_min_step),
+                                        "target_max_mm": float(target_max_step),
+                                        "notch_before": int(pending.notch),
+                                        "notch_after": int(next_notch),
+                                        "reason": "step_small" if delta_step_mm < float(target_min_step) else "step_large",
+                                    }
                                 )
-                            reward -= float(step_penalty)
-                            if pending.cmd in self.turn_step_mm_by_cmd:
-                                self.turn_step_mm_by_cmd[pending.cmd].append(float(delta_step_mm))
 
-                            if pending.notch is not None:
-                                next_notch = int(pending.notch)
-                                if delta_step_mm < float(target_min_step):
-                                    next_notch += 1
-                                elif delta_step_mm > float(target_max_step):
-                                    next_notch -= 1
-                                next_notch = max(int(TURN_NOTCH_MIN), min(int(TURN_NOTCH_MAX), int(next_notch)))
-                                notch_after = int(next_notch)
-                                if next_notch != int(pending.notch):
-                                    self.turn_notch_by_cmd[pending.cmd] = int(next_notch)
-                                    self.log.append(
-                                        {
-                                            "type": "turn_notch_adjust",
-                                            "run_id": self.run_id,
-                                            "trial": self.current_trial,
-                                            "phase": self.current_phase,
-                                            "act": pending.act,
-                                            "timestamp": time.time(),
-                                            "cmd": pending.cmd,
-                                            "delta_step_mm": float(delta_step_mm),
-                                            "target_min_mm": float(target_min_step),
-                                            "target_max_mm": float(target_max_step),
-                                            "notch_before": int(pending.notch),
-                                            "notch_after": int(next_notch),
-                                            "reason": (
-                                                "step_small"
-                                                if delta_step_mm < float(target_min_step)
-                                                else "step_large"
-                                            ),
-                                        }
-                                    )
-
-                        q_prev, q_next = self.policy.update(pending.cmd, pending.bin_idx, pending.score, reward)
-                        self._log_learn(
-                            trial=self.current_trial,
-                            phase=self.current_phase,
-                            act=pending.act,
-                            prev=pending,
-                            new_offset_x=offset_x,
-                            new_x_err_mm=x_err,
-                            crossed=crossed,
-                            overshoot=overshoot,
-                            reward=reward,
-                            q_prev=q_prev,
-                            q_next=q_next,
-                            delta_step_mm=delta_step_mm,
-                            step_penalty=step_penalty,
-                            notch_before=notch_before,
-                            notch_after=notch_after,
-                        )
+                    q_prev, q_next = self.policy.update(pending.cmd, pending.bin_idx, pending.score, reward)
+                    self._log_learn(
+                        trial=self.current_trial,
+                        phase=self.current_phase,
+                        act=pending.act,
+                        prev=pending,
+                        new_offset_x=offset_x,
+                        new_x_err_mm=x_err,
+                        crossed=crossed,
+                        overshoot=overshoot,
+                        reward=reward,
+                        q_prev=q_prev,
+                        q_next=q_next,
+                        delta_step_mm=delta_step_mm,
+                        step_penalty=step_penalty,
+                        notch_before=notch_before,
+                        notch_after=notch_after,
+                    )
 
                     if overshoot:
                         # Trial objective is zero overshoot: end immediately.
@@ -1960,18 +1826,259 @@ class XAxisCalibrator:
             self.robot.stop()
         except Exception:
             pass
+        if bool(self._owns_robot):
+            try:
+                self.robot.close()
+            except Exception:
+                pass
+        if bool(self._owns_vision):
+            try:
+                self.vision.close()
+            except Exception:
+                pass
         try:
-            self.robot.close()
+            if self.server is not None:
+                self.server.stop()
         except Exception:
             pass
+
+
+def _latest_event(events, event_type):
+    if not isinstance(events, list):
+        return None
+    for event in reversed(events):
+        if isinstance(event, dict) and event.get("type") == event_type:
+            return event
+    return None
+
+
+def _world_model_load(path: Path) -> dict:
+    try:
+        if path.exists():
+            try:
+                model = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                model = {}
+        else:
+            model = {}
+    except Exception:
+        model = {}
+    if not isinstance(model, dict):
+        return {}
+    return model
+
+
+def _auto_mini_last_run_epoch_s_from_model(model: dict) -> float | None:
+    if not isinstance(model, dict):
+        return None
+
+    meta = model.get(WORLD_MODEL_SPEED_SECONDS_TURN_META_KEY)
+    if isinstance(meta, dict):
         try:
-            self.vision.close()
-        except Exception:
-            pass
+            ts = float(meta.get(WORLD_MODEL_AUTO_MINI_LAST_RUN_TS_KEY))
+        except (TypeError, ValueError):
+            ts = None
+        if ts is not None and ts > 0.0:
+            return float(ts)
+
+    # Backward-compatible fallback: use the latest full/mini x-axis calibration timestamp.
+    x_axis = model.get(WORLD_MODEL_X_AXIS_SECTION_KEY)
+    if isinstance(x_axis, dict):
         try:
-            self.server.stop()
-        except Exception:
-            pass
+            ts = float(x_axis.get("timestamp"))
+        except (TypeError, ValueError):
+            ts = None
+        if ts is not None and ts > 0.0:
+            return float(ts)
+    return None
+
+
+def _format_utc_timestamp(epoch_s: float) -> str:
+    try:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(epoch_s)))
+    except Exception:
+        return ""
+
+
+def _persist_auto_mini_run_meta(
+    *,
+    step_name: str,
+    started_s: float,
+    ended_s: float,
+    min_interval_hours: float,
+    ok: bool,
+    confident: bool | None,
+) -> dict:
+    model_path = ROBOT_MODEL_FILE_DEFAULT
+    try:
+        model = _world_model_load(model_path)
+        meta = model.get(WORLD_MODEL_SPEED_SECONDS_TURN_META_KEY)
+        if not isinstance(meta, dict):
+            meta = {}
+            model[WORLD_MODEL_SPEED_SECONDS_TURN_META_KEY] = meta
+
+        try:
+            started_val = float(started_s)
+        except (TypeError, ValueError):
+            started_val = float(time.time())
+        try:
+            ended_val = float(ended_s)
+        except (TypeError, ValueError):
+            ended_val = float(time.time())
+        ended_val = max(started_val, ended_val)
+        duration_s = max(0.0, float(ended_val - started_val))
+
+        meta[WORLD_MODEL_AUTO_MINI_LAST_RUN_TS_KEY] = round(float(ended_val), 3)
+        meta[WORLD_MODEL_AUTO_MINI_LAST_RUN_ISO_KEY] = _format_utc_timestamp(ended_val)
+        meta[WORLD_MODEL_AUTO_MINI_LAST_RUN_STEP_KEY] = str(step_name or "ALIGN_BRICK")
+        meta[WORLD_MODEL_AUTO_MINI_LAST_RUN_OK_KEY] = bool(ok)
+        if confident is not None:
+            meta[WORLD_MODEL_AUTO_MINI_LAST_RUN_CONFIDENT_KEY] = bool(confident)
+        meta[WORLD_MODEL_AUTO_MINI_LAST_RUN_DURATION_S_KEY] = round(float(duration_s), 3)
+        meta[WORLD_MODEL_AUTO_MINI_MIN_INTERVAL_HOURS_KEY] = round(max(0.0, float(min_interval_hours)), 3)
+
+        model_path.write_text(json.dumps(model, indent=2) + "\n")
+        return {
+            "ok": True,
+            "model_path": str(model_path),
+            WORLD_MODEL_AUTO_MINI_LAST_RUN_TS_KEY: float(meta.get(WORLD_MODEL_AUTO_MINI_LAST_RUN_TS_KEY)),
+            WORLD_MODEL_AUTO_MINI_MIN_INTERVAL_HOURS_KEY: float(
+                meta.get(WORLD_MODEL_AUTO_MINI_MIN_INTERVAL_HOURS_KEY)
+            ),
+        }
+    except OSError as exc:
+        return {
+            "ok": False,
+            "model_path": str(model_path),
+            "error": str(exc),
+        }
+
+
+def run_mini_x_axis_calibration(
+    *,
+    robot,
+    vision,
+    step_key=None,
+    trials=MINI_TRIALS_DEFAULT,
+    log_path=RUN_LOG_FILE_DEFAULT,
+    x_axis_sign=X_AXIS_SIGN_DEFAULT,
+    log_fn=None,
+    min_interval_hours=AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS_DEFAULT,
+):
+    """
+    Run a quick in-process X-axis calibration using the caller's live robot/vision.
+    Returns a summary dict and persists conclusion updates to world_model_robot.json.
+    """
+    logger = log_fn if callable(log_fn) else print
+    step_name = str(step_key or "ALIGN_BRICK")
+    try:
+        cooldown_hours = max(0.0, float(min_interval_hours))
+    except (TypeError, ValueError):
+        cooldown_hours = float(AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS_DEFAULT)
+    cooldown_seconds = float(cooldown_hours) * 3600.0
+
+    if cooldown_seconds > 0.0:
+        model = _world_model_load(ROBOT_MODEL_FILE_DEFAULT)
+        last_run_epoch_s = _auto_mini_last_run_epoch_s_from_model(model)
+        if last_run_epoch_s is not None:
+            now_s = float(time.time())
+            elapsed_s = max(0.0, float(now_s - float(last_run_epoch_s)))
+            if elapsed_s < cooldown_seconds:
+                remaining_s = float(cooldown_seconds - elapsed_s)
+                next_allowed_s = float(last_run_epoch_s + cooldown_seconds)
+                logger(
+                    f"[AUTO] {step_name} mini x-axis calibration skipped "
+                    f"({cooldown_hours:.1f}h cooldown active; {remaining_s / 3600.0:.2f}h remaining; "
+                    f"last run {_format_utc_timestamp(last_run_epoch_s)})."
+                )
+                return {
+                    "ok": True,
+                    "skipped": True,
+                    "skip_reason": "cooldown",
+                    "cooldown_hours": float(cooldown_hours),
+                    "last_run_epoch_s": float(last_run_epoch_s),
+                    "next_allowed_epoch_s": float(next_allowed_s),
+                    "remaining_seconds": float(remaining_s),
+                }
+
+    logger(f"[AUTO] {step_name} preflight mini x-axis calibration ({int(max(1, int(trials)))} trial).")
+    calibrator = XAxisCalibrator(
+        num_trials=int(max(1, int(trials))),
+        stream_port=int(STREAM_PORT_DEFAULT),
+        log_path=Path(log_path),
+        x_axis_sign=float(x_axis_sign),
+        robot=robot,
+        vision=vision,
+        enable_stream=False,
+    )
+    started = time.time()
+    try:
+        calibrator.run()
+    except Exception as exc:
+        ended = float(time.time())
+        meta_result = _persist_auto_mini_run_meta(
+            step_name=step_name,
+            started_s=float(started),
+            ended_s=float(ended),
+            min_interval_hours=float(cooldown_hours),
+            ok=False,
+            confident=None,
+        )
+        summary = {
+            "ok": False,
+            "error": str(exc),
+            "seconds": float(ended - started),
+            "run_meta_persist_result": meta_result,
+        }
+        logger(f"[AUTO] {step_name} mini x-axis calibration failed: {exc}")
+        if not bool(meta_result.get("ok")):
+            logger(f"[AUTO] {step_name} mini x-axis run meta update failed: {meta_result.get('error')}")
+        return summary
+    finally:
+        calibrator.close()
+
+    events = calibrator.log.events if hasattr(calibrator, "log") else []
+    confidence = _latest_event(events, "confidence_summary") or {}
+    conclusion = _latest_event(events, "conclusion") or {}
+    persist = conclusion.get("persist_result") if isinstance(conclusion, dict) else {}
+    data = conclusion.get("data") if isinstance(conclusion, dict) else {}
+
+    summary = {
+        "ok": True,
+        "seconds": float(time.time() - started),
+        "confidence": confidence,
+        "conclusion": data if isinstance(data, dict) else {},
+        "persist_result": persist if isinstance(persist, dict) else {},
+    }
+    confidence_dict = summary["confidence"] if isinstance(summary["confidence"], dict) else {}
+    confident = bool(confidence_dict.get("confident")) if confidence_dict else None
+    meta_result = _persist_auto_mini_run_meta(
+        step_name=step_name,
+        started_s=float(started),
+        ended_s=float(time.time()),
+        min_interval_hours=float(cooldown_hours),
+        ok=True,
+        confident=confident,
+    )
+    summary["run_meta_persist_result"] = meta_result
+    if bool(summary["persist_result"].get("ok")):
+        logger(
+            f"[AUTO] {step_name} mini x-axis calibration applied "
+            f"(L/R 1% secs: {summary['persist_result'].get('applied_seconds_1pct', {})})."
+        )
+    elif bool(summary["persist_result"].get("skipped")):
+        logger(
+            f"[AUTO] {step_name} mini x-axis calibration did not apply "
+            f"(confidence gate not reached)."
+        )
+    else:
+        logger(
+            f"[AUTO] {step_name} mini x-axis calibration completed but world model update failed: "
+            f"{summary['persist_result'].get('error')}"
+        )
+    if not bool(meta_result.get("ok")):
+        logger(f"[AUTO] {step_name} mini x-axis run meta update failed: {meta_result.get('error')}")
+    return summary
 
 
 def main():
@@ -1980,6 +2087,9 @@ def main():
     parser.add_argument("--stream-port", type=int, default=STREAM_PORT_DEFAULT)
     parser.add_argument("--log", type=str, default=str(RUN_LOG_FILE_DEFAULT))
     parser.add_argument("--x-axis-sign", type=float, default=X_AXIS_SIGN_DEFAULT)
+    parser.add_argument("--stream", dest="stream", action="store_true", help="Enable mini calibration livestream")
+    parser.add_argument("--no-stream", dest="stream", action="store_false", help="Disable mini calibration livestream")
+    parser.set_defaults(stream=False)
     args = parser.parse_args()
 
     calibrator = XAxisCalibrator(
@@ -1987,6 +2097,7 @@ def main():
         stream_port=args.stream_port,
         log_path=Path(args.log),
         x_axis_sign=args.x_axis_sign,
+        enable_stream=bool(args.stream),
     )
     try:
         calibrator.run()

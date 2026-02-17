@@ -80,6 +80,26 @@
       "pwm": 255
     }
   },
+  "score_power_pwm_turn_left": {
+    "1": {
+      "power": 0.28,
+      "pwm": 96
+    },
+    "100": {
+      "power": 1.0,
+      "pwm": 255
+    }
+  },
+  "score_power_pwm_turn_right": {
+    "1": {
+      "power": 0.302,
+      "pwm": 102
+    },
+    "100": {
+      "power": 1.0,
+      "pwm": 255
+    }
+  },
   "speed_score_seconds": {
     "1": 0.25,
     "100": 0.3
@@ -104,5 +124,140 @@
         "segment_ms": 25
       }
     }
+  },
+  "x_axis_turn_calibration": {
+    "schema_version": 1,
+    "run_id": 1771290893,
+    "timestamp": 1771291050.944167,
+    "x_gate_metric": "xAxis_offset_abs",
+    "x_gate_target_mm": -1.44,
+    "x_gate_tol_mm": 0.7,
+    "x_axis_sign": 1.0,
+    "confidence": {
+      "confident": true,
+      "trials": 10,
+      "obs_l": 8,
+      "obs_r": 8,
+      "subtle_hits_l": 7,
+      "subtle_hits_r": 8,
+      "subtle_rate_l": 0.875,
+      "subtle_rate_r": 1.0,
+      "criteria": {
+        "min_trials": 6,
+        "min_obs_per_dir": 6,
+        "min_subtle_rate": 0.85,
+        "step_target_bands_mm": [
+          [
+            8.0,
+            0.3,
+            0.5
+          ],
+          [
+            20.0,
+            0.3,
+            0.7
+          ],
+          [
+            35.0,
+            0.3,
+            1.0
+          ],
+          [
+            1000000000.0,
+            0.3,
+            1.5
+          ]
+        ]
+      }
+    },
+    "recommended_by_cmd": {
+      "l": {
+        "available": true,
+        "samples": 8,
+        "adaptive_hits": 7,
+        "adaptive_hit_rate": 0.875,
+        "median_step_mm": 0.7406005572432832,
+        "median_target_step_mm": 0.9,
+        "median_notch": -2,
+        "median_score": 1,
+        "recommended_duration_scale_1pct": 0.7291379877028812,
+        "current_duration_ms_1pct": 185,
+        "recommended_duration_ms_1pct": 135,
+        "recommended_seconds_1pct": 0.135,
+        "closeness": {
+          "n": 8,
+          "mean_mm": 1.2920196250409512,
+          "median_mm": 1.006958442237444,
+          "best_mm": 0.5624029882509589,
+          "worst_mm": 3.6653048736610145,
+          "adaptive_hit_count": 7,
+          "adaptive_total": 8,
+          "adaptive_hit_rate": 0.875,
+          "tier_counts": {
+            "<=0.50": 0,
+            "<=0.70": 2,
+            "<=1.00": 4,
+            "<=1.50": 7
+          },
+          "tier_rates": {
+            "<=0.50": 0.0,
+            "<=0.70": 0.25,
+            "<=1.00": 0.5,
+            "<=1.50": 0.875
+          }
+        }
+      },
+      "r": {
+        "available": true,
+        "samples": 8,
+        "adaptive_hits": 8,
+        "adaptive_hit_rate": 1.0,
+        "median_step_mm": 0.59809355906458,
+        "median_target_step_mm": 0.9,
+        "median_notch": -3,
+        "median_score": 1,
+        "recommended_duration_scale_1pct": 0.6019125177723715,
+        "current_duration_ms_1pct": 108,
+        "recommended_duration_ms_1pct": 65,
+        "recommended_seconds_1pct": 0.065,
+        "closeness": {
+          "n": 8,
+          "mean_mm": 0.5651664493943649,
+          "median_mm": 0.59809355906458,
+          "best_mm": 0.35808032565535797,
+          "worst_mm": 0.7380604601907663,
+          "adaptive_hit_count": 8,
+          "adaptive_total": 8,
+          "adaptive_hit_rate": 1.0,
+          "tier_counts": {
+            "<=0.50": 2,
+            "<=0.70": 7,
+            "<=1.00": 8,
+            "<=1.50": 8
+          },
+          "tier_rates": {
+            "<=0.50": 0.25,
+            "<=0.70": 0.875,
+            "<=1.00": 1.0,
+            "<=1.50": 1.0
+          }
+        }
+      }
+    }
+  },
+  "speed_score_seconds_turn_left": {
+    "1": 0.135
+  },
+  "speed_score_seconds_turn_right": {
+    "1": 0.065
+  },
+  "speed_score_seconds_turn_meta": {
+    "mini_x_axis_last_run_epoch_s": 1771286893.578,
+    "mini_x_axis_last_run_iso_utc": "2026-02-17T00:08:13Z",
+    "mini_x_axis_last_run_step": "ALIGN_BRICK",
+    "mini_x_axis_last_run_ok": true,
+    "mini_x_axis_last_run_confident": true,
+    "mini_x_axis_last_run_seconds": 173.238,
+    "mini_x_axis_min_interval_hours": 12.0
   }
 }
