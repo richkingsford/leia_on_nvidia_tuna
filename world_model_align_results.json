@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "run_id": 1771295547,
-  "timestamp": 1771295547.160616,
+  "run_id": 1771298719,
+  "timestamp": 1771298719.1687486,
   "data_file": "world_model_align.json",
   "results_file": "world_model_align_results.json",
   "efficiency_chart_file": "world_model_align_efficiency.png",
@@ -16,14 +16,19 @@
     "x_axis_sign": 1.0,
     "x_target_mm": -1.44,
     "x_tol_mm": 0.7,
-    "x_tol_growth_per_mm_back": 0.02,
-    "x_tol_max_mm": 2.5,
+    "x_tol_relax_multiplier": 1.4,
+    "x_tol_growth_per_mm_back": 0.05,
+    "x_tol_max_mm": 4.0,
     "learn_speed_start": 10,
     "learn_speed_step": 1,
     "learn_speed_bonus": 2,
     "vision_lost_consec_frames": 3,
     "vision_lost_max_s": 0.35,
     "align_observe_timeout_s": 0.6,
+    "post_act_observe_ratio": 0.55,
+    "post_act_observe_min_s": 0.03,
+    "post_act_observe_max_s": 0.25,
+    "inter_trial_settle_s": 0.6,
     "recovery_reverse_max_acts": 6,
     "recovery_reverse_score": 6,
     "recovery_scan_max_attempts": 8,
@@ -36,7 +41,7 @@
   "trials": [
     {
       "trial": 1,
-      "timestamp": 1771295603.3686106,
+      "timestamp": 1771298734.2804308,
       "success": false,
       "reason": "max_adjusts",
       "vision_lost_events": 0,
@@ -44,11 +49,13 @@
       "recovery_recovered": 0,
       "learned_speed_score": 10,
       "adjust_count": 20,
-      "adjust_limit": 20
+      "adjust_limit": 20,
+      "progress_acts": 11,
+      "worsening_acts": 9
     },
     {
       "trial": 2,
-      "timestamp": 1771295611.4663029,
+      "timestamp": 1771298792.7740445,
       "success": false,
       "reason": "max_adjusts",
       "vision_lost_events": 0,
@@ -56,23 +63,27 @@
       "recovery_recovered": 0,
       "learned_speed_score": 10,
       "adjust_count": 20,
-      "adjust_limit": 20
+      "adjust_limit": 20,
+      "progress_acts": 12,
+      "worsening_acts": 8
     },
     {
       "trial": 3,
-      "timestamp": 1771295620.7685943,
+      "timestamp": 1771298812.7830873,
       "success": false,
       "reason": "max_adjusts",
-      "vision_lost_events": 0,
-      "recovery_attempts": 0,
-      "recovery_recovered": 0,
+      "vision_lost_events": 7,
+      "recovery_attempts": 1,
+      "recovery_recovered": 1,
       "learned_speed_score": 10,
       "adjust_count": 20,
-      "adjust_limit": 20
+      "adjust_limit": 20,
+      "progress_acts": 10,
+      "worsening_acts": 9
     },
     {
       "trial": 4,
-      "timestamp": 1771295629.477757,
+      "timestamp": 1771298843.579196,
       "success": false,
       "reason": "max_adjusts",
       "vision_lost_events": 0,
@@ -80,11 +91,13 @@
       "recovery_recovered": 0,
       "learned_speed_score": 10,
       "adjust_count": 20,
-      "adjust_limit": 20
+      "adjust_limit": 20,
+      "progress_acts": 12,
+      "worsening_acts": 7
     },
     {
       "trial": 5,
-      "timestamp": 1771295643.2801642,
+      "timestamp": 1771298901.8349338,
       "success": false,
       "reason": "max_adjusts",
       "vision_lost_events": 0,
@@ -92,11 +105,69 @@
       "recovery_recovered": 0,
       "learned_speed_score": 10,
       "adjust_count": 20,
-      "adjust_limit": 20
+      "adjust_limit": 20,
+      "progress_acts": 13,
+      "worsening_acts": 7
     },
     {
       "trial": 6,
-      "timestamp": 1771295695.584242,
+      "timestamp": 1771298932.3848715,
+      "success": false,
+      "reason": "lost_vision",
+      "vision_lost_events": 1,
+      "recovery_attempts": 1,
+      "recovery_recovered": 1,
+      "learned_speed_score": 10,
+      "adjust_count": 6,
+      "adjust_limit": 20,
+      "progress_acts": 4,
+      "worsening_acts": 1
+    },
+    {
+      "trial": 7,
+      "timestamp": 1771298933.7644067,
+      "success": false,
+      "reason": "reset_failed_vision",
+      "vision_lost_events": 1,
+      "recovery_attempts": 0,
+      "recovery_recovered": 0,
+      "learned_speed_score": 10,
+      "adjust_count": 0,
+      "adjust_limit": 20,
+      "progress_acts": 0,
+      "worsening_acts": 0
+    },
+    {
+      "trial": 8,
+      "timestamp": 1771298944.5859814,
+      "success": false,
+      "reason": "reset_failed_vision",
+      "vision_lost_events": 6,
+      "recovery_attempts": 2,
+      "recovery_recovered": 1,
+      "learned_speed_score": 10,
+      "adjust_count": 0,
+      "adjust_limit": 20,
+      "progress_acts": 0,
+      "worsening_acts": 0
+    },
+    {
+      "trial": 9,
+      "timestamp": 1771298945.4638302,
+      "success": false,
+      "reason": "reset_failed_vision",
+      "vision_lost_events": 1,
+      "recovery_attempts": 0,
+      "recovery_recovered": 0,
+      "learned_speed_score": 10,
+      "adjust_count": 0,
+      "adjust_limit": 20,
+      "progress_acts": 0,
+      "worsening_acts": 0
+    },
+    {
+      "trial": 10,
+      "timestamp": 1771298986.3884919,
       "success": false,
       "reason": "max_adjusts",
       "vision_lost_events": 0,
@@ -104,67 +175,21 @@
       "recovery_recovered": 0,
       "learned_speed_score": 10,
       "adjust_count": 20,
-      "adjust_limit": 20
-    },
-    {
-      "trial": 7,
-      "timestamp": 1771295706.9844918,
-      "success": false,
-      "reason": "lost_vision",
-      "vision_lost_events": 8,
-      "recovery_attempts": 1,
-      "recovery_recovered": 0,
-      "learned_speed_score": 10,
-      "adjust_count": 1,
-      "adjust_limit": 20
-    },
-    {
-      "trial": 8,
-      "timestamp": 1771295707.860746,
-      "success": false,
-      "reason": "reset_failed_vision",
-      "vision_lost_events": 1,
-      "recovery_attempts": 0,
-      "recovery_recovered": 0,
-      "learned_speed_score": 10,
-      "adjust_count": 0,
-      "adjust_limit": 20
-    },
-    {
-      "trial": 9,
-      "timestamp": 1771295708.7592158,
-      "success": false,
-      "reason": "reset_failed_vision",
-      "vision_lost_events": 1,
-      "recovery_attempts": 0,
-      "recovery_recovered": 0,
-      "learned_speed_score": 10,
-      "adjust_count": 0,
-      "adjust_limit": 20
-    },
-    {
-      "trial": 10,
-      "timestamp": 1771295709.6638272,
-      "success": false,
-      "reason": "reset_failed_vision",
-      "vision_lost_events": 1,
-      "recovery_attempts": 0,
-      "recovery_recovered": 0,
-      "learned_speed_score": 10,
-      "adjust_count": 0,
-      "adjust_limit": 20
+      "adjust_limit": 20,
+      "progress_acts": 12,
+      "worsening_acts": 7
     }
   ],
   "recovery_summary": {
-    "attempts": 1,
-    "recovered": 0,
-    "overall_rate": 0.0,
-    "reverse_attempts": 1,
-    "reverse_recovered": 0,
-    "reverse_rate": 0.0,
-    "scan_attempts": 1,
-    "scan_recovered": 0,
-    "scan_rate": 0.0
+    "attempts": 4,
+    "recovered": 3,
+    "overall_rate": 0.75,
+    "reverse_attempts": 2,
+    "reverse_recovered": 1,
+    "reverse_rate": 0.5,
+    "scan_attempts": 3,
+    "scan_recovered": 2,
+    "scan_rate": 0.6666666666666666
   },
   "efficiency_chart": {
     "ok": true,
@@ -178,5 +203,5 @@
   "completed_trials": 10,
   "early_stop": false,
   "early_stop_reason": null,
-  "finished_at": 1771295709.7063
+  "finished_at": 1771298986.4249647
 }

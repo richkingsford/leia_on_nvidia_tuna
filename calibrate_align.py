@@ -17,10 +17,10 @@ from telemetry_robot import WorldModel, draw_telemetry_overlay, StepState
 from telemetry_process import (
     COLOR_GRAY,
     COLOR_GREEN,
+    COLOR_ORANGE_BRIGHT,
     COLOR_RED,
     COLOR_RESET,
     COLOR_WHITE,
-    action_sent_display_text,
     compute_stream_gate_summary,
     format_control_action_line,
     send_robot_command,
@@ -37,6 +37,9 @@ RESULTS_FILE = str(
 )
 EFFICIENCY_CHART_FILE = str(
     Path(DATA_FILE).with_name(f"{Path(DATA_FILE).stem}_efficiency.png")
+)
+ACT_PROGRESS_CHART_FILE = str(
+    Path(DATA_FILE).with_name(f"{Path(DATA_FILE).stem}_act_progress.png")
 )
 ALPHA = 0.25         # Learning rate
 
@@ -73,8 +76,9 @@ X_TOL_MM = float(X_GATE_TOL_MM)
 LOG_FLUSH_EVERY_EVENTS = 50
 # Distance-normalized X tolerance: if we're farther than (dist target + tol),
 # widen the X threshold so alignment remains achievable farther back.
-X_TOL_GROWTH_PER_MM_BACK = 0.02
-X_TOL_MAX_MM = 2.5
+X_TOL_RELAX_MULTIPLIER = 1.4
+X_TOL_GROWTH_PER_MM_BACK = 0.05
+X_TOL_MAX_MM = 4.0
 
 # Advanced Control Tunings
 BACKLASH_S = 0.08         
@@ -99,6 +103,13 @@ LEARN_SPEED_START = 10    # Starting coarse speed (gentler initial exploration)
 LEARN_SPEED_STEP = 1      # Always increase every trial (slower ramp)
 LEARN_SPEED_BONUS = 2     # Extra increase if trial beats recent average
 OBSERVE_SLEEP_S = 0.02    # Small sleep while sampling to keep CPU down
+# Require each control decision to use a post-act observation that is at least
+# this mature relative to the previous command duration. This reduces acting on
+# stale camera samples without introducing long hard sleeps.
+POST_ACT_OBSERVE_RATIO = 0.55
+POST_ACT_OBSERVE_MIN_S = 0.03
+POST_ACT_OBSERVE_MAX_S = 0.25
+INTER_TRIAL_SETTLE_S = 0.6
 STALL_WINDOW = 3          # Detect stalling after ~2 acts (3 samples)
 STALL_BUMP_SCORE = 2      # Add a small speed bump when stalling (coarse mode)
 STALL_BUMP_PCT = 5.0      # Extra bump for precision mode when stalling
@@ -109,7 +120,7 @@ RECOVERY_REVERSE_MAX_ACTS = 6      # How many recent acts to invert for recovery
 RECOVERY_REVERSE_OBSERVE_S = 0.8
 RECOVERY_SCAN_MAX_ATTEMPTS = 8
 RECOVERY_REVERSE_ALLOWED_PHASES = {"align", "reset"}
-RECOVERY_REVERSE_SKIP_REASON_PREFIXES = ("sample_keepalive", "recovery_")
+RECOVERY_REVERSE_SKIP_REASON_PREFIXES = ("recovery_",)
 RECOVERY_REVERSE_SKIP_REASONS = {"between_trials"}
 MAX_CONSECUTIVE_UNRECOVERED_VISION_LOSSES = 3
 MAX_ADJUSTS_PER_TRIAL = 20
@@ -136,6 +147,7 @@ class AlignCalibrator:
         self.data_log = []
         self.results_file_path = Path(RESULTS_FILE)
         self.chart_file_path = Path(EFFICIENCY_CHART_FILE)
+        self.act_progress_chart_file_path = Path(ACT_PROGRESS_CHART_FILE)
         self.results_log = {}
         self.learned_speed_score = LEARN_SPEED_START
         self.keepalive_dir = "l"
@@ -156,7 +168,11 @@ class AlignCalibrator:
         self.trial_recovery_attempts = 0
         self.trial_recovery_successes = 0
         self.trial_adjust_count = 0
+        self.trial_progress_acts = 0
+        self.trial_worsening_acts = 0
         self._last_logged_abs_x_err = None
+        self._last_act_sent_at = None
+        self._last_act_duration_s = 0.0
         
         # Histories for smarter learning and metrics
         self.error_history = deque(maxlen=10)
@@ -194,7 +210,8 @@ class AlignCalibrator:
         )
         print(
             f"[ALIGN] Distance gate ({DIST_GATE_METRIC}): target {DIST_GATE_TARGET_MM:.2f}mm tol {DIST_GATE_TOL_MM:.2f}mm "
-            f"-> adaptive X tol up to {X_TOL_MAX_MM:.2f}mm when far back."
+            f"-> adaptive X tol up to {X_TOL_MAX_MM:.2f}mm when far back "
+            f"(base x{X_TOL_RELAX_MULTIPLIER:.2f}, growth {X_TOL_GROWTH_PER_MM_BACK:.3f}/mm)."
         )
 
     def _get_frame(self):
@@ -207,7 +224,7 @@ class AlignCalibrator:
             return 0.0
 
     def _active_x_tol_mm(self, dist_mm):
-        base_tol = float(X_TOL_MM)
+        base_tol = float(X_TOL_MM) * float(X_TOL_RELAX_MULTIPLIER)
         try:
             dist_val = float(dist_mm)
         except (TypeError, ValueError):
@@ -217,6 +234,31 @@ class AlignCalibrator:
             return float(base_tol)
         widened = float(base_tol) + ((dist_val - start_widen_mm) * float(X_TOL_GROWTH_PER_MM_BACK))
         return float(max(base_tol, min(float(X_TOL_MAX_MM), widened)))
+
+    def _mark_last_act_timing(self, event):
+        if not isinstance(event, dict):
+            return
+        try:
+            sent_at = float(event.get("timestamp"))
+        except (TypeError, ValueError):
+            sent_at = float(time.time())
+        duration_raw = event.get("duration_ms")
+        if duration_raw is None:
+            duration_raw = event.get("duration_model_ms")
+        try:
+            duration_s = max(0.0, float(duration_raw) / 1000.0)
+        except (TypeError, ValueError):
+            duration_s = 0.0
+        self._last_act_sent_at = float(sent_at)
+        self._last_act_duration_s = float(duration_s)
+
+    def _observe_not_before_ts(self):
+        if self._last_act_sent_at is None:
+            return None
+        settle_s = float(self._last_act_duration_s) * float(POST_ACT_OBSERVE_RATIO)
+        settle_s = max(float(POST_ACT_OBSERVE_MIN_S), settle_s)
+        settle_s = min(float(POST_ACT_OBSERVE_MAX_S), settle_s)
+        return float(self._last_act_sent_at) + float(settle_s)
 
     def _flush_logs(self, force=False):
         if not force and self._unsaved_events < LOG_FLUSH_EVERY_EVENTS:
@@ -243,6 +285,7 @@ class AlignCalibrator:
             "data_file": str(Path(DATA_FILE)),
             "results_file": str(self.results_file_path),
             "efficiency_chart_file": str(self.chart_file_path),
+            "act_progress_chart_file": str(self.act_progress_chart_file_path),
             "config": {
                 "num_trials": int(NUM_TRIALS),
                 "x_gate_metric": str(X_GATE_METRIC),
@@ -254,6 +297,7 @@ class AlignCalibrator:
                 "x_axis_sign": float(X_AXIS_SIGN),
                 "x_target_mm": float(X_TARGET_MM),
                 "x_tol_mm": float(X_TOL_MM),
+                "x_tol_relax_multiplier": float(X_TOL_RELAX_MULTIPLIER),
                 "x_tol_growth_per_mm_back": float(X_TOL_GROWTH_PER_MM_BACK),
                 "x_tol_max_mm": float(X_TOL_MAX_MM),
                 "learn_speed_start": int(LEARN_SPEED_START),
@@ -262,6 +306,10 @@ class AlignCalibrator:
                 "vision_lost_consec_frames": int(VISION_LOST_CONSEC_FRAMES),
                 "vision_lost_max_s": float(VISION_LOST_MAX_S),
                 "align_observe_timeout_s": float(ALIGN_OBSERVE_TIMEOUT_S),
+                "post_act_observe_ratio": float(POST_ACT_OBSERVE_RATIO),
+                "post_act_observe_min_s": float(POST_ACT_OBSERVE_MIN_S),
+                "post_act_observe_max_s": float(POST_ACT_OBSERVE_MAX_S),
+                "inter_trial_settle_s": float(INTER_TRIAL_SETTLE_S),
                 "recovery_reverse_max_acts": int(RECOVERY_REVERSE_MAX_ACTS),
                 "recovery_reverse_score": int(RECOVERY_REVERSE_SCORE),
                 "recovery_scan_max_attempts": int(RECOVERY_SCAN_MAX_ATTEMPTS),
@@ -274,6 +322,7 @@ class AlignCalibrator:
             "trials": [],
             "recovery_summary": None,
             "efficiency_chart": None,
+            "act_progress_chart": None,
             "status": "running",
             "completed_trials": 0,
             "early_stop": False,
@@ -345,6 +394,7 @@ class AlignCalibrator:
                 "timestamp": event["timestamp"],
             }
         )
+        self._mark_last_act_timing(event)
         self._emit_act_console(event)
         self._append_event(event)
         self.act_idx += 1
@@ -356,6 +406,11 @@ class AlignCalibrator:
         cmd = event.get("cmd")
         phase = str(event.get("phase") or "?")
         reason = str(event.get("reason") or "")
+        phase_key = phase.strip().lower()
+        reason_key = reason.strip().lower()
+        # Suppress noisy setup logs between trials; keep data in JSON events.
+        if phase_key in {"reset", "reset_recovery"} or reason_key in {"between_trials"}:
+            return
         trial = event.get("trial")
         act_idx = event.get("act")
 
@@ -364,20 +419,66 @@ class AlignCalibrator:
             score_for_display = event.get("score")
         if score_for_display is None:
             score_for_display = event.get("score_model")
-        sent_line = action_sent_display_text(
-            cmd,
-            score_for_display,
-            cmd_sent=event.get("cmd_sent"),
-            pwm=event.get("pwm"),
-            power=event.get("power"),
-            duration_ms=(event.get("duration_ms") if event.get("duration_ms") is not None else event.get("duration_model_ms")),
-        )
+
+        cmd_sent = event.get("cmd_sent")
+        cmd_plan_text = str(cmd).upper() if cmd is not None else "?"
+        cmd_sent_text = str(cmd_sent).upper() if cmd_sent is not None else cmd_plan_text
+        cmd_token = cmd_sent_text or cmd_plan_text
+
+        approx_score = None
+        try:
+            if score_for_display is not None:
+                approx_score = int(round(float(score_for_display)))
+        except (TypeError, ValueError):
+            approx_score = None
+        if approx_score is None:
+            try:
+                power_val = float(event.get("power"))
+                cmd_for_quant = str(cmd_sent if cmd_sent is not None else cmd).strip().lower()
+                if cmd_for_quant:
+                    _, q_score = telemetry_robot_module.quantize_speed(cmd_for_quant, speed=power_val)
+                    approx_score = int(round(float(q_score)))
+            except Exception:
+                approx_score = None
+        score_text = f"{int(approx_score)}%" if approx_score is not None else "?%"
+
+        detail_items = [f"~{score_text}"]
+        if cmd is not None and cmd_sent is not None:
+            cmd_plan_lower = str(cmd).strip().lower()
+            cmd_sent_lower = str(cmd_sent).strip().lower()
+            if cmd_plan_lower and cmd_sent_lower and cmd_plan_lower != cmd_sent_lower:
+                detail_items.append(f"plan={cmd_plan_text}")
+        if cmd_sent is not None:
+            detail_items.append(f"sent={cmd_sent_text}")
+        try:
+            pwm_val = int(round(float(event.get("pwm"))))
+            detail_items.append(f"pwm={pwm_val}")
+        except (TypeError, ValueError):
+            pass
+        try:
+            power_val = float(event.get("power"))
+            detail_items.append(f"power={power_val:.3f}")
+        except (TypeError, ValueError):
+            pass
+        duration_raw = event.get("duration_ms")
+        if duration_raw is None:
+            duration_raw = event.get("duration_model_ms")
+        try:
+            duration_ms = int(round(float(duration_raw)))
+            detail_items.append(f"{duration_ms}ms")
+        except (TypeError, ValueError):
+            pass
+        if len(detail_items) > 1:
+            sent_details = f"({detail_items[0]} | " + ", ".join(detail_items[1:]) + ")"
+        else:
+            sent_details = f"({detail_items[0]})"
 
         phase_color = COLOR_RED if phase.lower().startswith("recovery") else COLOR_WHITE
         print(
             f"{phase_color}[ACT #{int(act_idx) if act_idx is not None else -1}] "
             f"T{int(trial) if trial is not None else -1} {phase.upper()}{COLOR_RESET} "
-            f"{COLOR_WHITE}{sent_line}{COLOR_RESET}"
+            f"{COLOR_ORANGE_BRIGHT}{cmd_token} {score_text}{COLOR_RESET} "
+            f"{COLOR_WHITE}{sent_details}{COLOR_RESET}"
         )
 
         try:
@@ -535,6 +636,8 @@ class AlignCalibrator:
         else:
             self._last_obs_delta_offset_x = None
             self._last_obs_delta_dist = None
+            self._last_obs_offset_x = None
+            self._last_obs_dist = None
         
         # Draw Overlay
         gate_summary, analytics = compute_stream_gate_summary(self.world, "ALIGN_BRICK", active=True)
@@ -574,10 +677,7 @@ class AlignCalibrator:
         self,
         samples=3,
         timeout_s=2.0,
-        keepalive_dir=None,
-        keepalive_bump_pct=None,
-        *,
-        allow_blind_keepalive=False,
+        min_sample_time=None,
     ):
         """
         Reads 'samples' unique frames and returns averaged (offset_x, angle).
@@ -607,31 +707,43 @@ class AlignCalibrator:
                 if off_val is None or dist_val is None:
                     time.sleep(OBSERVE_SLEEP_S)
                     continue
+                sample_ts = float(time.time())
+                if min_sample_time is not None:
+                    try:
+                        min_ts = float(min_sample_time)
+                    except (TypeError, ValueError):
+                        min_ts = None
+                    if min_ts is not None and sample_ts < min_ts:
+                        time.sleep(OBSERVE_SLEEP_S)
+                        continue
                 if not poses:
-                    poses.append({"offset_x": off_val, "dist": dist_val, "angle": angle, "confidence": conf})
+                    poses.append(
+                        {
+                            "offset_x": off_val,
+                            "dist": dist_val,
+                            "angle": angle,
+                            "confidence": conf,
+                            "obs_ts": sample_ts,
+                        }
+                    )
                 else:
                     last = poses[-1]
                     if abs(off_val - last.get("offset_x", off_val)) > 0.1 or abs(dist_val - last.get("dist", dist_val)) > 0.5:
-                        poses.append({"offset_x": off_val, "dist": dist_val, "angle": angle, "confidence": conf})
-                # Keep motion smooth only while we still have vision.
-                if keepalive_dir:
-                    self.send_precision_command(
-                        keepalive_dir,
-                        bump_pct=keepalive_bump_pct,
-                        reason="sample_keepalive",
-                    )
+                        poses.append(
+                            {
+                                "offset_x": off_val,
+                                "dist": dist_val,
+                                "angle": angle,
+                                "confidence": conf,
+                                "obs_ts": sample_ts,
+                            }
+                        )
                 if len(poses) < samples:
                     time.sleep(OBSERVE_SLEEP_S) 
             else: 
                 blind_frames += 1
                 if blind_start_t is None:
                     blind_start_t = time.time()
-                if keepalive_dir and allow_blind_keepalive:
-                    self.send_precision_command(
-                        keepalive_dir,
-                        bump_pct=keepalive_bump_pct,
-                        reason="sample_keepalive_blind",
-                    )
                 blind_seconds = float(time.time() - float(blind_start_t))
                 if blind_frames >= int(VISION_LOST_CONSEC_FRAMES) or blind_seconds >= float(VISION_LOST_MAX_S):
                     self.robot.stop()
@@ -656,8 +768,9 @@ class AlignCalibrator:
         # Average results
         avg_offset = statistics.mean([p["offset_x"] for p in poses])
         avg_dist = statistics.mean([p["dist"] for p in poses])
+        obs_ts = max(float(p.get("obs_ts", start_t)) for p in poses)
         
-        return {"offset_x": avg_offset, "dist": avg_dist}
+        return {"offset_x": avg_offset, "dist": avg_dist, "obs_ts": float(obs_ts)}
 
     @staticmethod
     def _inverse_cmd(cmd):
@@ -670,7 +783,7 @@ class AlignCalibrator:
             "d": "u",
         }.get(str(cmd))
 
-    def recovery_reverse_recent(self, max_acts=RECOVERY_REVERSE_MAX_ACTS):
+    def recovery_reverse_recent(self, max_acts=RECOVERY_REVERSE_MAX_ACTS, *, emit_logs=True):
         history = list(self.recent_acts)
         if not history:
             return {"attempted": False, "recovered": False, "acts_attempted": 0}
@@ -709,7 +822,8 @@ class AlignCalibrator:
                 "plan": plan,
             }
         )
-        print("[RECOVERY] Reversing recent acts...")
+        if emit_logs:
+            print("[RECOVERY] Reversing recent acts...")
         for idx, step in enumerate(plan, start=1):
             mode = str(step.get("mode") or "precision")
             cmd = str(step["cmd"])
@@ -719,10 +833,11 @@ class AlignCalibrator:
             except (TypeError, ValueError):
                 score = int(RESET_SCORE)
             recovery_score = max(int(RECOVERY_REVERSE_SCORE), int(score))
-            print(
-                f"[RECOVERY] reverse step {idx}/{len(plan)}: cmd={cmd.upper()} "
-                f"score={int(recovery_score)}%"
-            )
+            if emit_logs:
+                print(
+                    f"[RECOVERY] reverse step {idx}/{len(plan)}: cmd={cmd.upper()} "
+                    f"score={int(recovery_score)}%"
+                )
             event = self.send_coarse_command(
                 cmd,
                 score=max(1, min(COARSE_SCORE, int(recovery_score))),
@@ -753,7 +868,7 @@ class AlignCalibrator:
             pose = self.get_stable_pose(
                 samples=1,
                 timeout_s=float(RECOVERY_REVERSE_OBSERVE_S),
-                keepalive_dir=None,
+                min_sample_time=self._observe_not_before_ts(),
             )
             found = pose is not None
             self._append_event(
@@ -784,7 +899,8 @@ class AlignCalibrator:
                         "acts_attempted": int(idx),
                     }
                 )
-                print(f"[RECOVERY] Recovered by reversing acts (step {idx}/{len(plan)}).")
+                if emit_logs:
+                    print(f"[RECOVERY] Recovered by reversing acts (step {idx}/{len(plan)}).")
                 return {"attempted": True, "recovered": True, "acts_attempted": int(idx)}
 
         self._append_event(
@@ -807,7 +923,11 @@ class AlignCalibrator:
           - Turn in a direction and validate via vision after each act.
           - Log each reset act with before/after observations (offset + dist).
         """
-        pose_start = self.get_stable_pose(samples=1, timeout_s=2.0)
+        pose_start = self.get_stable_pose(
+            samples=1,
+            timeout_s=2.0,
+            min_sample_time=self._observe_not_before_ts(),
+        )
         if not pose_start:
             return None
 
@@ -842,9 +962,12 @@ class AlignCalibrator:
         reset_failed_vision = False
         while self.running and reset_acts < int(RESET_MAX_ACTS):
             # Observe BEFORE deciding the next act (no keepalive so we don't double-command).
-            pre = self.get_stable_pose(samples=1, timeout_s=RESET_OBSERVE_TIMEOUT_S)
+            pre = self.get_stable_pose(
+                samples=1,
+                timeout_s=RESET_OBSERVE_TIMEOUT_S,
+                min_sample_time=self._observe_not_before_ts(),
+            )
             if not pre:
-                print("  [RESET] Lost vision, attempting recovery...")
                 self.current_phase = "reset_recovery"
                 if not self.recover_visibility(source="reset_pre"):
                     reset_failed_vision = True
@@ -876,7 +999,11 @@ class AlignCalibrator:
             reset_acts += 1
             time.sleep(max(0.02, float(BACKLASH_S)))
 
-            post = self.get_stable_pose(samples=1, timeout_s=RESET_OBSERVE_TIMEOUT_S)
+            post = self.get_stable_pose(
+                samples=1,
+                timeout_s=RESET_OBSERVE_TIMEOUT_S,
+                min_sample_time=self._observe_not_before_ts(),
+            )
             if not post:
                 if isinstance(event, dict):
                     event.update(
@@ -885,7 +1012,6 @@ class AlignCalibrator:
                             "result": "vision_lost_after_act",
                         }
                     )
-                print("  [RESET] Vision lost after act, attempting recovery...")
                 self.current_phase = "reset_recovery"
                 if not self.recover_visibility(source="reset_post"):
                     reset_failed_vision = True
@@ -949,19 +1075,21 @@ class AlignCalibrator:
             return None
         return last_pose
 
-    def recovery_scan(self, max_attempts=RECOVERY_SCAN_MAX_ATTEMPTS):
+    def recovery_scan(self, max_attempts=RECOVERY_SCAN_MAX_ATTEMPTS, *, emit_logs=True):
         """Slowly scan nearby area to find the brick again."""
-        print("[RECOVERY] Sight lost. Scanning nearby area...")
+        if emit_logs:
+            print("[RECOVERY] Sight lost. Scanning nearby area...")
         # Sweep pattern: two acts each direction so we avoid tiny reversal pulses.
         for i in range(1, max_attempts + 1):
             block = int((i - 1) // int(max(1, RECOVERY_SCAN_BURST_ACTS)))
             scan_dir = 'l' if (block % 2 == 0) else 'r'
             self.keepalive_dir = scan_dir
             burst_idx = int(((i - 1) % int(max(1, RECOVERY_SCAN_BURST_ACTS))) + 1)
-            print(
-                f"[RECOVERY] scan act {i}/{max_attempts}: cmd={scan_dir.upper()} "
-                f"score={int(RECOVERY_SCAN_SCORE)}% burst={burst_idx}/{int(max(1, RECOVERY_SCAN_BURST_ACTS))}"
-            )
+            if emit_logs:
+                print(
+                    f"[RECOVERY] scan act {i}/{max_attempts}: cmd={scan_dir.upper()} "
+                    f"score={int(RECOVERY_SCAN_SCORE)}% burst={burst_idx}/{int(max(1, RECOVERY_SCAN_BURST_ACTS))}"
+                )
             event = self.send_coarse_command(
                 scan_dir,
                 score=int(RECOVERY_SCAN_SCORE),
@@ -989,13 +1117,16 @@ class AlignCalibrator:
             if self.get_stable_pose(
                 samples=1,
                 timeout_s=float(RECOVERY_SCAN_OBSERVE_S),
-                keepalive_dir=None,
+                min_sample_time=self._observe_not_before_ts(),
             ):
-                print(f"[RECOVERY] Found brick again on scan act {i}!")
+                if emit_logs:
+                    print(f"[RECOVERY] Found brick again on scan act {i}!")
                 return True
         return False
 
     def recover_visibility(self, source="unknown"):
+        source_key = str(source or "").strip().lower()
+        emit_recovery_logs = not source_key.startswith("reset")
         self.recovery_stats["attempts"] = int(self.recovery_stats.get("attempts", 0) + 1)
         self.trial_recovery_attempts = int(self.trial_recovery_attempts + 1)
         self._append_event(
@@ -1009,7 +1140,7 @@ class AlignCalibrator:
             }
         )
         self.robot.stop()
-        reverse_result = self.recovery_reverse_recent()
+        reverse_result = self.recovery_reverse_recent(emit_logs=emit_recovery_logs)
         reverse_attempted = bool(reverse_result.get("attempted")) if isinstance(reverse_result, dict) else False
         reverse_recovered = bool(reverse_result.get("recovered")) if isinstance(reverse_result, dict) else False
         if reverse_attempted:
@@ -1023,7 +1154,7 @@ class AlignCalibrator:
         if not recovered:
             scan_attempted = True
             self.recovery_stats["scan_attempts"] = int(self.recovery_stats.get("scan_attempts", 0) + 1)
-            scan_recovered = bool(self.recovery_scan())
+            scan_recovered = bool(self.recovery_scan(emit_logs=emit_recovery_logs))
             recovered = bool(scan_recovered)
             if scan_recovered:
                 self.recovery_stats["scan_recovered"] = int(self.recovery_stats.get("scan_recovered", 0) + 1)
@@ -1080,7 +1211,8 @@ class AlignCalibrator:
         print(
             f"[TRIAL] {int(trial_idx)} summary: success={bool(success)} reason={str(reason)} | "
             f"vision_lost={vision_lost} | recovery_used={attempts} | recovered={recovered}/{attempts} | "
-            f"adjusts={adjusts}/{int(MAX_ADJUSTS_PER_TRIAL)}"
+            f"adjusts={adjusts}/{int(MAX_ADJUSTS_PER_TRIAL)} | "
+            f"progress={int(self.trial_progress_acts)} worsening={int(self.trial_worsening_acts)}"
         )
         self._append_event(
             {
@@ -1095,6 +1227,8 @@ class AlignCalibrator:
                 "recovery_recovered": int(recovered),
                 "adjust_count": int(adjusts),
                 "adjust_limit": int(MAX_ADJUSTS_PER_TRIAL),
+                "progress_acts": int(self.trial_progress_acts),
+                "worsening_acts": int(self.trial_worsening_acts),
             }
         )
         if isinstance(self.results_log, dict):
@@ -1109,6 +1243,8 @@ class AlignCalibrator:
                 "learned_speed_score": int(self.learned_speed_score),
                 "adjust_count": int(adjusts),
                 "adjust_limit": int(MAX_ADJUSTS_PER_TRIAL),
+                "progress_acts": int(self.trial_progress_acts),
+                "worsening_acts": int(self.trial_worsening_acts),
             }
             trials = self.results_log.get("trials")
             if isinstance(trials, list):
@@ -1213,6 +1349,301 @@ class AlignCalibrator:
                 }
             )
         return rows
+
+    def _act_progress_rows(self):
+        """Per successful trial, capture ALIGN acts up to victory."""
+        success_end_ts_by_trial = {}
+        for row in self.data_log:
+            if not isinstance(row, dict) or row.get("type") != "trial_summary":
+                continue
+            if not bool(row.get("success")):
+                continue
+            try:
+                trial_idx = int(row.get("trial"))
+                ts = float(row.get("timestamp"))
+            except (TypeError, ValueError):
+                continue
+            prev = success_end_ts_by_trial.get(trial_idx)
+            if prev is None or ts < float(prev):
+                success_end_ts_by_trial[trial_idx] = float(ts)
+
+        if not success_end_ts_by_trial:
+            return []
+
+        by_trial = {}
+        for row in self.data_log:
+            if not isinstance(row, dict) or row.get("type") != "act":
+                continue
+            if str(row.get("phase") or "").lower() != "align":
+                continue
+            try:
+                trial_idx = int(row.get("trial"))
+                ts = float(row.get("timestamp"))
+            except (TypeError, ValueError):
+                continue
+            victory_ts = success_end_ts_by_trial.get(trial_idx)
+            if victory_ts is None or ts > float(victory_ts):
+                continue
+            try:
+                abs_x_err_mm = abs(float(row.get("x_err_mm")))
+            except (TypeError, ValueError):
+                continue
+            try:
+                x_tol_active_mm = float(row.get("x_tol_active_mm"))
+            except (TypeError, ValueError):
+                x_tol_active_mm = None
+            by_trial.setdefault(trial_idx, []).append(
+                {
+                    "timestamp": float(ts),
+                    "abs_x_err_mm": float(abs_x_err_mm),
+                    "x_tol_active_mm": x_tol_active_mm,
+                }
+            )
+
+        out = []
+        for trial_idx in sorted(by_trial):
+            points_raw = sorted(by_trial.get(trial_idx) or [], key=lambda item: float(item.get("timestamp", 0.0)))
+            if not points_raw:
+                continue
+            points = []
+            prev_err = None
+            for act_in_trial, point in enumerate(points_raw, start=1):
+                err = float(point["abs_x_err_mm"])
+                if prev_err is None:
+                    trend = "start"
+                elif err < (prev_err - 0.02):
+                    trend = "better"
+                elif err > (prev_err + 0.02):
+                    trend = "worse"
+                else:
+                    trend = "flat"
+                points.append(
+                    {
+                        "act_in_trial": int(act_in_trial),
+                        "abs_x_err_mm": float(err),
+                        "x_tol_active_mm": point.get("x_tol_active_mm"),
+                        "trend": trend,
+                    }
+                )
+                prev_err = float(err)
+            final_tol = points[-1].get("x_tol_active_mm")
+            try:
+                final_tol = float(final_tol) if final_tol is not None else None
+            except (TypeError, ValueError):
+                final_tol = None
+            out.append(
+                {
+                    "trial": int(trial_idx),
+                    "victory_ts": float(success_end_ts_by_trial.get(trial_idx)),
+                    "victory_tol_mm": final_tol,
+                    "points": points,
+                }
+            )
+        return out
+
+    def write_act_progress_chart(self):
+        rows = self._act_progress_rows()
+        if not rows:
+            return {
+                "ok": False,
+                "path": str(self.act_progress_chart_file_path),
+                "reason": "no_success_trial_act_rows",
+            }
+
+        width = 1400
+        height = 900
+        margin_left = 95
+        margin_right = 40
+        margin_top = 90
+        margin_bottom = 110
+        x0 = margin_left
+        y0 = margin_top
+        x1 = width - margin_right
+        y1 = height - margin_bottom
+        plot_w = x1 - x0
+        plot_h = y1 - y0
+
+        img = np.full((height, width, 3), 247, dtype=np.uint8)
+        cv2.rectangle(img, (x0, y0), (x1, y1), (210, 210, 210), 1)
+
+        max_acts = max(len(row.get("points") or []) for row in rows)
+        max_acts = max(1, int(max_acts))
+
+        all_errs = []
+        for row in rows:
+            for point in row.get("points") or []:
+                try:
+                    all_errs.append(float(point.get("abs_x_err_mm")))
+                except (TypeError, ValueError):
+                    continue
+        max_err = max(all_errs) if all_errs else float(X_TOL_MM)
+        y_max = max(float(max_err) * 1.10, float(X_TOL_MM) * 2.0, 1.0)
+
+        # Y grid in mm.
+        y_ticks = 6
+        for i in range(y_ticks + 1):
+            val = float(y_max) * float(i) / float(y_ticks)
+            y = int(round(y1 - (val / float(y_max)) * plot_h))
+            cv2.line(img, (x0, y), (x1, y), (225, 225, 225), 1)
+            cv2.putText(
+                img,
+                f"{val:.1f}mm",
+                (18, y + 5),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.48,
+                (95, 95, 95),
+                1,
+                cv2.LINE_AA,
+            )
+
+        # X ticks by act index.
+        x_tick_step = max(1, int(round(float(max_acts) / 10.0)))
+        for act in range(1, max_acts + 1, x_tick_step):
+            if max_acts <= 1:
+                x = x0
+            else:
+                x = int(round(x0 + (float(act - 1) / float(max_acts - 1)) * plot_w))
+            cv2.line(img, (x, y0), (x, y1), (236, 236, 236), 1)
+            cv2.putText(
+                img,
+                str(int(act)),
+                (x - 8, y1 + 24),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.46,
+                (90, 90, 90),
+                1,
+                cv2.LINE_AA,
+            )
+
+        # Reference line: base normalized tolerance.
+        base_tol = float(X_TOL_MM) * float(X_TOL_RELAX_MULTIPLIER)
+        base_tol_clamped = min(float(y_max), max(0.0, float(base_tol)))
+        y_tol = int(round(y1 - (base_tol_clamped / float(y_max)) * plot_h))
+        cv2.line(img, (x0, y_tol), (x1, y_tol), (0, 140, 255), 1)
+        cv2.putText(
+            img,
+            f"base normalized tol {base_tol:.2f}mm",
+            (x1 - 260, max(y0 + 16, y_tol - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (0, 120, 220),
+            1,
+            cv2.LINE_AA,
+        )
+
+        palette = [
+            (60, 110, 220),
+            (210, 130, 30),
+            (120, 170, 70),
+            (170, 90, 180),
+            (40, 150, 170),
+            (200, 80, 120),
+        ]
+
+        legend_x = x0 + 8
+        legend_y = y0 + 18
+        legend_step = 23
+
+        for idx, row in enumerate(rows):
+            trial = int(row.get("trial"))
+            points = row.get("points") or []
+            if not points:
+                continue
+            color = palette[idx % len(palette)]
+            poly_pts = []
+            for point in points:
+                act_idx = int(point.get("act_in_trial") or 1)
+                err = float(point.get("abs_x_err_mm") or 0.0)
+                if max_acts <= 1:
+                    x = x0
+                else:
+                    x = int(round(x0 + (float(act_idx - 1) / float(max_acts - 1)) * plot_w))
+                y = int(round(y1 - (min(float(y_max), max(0.0, float(err))) / float(y_max)) * plot_h))
+                poly_pts.append((x, y))
+
+            if len(poly_pts) >= 2:
+                cv2.polylines(img, [np.array(poly_pts, dtype=np.int32)], False, color, 2)
+
+            # Per-act trend markers.
+            for p_idx, point in enumerate(points):
+                x, y = poly_pts[p_idx]
+                trend = str(point.get("trend") or "")
+                if trend == "better":
+                    dot = (60, 170, 70)
+                elif trend == "worse":
+                    dot = (60, 60, 210)
+                elif trend == "flat":
+                    dot = (120, 120, 120)
+                else:
+                    dot = color
+                cv2.circle(img, (x, y), 4, dot, -1)
+
+            # Victory marker.
+            vx, vy = poly_pts[-1]
+            cv2.circle(img, (vx, vy), 8, (0, 215, 255), 2)
+            cv2.circle(img, (vx, vy), 2, (0, 215, 255), -1)
+
+            final_err = float(points[-1].get("abs_x_err_mm") or 0.0)
+            final_tol = row.get("victory_tol_mm")
+            tol_text = ""
+            try:
+                if final_tol is not None:
+                    tol_text = f", tol {float(final_tol):.2f}mm"
+            except (TypeError, ValueError):
+                tol_text = ""
+            legend_text = f"T{trial}: {len(points)} acts, final {final_err:.2f}mm{tol_text}"
+            ly = int(legend_y + (idx * legend_step))
+            cv2.line(img, (legend_x, ly - 4), (legend_x + 20, ly - 4), color, 2)
+            cv2.putText(
+                img,
+                legend_text,
+                (legend_x + 28, ly),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.47,
+                (55, 55, 55),
+                1,
+                cv2.LINE_AA,
+            )
+
+        cv2.putText(
+            img,
+            "ALIGN Per-Act Progress To Victory",
+            (x0, 38),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.95,
+            (30, 30, 30),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            img,
+            "|x_err| in mm per act (lower is better). Dot colors: green=better, red=worse, gray=flat.",
+            (x0, 64),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.52,
+            (70, 70, 70),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            img,
+            "x-axis: act index within trial (align phase only, up to success)",
+            (x0 + 360, y1 + 56),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (80, 80, 80),
+            1,
+            cv2.LINE_AA,
+        )
+
+        ok = bool(cv2.imwrite(str(self.act_progress_chart_file_path), img))
+        return {
+            "ok": bool(ok),
+            "path": str(self.act_progress_chart_file_path),
+            "success_trial_count": int(len(rows)),
+            "max_acts_in_success_trial": int(max_acts),
+            "max_abs_x_err_mm": float(max_err),
+        }
 
     def write_efficiency_chart(self):
         rows = self._efficiency_rows()
@@ -1354,6 +1785,9 @@ class AlignCalibrator:
         if self.chart_file_path.exists():
             print(f"[ALIGN] Wiping {self.chart_file_path} for fresh chart...")
             self.chart_file_path.unlink()
+        if self.act_progress_chart_file_path.exists():
+            print(f"[ALIGN] Wiping {self.act_progress_chart_file_path} for fresh chart...")
+            self.act_progress_chart_file_path.unlink()
         self.data_log = []
         self._unsaved_events = 0
         self._init_results_log()
@@ -1372,6 +1806,7 @@ class AlignCalibrator:
             "x_axis_sign": X_AXIS_SIGN,
             "x_target_mm": X_TARGET_MM,
             "x_tol_mm": X_TOL_MM,
+            "x_tol_relax_multiplier": X_TOL_RELAX_MULTIPLIER,
             "x_tol_growth_per_mm_back": X_TOL_GROWTH_PER_MM_BACK,
             "x_tol_max_mm": X_TOL_MAX_MM,
             "precision_score_base": PRECISION_SCORE_BASE,
@@ -1380,6 +1815,10 @@ class AlignCalibrator:
             "vision_lost_consec_frames": int(VISION_LOST_CONSEC_FRAMES),
             "vision_lost_max_s": float(VISION_LOST_MAX_S),
             "align_observe_timeout_s": float(ALIGN_OBSERVE_TIMEOUT_S),
+            "post_act_observe_ratio": float(POST_ACT_OBSERVE_RATIO),
+            "post_act_observe_min_s": float(POST_ACT_OBSERVE_MIN_S),
+            "post_act_observe_max_s": float(POST_ACT_OBSERVE_MAX_S),
+            "inter_trial_settle_s": float(INTER_TRIAL_SETTLE_S),
             "recovery_reverse_max_acts": int(RECOVERY_REVERSE_MAX_ACTS),
             "recovery_reverse_score": int(RECOVERY_REVERSE_SCORE),
             "recovery_reverse_allowed_phases": sorted(RECOVERY_REVERSE_ALLOWED_PHASES),
@@ -1403,6 +1842,11 @@ class AlignCalibrator:
             f"{int(MAX_CONSECUTIVE_UNRECOVERED_VISION_LOSSES)} consecutive unrecovered vision losses."
         )
         print(f"[ALIGN] Trial guard: give up after {int(MAX_ADJUSTS_PER_TRIAL)} adjust acts.")
+        print(
+            "[ALIGN] Fresh-observation guard: post-act samples wait "
+            f"{POST_ACT_OBSERVE_RATIO:.2f}x duration (min {POST_ACT_OBSERVE_MIN_S:.2f}s, "
+            f"max {POST_ACT_OBSERVE_MAX_S:.2f}s)."
+        )
         
         for i in range(1, NUM_TRIALS + 1):
             if not self.running:
@@ -1419,8 +1863,20 @@ class AlignCalibrator:
             self.trial_recovery_attempts = 0
             self.trial_recovery_successes = 0
             self.trial_adjust_count = 0
+            self.trial_progress_acts = 0
+            self.trial_worsening_acts = 0
             self._last_logged_abs_x_err = None
-            print(f"\nTRIAL {i}/{NUM_TRIALS}")
+            print(f"\n\n\nTRIAL {i}/{NUM_TRIALS}")
+            print(
+                "[TRIAL] success gate: "
+                "visible=true and |x_err| <= x_tol_active for 3 consecutive frames."
+            )
+            print(
+                "[TRIAL] x_tol_active(dist) = "
+                f"clamp(({X_TOL_MM:.2f}*{X_TOL_RELAX_MULTIPLIER:.2f}) + "
+                f"max(0, dist - ({DIST_GATE_TARGET_MM:.2f}+{DIST_GATE_TOL_MM:.2f})) * "
+                f"{X_TOL_GROWTH_PER_MM_BACK:.3f}, max {X_TOL_MAX_MM:.2f})"
+            )
             trial_success = False
             trial_reason = "unknown"
             
@@ -1435,19 +1891,57 @@ class AlignCalibrator:
                     break
                 continue
 
+            # Trial-start snapshot: show the active (distance-normalized) X tolerance.
+            try:
+                start_offset = float(pose_reset.get("offset_x"))
+            except (TypeError, ValueError):
+                start_offset = None
+            try:
+                start_dist = float(pose_reset.get("dist"))
+            except (TypeError, ValueError):
+                start_dist = None
+            start_active_tol = self._active_x_tol_mm(start_dist)
+            start_x_err = self._x_err_mm(start_offset) if start_offset is not None else None
+            dist_text = f"{start_dist:.1f}mm" if start_dist is not None else "--"
+            err_text = f"{start_x_err:+.2f}mm" if start_x_err is not None else "--"
+            print(
+                "[TRIAL] target snapshot: "
+                f"x_target={X_TARGET_MM:+.2f}mm | "
+                f"x_tol_base={X_TOL_MM:.2f}mm x{X_TOL_RELAX_MULTIPLIER:.2f} -> x_tol_active={start_active_tol:.2f}mm | "
+                f"dist={dist_text} (dist_target={DIST_GATE_TARGET_MM:.2f}±{DIST_GATE_TOL_MM:.2f}mm) | "
+                f"start_x_err={err_text}"
+            )
+            self._append_event(
+                {
+                    "type": "trial_target_snapshot",
+                    "run_id": self.run_id,
+                    "trial": int(i),
+                    "timestamp": time.time(),
+                    "x_target_mm": float(X_TARGET_MM),
+                    "x_tol_base_mm": float(X_TOL_MM),
+                    "x_tol_relax_multiplier": float(X_TOL_RELAX_MULTIPLIER),
+                    "x_tol_active_mm": float(start_active_tol),
+                    "dist_mm": (None if start_dist is None else float(start_dist)),
+                    "dist_gate_target_mm": float(DIST_GATE_TARGET_MM),
+                    "dist_gate_tol_mm": float(DIST_GATE_TOL_MM),
+                    "start_x_err_mm": (None if start_x_err is None else float(start_x_err)),
+                }
+            )
+
             # No robot.stop() here - we want to transition immediately into ALIGN
             
             # 2. CONTINUOUS ALIGNMENT
             self.current_phase = "align"
             trial_start_t = time.time()
             trial_start_offset = None
+            prev_align_abs_err = None
             
             while self.running:
                 # Continuous observation (1 sample for speed, short timeout).
                 pose = self.get_stable_pose(
                     samples=1,
                     timeout_s=float(ALIGN_OBSERVE_TIMEOUT_S),
-                    keepalive_dir=self.keepalive_dir,
+                    min_sample_time=self._observe_not_before_ts(),
                 )
                 if not pose:
                     print(f"  [LOST] Vision lost, attempting recovery...")
@@ -1459,11 +1953,12 @@ class AlignCalibrator:
                     pose = self.get_stable_pose(
                         samples=1,
                         timeout_s=float(ALIGN_OBSERVE_TIMEOUT_S),
-                        keepalive_dir=None,
+                        min_sample_time=self._observe_not_before_ts(),
                     )
                     if not pose:
                         trial_reason = "lost_vision"
                         break
+                    prev_align_abs_err = None
                     trial_start_t = time.time() # Reset timer if we lost track
                 
                 off_now = pose["offset_x"]
@@ -1474,6 +1969,13 @@ class AlignCalibrator:
                 x_err = self._x_err_mm(off_now)
                 abs_error_from_target = abs(x_err)
                 active_x_tol = self._active_x_tol_mm(dist_now)
+                if prev_align_abs_err is not None:
+                    delta_abs_err = float(prev_align_abs_err) - float(abs_error_from_target)
+                    if delta_abs_err > 0.02:
+                        self.trial_progress_acts = int(self.trial_progress_acts + 1)
+                    elif delta_abs_err < -0.02:
+                        self.trial_worsening_acts = int(self.trial_worsening_acts + 1)
+                prev_align_abs_err = float(abs_error_from_target)
                 
                 # Check Gate Success: Requirement = 3 consecutive frames
                 # We use the official gate_satisfied check for parity with the overlay
@@ -1491,8 +1993,14 @@ class AlignCalibrator:
                         self.print_trial_summary(i, off_now, total_time)
                         self.log_trial(i, trial_start_offset, off_now, total_time)
                         self.update_learning_speed(total_time, avg_recent=avg_recent)
-                        # Keep moving slowly while we transition to the next trial.
-                        self.send_precision_command(self.keepalive_dir, reason="between_trials")
+                        print(
+                            "[VICTORY] "
+                            f"after {int(self.trial_adjust_count)} acts "
+                            f"({int(self.trial_progress_acts)} progress acts + "
+                            f"{int(self.trial_worsening_acts)} worsening acts)"
+                        )
+                        # Stop between trials; next motion should come from an explicit reset/align decision.
+                        self.robot.stop()
                         trial_success = True
                         trial_reason = "success"
                         break
@@ -1574,16 +2082,30 @@ class AlignCalibrator:
             self.print_trial_recovery_summary(i, success=trial_success, reason=trial_reason)
             if self.abort_run_early:
                 break
+            if self.running and i < int(NUM_TRIALS):
+                self.robot.stop()
+                self._last_act_sent_at = None
+                self._last_act_duration_s = 0.0
+                if float(INTER_TRIAL_SETTLE_S) > 0.0:
+                    time.sleep(float(INTER_TRIAL_SETTLE_S))
 
         recovery_summary = self.print_recovery_summary()
         chart_result = self.write_efficiency_chart()
+        act_chart_result = self.write_act_progress_chart()
         if bool(chart_result.get("ok")):
             print(f"[ALIGN] Efficiency chart: {chart_result.get('path')}")
         else:
             print(f"[ALIGN] Efficiency chart skipped: {chart_result.get('reason')}")
+        if bool(act_chart_result.get("ok")):
+            print(f"[ALIGN] Per-act progress chart: {act_chart_result.get('path')}")
+        else:
+            print(f"[ALIGN] Per-act progress chart skipped: {act_chart_result.get('reason')}")
         if isinstance(self.results_log, dict):
             self.results_log["recovery_summary"] = dict(recovery_summary) if isinstance(recovery_summary, dict) else None
             self.results_log["efficiency_chart"] = dict(chart_result) if isinstance(chart_result, dict) else None
+            self.results_log["act_progress_chart"] = (
+                dict(act_chart_result) if isinstance(act_chart_result, dict) else None
+            )
             self.results_log["early_stop"] = bool(self.abort_run_early)
             self.results_log["early_stop_reason"] = (
                 "consecutive_unrecovered_vision_losses" if self.abort_run_early else None
@@ -1628,8 +2150,11 @@ class AlignCalibrator:
                 self.results_log["status"] = "closed_early"
                 self.results_log["finished_at"] = float(time.time())
             chart_result = self.write_efficiency_chart()
+            act_chart_result = self.write_act_progress_chart()
             if isinstance(chart_result, dict):
                 self.results_log["efficiency_chart"] = dict(chart_result)
+            if isinstance(act_chart_result, dict):
+                self.results_log["act_progress_chart"] = dict(act_chart_result)
             self._write_results()
         self.robot.close()
         self.vision.close()
