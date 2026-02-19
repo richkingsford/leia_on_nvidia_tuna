@@ -49,7 +49,9 @@ DEFAULT_FRAME_H = 480
 DEFAULT_FOCAL_PX = 450.0
 
 # YOLO model path (relative to this file)
-MODEL_PATH = Path(__file__).resolve().parent / "brick_yolo_v2.onnx"
+MODEL_PATH_V3 = Path(__file__).resolve().parent / "brick_yolo_v3.onnx"
+MODEL_PATH_V2 = Path(__file__).resolve().parent / "brick_yolo_v2.onnx"
+MODEL_PATH = MODEL_PATH_V3 if MODEL_PATH_V3.exists() else MODEL_PATH_V2
 
 # Detection confidence threshold
 CONF_THRESHOLD = 0.15
@@ -97,7 +99,7 @@ class BrickDetector:
         if not mpath.exists():
             raise FileNotFoundError(
                 f"YOLO ONNX model not found at {mpath}. "
-                f"Place brick_yolo_v2.onnx next to this script."
+                f"Place brick_yolo_v3.onnx (or brick_yolo_v2.onnx) next to this script."
             )
         self.net = cv2.dnn.readNetFromONNX(str(mpath))
         self.log.info("Loaded YOLO ONNX model from %s", mpath)
