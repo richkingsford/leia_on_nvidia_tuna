@@ -511,25 +511,14 @@ class BrickDetector:
             # Angle indicator
             cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
             length = min(x2 - x1, y2 - y1) // 2
-            rad = math.radians(angle if i == 0 else
-                               self._estimate_angle(frame, x1, y1, x2, y2))
+            measured_angle = (
+                angle if i == 0 else self._estimate_angle(frame, x1, y1, x2, y2)
+            )
+            # UI convention: 0° points straight down; negative leans left.
+            rad = math.radians(measured_angle - 90.0)
             ex = int(cx + length * math.cos(rad))
             ey = int(cy - length * math.sin(rad))
             cv2.line(frame, (cx, cy), (ex, ey), (0, 0, 255), 2)
-
-            label = f"brick {c:.2f}"
-            cv2.putText(frame, label, (x1, y1 - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
-        # HUD
-        cv2.putText(frame, f"Angle: {angle:.1f} deg", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        cv2.putText(frame, f"Dist: {dist:.0f} mm", (10, 55),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        cv2.putText(frame, f"Offset: {offset_x:.1f} mm", (10, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        cv2.putText(frame, f"Conf: {conf:.0%}", (10, 105),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
         self.current_frame = frame
 
