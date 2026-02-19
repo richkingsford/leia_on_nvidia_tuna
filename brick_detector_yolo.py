@@ -45,8 +45,12 @@ DEFAULT_FRAME_W = 640
 DEFAULT_FRAME_H = 480
 
 # OV2710 camera parameters (100-degree FOV, 1/2.7" sensor)
-# Approximate focal length in pixels at 640x480
-DEFAULT_FOCAL_PX = 450.0
+# Focal length in pixels, calibrated at 640px frame width.
+# ArUco detector uses focal=frame_width; YOLO bbox height maps to
+# BRICK_HEIGHT_MM with ~10% bbox padding, giving ~0.9*frame_width.
+# Calibrated against ArUco gate targets (dist≈98-102mm at scoop position).
+FOCAL_PX_REF = 580.0
+FOCAL_REF_WIDTH = 640.0
 
 # YOLO model path (relative to this file)
 MODEL_PATH_V3 = Path(__file__).resolve().parent / "brick_yolo_v3.onnx"
@@ -76,7 +80,7 @@ class BrickDetector:
     """
 
     def __init__(self, debug=True, save_folder=None, speed_optimize=False,
-                 model_path=None):
+                 model_path=None, focal_px=None):
         self.debug = debug
         self.speed_optimize = speed_optimize
         self.log = logging.getLogger("BrickVisionYOLO")
@@ -138,9 +142,15 @@ class BrickDetector:
         self.frame_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or DEFAULT_FRAME_W
         self.frame_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or DEFAULT_FRAME_H
 
-        # Camera parameters
-        self.focal_px = DEFAULT_FOCAL_PX
+        # Camera parameters — scale focal length with resolution
+        if focal_px is not None:
+            self.focal_px = float(focal_px)
+        else:
+            self.focal_px = FOCAL_PX_REF * (self.frame_w / FOCAL_REF_WIDTH)
         self.camera_center_offset_px = 0.0
+        self.log.info("focal_px=%.1f (frame %dx%d). Use calibrate_focal() or "
+                      "set_runtime_tuning(focal_px=N) to adjust.",
+                      self.focal_px, self.frame_w, self.frame_h)
 
         # Temporal smoothing
         self._prev_angle = None
@@ -148,7 +158,8 @@ class BrickDetector:
         self._prev_offset = None
         self._smooth_alpha = 0.3  # EMA weight for new values (lower = smoother)
 
-    def set_runtime_tuning(self, confidence=None, smoothing_alpha=None, nms_threshold=None):
+    def set_runtime_tuning(self, confidence=None, smoothing_alpha=None,
+                           nms_threshold=None, focal_px=None):
         if confidence is not None:
             try:
                 conf_val = float(confidence)
@@ -167,10 +178,16 @@ class BrickDetector:
                 self.nms_threshold = max(0.0, min(1.0, nms_val))
             except (TypeError, ValueError):
                 pass
+        if focal_px is not None:
+            try:
+                self.focal_px = max(1.0, float(focal_px))
+            except (TypeError, ValueError):
+                pass
         return {
-            "conf_threshold": float(getattr(self, "conf_threshold", CONF_THRESHOLD)),
-            "smooth_alpha": float(getattr(self, "_smooth_alpha", 0.3)),
-            "nms_threshold": float(getattr(self, "nms_threshold", NMS_THRESHOLD)),
+            "conf_threshold": float(self.conf_threshold),
+            "smooth_alpha": float(self._smooth_alpha),
+            "nms_threshold": float(self.nms_threshold),
+            "focal_px": float(self.focal_px),
         }
 
     # ------------------------------------------------------------------
@@ -431,6 +448,9 @@ class BrickDetector:
         bricks = self._detect(frame)
 
         if not bricks:
+            self._prev_angle = None
+            self._prev_dist = None
+            self._prev_offset = None
             self.last_status = "searching"
             self.last_primary_confidence = 0.0
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
@@ -451,7 +471,7 @@ class BrickDetector:
         self._prev_dist = dist
 
         brick_center_x = (x1 + x2) / 2.0
-        frame_center_x = w_frame / 2.0
+        frame_center_x = w_frame / 2.0 + self.camera_center_offset_px
         offset_px = brick_center_x - frame_center_x
         raw_offset_x = (offset_px / self.focal_px) * dist
         offset_x = self._smooth(raw_offset_x, self._prev_offset)
@@ -470,7 +490,8 @@ class BrickDetector:
         cam_height = 0.0
 
         if self.debug:
-            self._draw_debug(frame, bricks, angle, dist, offset_x, conf)
+            debug_frame = frame.copy()
+            self._draw_debug(debug_frame, bricks, angle, dist, offset_x, conf)
 
         return (True, angle, dist, offset_x, conf_pct, cam_height,
                 brick_above, brick_below)
@@ -511,6 +532,47 @@ class BrickDetector:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
         self.current_frame = frame
+
+    def calibrate_focal(self, known_distance_mm, frame=None):
+        """
+        Calibrate focal_px by detecting a brick at a known distance.
+
+        Place a brick at a measured distance (e.g. ArUco-verified), then call:
+            detector.calibrate_focal(102.0)
+
+        Args:
+            known_distance_mm: True distance to the brick in mm.
+            frame: Optional frame to use. If None, captures from camera.
+
+        Returns:
+            float: The computed focal_px, or None if detection failed.
+        """
+        if frame is None:
+            ret, frame = self.cap.read()
+            if not ret or frame is None:
+                self.log.error("calibrate_focal: frame capture failed")
+                return None
+
+        bricks = self._detect(frame)
+        if not bricks:
+            self.log.error("calibrate_focal: no brick detected")
+            return None
+
+        bricks.sort(key=lambda b: b[4], reverse=True)
+        x1, y1, x2, y2, conf = bricks[0]
+        bbox_h = y2 - y1
+        if bbox_h <= 0:
+            return None
+
+        new_focal = (known_distance_mm * bbox_h) / BRICK_HEIGHT_MM
+        if new_focal < 1.0:
+            self.log.error("calibrate_focal: computed focal_px=%.1f is too small "
+                           "(dist=%.1f, bbox_h=%d)", new_focal, known_distance_mm, bbox_h)
+            return None
+        self.focal_px = new_focal
+        self.log.info("calibrate_focal: bbox_h=%d, dist=%.1fmm -> focal_px=%.1f",
+                      bbox_h, known_distance_mm, self.focal_px)
+        return self.focal_px
 
     def release(self):
         """Release camera resources."""
