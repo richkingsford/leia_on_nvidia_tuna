@@ -69,6 +69,15 @@ DEFAULT_LITE_GATE_CHECK_CONFIG = {
 DEFAULT_SPEED_SCORE = telemetry_robot_module.SPEED_SCORE_DEFAULT
 MAX_SPEED_SCORE = telemetry_robot_module.SPEED_SCORE_MAX
 
+ALIGN_RECOVERY_REVERSE_MAX_ACTS = 6
+ALIGN_RECOVERY_REVERSE_OBSERVE_S = 0.8
+ALIGN_RECOVERY_SCAN_MAX_ATTEMPTS = 8
+ALIGN_RECOVERY_SCAN_SCORE = 8
+ALIGN_RECOVERY_SCAN_BURST_ACTS = 2
+ALIGN_RECOVERY_SCAN_OBSERVE_S = 0.6
+ALIGN_RECOVERY_LOST_VISIBLE_FRAMES = 3
+ALIGN_RECOVERY_LOST_VISIBLE_MIN_S = 0.20
+
 MM_METRICS = {
     "xAxis_offset_abs",
     "dist",
@@ -396,83 +405,6 @@ def format_headline(headline, color, details=""):
     if details is None:
         details = ""
     return f"{color}{headline}{COLOR_RESET}{details}"
-
-
-def format_shorthand_calibration_line(
-    trial,
-    phase,
-    pre_obs_text,
-    action_cmd,
-    action_score,
-    result_delta_obj,
-    phase_color=None,
-    motor_power=None,
-    motor_pwm=None,
-    motor_duration_ms=None,
-):
-    """
-    Format a single-line calibration log following observe > act pattern.
-    
-    Args:
-        trial: Trial number
-        phase: Phase name (ALIGN, etc)
-        pre_obs_text: Text describing pre-action observation (e.g. "x_err=+1.23mm tol=2.5mm")
-        action_cmd: Command sent (FWD, RIGHT, etc)
-        action_score: Speed score as int percentage
-        result_delta_obj: Optional dict with keys: 'delta_text', 'delta_class'. Pass None to omit result display.
-        phase_color: Optional color for phase; defaults to COLOR_RED if "recovery" in phase
-        motor_power: Optional motor power value (0.0-1.0)
-        motor_pwm: Optional PWM value (0-255)
-        motor_duration_ms: Optional duration in milliseconds
-    
-    Returns:
-        Colored string with full diagnostic line
-    """
-    if phase_color is None:
-        phase_color = COLOR_RED if phase and "recovery" in phase.lower() else COLOR_WHITE
-    
-    trial_str = f"T{int(trial)}" if trial is not None else "T?"
-    phase_upper = str(phase).upper() if phase else "?"
-    
-    # Action part (with color and motor vars)
-    motor_vars = ""
-    if motor_power is not None or motor_pwm is not None or motor_duration_ms is not None:
-        parts = []
-        if motor_pwm is not None:
-            parts.append(f"pwm={int(motor_pwm)}")
-        if motor_power is not None:
-            parts.append(f"pwr={motor_power:.3f}")
-        if motor_duration_ms is not None:
-            parts.append(f"t={int(motor_duration_ms)}ms")
-        if parts:
-            motor_vars = f"{COLOR_GRAY}({', '.join(parts)}){COLOR_RESET}"
-    action_str = f"{COLOR_ORANGE_BRIGHT}{action_cmd} {action_score}%{COLOR_RESET}{motor_vars}"
-    
-    # Result part (with color based on delta_class) - optional
-    if result_delta_obj is not None:
-        delta_class = (result_delta_obj or {}).get("delta_class", "unknown")
-        delta_text = (result_delta_obj or {}).get("delta_text", "")
-        
-        if delta_class == "closer":
-            result_color = COLOR_GREEN
-        elif delta_class == "backward":
-            result_color = COLOR_RED
-        else:
-            result_color = COLOR_WHITE
-        
-        result_str = f"{result_color}{delta_text}{COLOR_RESET}" if delta_text else f"{result_color}no change{COLOR_RESET}"
-        
-        # Full line: [TRIAL PHASE] obs → act → result
-        return (
-            f"{phase_color}[{trial_str} {phase_upper}]{COLOR_RESET} "
-            f"({pre_obs_text}) {action_str} → {result_str}"
-        )
-    else:
-        # No result - just show observation and action
-        return (
-            f"{phase_color}[{trial_str} {phase_upper}]{COLOR_RESET} "
-            f"({pre_obs_text}) → {action_str}"
-        )
 
 
 @dataclass
@@ -1215,7 +1147,7 @@ def send_robot_command_pwm(robot, world, step, cmd, power, pwm, duration_ms, spe
     power_from_pwm = telemetry_robot_module.pwm_to_power(pwm_val)
     if power_from_pwm is not None:
         power_val = max(0.0, min(1.0, float(power_from_pwm)))
-    _, score_effective = telemetry_robot_module.quantize_speed(cmd, speed=power_val)
+    _, score_effective = telemetry_robot_module.quantize_speed(cmd_sent, speed=power_val)
     if score_effective is None:
         score_effective = speed_score
     
@@ -2895,15 +2827,33 @@ def _build_auto_step_diagnostic(
             "delta_text": f"{delta_plain}{post_tail}",
         }
 
-    colored = format_shorthand_calibration_line(
-        trial=getattr(world, "loop_id", None),
-        phase=step_key or str(step),
-        pre_obs_text=pre_obs_text,
-        action_cmd=action_cmd,
-        action_score=action_score,
-        result_delta_obj=result_delta_obj,
-        phase_color=COLOR_WHITE,
+    trial_num = int(getattr(world, "loop_id", 0) or 0)
+    phase_upper = str(step_key or str(step) or "?").upper()
+    action_text_colored = f"{COLOR_WHITE}{action_cmd.lower()} {int(action_score)}%{COLOR_RESET}"
+    motor_suffix = ""
+    action_plain_strip = str(action_plain).strip()
+    if "(" in action_plain_strip and action_plain_strip.endswith(")"):
+        try:
+            motor_suffix_raw = action_plain_strip[action_plain_strip.index("("):]
+        except ValueError:
+            motor_suffix_raw = ""
+        if motor_suffix_raw:
+            motor_suffix = f" {COLOR_GRAY}{motor_suffix_raw}{COLOR_RESET}"
+    delta_class = (result_delta_obj or {}).get("delta_class", "unknown")
+    delta_text = str((result_delta_obj or {}).get("delta_text", "") or "")
+    if delta_class == "closer":
+        result_color = COLOR_GREEN
+    elif delta_class == "backward":
+        result_color = COLOR_RED
+    else:
+        result_color = COLOR_YELLOW
+    colored = (
+        f"{COLOR_CYAN}[T{trial_num} {phase_upper}]{COLOR_RESET} "
+        f"{COLOR_WHITE}{pre_obs_text}{COLOR_RESET} → "
+        f"{action_text_colored}{motor_suffix}"
     )
+    if delta_text:
+        colored += f" {result_color}{delta_text}{COLOR_RESET}"
     plain = _strip_known_ansi(colored)
     return {
         "plain": plain,
@@ -2950,35 +2900,6 @@ def _current_success_ok(world, step):
     wall_ok = bool(telemetry_wall.evaluate_success_gates(world, step, world.wall_envelope).ok)
     robot_ok = bool(telemetry_robot_module.evaluate_success_gates(world, step, telemetry_rules, process_rules).ok)
     return brick_ok and wall_ok and robot_ok
-
-
-def _format_auto_step_diagnostic(world, step, action_text, pre_gate_text, success_override=None):
-    return _build_auto_step_diagnostic(
-        world,
-        step,
-        action_text,
-        pre_gate_text,
-        success_override=success_override,
-    )["plain"]
-
-
-def _format_auto_step_diagnostic_colored(
-    world,
-    step,
-    action_text,
-    pre_gate_text,
-    *,
-    pre_focus=None,
-    success_override=None,
-):
-    return _build_auto_step_diagnostic(
-        world,
-        step,
-        action_text,
-        pre_gate_text,
-        pre_focus=pre_focus,
-        success_override=success_override,
-    )["colored"]
 
 
 def _store_auto_step_diagnostic(world, step, line, sent_snapshot=None, *, colored_line=None, segments=None):
@@ -3875,6 +3796,146 @@ def run_alignment_segment(
     confirm_callback=None,
     align_silent=False,
 ):
+    def _emit_align_shorthand_action_line(
+        *,
+        local_gate_before_action,
+        prev_log_correction_type,
+        prev_log_x_err,
+        prev_log_dist,
+        cmd,
+        score_effective,
+        action_meta,
+        action_index,
+        settle=False,
+    ):
+        cmd_key = str(cmd).strip().lower()
+        if cmd_key in ("f", "b"):
+            correction_type = "distance"
+        elif cmd_key in ("l", "r"):
+            correction_type = "x_axis"
+        else:
+            correction_type = str(prev_log_correction_type or "").strip().lower()
+            if correction_type not in {"distance", "x_axis"}:
+                correction_type = "x_axis"
+
+        x_err_now = local_gate_before_action.get("x_err")
+        x_target = local_gate_before_action.get("x_target")
+        x_tol = local_gate_before_action.get("x_tol")
+        dist_now = local_gate_before_action.get("dist")
+        dist_target = local_gate_before_action.get("dist_target")
+        dist_tol = local_gate_before_action.get("dist_tol")
+
+        metric_color = COLOR_YELLOW
+        metric_text = ""
+        metric_name = "x_err"
+
+        if correction_type == "distance":
+            metric_name = "dist_err"
+            try:
+                curr_metric = abs(float(dist_now) - float(dist_target))
+            except (TypeError, ValueError):
+                curr_metric = None
+            prev_metric = None
+            try:
+                if prev_log_dist is not None:
+                    prev_metric = abs(float(prev_log_dist) - float(dist_target))
+            except (TypeError, ValueError):
+                prev_metric = None
+
+            if curr_metric is None:
+                metric_text = "unknown"
+                metric_color = COLOR_WHITE
+            else:
+                if prev_metric is None:
+                    metric_color = COLOR_YELLOW
+                    metric_text = f"{curr_metric:+.2f}mm (initial)"
+                else:
+                    delta = float(prev_metric) - float(curr_metric)
+                    if abs(delta) < 0.05:
+                        metric_color = COLOR_YELLOW
+                        metric_text = f"{curr_metric:+.2f}mm (~unchanged)"
+                    elif delta > 0:
+                        metric_color = COLOR_GREEN
+                        metric_text = f"{curr_metric:+.2f}mm ({delta:+.2f}mm better)"
+                    else:
+                        metric_color = COLOR_RED
+                        metric_text = f"{curr_metric:+.2f}mm ({delta:+.2f}mm worse)"
+            target_text = f"{float(dist_target):.2f}mm"
+            tol_text = f"{float(dist_tol):.2f}mm"
+        else:
+            try:
+                curr_metric = float(x_err_now)
+            except (TypeError, ValueError):
+                curr_metric = None
+            prev_metric = None
+            try:
+                if prev_log_x_err is not None:
+                    prev_metric = float(prev_log_x_err)
+            except (TypeError, ValueError):
+                prev_metric = None
+
+            if curr_metric is None:
+                metric_text = "unknown"
+                metric_color = COLOR_WHITE
+            else:
+                overshot = False
+                if prev_metric is not None:
+                    overshot = (
+                        (float(prev_metric) * float(curr_metric)) < 0.0
+                        and abs(float(prev_metric)) > 0.30
+                        and abs(float(curr_metric)) > 0.30
+                    )
+                if prev_metric is None:
+                    metric_color = COLOR_YELLOW
+                    metric_text = f"{curr_metric:+.2f}mm (initial)"
+                elif overshot:
+                    metric_color = COLOR_RED
+                    metric_text = f"{curr_metric:+.2f}mm (overshot target)"
+                else:
+                    delta = abs(float(prev_metric)) - abs(float(curr_metric))
+                    if abs(delta) < 0.05:
+                        metric_color = COLOR_YELLOW
+                        metric_text = f"{curr_metric:+.2f}mm (~unchanged)"
+                    elif delta > 0:
+                        metric_color = COLOR_GREEN
+                        metric_text = f"{curr_metric:+.2f}mm ({delta:+.2f}mm better)"
+                    else:
+                        metric_color = COLOR_RED
+                        metric_text = f"{curr_metric:+.2f}mm ({delta:+.2f}mm worse)"
+            target_text = f"{float(x_target):+.2f}mm"
+            tol_text = f"{float(x_tol):.2f}mm"
+
+        try:
+            score_display = int(round(float(score_effective))) if score_effective is not None else 0
+        except (TypeError, ValueError):
+            score_display = 0
+        motor_power = action_meta.get("power") if isinstance(action_meta, dict) else None
+        motor_pwm = action_meta.get("pwm") if isinstance(action_meta, dict) else None
+        motor_duration_ms = None
+        if isinstance(action_meta, dict):
+            motor_duration_ms = action_meta.get("duration_model_ms")
+            if motor_duration_ms is None:
+                motor_duration_ms = action_meta.get("duration_ms")
+        motor_details = ""
+        parts = []
+        if motor_pwm is not None:
+            parts.append(f"pwm={int(motor_pwm)}")
+        if motor_power is not None:
+            parts.append(f"pwr={float(motor_power):.3f}")
+        if motor_duration_ms is not None:
+            parts.append(f"t={int(motor_duration_ms)}ms")
+        if parts:
+            motor_details = f" {COLOR_GRAY}({', '.join(parts)}){COLOR_RESET}"
+
+        trial_num = int(getattr(world, "loop_id", 0) or 0)
+        phase_label = "ALIGN_SETTLE" if bool(settle) else "ALIGN"
+        print(
+            f"{COLOR_CYAN}[T{trial_num}.{int(action_index)} {phase_label}]{COLOR_RESET} "
+            f"{metric_name}={metric_color}{metric_text}{COLOR_RESET} "
+            f"(target {target_text} ±{tol_text}) → "
+            f"{COLOR_WHITE}{str(cmd).lower()} {int(score_display)}%{COLOR_RESET}{motor_details}"
+        )
+
     def _dominant_turn_from_steps(motion_steps):
         if not motion_steps:
             return None
@@ -3895,6 +3956,25 @@ def run_alignment_segment(
         if left_s > right_s:
             return "l"
         return "r"
+
+    def _observe_visible(timeout_s):
+        deadline = float(time.time()) + max(0.05, float(timeout_s))
+        while time.time() < deadline:
+            update_world_from_vision(world, vision, log=False)
+            if bool((getattr(world, "brick", None) or {}).get("visible")):
+                return True
+            time.sleep(float(CONTROL_DT))
+        return False
+
+    def _inverse_cmd(cmd):
+        return {
+            "l": "r",
+            "r": "l",
+            "f": "b",
+            "b": "f",
+            "u": "d",
+            "d": "u",
+        }.get(str(cmd))
 
     action_speeds = derive_action_speeds(raw_steps)
     gate_bounds = telemetry_brick.success_gate_bounds(
@@ -3920,6 +4000,8 @@ def run_alignment_segment(
         scan_cmd = demo_single_turn_cmd
 
     def _apply_turn_only_demo_policy(cmd, speed, speed_score, cmd_reason):
+        if normalize_step_label(step) == "ALIGN_BRICK":
+            return cmd, speed, speed_score, cmd_reason
         if not demo_turn_only:
             return cmd, speed, speed_score, cmd_reason
         if scan_cmd not in ("l", "r"):
@@ -4000,12 +4082,137 @@ def run_alignment_segment(
     prev_log_correction_type = None
     prev_log_x_err = None
     prev_log_dist = None
+    align_action_idx = 0
+    stale_pre_obs_streak = 0
+    stale_frame_streak = 0
+    not_visible_streak = 0
+    last_visible_ts = time.time()
+    last_align_action = None
+    last_align_signature = None
+    recent_align_acts = collections.deque(maxlen=32)
     loop_id = 0
+
+    def _format_last_align_action_for_recovery():
+        if not isinstance(last_align_action, dict):
+            return "none"
+        cmd_val = str(last_align_action.get("cmd") or "?").upper()
+        score_val = last_align_action.get("score")
+        pwm_val = last_align_action.get("pwm")
+        pwr_val = last_align_action.get("power")
+        t_val = last_align_action.get("duration_ms")
+        parts = [f"cmd={cmd_val}"]
+        if score_val is not None:
+            try:
+                parts.append(f"score={int(round(float(score_val)))}%")
+            except (TypeError, ValueError):
+                pass
+        if pwm_val is not None:
+            try:
+                parts.append(f"pwm={int(round(float(pwm_val)))}")
+            except (TypeError, ValueError):
+                pass
+        if pwr_val is not None:
+            try:
+                parts.append(f"pwr={float(pwr_val):.3f}")
+            except (TypeError, ValueError):
+                pass
+        if t_val is not None:
+            try:
+                parts.append(f"t={int(round(float(t_val)))}ms")
+            except (TypeError, ValueError):
+                pass
+        return ", ".join(parts)
+
+    def _recover_visibility(source="unknown", reason=None):
+        source_key = str(source or "").strip().lower()
+        if not align_silent:
+            reason_text = str(reason or "confident visibility loss").strip()
+            print(format_headline(f"[RECOVERY] trigger: {reason_text}", COLOR_ORANGE_BRIGHT))
+            print(
+                format_headline(
+                    f"[RECOVERY] last act: {_format_last_align_action_for_recovery()}",
+                    COLOR_WHITE,
+                )
+            )
+            print(format_headline(f"[RECOVERY] {source_key}: reversing recent acts...", COLOR_WHITE))
+
+        plan = []
+        for row in reversed(list(recent_align_acts)[-int(ALIGN_RECOVERY_REVERSE_MAX_ACTS):]):
+            inv = _inverse_cmd(row.get("cmd"))
+            if inv is None:
+                continue
+            score = row.get("score")
+            try:
+                score = int(round(float(score))) if score is not None else int(ALIGN_RECOVERY_SCAN_SCORE)
+            except (TypeError, ValueError):
+                score = int(ALIGN_RECOVERY_SCAN_SCORE)
+            score = max(int(telemetry_robot_module.SPEED_SCORE_MIN), min(int(score), int(MAX_SPEED_SCORE)))
+            plan.append({"cmd": str(inv), "score": int(score)})
+
+        for idx, row in enumerate(plan, start=1):
+            if not align_silent:
+                print(
+                    format_headline(
+                        f"[RECOVERY] reverse {idx}/{len(plan)}: {row['cmd'].upper()} {int(row['score'])}%",
+                        COLOR_WHITE,
+                    )
+                )
+            send_robot_command(
+                robot,
+                world,
+                step,
+                row["cmd"],
+                0.0,
+                speed_score=row["score"],
+                auto_mode=True,
+            )
+            if _observe_visible(float(ALIGN_RECOVERY_REVERSE_OBSERVE_S)):
+                if not align_silent:
+                    print(format_headline("[RECOVERY] Visibility restored by reverse acts.", COLOR_GREEN))
+                return True
+
+        if not align_silent:
+            print(format_headline("[RECOVERY] Scanning for brick...", COLOR_WHITE))
+        for i in range(1, int(ALIGN_RECOVERY_SCAN_MAX_ATTEMPTS) + 1):
+            block = int((i - 1) // int(max(1, ALIGN_RECOVERY_SCAN_BURST_ACTS)))
+            scan_cmd_local = "l" if (block % 2 == 0) else "r"
+            scan_score_local = int(ALIGN_RECOVERY_SCAN_SCORE)
+            if not align_silent:
+                print(
+                    format_headline(
+                        f"[RECOVERY] scan {i}/{int(ALIGN_RECOVERY_SCAN_MAX_ATTEMPTS)}: {scan_cmd_local.upper()} {scan_score_local}%",
+                        COLOR_WHITE,
+                    )
+                )
+            send_robot_command(
+                robot,
+                world,
+                step,
+                scan_cmd_local,
+                0.0,
+                speed_score=scan_score_local,
+                auto_mode=True,
+            )
+            if _observe_visible(float(ALIGN_RECOVERY_SCAN_OBSERVE_S)):
+                if not align_silent:
+                    print(format_headline("[RECOVERY] Visibility restored by scan.", COLOR_GREEN))
+                return True
+
+        if not align_silent:
+            print(format_headline("[RECOVERY] Failed to restore visibility.", COLOR_RED))
+        return False
 
     while True:
         loop_id += 1
         world.loop_id = loop_id
+        step_norm = normalize_step_label(step)
         update_world_from_vision(world, vision, log=not align_silent)
+        visible_now = bool((getattr(world, "brick", None) or {}).get("visible"))
+        if visible_now:
+            not_visible_streak = 0
+            last_visible_ts = time.time()
+        else:
+            not_visible_streak = int(not_visible_streak) + 1
         obs_note = getattr(world, "_last_obs_note", None)
         if obs_note:
             world._last_obs_note = None
@@ -4046,25 +4253,64 @@ def run_alignment_segment(
                 print_success_events(world, step)
             return True, "success gate"
 
-        analytics = next_module.compute_alignment_decision(
-            world=world,
-            step=step,
-            process_rules=world.process_rules or {},
-            learned_rules=world.learned_rules or {},
-            duration_s=CONTROL_DT,
-        )
-        cmd = analytics.get("cmd")
-        speed = analytics.get("speed") or 0.0
-        cmd_reason = analytics.get("worst_metric") or "align"
-        speed_score = analytics.get("speed_score")
+        if step_norm == "ALIGN_BRICK" and not visible_now:
+            lost_for_s = max(0.0, float(time.time()) - float(last_visible_ts))
+            confident_loss = bool(
+                int(not_visible_streak) >= int(ALIGN_RECOVERY_LOST_VISIBLE_FRAMES)
+                and float(lost_for_s) >= float(ALIGN_RECOVERY_LOST_VISIBLE_MIN_S)
+            )
+            if not confident_loss:
+                time.sleep(CONTROL_DT)
+                continue
+            reason = (
+                "brick invisible "
+                f"for {int(not_visible_streak)} consecutive frames and {float(lost_for_s):.2f}s "
+                f"(threshold {int(ALIGN_RECOVERY_LOST_VISIBLE_FRAMES)} frames / {float(ALIGN_RECOVERY_LOST_VISIBLE_MIN_S):.2f}s)"
+            )
+            if _recover_visibility(source="align_observe", reason=reason):
+                stale_pre_obs_streak = 0
+                stale_frame_streak = 0
+                not_visible_streak = 0
+                last_visible_ts = time.time()
+                last_align_signature = None
+                continue
+            return False, "lost_vision"
+
+        if step_norm == "ALIGN_BRICK":
+            brick = getattr(world, "brick", {}) or {}
+            act_plan = next_module.select_align_brick_next_act(
+                process_rules=world.process_rules or {},
+                x_axis_mm=brick.get("x_axis", brick.get("offset_x")),
+                dist_mm=brick.get("dist"),
+                visible=bool(brick.get("visible")),
+                angle_deg=brick.get("angle", 0.0),
+                duration_s=CONTROL_DT,
+            )
+            cmd = act_plan.get("cmd")
+            cmd_reason = act_plan.get("reason") or "align"
+            speed_score = act_plan.get("score")
+            speed = telemetry_robot_module.manual_speed_for_cmd(cmd, speed_score) if cmd and speed_score is not None else 0.0
+        else:
+            analytics = next_module.compute_alignment_decision(
+                world=world,
+                step=step,
+                process_rules=world.process_rules or {},
+                learned_rules=world.learned_rules or {},
+                duration_s=CONTROL_DT,
+            )
+            cmd = analytics.get("cmd")
+            speed = analytics.get("speed") or 0.0
+            cmd_reason = analytics.get("worst_metric") or "align"
+            speed_score = analytics.get("speed_score")
         cmd, speed, speed_score, cmd_reason = _apply_turn_only_demo_policy(
             cmd,
             speed,
             speed_score,
             cmd_reason,
         )
-        speed = apply_pursuit_speed(speed)
-        speed = apply_confidence_speed(speed, success_ok, confidence, world)
+        if step_norm != "ALIGN_BRICK":
+            speed = apply_pursuit_speed(speed)
+            speed = apply_confidence_speed(speed, success_ok, confidence, world)
         if cmd != last_cmd or cmd_reason != last_reason or speed != last_speed:
             if not align_silent:
                 reason = f"{cmd_reason} {int(speed_score)}%" if speed_score is not None else cmd_reason
@@ -4108,48 +4354,60 @@ def run_alignment_segment(
                 score_effective = action_meta.get("score_effective")
                 if score_effective is None:
                     score_effective = action_meta.get("score_model", speed_score)
-            if not align_silent:
-                result_delta_obj = next_module.build_align_result_delta_obj(
-                    correction_type=prev_log_correction_type,
-                    prev_x_err_mm=prev_log_x_err,
-                    curr_x_err_mm=local_gate_before_action.get("x_err"),
-                    prev_dist_mm=prev_log_dist,
-                    curr_dist_mm=local_gate_before_action.get("dist"),
-                    dist_target_mm=local_gate_before_action.get("dist_target", 0.0),
-                )
-                pre_obs_text = next_module.format_align_pre_observation_text(
-                    x_err_mm=local_gate_before_action.get("x_err"),
-                    x_tol_mm=local_gate_before_action.get("x_tol"),
-                    x_target_mm=local_gate_before_action.get("x_target"),
-                    offset_x=local_gate_before_action.get("x_axis"),
-                    dist_mm=local_gate_before_action.get("dist"),
-                )
+
+            if step_norm == "ALIGN_BRICK":
                 try:
-                    score_display = int(round(float(score_effective))) if score_effective is not None else 0
+                    x_sig = round(float(local_gate_before_action.get("x_err")), 2)
                 except (TypeError, ValueError):
-                    score_display = 0
-                motor_power = action_meta.get("power") if isinstance(action_meta, dict) else None
-                motor_pwm = action_meta.get("pwm") if isinstance(action_meta, dict) else None
-                motor_duration_ms = None
-                if isinstance(action_meta, dict):
-                    motor_duration_ms = action_meta.get("duration_model_ms")
-                    if motor_duration_ms is None:
-                        motor_duration_ms = action_meta.get("duration_ms")
-                print(
-                    format_shorthand_calibration_line(
-                        trial=getattr(world, "loop_id", None),
-                        phase=normalize_step_label(step),
-                        pre_obs_text=pre_obs_text,
-                        action_cmd=str(cmd).lower(),
-                        action_score=score_display,
-                        result_delta_obj=result_delta_obj,
-                        phase_color=(
-                            COLOR_CYAN if normalize_step_label(step) == "ALIGN_BRICK" else COLOR_WHITE
-                        ),
-                        motor_power=motor_power,
-                        motor_pwm=motor_pwm,
-                        motor_duration_ms=motor_duration_ms,
+                    x_sig = None
+                try:
+                    d_sig = round(float(local_gate_before_action.get("dist")), 1)
+                except (TypeError, ValueError):
+                    d_sig = None
+                try:
+                    s_sig = int(round(float(score_effective))) if score_effective is not None else None
+                except (TypeError, ValueError):
+                    s_sig = None
+                sig = (x_sig, d_sig, str(cmd), s_sig)
+                if sig == last_align_signature:
+                    stale_pre_obs_streak = int(stale_pre_obs_streak) + 1
+                else:
+                    stale_pre_obs_streak = 0
+                last_align_signature = sig
+
+                if stale_pre_obs_streak >= 8:
+                    if robot:
+                        robot.stop()
+                    print(
+                        format_headline(
+                            "[WARN] ALIGN_BRICK stale observation for 8 consecutive acts; treating as lost visibility.",
+                            COLOR_RED,
+                        )
                     )
+                    reason = (
+                        "stale observation signature repeated for 8 acts "
+                        f"(signature={str(sig)})"
+                    )
+                    if _recover_visibility(source="stale_observation", reason=reason):
+                        stale_pre_obs_streak = 0
+                        stale_frame_streak = 0
+                        not_visible_streak = 0
+                        last_visible_ts = time.time()
+                        last_align_signature = None
+                        continue
+                    return False, "lost_vision_stale_observation"
+            if not align_silent:
+                align_action_idx = int(align_action_idx) + 1
+                _emit_align_shorthand_action_line(
+                    local_gate_before_action=local_gate_before_action,
+                    prev_log_correction_type=prev_log_correction_type,
+                    prev_log_x_err=prev_log_x_err,
+                    prev_log_dist=prev_log_dist,
+                    cmd=cmd,
+                    score_effective=score_effective,
+                    action_meta=action_meta,
+                    action_index=align_action_idx,
+                    settle=False,
                 )
             action_detail = None
             if not suppress_auto_diag:
@@ -4186,6 +4444,27 @@ def run_alignment_segment(
                 world.update_from_motion(evt)
             if next_module.success_gates_visible_only(world.process_rules or {}, step):
                 world._visible_speed_cycle = int(getattr(world, "_visible_speed_cycle", 0)) + 1
+            if step_norm == "ALIGN_BRICK" and cmd in ("f", "b", "l", "r"):
+                try:
+                    hist_score = int(round(float(score_effective))) if score_effective is not None else None
+                except (TypeError, ValueError):
+                    hist_score = None
+                if hist_score is None:
+                    try:
+                        hist_score = int(round(float(speed_score))) if speed_score is not None else int(DEFAULT_SPEED_SCORE)
+                    except (TypeError, ValueError):
+                        hist_score = int(DEFAULT_SPEED_SCORE)
+                recent_align_acts.append({"cmd": str(cmd), "score": int(hist_score)})
+                if isinstance(action_meta, dict):
+                    last_align_action = {
+                        "cmd": str(action_meta.get("cmd_sent") or cmd),
+                        "score": hist_score,
+                        "pwm": action_meta.get("pwm"),
+                        "power": action_meta.get("power"),
+                        "duration_ms": action_meta.get("duration_ms"),
+                    }
+                else:
+                    last_align_action = {"cmd": str(cmd), "score": hist_score}
             if confirm_callback and robot:
                 robot.stop()
             last_action_frame = post_act_analysis(
@@ -4227,7 +4506,31 @@ def run_alignment_segment(
                 post_act_settle_pause(world, vision)
             post_frame_id = getattr(world, "_frame_id", 0)
             if post_frame_id <= pre_frame_id:
+                stale_frame_streak = int(stale_frame_streak) + 1
                 print(format_headline("[WARN] No new frame observed after action", COLOR_RED))
+                if step_norm == "ALIGN_BRICK" and stale_frame_streak >= 3:
+                    if robot:
+                        robot.stop()
+                    print(
+                        format_headline(
+                            "[WARN] ALIGN_BRICK frame stream appears stale; treating as lost visibility.",
+                            COLOR_RED,
+                        )
+                    )
+                    reason = (
+                        f"no new frame id for {int(stale_frame_streak)} consecutive actions "
+                        f"(pre={int(pre_frame_id)}, post={int(post_frame_id)})"
+                    )
+                    if _recover_visibility(source="stale_frames", reason=reason):
+                        stale_pre_obs_streak = 0
+                        stale_frame_streak = 0
+                        not_visible_streak = 0
+                        last_visible_ts = time.time()
+                        last_align_signature = None
+                        continue
+                    return False, "lost_vision_stale_frames"
+            else:
+                stale_frame_streak = 0
         else:
             if robot:
                 robot.stop()
@@ -4255,6 +4558,7 @@ def run_alignment_segment(
         )
     settle_deadline = time.time() + SUCCESS_SETTLE_S
     settle_tracker = new_success_tracker(step, world.process_rules)
+    settle_action_idx = 0
     loop_id = 0
     while time.time() < settle_deadline:
         loop_id += 1
@@ -4282,25 +4586,42 @@ def run_alignment_segment(
                 print_success_events(world, step)
             return True, "success gate"
 
-        analytics = next_module.compute_alignment_decision(
-            world=world,
-            step=step,
-            process_rules=world.process_rules or {},
-            learned_rules=world.learned_rules or {},
-            duration_s=CONTROL_DT,
-        )
-        cmd = analytics.get("cmd")
-        speed = analytics.get("speed") or 0.0
-        cmd_reason = analytics.get("worst_metric") or "align"
-        speed_score = analytics.get("speed_score")
+        step_norm = normalize_step_label(step)
+        if step_norm == "ALIGN_BRICK":
+            brick = getattr(world, "brick", {}) or {}
+            act_plan = next_module.select_align_brick_next_act(
+                process_rules=world.process_rules or {},
+                x_axis_mm=brick.get("x_axis", brick.get("offset_x")),
+                dist_mm=brick.get("dist"),
+                visible=bool(brick.get("visible")),
+                angle_deg=brick.get("angle", 0.0),
+                duration_s=CONTROL_DT,
+            )
+            cmd = act_plan.get("cmd")
+            cmd_reason = act_plan.get("reason") or "align"
+            speed_score = act_plan.get("score")
+            speed = telemetry_robot_module.manual_speed_for_cmd(cmd, speed_score) if cmd and speed_score is not None else 0.0
+        else:
+            analytics = next_module.compute_alignment_decision(
+                world=world,
+                step=step,
+                process_rules=world.process_rules or {},
+                learned_rules=world.learned_rules or {},
+                duration_s=CONTROL_DT,
+            )
+            cmd = analytics.get("cmd")
+            speed = analytics.get("speed") or 0.0
+            cmd_reason = analytics.get("worst_metric") or "align"
+            speed_score = analytics.get("speed_score")
         cmd, speed, speed_score, cmd_reason = _apply_turn_only_demo_policy(
             cmd,
             speed,
             speed_score,
             cmd_reason,
         )
-        speed = apply_pursuit_speed(speed)
-        speed = apply_confidence_speed(speed, success_ok, confidence, world)
+        if step_norm != "ALIGN_BRICK":
+            speed = apply_pursuit_speed(speed)
+            speed = apply_confidence_speed(speed, success_ok, confidence, world)
         if cmd != last_cmd or cmd_reason != last_reason or speed != last_speed:
             if not align_silent:
                 reason = f"{cmd_reason} {int(speed_score)}%" if speed_score is not None else cmd_reason
@@ -4340,47 +4661,17 @@ def run_alignment_segment(
                 if score_effective is None:
                     score_effective = action_meta.get("score_model", speed_score)
             if not align_silent:
-                result_delta_obj = next_module.build_align_result_delta_obj(
-                    correction_type=prev_log_correction_type,
-                    prev_x_err_mm=prev_log_x_err,
-                    curr_x_err_mm=local_gate_before_action.get("x_err"),
-                    prev_dist_mm=prev_log_dist,
-                    curr_dist_mm=local_gate_before_action.get("dist"),
-                    dist_target_mm=local_gate_before_action.get("dist_target", 0.0),
-                )
-                pre_obs_text = next_module.format_align_pre_observation_text(
-                    x_err_mm=local_gate_before_action.get("x_err"),
-                    x_tol_mm=local_gate_before_action.get("x_tol"),
-                    x_target_mm=local_gate_before_action.get("x_target"),
-                    offset_x=local_gate_before_action.get("x_axis"),
-                    dist_mm=local_gate_before_action.get("dist"),
-                )
-                try:
-                    score_display = int(round(float(score_effective))) if score_effective is not None else 0
-                except (TypeError, ValueError):
-                    score_display = 0
-                motor_power = action_meta.get("power") if isinstance(action_meta, dict) else None
-                motor_pwm = action_meta.get("pwm") if isinstance(action_meta, dict) else None
-                motor_duration_ms = None
-                if isinstance(action_meta, dict):
-                    motor_duration_ms = action_meta.get("duration_model_ms")
-                    if motor_duration_ms is None:
-                        motor_duration_ms = action_meta.get("duration_ms")
-                print(
-                    format_shorthand_calibration_line(
-                        trial=getattr(world, "loop_id", None),
-                        phase=f"{normalize_step_label(step)}_SETTLE",
-                        pre_obs_text=pre_obs_text,
-                        action_cmd=str(cmd).lower(),
-                        action_score=score_display,
-                        result_delta_obj=result_delta_obj,
-                        phase_color=(
-                            COLOR_CYAN if normalize_step_label(step) == "ALIGN_BRICK" else COLOR_WHITE
-                        ),
-                        motor_power=motor_power,
-                        motor_pwm=motor_pwm,
-                        motor_duration_ms=motor_duration_ms,
-                    )
+                settle_action_idx = int(settle_action_idx) + 1
+                _emit_align_shorthand_action_line(
+                    local_gate_before_action=local_gate_before_action,
+                    prev_log_correction_type=prev_log_correction_type,
+                    prev_log_x_err=prev_log_x_err,
+                    prev_log_dist=prev_log_dist,
+                    cmd=cmd,
+                    score_effective=score_effective,
+                    action_meta=action_meta,
+                    action_index=settle_action_idx,
+                    settle=True,
                 )
             action_detail = None
             if not suppress_auto_diag:

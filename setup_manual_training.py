@@ -20,6 +20,11 @@ from brick_detector_yolo import BrickDetector as YoloBrickDetector
 from helper_manual_config import load_manual_training_config
 from helper_micro_speed_adjust import micro_adjust_speed_score
 from helper_align_profile import load_align_profile, inject_align_profile_into_learned_rules
+from helper_next import (
+    ALIGN_BRICK_X_AXIS_CURVE_BINS_MM,
+    align_brick_x_axis_decision_line,
+    align_brick_x_axis_one_shot_score,
+)
 from helper_mini_x_axis_calibrate import (
     MINI_TRIALS_DEFAULT as MINI_X_AXIS_TRIALS_DEFAULT,
     RUN_LOG_FILE_DEFAULT as MINI_X_AXIS_LOG_DEFAULT,
@@ -59,7 +64,6 @@ from autobuild import (
     update_process_model_from_demos,
 )
 import telemetry_brick
-import helper_next as next_module
 
 class _LineStartTracker:
     def __init__(self):
@@ -305,6 +309,22 @@ def step_label(obj_enum):
 
 def log_line(message):
     print(str(message).strip(), flush=True)
+
+
+def log_align_curve_lookup_table():
+    log_line("[ALIGN_CURVE] Single-source x-axis turn curve loaded:")
+    log_line(f"[ALIGN_CURVE] {align_brick_x_axis_decision_line()}")
+    log_line("[ALIGN_CURVE] Turn maps are directional; L and R can differ.")
+    for x_err_mm in ALIGN_BRICK_X_AXIS_CURVE_BINS_MM:
+        score = int(align_brick_x_axis_one_shot_score(x_err_mm))
+        l_power, l_pwm, _l_score_used, l_duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd("l", score)
+        r_power, r_pwm, _r_score_used, r_duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd("r", score)
+        log_line(
+            "[ALIGN_CURVE] "
+            f"|x_err|={float(x_err_mm):>4.1f}mm -> score={int(score):>2d}% "
+            f"L(pwm={int(l_pwm)}, pwr={float(l_power):.3f}, t={int(l_duration_ms)}ms) "
+            f"R(pwm={int(r_pwm)}, pwr={float(r_power):.3f}, t={int(r_duration_ms)}ms)"
+        )
 
 
 def prompt_line(prompt):
@@ -722,44 +742,6 @@ def run_auto_step(app_state, obj_enum):
 
     quiet_align = False
     log_line(f"[AUTO] {step_key} demo={seg_type} success gates: {success_desc}")
-
-    if step_key in {"ALIGN_BRICK", "POSITION_BRICK"}:
-        brick = app_state.world.brick if isinstance(app_state.world.brick, dict) else {}
-        dist_now = brick.get("dist")
-        dist_target = None
-        try:
-            dist_target = float((((cfg or {}).get("success_gates") or {}).get("dist") or {}).get("target"))
-        except (TypeError, ValueError):
-            dist_target = None
-        try:
-            dist_err_for_curve = abs(float(dist_now) - float(dist_target)) if dist_target is not None and dist_now is not None else None
-        except (TypeError, ValueError):
-            dist_err_for_curve = None
-
-        sample_points = list(getattr(next_module, "TURN_CURVE_X_ERR_MM_POINTS", (2.0, 8.0, 16.0)))
-        sample_count = min(3, len(sample_points))
-        sampled = random.sample(sample_points, sample_count) if sample_count > 0 else []
-
-        rows = []
-        for x_err_mm in sampled:
-            score = next_module.align_turn_speed_score_for_step(
-                step_key,
-                float(x_err_mm),
-                dist_gate_error_mm=dist_err_for_curve,
-            )
-            rows.append(f"{float(x_err_mm):.1f}mm > {int(score)}%")
-
-        policy_name = "one-shot" if step_key == "ALIGN_BRICK" else "banded"
-        if dist_err_for_curve is not None:
-            log_line(
-                f"[AUTO] {step_key} l/r speed decision curve ({policy_name}, dist_err={float(dist_err_for_curve):.2f}mm): "
-                + "; ".join(rows)
-            )
-        else:
-            log_line(
-                f"[AUTO] {step_key} l/r speed decision curve ({policy_name}): "
-                + "; ".join(rows)
-            )
 
     if app_state.robot:
         app_state.robot.stop()
@@ -2176,6 +2158,7 @@ if __name__ == "__main__":
     _set_stream_state_vision_mode(state, vision_mode)
     _set_stream_state_markerless_profile(state, markerless_profile)
     refresh_world_model_from_demos(state, force=True)
+    log_align_curve_lookup_table()
     print_command_help(state)
     
     # Keyboard thread

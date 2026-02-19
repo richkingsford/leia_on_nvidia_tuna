@@ -24,6 +24,30 @@ def _safe_float(value, default=0.0):
         return float(default)
 
 
+def _build_x_axis_turn_curve_profile():
+    try:
+        from helper_next import (
+            ALIGN_BRICK_X_AXIS_CURVE_ALPHA,
+            ALIGN_BRICK_X_AXIS_CURVE_CAP,
+            ALIGN_BRICK_X_AXIS_CURVE_MAX_ERR_MM,
+            ALIGN_BRICK_X_AXIS_ONESHOT_MIN_SCORE,
+            ALIGN_BRICK_X_AXIS_ONESHOT_MAX_SCORE,
+            align_brick_x_axis_decision_line,
+        )
+    except Exception:
+        return None
+
+    return {
+        "model": "power_curve",
+        "decision_line": str(align_brick_x_axis_decision_line()),
+        "alpha": float(ALIGN_BRICK_X_AXIS_CURVE_ALPHA),
+        "cap": float(ALIGN_BRICK_X_AXIS_CURVE_CAP),
+        "max_err_mm": float(ALIGN_BRICK_X_AXIS_CURVE_MAX_ERR_MM),
+        "min_score": int(ALIGN_BRICK_X_AXIS_ONESHOT_MIN_SCORE),
+        "max_score": int(ALIGN_BRICK_X_AXIS_ONESHOT_MAX_SCORE),
+    }
+
+
 def build_align_profile_from_results_payload(results_payload):
     if not isinstance(results_payload, dict):
         return None
@@ -119,6 +143,11 @@ def build_align_profile_from_results_payload(results_payload):
             "median_learned_speed_score": float(median_learned_score),
         },
     }
+
+    curve_profile = _build_x_axis_turn_curve_profile()
+    if isinstance(curve_profile, dict):
+        profile["x_axis_turn_curve"] = curve_profile
+
     return profile
 
 

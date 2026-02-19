@@ -42,10 +42,12 @@ ALIGN_BRICK_DIST_ERROR_SCORE_BANDS = (
     (8.0, 4.0),      # dist_err < 8.0mm: score 4.0 (~13% power)
     (1000.0, 5.0),   # dist_err >= 8.0mm: score 5.0 (~17% power) fallback
 )
-ALIGN_BRICK_X_AXIS_ONESHOT_MM_PER_SCORE = 0.35
-ALIGN_BRICK_X_AXIS_ONESHOT_MIN_SCORE = 5
-ALIGN_BRICK_X_AXIS_ONESHOT_MAX_SCORE = 50
-ALIGN_BRICK_X_AXIS_ONESHOT_GAIN = 1.20
+ALIGN_BRICK_X_AXIS_CURVE_ALPHA = 1.67
+ALIGN_BRICK_X_AXIS_CURVE_CAP = 24.78
+ALIGN_BRICK_X_AXIS_CURVE_MAX_ERR_MM = 22.0
+ALIGN_BRICK_X_AXIS_CURVE_BINS_MM = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 22.0)
+ALIGN_BRICK_X_AXIS_ONESHOT_MIN_SCORE = 1
+ALIGN_BRICK_X_AXIS_ONESHOT_MAX_SCORE = 25
 TURN_CURVE_X_ERR_MM_POINTS = (0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 22.0, 30.0, 40.0)
 ALIGN_STEPS_SHARED_TURN_SCORE_BANDS = (
     (2.0, int(SPEED_SCORE_MIN)),
@@ -189,17 +191,27 @@ def align_brick_x_axis_one_shot_score(x_err_mm: float) -> int:
     except (TypeError, ValueError):
         gap_mm = 0.0
 
-    raw = int(
-        math.ceil(
-            (float(gap_mm) / max(1e-6, float(ALIGN_BRICK_X_AXIS_ONESHOT_MM_PER_SCORE)))
-            * float(ALIGN_BRICK_X_AXIS_ONESHOT_GAIN)
-        )
-    )
+    max_err = max(1e-6, float(ALIGN_BRICK_X_AXIS_CURVE_MAX_ERR_MM))
+    ratio = max(0.0, min(1.0, float(gap_mm) / float(max_err)))
+    curved = float(ratio) ** float(ALIGN_BRICK_X_AXIS_CURVE_ALPHA)
+    raw = int(round(1.0 + (float(ALIGN_BRICK_X_AXIS_CURVE_CAP) - 1.0) * curved))
     return int(
         max(
             int(ALIGN_BRICK_X_AXIS_ONESHOT_MIN_SCORE),
             min(int(raw), int(ALIGN_BRICK_X_AXIS_ONESHOT_MAX_SCORE)),
         )
+    )
+
+
+def align_brick_x_axis_decision_line() -> str:
+    return (
+        "score = clamp(round(1 + (cap - 1) * "
+        "(min(|x_err_mm|, max_err_mm)/max_err_mm)^alpha), min_score, max_score) "
+        f"where alpha={float(ALIGN_BRICK_X_AXIS_CURVE_ALPHA):.2f}, "
+        f"cap={float(ALIGN_BRICK_X_AXIS_CURVE_CAP):.2f}, "
+        f"max_err_mm={float(ALIGN_BRICK_X_AXIS_CURVE_MAX_ERR_MM):.1f}, "
+        f"min_score={int(ALIGN_BRICK_X_AXIS_ONESHOT_MIN_SCORE)}, "
+        f"max_score={int(ALIGN_BRICK_X_AXIS_ONESHOT_MAX_SCORE)}"
     )
 
 
@@ -904,6 +916,86 @@ def compute_alignment_decision(
         step,
         duration_s=duration_s,
     )
+
+
+def select_align_brick_next_act(
+    *,
+    process_rules,
+    x_axis_mm,
+    dist_mm,
+    visible=True,
+    angle_deg=0.0,
+    duration_s=0.05,
+):
+    """
+    Single source selector for ALIGN_BRICK next act (cmd + speed score).
+
+    This function encapsulates the exact approach used by the best calibrate trials:
+    - Direction source: `compute_alignment_decision(...)`
+    - Distance score source: `align_brick_dist_error_speed_score(...)`
+    - Turn score source: `align_brick_x_axis_one_shot_score(...)`
+    """
+    analytics = compute_alignment_decision(
+        world=None,
+        step="ALIGN_BRICK",
+        process_rules=process_rules,
+        learned_rules=None,
+        duration_s=duration_s,
+        visible=bool(visible),
+        x_axis=x_axis_mm,
+        angle=angle_deg,
+        dist=dist_mm,
+    )
+
+    prod_cmd = analytics.get("cmd")
+    worst_metric = analytics.get("worst_metric")
+
+    _obj_name, success_gates = _success_gates_for_step(process_rules, "ALIGN_BRICK")
+    x_stats = success_gates.get("xAxis_offset_abs") if isinstance(success_gates, dict) else {}
+    if not isinstance(x_stats, dict):
+        x_stats = {}
+    d_stats = success_gates.get("dist") if isinstance(success_gates, dict) else {}
+    if not isinstance(d_stats, dict):
+        d_stats = {}
+
+    x_target = _coerce_float(x_stats.get("target"), 0.0) or 0.0
+    dist_target = _coerce_float(d_stats.get("target"), 0.0) or 0.0
+
+    x_axis_val = _coerce_float(x_axis_mm, 0.0) or 0.0
+    x_err_mm = float(x_axis_val - x_target)
+    dist_val = _coerce_float(dist_mm, None)
+    if dist_val is None:
+        dist_err_mm = float("inf")
+    else:
+        dist_err_mm = abs(float(dist_val - dist_target))
+
+    if prod_cmd not in ("f", "b", "l", "r"):
+        prod_cmd = "l" if x_err_mm <= 0.0 else "r"
+        if not worst_metric:
+            worst_metric = "xAxis_offset_abs"
+
+    if prod_cmd in ("f", "b"):
+        correction_type = "distance"
+        score_float = float(align_brick_dist_error_speed_score(dist_err_mm))
+        score_int = int(round(score_float))
+        reason = "distance_alignment"
+    else:
+        correction_type = "x_axis"
+        score_float = None
+        score_int = int(align_brick_x_axis_one_shot_score(x_err_mm))
+        reason = "x_axis_alignment"
+
+    return {
+        "cmd": str(prod_cmd),
+        "correction_type": str(correction_type),
+        "score": int(score_int),
+        "score_float": score_float,
+        "reason": str(reason),
+        "worst_metric": worst_metric,
+        "x_err_mm": float(x_err_mm),
+        "dist_err_mm": float(dist_err_mm),
+        "dist_target_mm": float(dist_target),
+    }
 
 
 def align_local_gate_status(world, step="ALIGN_BRICK", process_rules=None):

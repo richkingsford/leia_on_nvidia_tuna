@@ -26,12 +26,11 @@ except Exception:
 from helper_robot_control import Robot
 from helper_vision_aruco import ArucoBrickVision
 from helper_next import (
-    compute_alignment_decision,
+    ALIGN_BRICK_X_AXIS_CURVE_BINS_MM,
     align_local_gate_status,
-    align_brick_dist_error_speed_score,
     align_brick_x_axis_one_shot_score,
-    format_align_pre_observation_text,
-    build_align_result_delta_obj,
+    align_brick_x_axis_decision_line,
+    select_align_brick_next_act,
 )
 import telemetry_robot as telemetry_robot_module
 from telemetry_robot import WorldModel, StepState
@@ -45,7 +44,6 @@ from telemetry_process import (
     COLOR_WHITE,
     COLOR_YELLOW,
     format_control_action_line,
-    format_shorthand_calibration_line,
     send_robot_command,
     send_robot_command_pwm,
 )
@@ -63,7 +61,7 @@ RESULTS_FILE = str(
 )
 ALPHA = 0.25         # Learning rate
 SPEED_CURVE_PNG = "world_model_align_speed_curve.png"
-SPEED_CURVE_X_BINS_MM = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 22.0]
+SPEED_CURVE_X_BINS_MM = list(ALIGN_BRICK_X_AXIS_CURVE_BINS_MM)
 
 # Success Gates (Loaded dynamically)
 STEPS = load_process_steps()
@@ -312,25 +310,36 @@ class AlignCalibrator:
                 print("[LEARN] matplotlib unavailable; skipping speed-curve PNG rendering.")
                 self._speed_curve_plot_warned = True
             return
-        if not self.speed_curve_history:
+
+        x_bins = list(SPEED_CURVE_X_BINS_MM)
+        if not x_bins:
             return
 
-        fig, ax = plt.subplots(figsize=(10, 6))
-        cmap = plt.get_cmap("tab10")
-        for idx, snap in enumerate(self.speed_curve_history):
-            xs = [float(x) for x, _ in snap["points"]]
-            ys = [float(y) for _, y in snap["points"]]
-            color = cmap(idx % 10)
-            ax.plot(xs, ys, marker="o", linewidth=1.8, markersize=3.0, color=color, label=f"Trial {int(snap['trial'])}")
+        xs = [float(x) for x in x_bins]
+        ys = [float(align_brick_x_axis_one_shot_score(x)) for x in xs]
 
-        ax.set_title("Speed Score Decision Curve by Trial")
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(xs, ys, marker="o", linewidth=2.2, markersize=4.0, color="tab:blue", label="Production x-axis turn curve")
+
+        ax.set_title("Production X-Axis Turn Speed Curve (Single Source of Truth)")
         ax.set_xlabel("|x-axis offset error| (mm)")
-        ax.set_ylabel("Speed score (1-100)")
+        ax.set_ylabel("Turn speed score (%)")
         ax.set_xlim(left=0.0)
-        ax.set_ylim(1.0, 100.0)
+        ax.set_ylim(1.0, 25.0)
         ax.grid(True, linestyle=":", alpha=0.35)
-        ax.legend(loc="upper left", fontsize=8, ncol=2)
-        fig.tight_layout()
+        ax.legend(loc="upper left", fontsize=9)
+        fig.subplots_adjust(bottom=0.22)
+        fig.text(
+            0.5,
+            0.03,
+            align_brick_x_axis_decision_line(),
+            fontsize=8,
+            color="dimgray",
+            ha="center",
+            va="bottom",
+            wrap=True,
+        )
+        fig.tight_layout(rect=(0.0, 0.08, 1.0, 1.0))
         fig.savefig(SPEED_CURVE_PNG, dpi=160)
         plt.close(fig)
 
@@ -601,125 +610,9 @@ class AlignCalibrator:
         )
         self._mark_last_act_timing(event)
         # Old-style logging removed - using new formatted logs in align loop instead
-        # self._emit_act_console(event)
         self._append_event(event)
         self.act_idx += 1
         return event
-
-    def _emit_act_console(self, event):
-        if not isinstance(event, dict):
-            return
-        phase = str(event.get("phase") or "?")
-        reason = str(event.get("reason") or "")
-        phase_key = phase.strip().lower()
-        reason_key = reason.strip().lower()
-        # Suppress noisy setup logs between trials; keep data in JSON events.
-        if phase_key in {"reset", "reset_recovery"} or reason_key in {"between_trials"}:
-            return
-        
-        trial = event.get("trial")
-        act_idx = event.get("act")
-        cmd = event.get("cmd")
-        
-        # Determine score to display
-        score_for_display = event.get("score_requested")
-        if score_for_display is None:
-            score_for_display = event.get("score")
-        if score_for_display is None:
-            score_for_display = event.get("score_model")
-        
-        approx_score = None
-        try:
-            if score_for_display is not None:
-                approx_score = int(round(float(score_for_display)))
-        except (TypeError, ValueError):
-            approx_score = None
-        
-        if approx_score is None:
-            try:
-                power_val = float(event.get("power"))
-                cmd_for_quant = str(event.get("cmd_sent") or cmd).strip().lower()
-                if cmd_for_quant:
-                    _, q_score = telemetry_robot_module.quantize_speed(cmd_for_quant, speed=power_val)
-                    approx_score = int(round(float(q_score)))
-            except Exception:
-                approx_score = None
-        
-        score_pct = int(approx_score) if approx_score is not None else 0
-        
-        # Extract current (pre-action) observation
-        try:
-            x_err_mm = float(event.get("x_err_mm"))
-        except (TypeError, ValueError):
-            x_err_mm = None
-        try:
-            x_tol_active = float(event.get("x_tol_active_mm"))
-        except (TypeError, ValueError):
-            x_tol_active = float(X_TOL_MM)
-        try:
-            dist_mm = float(event.get("dist"))
-        except (TypeError, ValueError):
-            dist_mm = None
-        try:
-            offset_x = float(event.get("offset_x"))
-        except (TypeError, ValueError):
-            offset_x = None
-        
-        result_delta_obj = None
-        if (
-            self._prev_act_x_err is not None
-            and x_err_mm is not None
-            and trial == self._prev_act_trial
-            and phase == self._prev_act_phase
-        ):
-            result_delta_obj = build_align_result_delta_obj(
-                correction_type=self._prev_act_correction_type,
-                prev_x_err_mm=self._prev_act_x_err,
-                curr_x_err_mm=x_err_mm,
-                prev_dist_mm=self._prev_act_dist_mm,
-                curr_dist_mm=dist_mm,
-                dist_target_mm=float(DIST_TARGET_MM),
-            )
-        
-        # --- SECOND: Show current act (pre-action state and command to send) ---
-        pre_obs_text = format_align_pre_observation_text(
-            x_err_mm=x_err_mm,
-            x_tol_mm=x_tol_active,
-            x_target_mm=float(X_TARGET_MM),
-            offset_x=offset_x,
-            dist_mm=dist_mm,
-        )
-        
-        # Emit single-line diagnostic
-        cmd_upper = str(cmd).upper() if cmd else "?"
-        phase_color = COLOR_RED if phase.lower().startswith("recovery") else COLOR_WHITE
-        
-        # Extract motor command variables
-        motor_power = event.get("power")
-        motor_pwm = event.get("pwm")
-        motor_duration_ms = event.get("duration_ms")
-        
-        line = format_shorthand_calibration_line(
-            trial=trial,
-            phase=phase,
-            pre_obs_text=pre_obs_text,
-            action_cmd=cmd_upper,
-            action_score=score_pct,
-            result_delta_obj=result_delta_obj,
-            phase_color=phase_color,
-            motor_power=motor_power,
-            motor_pwm=motor_pwm,
-            motor_duration_ms=motor_duration_ms,
-        )
-        print(line)
-        
-        # Store current act info for showing result on next iteration
-        self._prev_act_x_err = x_err_mm
-        self._prev_act_cmd = cmd
-        self._prev_act_trial = trial
-        self._prev_act_phase = phase
-        self._prev_act_dist_mm = dist_mm
-        self._prev_act_correction_type = getattr(self, '_current_correction_type', None)
 
 
     def send_coarse_command(self, cmd, score, reason=None, extra=None):
@@ -2461,29 +2354,18 @@ class AlignCalibrator:
                     _gate_observation_frame_count = 0
                     _gate_recheck_attempts = 0
                     
-                    # PREDICT DIRECTION & SPEED using shared production helper logic.
-                    analytics = compute_alignment_decision(
-                        world=None,
-                        step="ALIGN_BRICK",
+                    act_plan = select_align_brick_next_act(
                         process_rules=self.world.process_rules,
-                        learned_rules=None,
-                        duration_s=0.05,
+                        x_axis_mm=off_now,
+                        dist_mm=dist_now,
                         visible=True,
-                        x_axis=off_now,
-                        angle=0.0,
-                        dist=dist_now,
+                        angle_deg=0.0,
+                        duration_s=0.05,
                     )
-                    prod_cmd = analytics.get("cmd")  # 'f', 'b', 'l', 'r', or None
-                    prod_worst_metric = analytics.get("worst_metric")  # 'dist', 'xAxis_offset_abs', or None
-                    
-                    # Map production command to our direction
-                    if prod_cmd in ('f', 'b', 'l', 'r'):
-                        align_dir = prod_cmd
-                        correction_type = "distance" if prod_cmd in ('f', 'b') else "x_axis"
-                    else:
-                        # Fallback (shouldn't happen if gates work)
-                        align_dir = 'l' if x_err > 0 else 'r'
-                        correction_type = "x_axis"
+                    align_dir = str(act_plan.get("cmd") or "l")
+                    correction_type = str(act_plan.get("correction_type") or "x_axis")
+                    prod_worst_metric = act_plan.get("worst_metric")
+                    planned_score = int(act_plan.get("score") or 1)
                     
                     self.keepalive_dir = align_dir
                     
@@ -2495,10 +2377,8 @@ class AlignCalibrator:
                     trial_num = int(self.current_trial)
                     act_num = int(self.trial_adjust_count) + 1
                     if correction_type == "distance":
-                        # Calculate granular speed score based on distance error
-                        # This uses the single source of truth: align_brick_dist_error_speed_score
-                        dist_score_float = align_brick_dist_error_speed_score(dist_err)
-                        dist_score = int(round(dist_score_float))  # Round to nearest int for command
+                        dist_score_float = act_plan.get("score_float")
+                        dist_score = int(planned_score)
                         event = self.send_coarse_command(
                             align_dir,
                             score=dist_score,
@@ -2555,8 +2435,7 @@ class AlignCalibrator:
                         # Update previous distance error after taking this action
                         prev_dist_err = float(dist_err)
                     else:
-                        # One-shot x-axis correction: use score sized from current x-gap.
-                        x_turn_score = int(align_brick_x_axis_one_shot_score(x_err))
+                        x_turn_score = int(planned_score)
                         event = self.send_coarse_command(
                             align_dir,
                             score=x_turn_score,

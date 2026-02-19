@@ -5,6 +5,15 @@
   "turn_speed_scale": 1.09,
   "dist_speed_scale": 0.99,
   "max_speed_score": 20,
+  "x_axis_turn_curve": {
+    "model": "power_curve",
+    "decision_line": "score = clamp(round(1 + (cap - 1) * (min(|x_err_mm|, max_err_mm)/max_err_mm)^alpha), min_score, max_score) where alpha=1.67, cap=24.78, max_err_mm=22.0, min_score=1, max_score=25",
+    "alpha": 1.67,
+    "cap": 24.78,
+    "max_err_mm": 22.0,
+    "min_score": 1,
+    "max_score": 25
+  },
   "stats": {
     "trials": 20,
     "success_rate": 0.95,
