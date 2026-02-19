@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import os
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from collections import deque
@@ -27,6 +28,7 @@ class ArucoBrickVision:
         self.current_frame = None
         self.raw_frame = None
         self.cap = None
+        self.camera_index = None
         
         # Stacking stability
         self.stack_history = deque(maxlen=6)
@@ -58,12 +60,62 @@ class ArucoBrickVision:
         self.ALPHA = 0.2
         self.last_pose = None
 
-    def init_camera(self, width: int = 640, height: int = 480):
-        if self.cap is None:
-            self.cap = cv2.VideoCapture(0)
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    def _candidate_camera_indices(self, preferred_index: Optional[int]) -> List[int]:
+        candidates: List[int] = []
+
+        if preferred_index is not None:
+            candidates.append(int(preferred_index))
+
+        env_index = os.getenv("LEIA_CAMERA_INDEX")
+        if env_index:
+            try:
+                candidates.append(int(env_index))
+            except ValueError:
+                pass
+
+        candidates.extend([0, 1, 2, 3])
+
+        deduped: List[int] = []
+        for idx in candidates:
+            if idx not in deduped:
+                deduped.append(idx)
+        return deduped
+
+    def _open_camera(self, index: int, width: int, height: int):
+        backend_pref = cv2.CAP_V4L2 if hasattr(cv2, "CAP_V4L2") else cv2.CAP_ANY
+        for backend in (backend_pref, cv2.CAP_ANY):
+            cap = cv2.VideoCapture(index, backend)
+            if cap is not None and cap.isOpened():
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                return cap
+            if cap is not None:
+                cap.release()
+            if backend == cv2.CAP_ANY:
+                break
+        return None
+
+    def init_camera(self, width: int = 640, height: int = 480, camera_index: Optional[int] = None):
+        if self.cap is None or not self.cap.isOpened():
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
+
+            tried_indices: List[int] = []
+            for idx in self._candidate_camera_indices(camera_index):
+                tried_indices.append(idx)
+                cap = self._open_camera(idx, width, height)
+                if cap is not None and cap.isOpened():
+                    self.cap = cap
+                    self.camera_index = idx
+                    print(f"[VISION] ArUco camera opened on index {idx}")
+                    break
+
+            if self.cap is None or not self.cap.isOpened():
+                self.cap = None
+                self.camera_index = None
+                print(f"[VISION] Unable to open camera. Tried indices: {tried_indices}")
 
         # Approximate camera matrix if none provided
         focal_length = width
@@ -76,8 +128,10 @@ class ArucoBrickVision:
         self.dist_coeffs = np.zeros((5, 1), dtype=np.float32)
 
     def read(self):
-        if self.cap is None:
+        if self.cap is None or not self.cap.isOpened():
             self.init_camera()
+            if self.cap is None or not self.cap.isOpened():
+                return False, 0, -1, 0, 0, 0, False, False
 
         # Flush a few frames to avoid stale buffer data
         for _ in range(2):

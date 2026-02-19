@@ -1,5 +1,6 @@
 import argparse
 import json
+import random
 import sys
 import threading
 import time
@@ -58,6 +59,7 @@ from autobuild import (
     update_process_model_from_demos,
 )
 import telemetry_brick
+import helper_next as next_module
 
 class _LineStartTracker:
     def __init__(self):
@@ -720,6 +722,45 @@ def run_auto_step(app_state, obj_enum):
 
     quiet_align = False
     log_line(f"[AUTO] {step_key} demo={seg_type} success gates: {success_desc}")
+
+    if step_key in {"ALIGN_BRICK", "POSITION_BRICK"}:
+        brick = app_state.world.brick if isinstance(app_state.world.brick, dict) else {}
+        dist_now = brick.get("dist")
+        dist_target = None
+        try:
+            dist_target = float((((cfg or {}).get("success_gates") or {}).get("dist") or {}).get("target"))
+        except (TypeError, ValueError):
+            dist_target = None
+        try:
+            dist_err_for_curve = abs(float(dist_now) - float(dist_target)) if dist_target is not None and dist_now is not None else None
+        except (TypeError, ValueError):
+            dist_err_for_curve = None
+
+        sample_points = list(getattr(next_module, "TURN_CURVE_X_ERR_MM_POINTS", (2.0, 8.0, 16.0)))
+        sample_count = min(3, len(sample_points))
+        sampled = random.sample(sample_points, sample_count) if sample_count > 0 else []
+
+        rows = []
+        for x_err_mm in sampled:
+            score = next_module.align_turn_speed_score_for_step(
+                step_key,
+                float(x_err_mm),
+                dist_gate_error_mm=dist_err_for_curve,
+            )
+            rows.append(f"{float(x_err_mm):.1f}mm > {int(score)}%")
+
+        policy_name = "one-shot" if step_key == "ALIGN_BRICK" else "banded"
+        if dist_err_for_curve is not None:
+            log_line(
+                f"[AUTO] {step_key} l/r speed decision curve ({policy_name}, dist_err={float(dist_err_for_curve):.2f}mm): "
+                + "; ".join(rows)
+            )
+        else:
+            log_line(
+                f"[AUTO] {step_key} l/r speed decision curve ({policy_name}): "
+                + "; ".join(rows)
+            )
+
     if app_state.robot:
         app_state.robot.stop()
     reset_auto_step_action_stats(app_state.world, step_key)

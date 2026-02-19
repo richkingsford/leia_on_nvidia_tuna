@@ -42,6 +42,11 @@ ALIGN_BRICK_DIST_ERROR_SCORE_BANDS = (
     (8.0, 4.0),      # dist_err < 8.0mm: score 4.0 (~13% power)
     (1000.0, 5.0),   # dist_err >= 8.0mm: score 5.0 (~17% power) fallback
 )
+ALIGN_BRICK_X_AXIS_ONESHOT_MM_PER_SCORE = 0.35
+ALIGN_BRICK_X_AXIS_ONESHOT_MIN_SCORE = 5
+ALIGN_BRICK_X_AXIS_ONESHOT_MAX_SCORE = 50
+ALIGN_BRICK_X_AXIS_ONESHOT_GAIN = 1.20
+TURN_CURVE_X_ERR_MM_POINTS = (0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 22.0, 30.0, 40.0)
 ALIGN_STEPS_SHARED_TURN_SCORE_BANDS = (
     (2.0, int(SPEED_SCORE_MIN)),
     (4.0, 2),
@@ -172,6 +177,54 @@ def align_brick_dist_error_speed_score(dist_error_mm: float) -> float:
     return float(ALIGN_BRICK_DIST_ERROR_SCORE_BANDS[-1][1]) if ALIGN_BRICK_DIST_ERROR_SCORE_BANDS else 1.0
 
 
+def align_brick_x_axis_one_shot_score(x_err_mm: float) -> int:
+    """
+    Compute ALIGN_BRICK one-shot turn score from x-axis error magnitude.
+
+    This matches calibrate-align behavior and is shared by both calibrate and
+    auto step-4 decision paths.
+    """
+    try:
+        gap_mm = abs(float(x_err_mm))
+    except (TypeError, ValueError):
+        gap_mm = 0.0
+
+    raw = int(
+        math.ceil(
+            (float(gap_mm) / max(1e-6, float(ALIGN_BRICK_X_AXIS_ONESHOT_MM_PER_SCORE)))
+            * float(ALIGN_BRICK_X_AXIS_ONESHOT_GAIN)
+        )
+    )
+    return int(
+        max(
+            int(ALIGN_BRICK_X_AXIS_ONESHOT_MIN_SCORE),
+            min(int(raw), int(ALIGN_BRICK_X_AXIS_ONESHOT_MAX_SCORE)),
+        )
+    )
+
+
+def align_turn_speed_score_for_step(step, x_err_mm: float, *, dist_gate_error_mm=None) -> int:
+    """Return shared l/r speed score for a step using the active paradigm."""
+    step_key = _step_name(step)
+    if step_key == "ALIGN_BRICK":
+        return int(align_brick_x_axis_one_shot_score(x_err_mm))
+    if step_key == "POSITION_BRICK":
+        return int(
+            align_steps_turn_speed_score(
+                x_err_mm,
+                ALIGN_STEPS_SHARED_TURN_FALLBACK_SCORE,
+                dist_gate_error_mm=dist_gate_error_mm,
+            )
+        )
+    return int(
+        align_steps_turn_speed_score(
+            x_err_mm,
+            ALIGN_STEPS_SHARED_TURN_FALLBACK_SCORE,
+            dist_gate_error_mm=dist_gate_error_mm,
+        )
+    )
+
+
 def _turn_score_cap_for_dist_gate_error(dist_gate_error_mm, x_axis_gap_mm):
     if dist_gate_error_mm is None:
         return None
@@ -276,51 +329,6 @@ def align_brick_micro_forward_profile(process_rules, step: str):
         "somewhat_close_mm": ordered[2],
         "far_mm": ordered[3],
     }
-
-
-def align_brick_forward_speed_score(dist_mm: float, process_rules, step: str) -> int:
-    profile = align_brick_micro_forward_profile(process_rules, step)
-    very_close = float(profile["very_close_mm"])
-    close = float(profile["close_mm"])
-    somewhat_close = float(profile["somewhat_close_mm"])
-    far = float(profile["far_mm"])
-
-    try:
-        dist_val = float(dist_mm)
-    except (TypeError, ValueError):
-        dist_val = far
-
-    score_very_close = float(SPEED_SCORE_MIN)
-    score_far = min(float(SPEED_SCORE_MAX), float(SPEED_SCORE_DEFAULT) + 5.0)
-    score_close = max(score_very_close, round(score_far * 0.25))
-    score_somewhat = max(score_close, round(score_far * 0.55))
-
-    if dist_val <= very_close:
-        return int(SPEED_SCORE_MIN)
-    if close <= very_close:
-        return int(round(score_far))
-
-    if dist_val <= close:
-        t = (dist_val - very_close) / max(1e-6, close - very_close)
-        score = _lerp(score_very_close, score_close, _smoothstep01(t))
-        return normalize_speed_score(score)
-    if somewhat_close <= close:
-        return normalize_speed_score(score_somewhat)
-    if dist_val <= somewhat_close:
-        t = (dist_val - close) / max(1e-6, somewhat_close - close)
-        score = _lerp(score_close, score_somewhat, _smoothstep01(t))
-        return normalize_speed_score(score)
-    if far <= somewhat_close:
-        return normalize_speed_score(score_far)
-    if dist_val <= far:
-        t = (dist_val - somewhat_close) / max(1e-6, far - somewhat_close)
-        score = _lerp(score_somewhat, score_far, _smoothstep01(t))
-        return normalize_speed_score(score)
-    max_dist = max(far + 1.0, 500.0)
-    score_max = min(float(SPEED_SCORE_MAX), score_far + 20.0)
-    t = (dist_val - far) / max(1e-6, max_dist - far)
-    score = _lerp(score_far, score_max, _smoothstep01(t))
-    return normalize_speed_score(score)
 
 
 def align_brick_x_axis_tol_scale(dist_mm: float, process_rules, step: str) -> float:
@@ -759,17 +767,26 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
         if obj_name != "ALIGN_BRICK":
             slow_mm = ALIGN_SPEED_SLOW_MM / 4.0
             fast_mm = ALIGN_SPEED_FAST_MM / 4.0
-        if obj_name == "ALIGN_BRICK" and cmd == "f":
-            base_score = align_brick_forward_speed_score(dist, process_rules, obj_name)
-            speed_score = align_steps_dist_speed_score(dist, base_score)
+        if obj_name == "ALIGN_BRICK" and cmd in ("f", "b"):
+            # Keep ALIGN_BRICK distance micro-adjustments identical to calibrate_align:
+            # speed comes from distance error to target, not raw distance profile.
+            dist_error_mm = None
+            if isinstance(offsets, dict):
+                dist_signed_err = _coerce_float(offsets.get("dist"), None)
+                if dist_signed_err is not None:
+                    dist_error_mm = abs(float(dist_signed_err))
+            if dist_error_mm is None:
+                dist_error_mm = _coerce_float(mm_errors.get("dist"), 0.0) or 0.0
+            dist_score_float = align_brick_dist_error_speed_score(float(dist_error_mm))
+            speed_score = int(round(float(dist_score_float)))
         elif obj_name == "POSITION_BRICK" and cmd in ("f", "b"):
             base_score = _score_from_mm(mm_off, slow_mm, fast_mm)
             speed_score = align_steps_dist_speed_score(dist, base_score)
         elif obj_name in ("ALIGN_BRICK", "POSITION_BRICK") and cmd in ("l", "r") and x_axis_turn_error_mm is not None:
             dist_gate_error_mm = mm_errors.get("dist")
-            speed_score = align_steps_turn_speed_score(
+            speed_score = align_turn_speed_score_for_step(
+                obj_name,
                 x_axis_turn_error_mm,
-                ALIGN_STEPS_SHARED_TURN_FALLBACK_SCORE,
                 dist_gate_error_mm=dist_gate_error_mm,
             )
         else:
@@ -794,7 +811,10 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
         speed_score = min(int(speed_score), int(max_speed_score))
     if profile_max_speed_score is not None:
         speed_score = min(int(speed_score), int(profile_max_speed_score))
-    speed_score = min(int(speed_score), int(AUTO_SPEED_SCORE_HARD_MAX))
+    # Keep ALIGN_BRICK score dynamics aligned with calibrate_align; do not apply
+    # the auto hard cap to this step.
+    if obj_name != "ALIGN_BRICK":
+        speed_score = min(int(speed_score), int(AUTO_SPEED_SCORE_HARD_MAX))
 
     if cmd:
         speed = manual_speed_for_cmd(cmd, speed_score)
@@ -812,6 +832,220 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
         "angle": angle,
         "dist": dist,
         "offsets": offsets,
+    }
+
+
+def _coerce_float(value, default=None):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _success_gates_for_step(process_rules, step):
+    obj_name = _step_name(step)
+    step_cfg = (process_rules or {}).get(obj_name, {}) if isinstance(process_rules, dict) else {}
+    success_gates = step_cfg.get("success_gates") if isinstance(step_cfg, dict) else {}
+    if not isinstance(success_gates, dict):
+        success_gates = {}
+    return obj_name, success_gates
+
+
+def compute_alignment_decision(
+    *,
+    world=None,
+    step="ALIGN_BRICK",
+    process_rules=None,
+    learned_rules=None,
+    duration_s=0.05,
+    visible=None,
+    x_axis=None,
+    angle=None,
+    dist=None,
+):
+    """
+    Single source of truth for deciding next ALIGN-style action.
+
+    Use with either a full world model (`world=...`) or raw measurements
+    (`visible`, `x_axis`, `angle`, `dist`).
+    """
+    if world is not None:
+        rules = process_rules if process_rules is not None else getattr(world, "process_rules", {})
+        learned = learned_rules if learned_rules is not None else getattr(world, "learned_rules", {})
+        return compute_alignment_analytics(
+            world,
+            rules or {},
+            learned,
+            step,
+            duration_s=duration_s,
+        )
+
+    class _WorldView:
+        def __init__(self):
+            self.brick = {
+                "visible": bool(visible),
+                "x_axis": _coerce_float(x_axis, 0.0) or 0.0,
+                "offset_x": _coerce_float(x_axis, 0.0) or 0.0,
+                "angle": _coerce_float(angle, 0.0) or 0.0,
+                "dist": _coerce_float(dist, 0.0) or 0.0,
+            }
+            self._align_focus_dist = False
+            self._visibility_lost_frames = 0
+            self.last_visible_time = None
+            self.last_seen_x_axis = None
+            self.last_seen_angle = None
+            self.last_seen_dist = None
+
+    world_view = _WorldView()
+    return compute_alignment_analytics(
+        world_view,
+        process_rules or {},
+        learned_rules,
+        step,
+        duration_s=duration_s,
+    )
+
+
+def align_local_gate_status(world, step="ALIGN_BRICK", process_rules=None):
+    """
+    Evaluate strict local ALIGN_BRICK-style gate truth from the current brick state.
+
+    Returns a dict with bools and per-metric errors so callers can combine this with
+    broader gate checker signals (consecutive/majority trackers).
+    """
+    rules = process_rules if process_rules is not None else getattr(world, "process_rules", {})
+    _obj_name, success_gates = _success_gates_for_step(rules, step)
+    brick = getattr(world, "brick", {}) or {}
+
+    visible = bool(brick.get("visible"))
+    x_axis_raw = brick.get("x_axis", brick.get("offset_x"))
+    dist_raw = brick.get("dist")
+
+    x_axis = _coerce_float(x_axis_raw, None)
+    dist_val = _coerce_float(dist_raw, None)
+
+    x_stats = success_gates.get("xAxis_offset_abs") if isinstance(success_gates, dict) else {}
+    if not isinstance(x_stats, dict):
+        x_stats = {}
+    x_target = _coerce_float(x_stats.get("target"), 0.0)
+    x_tol = abs(_coerce_float(x_stats.get("tol"), 0.0) or 0.0)
+    x_err = None if x_axis is None else float(x_axis - x_target)
+    x_abs_err = None if x_err is None else abs(float(x_err))
+    x_within_tol = bool(x_abs_err is not None and x_abs_err <= x_tol)
+
+    d_stats = success_gates.get("dist") if isinstance(success_gates, dict) else {}
+    if not isinstance(d_stats, dict):
+        d_stats = {}
+    d_target = _coerce_float(d_stats.get("target"), 0.0)
+    d_tol = abs(_coerce_float(d_stats.get("tol"), 0.0) or 0.0)
+    dist_err = None if dist_val is None else abs(float(dist_val - d_target))
+    dist_within_tol = bool(dist_err is not None and dist_err <= d_tol)
+
+    ok = bool(visible and x_within_tol and dist_within_tol)
+    return {
+        "ok": ok,
+        "visible": bool(visible),
+        "x_axis": x_axis,
+        "x_target": x_target,
+        "x_tol": x_tol,
+        "x_err": x_err,
+        "x_abs_err": x_abs_err,
+        "x_within_tol": x_within_tol,
+        "dist": dist_val,
+        "dist_target": d_target,
+        "dist_tol": d_tol,
+        "dist_err": dist_err,
+        "dist_within_tol": dist_within_tol,
+    }
+
+
+def format_align_pre_observation_text(
+    *,
+    x_err_mm,
+    x_tol_mm,
+    x_target_mm=0.0,
+    offset_x=None,
+    dist_mm=None,
+):
+    """Build a concise calibrate-style pre-action observation string."""
+    parts = []
+    x_err = _coerce_float(x_err_mm, None)
+    x_tol = abs(_coerce_float(x_tol_mm, 0.0) or 0.0)
+    x_target = _coerce_float(x_target_mm, 0.0) or 0.0
+    if x_err is not None:
+        parts.append(f"x_err={x_err:+.2f}mm")
+        parts.append(f"gate=[{-x_tol:+.2f},{x_tol:+.2f}]mm")
+        parts.append(f"target={x_target:+.2f}mm")
+    else:
+        parts.append("x_err=unknown")
+
+    offset_val = _coerce_float(offset_x, None)
+    if offset_val is not None:
+        parts.append(f"offset={offset_val:+.2f}mm")
+
+    dist_val = _coerce_float(dist_mm, None)
+    if dist_val is not None:
+        parts.append(f"dist={dist_val:.1f}mm")
+
+    return " ".join(parts)
+
+
+def build_align_result_delta_obj(
+    *,
+    correction_type,
+    prev_x_err_mm=None,
+    curr_x_err_mm=None,
+    prev_dist_mm=None,
+    curr_dist_mm=None,
+    dist_target_mm=0.0,
+    stable_deadzone_mm=0.02,
+):
+    """Build `result_delta_obj` payload for format_shorthand_calibration_line."""
+    corr = str(correction_type or "").strip().lower()
+    deadzone = abs(_coerce_float(stable_deadzone_mm, 0.02) or 0.02)
+
+    if corr == "distance":
+        prev_dist = _coerce_float(prev_dist_mm, None)
+        curr_dist = _coerce_float(curr_dist_mm, None)
+        target = _coerce_float(dist_target_mm, 0.0) or 0.0
+        if prev_dist is None or curr_dist is None:
+            return None
+        prev_gap = abs(prev_dist - target)
+        curr_gap = abs(curr_dist - target)
+        delta = float(prev_gap - curr_gap)
+        if delta > deadzone:
+            delta_class = "closer"
+            change_text = f"improved {abs(delta):.2f}mm"
+        elif delta < -deadzone:
+            delta_class = "backward"
+            change_text = f"worsened {abs(delta):.2f}mm"
+        else:
+            delta_class = "unchanged"
+            change_text = "no change"
+        return {
+            "delta_class": delta_class,
+            "delta_text": f"dist {prev_dist:.1f}→{curr_dist:.1f}mm ({change_text})",
+        }
+
+    prev_x = _coerce_float(prev_x_err_mm, None)
+    curr_x = _coerce_float(curr_x_err_mm, None)
+    if prev_x is None or curr_x is None:
+        return None
+    prev_abs = abs(prev_x)
+    curr_abs = abs(curr_x)
+    delta = float(prev_abs - curr_abs)
+    if delta > deadzone:
+        delta_class = "closer"
+        change_text = f"improved {abs(delta):.2f}mm"
+    elif delta < -deadzone:
+        delta_class = "backward"
+        change_text = f"worsened {abs(delta):.2f}mm"
+    else:
+        delta_class = "unchanged"
+        change_text = "no change"
+    return {
+        "delta_class": delta_class,
+        "delta_text": f"x_err {prev_abs:.2f}→{curr_abs:.2f}mm ({change_text})",
     }
 
 

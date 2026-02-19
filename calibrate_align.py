@@ -25,7 +25,14 @@ except Exception:
 
 from helper_robot_control import Robot
 from helper_vision_aruco import ArucoBrickVision
-from helper_next import compute_alignment_analytics, align_brick_dist_error_speed_score
+from helper_next import (
+    compute_alignment_decision,
+    align_local_gate_status,
+    align_brick_dist_error_speed_score,
+    align_brick_x_axis_one_shot_score,
+    format_align_pre_observation_text,
+    build_align_result_delta_obj,
+)
 import telemetry_robot as telemetry_robot_module
 from telemetry_robot import WorldModel, StepState
 from telemetry_process import (
@@ -117,10 +124,6 @@ DIRECTION_CHANGE_DAMPENING = 0.50  # Reduce speed by 50% when reversing directio
 OVERSHOOT_FIRST_PENALTY_PCT = 30.0  # One-strike rule: cut learned_speed_score by 30% after first overshoot
 SETTLING_ZONE_MULTIPLIER = 2.0     # Enter ultra-precision when within tolerance * this
 PROPORTIONAL_CONTROL_ENABLED = True  # Scale precision speed based on error magnitude
-X_AXIS_ONESHOT_MM_PER_SCORE = 0.35  # Aggressive one-shot targeting across all x-axis gap sizes
-X_AXIS_ONESHOT_MIN_SCORE = 5        # Avoid timid x-axis corrections
-X_AXIS_ONESHOT_MAX_SCORE = 50  # Allow full turn range for large-gap one-shot attempts
-X_AXIS_ONESHOT_GAIN = 1.20          # Extra gain to bias toward single-act closure
 
 # Advanced Control Tunings
 BACKLASH_S = 0.08         
@@ -426,15 +429,6 @@ class AlignCalibrator:
             return float(DIST_ACT_NEAR_SCORE_SCALE), float(DIST_ACT_NEAR_BUMP_SCALE), "near"
         return 1.0, 1.0, "mid"
 
-    def _x_axis_one_shot_score(self, x_err_mm):
-        """Compute a single-turn score intended to close x-axis gap in one act when possible."""
-        try:
-            gap_mm = abs(float(x_err_mm))
-        except (TypeError, ValueError):
-            gap_mm = 0.0
-        raw = int(math.ceil((float(gap_mm) / max(1e-6, float(X_AXIS_ONESHOT_MM_PER_SCORE))) * float(X_AXIS_ONESHOT_GAIN)))
-        return int(self._clamp(raw, int(X_AXIS_ONESHOT_MIN_SCORE), int(X_AXIS_ONESHOT_MAX_SCORE)))
-
     def _mark_last_act_timing(self, event):
         if not isinstance(event, dict):
             return
@@ -671,111 +665,30 @@ class AlignCalibrator:
         except (TypeError, ValueError):
             offset_x = None
         
-        # --- FIRST: Show result of PREVIOUS act (if any) ---
-        # Current observation is the POST-result of the previous act
-        if (self._prev_act_x_err is not None and 
-            x_err_mm is not None and 
-            trial == self._prev_act_trial and 
-            phase == self._prev_act_phase):
-            
-            prev_cmd_upper = str(self._prev_act_cmd).upper() if self._prev_act_cmd else "?"
-            correction_type = self._prev_act_correction_type or "?"
-            
-            # Show result based on correction type
-            if correction_type == "distance" and self._prev_act_dist_mm is not None and dist_mm is not None:
-                # Distance correction: show distance change
-                prev_dist = float(self._prev_act_dist_mm)
-                curr_dist = float(dist_mm)
-                delta = abs(prev_dist - float(DIST_TARGET_MM)) - abs(curr_dist - float(DIST_TARGET_MM))  # Positive = improved
-                
-                if delta > 0.02:
-                    result_color = COLOR_GREEN
-                    change_text = f"improved {abs(delta):.2f}mm"
-                elif delta < -0.02:
-                    result_color = COLOR_RED
-                    change_text = f"worsened {abs(delta):.2f}mm"
-                else:
-                    result_color = COLOR_GRAY
-                    change_text = "no change"
-                
-                result_line = (
-                    f"{COLOR_GRAY}  └─ Result of {prev_cmd_upper}: "
-                    f"dist {prev_dist:.1f}mm → {curr_dist:.1f}mm "
-                    f"{result_color}({change_text}){COLOR_RESET}"
-                )
-            elif correction_type == "x_axis":
-                # X-axis correction: show x-axis error change
-                prev_x_err = float(self._prev_act_x_err)
-                curr_x_err = float(x_err_mm)
-                prev_abs = abs(prev_x_err)
-                curr_abs = abs(curr_x_err)
-                delta = prev_abs - curr_abs  # Positive = improved, Negative = worse
-                
-                if delta > 0.02:
-                    result_color = COLOR_GREEN
-                    change_text = f"improved {abs(delta):.2f}mm"
-                elif delta < -0.02:
-                    result_color = COLOR_RED
-                    change_text = f"worsened {abs(delta):.2f}mm"
-                else:
-                    result_color = COLOR_GRAY
-                    change_text = "no change"
-                
-                result_line = (
-                    f"{COLOR_GRAY}  └─ Result of {prev_cmd_upper}: "
-                    f"x_err {prev_abs:.2f}mm → {curr_abs:.2f}mm "
-                    f"{result_color}({change_text}){COLOR_RESET}"
-                )
-            else:
-                # Fallback: show x-axis error if type unknown
-                prev_x_err = float(self._prev_act_x_err)
-                curr_x_err = float(x_err_mm)
-                prev_abs = abs(prev_x_err)
-                curr_abs = abs(curr_x_err)
-                delta = prev_abs - curr_abs
-                
-                if delta > 0.02:
-                    result_color = COLOR_GREEN
-                    change_text = f"improved {abs(delta):.2f}mm"
-                elif delta < -0.02:
-                    result_color = COLOR_RED
-                    change_text = f"worsened {abs(delta):.2f}mm"
-                else:
-                    result_color = COLOR_GRAY
-                    change_text = "no change"
-                
-                result_line = (
-                    f"{COLOR_GRAY}  └─ Result of {prev_cmd_upper}: "
-                    f"x_err {prev_abs:.2f}mm → {curr_abs:.2f}mm "
-                    f"{result_color}({change_text}){COLOR_RESET}"
-                )
-            print(result_line)
+        result_delta_obj = None
+        if (
+            self._prev_act_x_err is not None
+            and x_err_mm is not None
+            and trial == self._prev_act_trial
+            and phase == self._prev_act_phase
+        ):
+            result_delta_obj = build_align_result_delta_obj(
+                correction_type=self._prev_act_correction_type,
+                prev_x_err_mm=self._prev_act_x_err,
+                curr_x_err_mm=x_err_mm,
+                prev_dist_mm=self._prev_act_dist_mm,
+                curr_dist_mm=dist_mm,
+                dist_target_mm=float(DIST_TARGET_MM),
+            )
         
         # --- SECOND: Show current act (pre-action state and command to send) ---
-        # Build pre-observation text
-        pre_obs_parts = []
-        if x_err_mm is not None:
-            gate_low = -float(x_tol_active)
-            gate_high = float(x_tol_active)
-            pre_obs_parts.append(f"x_err={x_err_mm:+.2f}mm")
-            pre_obs_parts.append(f"gate=[{gate_low:+.2f},{gate_high:+.2f}]mm")
-            pre_obs_parts.append(f"target={float(X_TARGET_MM):+.2f}mm")
-        else:
-            pre_obs_parts.append("x_err=unknown")
-        if offset_x is not None:
-            abs_offset = abs(float(offset_x))
-            if abs_offset > 10.0:
-                offset_color = COLOR_RED
-            elif abs_offset > 3.0:
-                offset_color = COLOR_ORANGE_BRIGHT
-            elif abs_offset > 0.0:
-                offset_color = COLOR_GREEN
-            else:
-                offset_color = COLOR_WHITE
-            pre_obs_parts.append(f"offset={offset_color}{offset_x:+.2f}mm{COLOR_RESET}")
-        if dist_mm is not None:
-            pre_obs_parts.append(f"dist={dist_mm:.1f}mm")
-        pre_obs_text = " ".join(pre_obs_parts)
+        pre_obs_text = format_align_pre_observation_text(
+            x_err_mm=x_err_mm,
+            x_tol_mm=x_tol_active,
+            x_target_mm=float(X_TARGET_MM),
+            offset_x=offset_x,
+            dist_mm=dist_mm,
+        )
         
         # Emit single-line diagnostic
         cmd_upper = str(cmd).upper() if cmd else "?"
@@ -786,14 +699,13 @@ class AlignCalibrator:
         motor_pwm = event.get("pwm")
         motor_duration_ms = event.get("duration_ms")
         
-        # Don't pass result_delta - we're showing it separately now
         line = format_shorthand_calibration_line(
             trial=trial,
             phase=phase,
             pre_obs_text=pre_obs_text,
             action_cmd=cmd_upper,
             action_score=score_pct,
-            result_delta_obj=None,  # No longer showing misleading delta
+            result_delta_obj=result_delta_obj,
             phase_color=phase_color,
             motor_power=motor_power,
             motor_pwm=motor_pwm,
@@ -2380,22 +2292,37 @@ class AlignCalibrator:
                 # Gates: visible=true AND |x_err| <= x_tol AND |dist - dist_target| <= dist_tol
                 gate_eval_ok, confidence = evaluate_gate_status(self.world, "ALIGN_BRICK")
                 
-                # Detailed gate analysis for debugging
-                # (dist_err already calculated earlier at line 2459, don't recalculate)
-                x_within_tol = abs_error_from_target <= float(X_TOL_MM)
-                dist_within_tol = dist_err <= float(DIST_TOL_MM)
-                local_gate_ok = (
-                    dist_now is not None
-                    and off_now is not None
-                    and x_within_tol
-                    and dist_within_tol
+                # Detailed gate analysis for debugging and strict local truth check.
+                local_gate = align_local_gate_status(
+                    self.world,
+                    "ALIGN_BRICK",
+                    process_rules=self.world.process_rules,
                 )
+                x_within_tol = bool(local_gate.get("x_within_tol"))
+                dist_within_tol = bool(local_gate.get("dist_within_tol"))
+                local_gate_ok = bool(local_gate.get("ok"))
                 success_ok = bool(gate_eval_ok and local_gate_ok)
                 
                 # Colorize boolean results
                 x_status = f"{COLOR_GREEN}true{COLOR_RESET}" if x_within_tol else f"{COLOR_RED}false{COLOR_RESET}"
                 dist_status = f"{COLOR_GREEN}true{COLOR_RESET}" if dist_within_tol else f"{COLOR_RED}false{COLOR_RESET}"
-                gate_analysis = f"X:[{x_err:+.2f}mm<={X_TOL_MM:.2f}? {x_status}] | Dist:[{dist_now:.1f}mm≠{DIST_TARGET_MM}mm={dist_err:.2f}±{DIST_TOL_MM}? {dist_status}]"
+                x_err_gate = local_gate.get("x_err")
+                if x_err_gate is None:
+                    x_err_gate = x_err
+                x_tol_gate = float(local_gate.get("x_tol") or X_TOL_MM)
+                dist_gate = local_gate.get("dist")
+                if dist_gate is None:
+                    dist_gate = dist_now
+                dist_target_gate = float(local_gate.get("dist_target") or DIST_TARGET_MM)
+                dist_err_gate = local_gate.get("dist_err")
+                if dist_err_gate is None:
+                    dist_err_gate = dist_err
+                dist_tol_gate = float(local_gate.get("dist_tol") or DIST_TOL_MM)
+                gate_analysis = (
+                    f"X:[{float(x_err_gate):+.2f}mm<={x_tol_gate:.2f}? {x_status}] | "
+                    f"Dist:[{float(dist_gate):.1f}mm≠{dist_target_gate:.2f}mm={float(dist_err_gate):.2f}"
+                    f"±{dist_tol_gate:.2f}? {dist_status}]"
+                )
                 
                 # Track frame count for periodic reporting
                 if not hasattr(self, '_align_frame_count'):
@@ -2534,26 +2461,17 @@ class AlignCalibrator:
                     _gate_observation_frame_count = 0
                     _gate_recheck_attempts = 0
                     
-                    # PREDICT DIRECTION & SPEED using production logic
-                    # Build a simple world object for compute_alignment_analytics
-                    class SimpleWorld:
-                        def __init__(self):
-                            self.brick = {
-                                'visible': True,
-                                'x_axis': float(off_now),
-                                'angle': 0.0,
-                                'dist': float(dist_now),
-                            }
-                            self._align_focus_dist = False
-                    workflow_world = SimpleWorld()
-                    
-                    # Use production logic to identify worst metric
-                    analytics = compute_alignment_analytics(
-                        workflow_world,
-                        self.world.process_rules,
-                        None,  # learned_rules
-                        "ALIGN_BRICK",
-                        duration_s=0.05
+                    # PREDICT DIRECTION & SPEED using shared production helper logic.
+                    analytics = compute_alignment_decision(
+                        world=None,
+                        step="ALIGN_BRICK",
+                        process_rules=self.world.process_rules,
+                        learned_rules=None,
+                        duration_s=0.05,
+                        visible=True,
+                        x_axis=off_now,
+                        angle=0.0,
+                        dist=dist_now,
                     )
                     prod_cmd = analytics.get("cmd")  # 'f', 'b', 'l', 'r', or None
                     prod_worst_metric = analytics.get("worst_metric")  # 'dist', 'xAxis_offset_abs', or None
@@ -2638,7 +2556,7 @@ class AlignCalibrator:
                         prev_dist_err = float(dist_err)
                     else:
                         # One-shot x-axis correction: use score sized from current x-gap.
-                        x_turn_score = int(self._x_axis_one_shot_score(x_err))
+                        x_turn_score = int(align_brick_x_axis_one_shot_score(x_err))
                         event = self.send_coarse_command(
                             align_dir,
                             score=x_turn_score,
