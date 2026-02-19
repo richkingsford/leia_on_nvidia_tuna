@@ -2,8 +2,10 @@
 """Autobuild orchestration using telemetry-backed logic."""
 import argparse
 import threading
+from pathlib import Path
 
 from helper_streaming import start_stream_server
+from helper_align_profile import load_align_profile, inject_align_profile_into_learned_rules
 from telemetry_process import *  # noqa: F401,F403
 from telemetry_process import (
     run_alignment_segment,
@@ -56,6 +58,22 @@ def run_autobuild(session_name=None, stream=True):
     world.suppress_brick_state_log = True
     world.log_brick_frames = False
     world.log_fresh_frames = True
+    align_profile = load_align_profile(Path(__file__).resolve().parent)
+    world.learned_rules = inject_align_profile_into_learned_rules(
+        getattr(world, "learned_rules", {}),
+        align_profile,
+    )
+    if isinstance(align_profile, dict) and align_profile:
+        print(
+            format_headline(
+                "[ALIGN_PROFILE] Applied calibrate-align profile "
+                f"(run_id={align_profile.get('source_run_id')}, "
+                f"turn_scale={align_profile.get('turn_speed_scale')}, "
+                f"dist_scale={align_profile.get('dist_speed_scale')}, "
+                f"max_speed={align_profile.get('max_speed_score')})",
+                COLOR_WHITE,
+            )
+        )
 
     stream_server = None
     if stream:

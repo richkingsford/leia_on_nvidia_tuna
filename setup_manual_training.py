@@ -18,6 +18,7 @@ from helper_vision_aruco import ArucoBrickVision
 from brick_detector_yolo import BrickDetector as YoloBrickDetector
 from helper_manual_config import load_manual_training_config
 from helper_micro_speed_adjust import micro_adjust_speed_score
+from helper_align_profile import load_align_profile, inject_align_profile_into_learned_rules
 from helper_mini_x_axis_calibrate import (
     MINI_TRIALS_DEFAULT as MINI_X_AXIS_TRIALS_DEFAULT,
     RUN_LOG_FILE_DEFAULT as MINI_X_AXIS_LOG_DEFAULT,
@@ -843,6 +844,20 @@ def refresh_world_model_from_demos(app_state, force=False, min_interval_s=0.5):
         process_rules = {}
     app_state.world.process_rules = process_rules
     app_state.world.rules = process_rules
+    align_profile = load_align_profile(Path(__file__).resolve().parent)
+    app_state.world.learned_rules = inject_align_profile_into_learned_rules(
+        getattr(app_state.world, "learned_rules", {}),
+        align_profile,
+    )
+    if isinstance(align_profile, dict) and align_profile:
+        run_id = align_profile.get("source_run_id")
+        turn_scale = align_profile.get("turn_speed_scale")
+        dist_scale = align_profile.get("dist_speed_scale")
+        cap = align_profile.get("max_speed_score")
+        log_line(
+            "[ALIGN_PROFILE] Applied calibrate-align profile "
+            f"(run_id={run_id}, turn_scale={turn_scale}, dist_scale={dist_scale}, max_speed={cap})."
+        )
     app_state.config_mtime = latest_mtime
 
 def refresh_brick_telemetry(app_state, read_vision=True):
@@ -1446,7 +1461,7 @@ class AppState:
         open_new_log(self)
         
         # ID Init
-        self.world.step_state = DEMO_STEPS[0]
+        self.world.step_state = StepState.ALIGN_BRICK  # Default to ALIGN_BRICK for gate testing
 
         self.vision = None
         self.robot = None

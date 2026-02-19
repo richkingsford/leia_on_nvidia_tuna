@@ -1,0 +1,16 @@
+{
+  "source": "calibrate_align",
+  "source_run_id": 1771463897,
+  "generated_at": 1771464523.3677306,
+  "turn_speed_scale": 1.09,
+  "dist_speed_scale": 0.99,
+  "max_speed_score": 20,
+  "stats": {
+    "trials": 20,
+    "success_rate": 0.95,
+    "overshoot_rate": 0.0035714285714285713,
+    "median_success_adjusts": 13.0,
+    "lost_vision_failures": 1,
+    "median_learned_speed_score": 23.0
+  }
+}

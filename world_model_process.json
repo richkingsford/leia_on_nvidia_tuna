@@ -36,10 +36,10 @@
                 },
                 "xAxis_offset_abs": {
                     "target": -1.44,
-                    "tol": 0.7
+                    "tol": 1.4
                 },
                 "dist": {
-                    "target": 97.96,
+                    "target": 102.0,
                     "tol": 1.5
                 }
             }
@@ -70,7 +70,7 @@
                 },
                 "xAxis_offset_abs": {
                     "target": -2.31,
-                    "tol": 0.7
+                    "tol": 1.4
                 },
                 "dist": {
                     "target": 48.55,

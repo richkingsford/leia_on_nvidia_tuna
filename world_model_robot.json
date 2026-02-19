@@ -62,8 +62,8 @@
   "min_turn_power": 0.064,
   "score_power_pwm_drive": {
     "1": {
-      "power": 0.3,
-      "pwm": 102
+      "power": 0.26,
+      "pwm": 93
     },
     "100": {
       "power": 1.0,
@@ -131,7 +131,7 @@
     "timestamp": 1771291050.944167,
     "x_gate_metric": "xAxis_offset_abs",
     "x_gate_target_mm": -1.44,
-    "x_gate_tol_mm": 0.7,
+    "x_gate_tol_mm": 1.4,
     "x_axis_sign": 1.0,
     "confidence": {
       "confident": true,

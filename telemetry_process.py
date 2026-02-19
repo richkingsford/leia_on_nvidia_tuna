@@ -96,7 +96,7 @@ AUTO_DEMO_SPEED_STEPS = {
 FIND_BRICK_TURN_MOVE_MAX_SCORE = 2
 FIND_BRICK_TURN_CHECK_MAX_SCORE = 1
 MIN_MM_TOL = 1.5
-X_AXIS_OFFSET_ABS_TOL_MM = 0.7
+X_AXIS_OFFSET_ABS_TOL_MM = 1.4
 
 
 
@@ -355,6 +355,8 @@ COLOR_GREEN = "\033[32m"
 COLOR_RED = "\033[31m"
 COLOR_WHITE = "\033[37m"
 COLOR_GRAY = "\033[90m"
+COLOR_CYAN = "\033[36m"
+COLOR_YELLOW = "\033[33m"
 COLOR_ORANGE_BRIGHT = "\033[38;5;208m"
 ACTION_DISPLAY_TTL_S = 3.0
 
@@ -393,6 +395,83 @@ def format_headline(headline, color, details=""):
     if details is None:
         details = ""
     return f"{color}{headline}{COLOR_RESET}{details}"
+
+
+def format_shorthand_calibration_line(
+    trial,
+    phase,
+    pre_obs_text,
+    action_cmd,
+    action_score,
+    result_delta_obj,
+    phase_color=None,
+    motor_power=None,
+    motor_pwm=None,
+    motor_duration_ms=None,
+):
+    """
+    Format a single-line calibration log following observe > act pattern.
+    
+    Args:
+        trial: Trial number
+        phase: Phase name (ALIGN, etc)
+        pre_obs_text: Text describing pre-action observation (e.g. "x_err=+1.23mm tol=2.5mm")
+        action_cmd: Command sent (FWD, RIGHT, etc)
+        action_score: Speed score as int percentage
+        result_delta_obj: Optional dict with keys: 'delta_text', 'delta_class'. Pass None to omit result display.
+        phase_color: Optional color for phase; defaults to COLOR_RED if "recovery" in phase
+        motor_power: Optional motor power value (0.0-1.0)
+        motor_pwm: Optional PWM value (0-255)
+        motor_duration_ms: Optional duration in milliseconds
+    
+    Returns:
+        Colored string with full diagnostic line
+    """
+    if phase_color is None:
+        phase_color = COLOR_RED if phase and "recovery" in phase.lower() else COLOR_WHITE
+    
+    trial_str = f"T{int(trial)}" if trial is not None else "T?"
+    phase_upper = str(phase).upper() if phase else "?"
+    
+    # Action part (with color and motor vars)
+    motor_vars = ""
+    if motor_power is not None or motor_pwm is not None or motor_duration_ms is not None:
+        parts = []
+        if motor_pwm is not None:
+            parts.append(f"pwm={int(motor_pwm)}")
+        if motor_power is not None:
+            parts.append(f"pwr={motor_power:.3f}")
+        if motor_duration_ms is not None:
+            parts.append(f"t={int(motor_duration_ms)}ms")
+        if parts:
+            motor_vars = f" ({', '.join(parts)})"
+    action_str = f"{COLOR_ORANGE_BRIGHT}{action_cmd} {action_score}%{motor_vars}{COLOR_RESET}"
+    
+    # Result part (with color based on delta_class) - optional
+    if result_delta_obj is not None:
+        delta_class = (result_delta_obj or {}).get("delta_class", "unknown")
+        delta_text = (result_delta_obj or {}).get("delta_text", "")
+        
+        if delta_class == "closer":
+            result_color = COLOR_GREEN
+        elif delta_class == "backward":
+            result_color = COLOR_RED
+        else:
+            result_color = COLOR_WHITE
+        
+        result_str = f"{result_color}{delta_text}{COLOR_RESET}" if delta_text else f"{result_color}no change{COLOR_RESET}"
+        
+        # Full line: [TRIAL PHASE] obs → act → result
+        return (
+            f"{phase_color}[{trial_str} {phase_upper}]{COLOR_RESET} "
+            f"({pre_obs_text}) {action_str} → {result_str}"
+        )
+    else:
+        # No result - just show observation and action
+        return (
+            f"{phase_color}[{trial_str} {phase_upper}]{COLOR_RESET} "
+            f"({pre_obs_text}) → {action_str}"
+        )
 
 
 @dataclass
@@ -1138,6 +1217,19 @@ def send_robot_command_pwm(robot, world, step, cmd, power, pwm, duration_ms, spe
     _, score_effective = telemetry_robot_module.quantize_speed(cmd, speed=power_val)
     if score_effective is None:
         score_effective = speed_score
+    
+    # For precision mode (very low speeds), quantize_speed may round up incorrectly.
+    # If the quantized score is significantly higher than the intended speed_score,
+    # use the intended score instead (prevents 2% when we intended 1%)
+    if speed_score is not None and score_effective is not None:
+        try:
+            effective = int(round(float(score_effective)))
+            intended = int(round(float(speed_score)))
+            # If quantized score is just 1 above intended (common rounding error), use intended
+            if effective > intended and effective - intended == 1 and intended < 10:
+                score_effective = speed_score
+        except (TypeError, ValueError):
+            pass
     record_action_display(
         world,
         step,

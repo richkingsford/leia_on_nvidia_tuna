@@ -23,10 +23,24 @@ from telemetry_robot import (
 
 VISIBILITY_LOST_CONFIRM_FRAMES = 3
 AUTO_SPEED_SCORE_HARD_MAX = 20
-ALIGN_BRICK_X_AXIS_TOL_FAR_SCALE = 3.0
+# X-axis tolerance scaling: when far from brick, be much more lenient with x-axis alignment
+# This prevents hitting the brick while misaligned. Close distance = strict (1.0x), far = very lenient (6.0x)
+ALIGN_BRICK_X_AXIS_TOL_FAR_SCALE = 6.0
 ALIGN_STEPS_SHARED_DIST_SCORE_BANDS = (
     (60.0, int(SPEED_SCORE_MIN)),
     (80.0, 5),
+)
+# Distance ERROR (gap to target) speed scoring for ALIGN_BRICK micro-adjustments.
+# Maps distance error MM to speed score (can be fractional for fine control).
+# Lines: (error_threshold_mm, score) - if error < threshold, use this score
+ALIGN_BRICK_DIST_ERROR_SCORE_BANDS = (
+    (2.0, 1.0),      # dist_err < 2.0mm: score 1.0 (~3% power)
+    (3.0, 1.5),      # dist_err < 3.0mm: score 1.5 (~5% power)
+    (4.0, 2.0),      # dist_err < 4.0mm: score 2.0 (~6% power)
+    (5.0, 2.5),      # dist_err < 5.0mm: score 2.5 (~7% power)
+    (6.0, 3.0),      # dist_err < 6.0mm: score 3.0 (~10% power)
+    (8.0, 4.0),      # dist_err < 8.0mm: score 4.0 (~13% power)
+    (1000.0, 5.0),   # dist_err >= 8.0mm: score 5.0 (~17% power) fallback
 )
 ALIGN_STEPS_SHARED_TURN_SCORE_BANDS = (
     (2.0, int(SPEED_SCORE_MIN)),
@@ -122,6 +136,40 @@ def align_steps_dist_speed_score(dist_mm: float, fallback_score: int) -> int:
         ALIGN_STEPS_SHARED_DIST_SCORE_BANDS,
         fallback_score,
     )
+
+
+def align_brick_dist_error_speed_score(dist_error_mm: float) -> float:
+    """
+    Calculate granular speed score for ALIGN_BRICK distance micro-adjustments.
+    
+    Maps distance error (gap between current distance and target) to appropriate
+    speed score, with fine-grained bands that support fractional scores (e.g., 1.5).
+    
+    This is the single source of truth for distance alignment speed logic.
+    Lines defined in ALIGN_BRICK_DIST_ERROR_SCORE_BANDS in world model.
+    
+    Args:
+        dist_error_mm: Absolute distance error in mm (should be >= 0)
+    
+    Returns:
+        Speed score as float (e.g., 1.0, 1.5, 2.0, 2.5, 3.0, etc.)
+    """
+    try:
+        error_mm = abs(float(dist_error_mm))
+    except (TypeError, ValueError):
+        return 1.0  # Default to minimal score on error
+    
+    # Use banded lookup: find first band where error_mm < upper_bound
+    for upper_bound, score in ALIGN_BRICK_DIST_ERROR_SCORE_BANDS:
+        try:
+            bound = float(upper_bound)
+            if error_mm < bound:
+                return float(score)
+        except (TypeError, ValueError):
+            continue
+    
+    # Fallback to last score if exceeds all bands (shouldn't happen with large fallback)
+    return float(ALIGN_BRICK_DIST_ERROR_SCORE_BANDS[-1][1]) if ALIGN_BRICK_DIST_ERROR_SCORE_BANDS else 1.0
 
 
 def _turn_score_cap_for_dist_gate_error(dist_gate_error_mm, x_axis_gap_mm):
@@ -276,21 +324,36 @@ def align_brick_forward_speed_score(dist_mm: float, process_rules, step: str) ->
 
 
 def align_brick_x_axis_tol_scale(dist_mm: float, process_rules, step: str) -> float:
+    """
+    Calculate x-axis tolerance scaling based on distance from brick.
+    
+    The further from the brick, the more lenient we are with x-axis alignment.
+    This prevents hitting the brick while misaligned and allows coarser x-axis
+    positioning when far, with precise alignment only required when close.
+    
+    Returns:
+        1.0 when at close distance or closer (strict alignment required)
+        Up to 6.0 when at far distance or beyond (very lenient alignment)
+    """
     profile = align_brick_micro_forward_profile(process_rules, step)
-    close = float(profile["close_mm"])
-    far = float(profile["far_mm"])
-    max_scale = float(ALIGN_BRICK_X_AXIS_TOL_FAR_SCALE)
+    close = float(profile["close_mm"])  # ~150mm - where strict alignment starts
+    far = float(profile["far_mm"])      # ~200mm - where max leniency applies
+    max_scale = float(ALIGN_BRICK_X_AXIS_TOL_FAR_SCALE)  # 6.0x
 
     try:
         dist_val = float(dist_mm)
     except (TypeError, ValueError):
         return 1.0
 
+    # At close distance or closer: strict 1.0x tolerance (precise alignment required)
     if dist_val <= close:
         return 1.0
+    # If far <= close (invalid config), return max leniency
     if far <= close:
         return max_scale
 
+    # Between close and far: smoothly scale from 1.0x to 6.0x
+    # Use smoothstep for gradual transition
     t = (dist_val - close) / max(1e-6, far - close)
     return float(_lerp(1.0, max_scale, _smoothstep01(t)))
 
@@ -484,22 +547,35 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
         x_axis_ok = True
     dist_gap_mm = None
     force_dist_focus = False
+    force_x_axis_focus = False  # New: prioritize x-axis when far from brick
     if obj_name == "ALIGN_BRICK":
         try:
             dist_gap_mm = abs(float(offsets.get("dist", 0.0) or 0.0))
         except (TypeError, ValueError):
             dist_gap_mm = None
-        focus_dist = bool(getattr(world, "_align_focus_dist", False))
+        
+        # CRITICAL SAFETY: When far from brick, prioritize x-axis alignment first
+        # This prevents hitting the brick while misaligned on x-axis
+        # Only focus on distance when x-axis is good OR distance is extreme (>150mm)
         if dist_gap_mm is not None:
-            if dist_gap_mm > 150.0:
-                focus_dist = True
-            elif focus_dist and dist_gap_mm < 100.0:
-                focus_dist = False
+            # If we're far (>50mm from target) and x-axis needs work, prioritize x-axis
+            x_axis_gap_mm = mm_errors.get("xAxis_offset_abs", 0.0)
+            if dist_gap_mm > 50.0 and x_axis_gap_mm > 2.0:
+                force_x_axis_focus = True
+            # Only force distance focus if extremely far AND x-axis is acceptable
+            elif dist_gap_mm > 150.0 and x_axis_gap_mm < 5.0:
+                force_dist_focus = True
+            # Medium distance (50-150mm): use natural worst_metric selection
+            else:
+                force_dist_focus = False
+                force_x_axis_focus = False
+        
+        # Update sticky focus state (legacy compatibility)
+        focus_dist = force_dist_focus
         try:
             world._align_focus_dist = focus_dist
         except Exception:
             pass
-        force_dist_focus = focus_dist
     worst_metric = max(ratios, key=lambda m: ratios[m], default=None)
     worst_ratio = ratios.get(worst_metric, 0.0) if worst_metric else 0.0
 
@@ -572,9 +648,41 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
                     "offsets": offsets,
                 }
 
-    if force_dist_focus:
+    # Apply focus overrides based on distance-dependent prioritization
+    if force_x_axis_focus:
+        worst_metric = "xAxis_offset_abs"
+        worst_ratio = max(worst_ratio, ratios.get("xAxis_offset_abs", 1.0), 1.0)
+    elif force_dist_focus:
         worst_metric = "dist"
         worst_ratio = max(worst_ratio, ratios.get("dist", 1.0), 1.0)
+
+    profile = {}
+    if isinstance(learned_rules, dict):
+        step_profile = learned_rules.get(obj_name)
+        if isinstance(step_profile, dict) and isinstance(step_profile.get("calibration_profile"), dict):
+            profile = dict(step_profile.get("calibration_profile") or {})
+        elif obj_name == "POSITION_BRICK":
+            align_profile = learned_rules.get("ALIGN_BRICK")
+            if isinstance(align_profile, dict) and isinstance(align_profile.get("calibration_profile"), dict):
+                profile = dict(align_profile.get("calibration_profile") or {})
+
+    try:
+        turn_speed_scale = float(profile.get("turn_speed_scale", 1.0))
+    except (TypeError, ValueError):
+        turn_speed_scale = 1.0
+    try:
+        dist_speed_scale = float(profile.get("dist_speed_scale", 1.0))
+    except (TypeError, ValueError):
+        dist_speed_scale = 1.0
+    turn_speed_scale = max(0.5, min(1.5, float(turn_speed_scale)))
+    dist_speed_scale = max(0.5, min(1.5, float(dist_speed_scale)))
+
+    profile_max_speed_score = None
+    try:
+        if profile.get("max_speed_score") is not None:
+            profile_max_speed_score = normalize_speed_score(profile.get("max_speed_score"))
+    except (TypeError, ValueError):
+        profile_max_speed_score = None
 
     min_speed = ALIGN_MIN_SPEED
     max_speed = ALIGN_MAX_SPEED
@@ -668,6 +776,11 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
             speed_score = _score_from_mm(mm_off, slow_mm, fast_mm)
         speed_score = normalize_speed_score(speed_score)
 
+    if cmd in ("l", "r"):
+        speed_score = normalize_speed_score(float(speed_score) * float(turn_speed_scale))
+    elif cmd in ("f", "b"):
+        speed_score = normalize_speed_score(float(speed_score) * float(dist_speed_scale))
+
     if not visible_for_cmd:
         speed_score = SPEED_SCORE_DEFAULT
         speed_score = normalize_speed_score(speed_score)
@@ -679,6 +792,8 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
             max_speed_score = None
     if max_speed_score is not None:
         speed_score = min(int(speed_score), int(max_speed_score))
+    if profile_max_speed_score is not None:
+        speed_score = min(int(speed_score), int(profile_max_speed_score))
     speed_score = min(int(speed_score), int(AUTO_SPEED_SCORE_HARD_MAX))
 
     if cmd:
