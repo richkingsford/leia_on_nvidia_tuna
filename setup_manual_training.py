@@ -854,10 +854,13 @@ def refresh_world_model_from_demos(app_state, force=False, min_interval_s=0.5):
         turn_scale = align_profile.get("turn_speed_scale")
         dist_scale = align_profile.get("dist_speed_scale")
         cap = align_profile.get("max_speed_score")
-        log_line(
-            "[ALIGN_PROFILE] Applied calibrate-align profile "
-            f"(run_id={run_id}, turn_scale={turn_scale}, dist_scale={dist_scale}, max_speed={cap})."
-        )
+        signature = (run_id, turn_scale, dist_scale, cap)
+        if signature != getattr(app_state, "_last_align_profile_signature", None):
+            log_line(
+                "[ALIGN_PROFILE] Applied calibrate-align profile "
+                f"(run_id={run_id}, turn_scale={turn_scale}, dist_scale={dist_scale}, max_speed={cap})."
+            )
+            app_state._last_align_profile_signature = signature
     app_state.config_mtime = latest_mtime
 
 def refresh_brick_telemetry(app_state, read_vision=True):
@@ -1492,6 +1495,7 @@ class AppState:
 
         self.config_mtime = 0
         self.last_config_check = 0
+        self._last_align_profile_signature = None
 
 def getch():
     """Reads a single character from stdin in raw mode."""

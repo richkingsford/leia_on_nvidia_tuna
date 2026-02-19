@@ -14538,5 +14538,35 @@
     "seconds_to_success": 31.51016926765442,
     "K_L": 300.0,
     "K_R": 300.0
+  },
+  {
+    "type": "trial_summary",
+    "run_id": 1771463897,
+    "trial": 20,
+    "timestamp": 1771464523.3650808,
+    "success": true,
+    "reason": "success",
+    "vision_lost_events": 0,
+    "recovery_attempts": 0,
+    "recovery_recovered": 0,
+    "adjust_count": 17,
+    "adjust_limit": 100,
+    "progress_acts": 10,
+    "worsening_acts": 6,
+    "overshoot_acts": 0
+  },
+  {
+    "type": "recovery_summary",
+    "run_id": 1771463897,
+    "timestamp": 1771464523.3669078,
+    "attempts": 3,
+    "recovered": 2,
+    "overall_rate": 0.6666666666666666,
+    "reverse_attempts": 3,
+    "reverse_recovered": 2,
+    "reverse_rate": 0.6666666666666666,
+    "scan_attempts": 1,
+    "scan_recovered": 0,
+    "scan_rate": 0.0
   }
 ]
