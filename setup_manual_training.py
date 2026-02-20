@@ -327,6 +327,66 @@ def log_align_curve_lookup_table():
         )
 
 
+def _cmd_to_motion_action_type(cmd):
+    cmd_key = str(cmd or "").strip().lower()
+    return {
+        "f": "forward",
+        "b": "backward",
+        "l": "left_turn",
+        "r": "right_turn",
+        "u": "mast_up",
+        "d": "mast_down",
+    }.get(cmd_key, "unknown")
+
+
+def _demo_logging_active(app_state):
+    if getattr(app_state, "active_attempt", None):
+        return True
+    return bool(getattr(app_state, "auto_demo_logging_active", False))
+
+
+def _log_motion_event_and_state(app_state, cmd, speed, score, duration_ms=None):
+    if app_state.logger is None or getattr(app_state, "logger_closed", True):
+        return
+    if not _demo_logging_active(app_state):
+        return
+    action_type = _cmd_to_motion_action_type(cmd)
+    power_u8 = int(max(0.0, min(1.0, float(speed or 0.0))) * 255)
+    try:
+        dur_ms = int(round(float(duration_ms))) if duration_ms is not None else int(CONTROL_DT * 1000)
+    except (TypeError, ValueError):
+        dur_ms = int(CONTROL_DT * 1000)
+    evt = MotionEvent(action_type, power_u8, max(1, int(dur_ms)), speed_score=score)
+    app_state.logger.log_event(evt, app_state.world.step_state.value)
+    app_state.logger.log_state(app_state.world)
+
+
+def _begin_auto_demo_logging(app_state, obj_enum):
+    ensure_log_open(app_state)
+    marker = ATTEMPT_MARKERS["NOMINAL"][0]
+    obj_label = step_label(obj_enum)
+    app_state.logger.log_keyframe(marker, obj_label)
+    app_state.world.recording_active = True
+    app_state.world.attempt_status = ATTEMPT_STATUS["NOMINAL"]
+    app_state.auto_demo_logging_active = True
+
+
+def _end_auto_demo_logging(app_state, obj_enum):
+    if app_state.logger is None or getattr(app_state, "logger_closed", True):
+        app_state.auto_demo_logging_active = False
+        app_state.world.recording_active = False
+        app_state.world.attempt_status = "NORMAL"
+        return
+    marker = ATTEMPT_MARKERS["NOMINAL"][1]
+    obj_label = step_label(obj_enum)
+    app_state.logger.log_keyframe(marker, obj_label)
+    app_state.auto_demo_logging_active = False
+    app_state.world.recording_active = False
+    app_state.world.attempt_status = "NORMAL"
+    if app_state.log_path:
+        prune_log_file(app_state.log_path, delete_if_empty=True)
+
+
 def prompt_line(prompt):
     fd_term = sys.stdin.fileno()
     old_attr = termios.tcgetattr(fd_term)
@@ -637,6 +697,7 @@ def run_auto_step(app_state, obj_enum):
     app_state.world.rules = process_rules
 
     app_state.world.step_state = obj_enum
+    _begin_auto_demo_logging(app_state, obj_enum)
 
     cfg = process_rules.get(step_key, {}) if process_rules else {}
     nominal_only = bool(cfg.get("nominalDemosOnly"))
@@ -748,17 +809,20 @@ def run_auto_step(app_state, obj_enum):
     reset_auto_step_action_stats(app_state.world, step_key)
     observer = make_auto_observer(app_state)
     confirm_callback = None
-    ok, reason = replay_segment(
-        segment,
-        step_key,
-        app_state.robot,
-        app_state.vision,
-        app_state.world,
-        observer=observer,
-        analysis_pause_s=0.0,
-        confirm_callback=confirm_callback,
-        align_silent=quiet_align,
-    )
+    try:
+        ok, reason = replay_segment(
+            segment,
+            step_key,
+            app_state.robot,
+            app_state.vision,
+            app_state.world,
+            observer=observer,
+            analysis_pause_s=0.0,
+            confirm_callback=confirm_callback,
+            align_silent=quiet_align,
+        )
+    finally:
+        _end_auto_demo_logging(app_state, obj_enum)
     if ok:
         reason_text = reason.replace("_", " ") if isinstance(reason, str) else "success criteria met"
         log_line(f"[AUTO] {step_key} complete — {reason_text}.")
@@ -768,12 +832,23 @@ def run_auto_step(app_state, obj_enum):
         acts_backward = int((act_stats or {}).get("backward") or 0)
         acts_unchanged = int((act_stats or {}).get("unchanged") or 0)
         acts_unknown = int((act_stats or {}).get("unknown") or 0)
+        if acts_total <= 0 and actions:
+            acts_total = int(len(actions))
+            acts_closer = 0
+            acts_backward = 0
+            acts_unchanged = 0
+            acts_unknown = int(acts_total)
+        parts_sum = int(acts_closer + acts_backward + acts_unchanged + acts_unknown)
+        if acts_total < parts_sum:
+            acts_total = int(parts_sum)
+        elif acts_total > parts_sum:
+            acts_unknown += int(acts_total - parts_sum)
         step_code = step_code_for_obj(obj_enum)
-        log_line(
-            f"ACHIEVED step {step_code} in {acts_total} acts. "
-            f"{acts_closer} got us closer, {acts_backward} took us backwards, "
-            f"{acts_unchanged} were unchanged, and {acts_unknown} were unclear."
-        )
+        log_line(f"ACHIEVED step {step_code} ({step_key}) in {acts_total} acts.")
+        log_line(f"  {acts_closer} closer acts")
+        log_line(f"  {acts_backward} dumb acts")
+        log_line(f"  {acts_unchanged} unchanged acts")
+        log_line(f"  {acts_unknown} unclear acts")
     else:
         log_line(f"[AUTO] {step_key} failed ({reason}).")
     return ok
@@ -1164,6 +1239,14 @@ def make_auto_observer(app_state):
     def _observer(stage, world, vision, cmd, speed, reason):
         # replay_segment already refreshed world from vision before observer callbacks.
         # Avoid a second camera read here; it can stall stream updates on some cameras.
+        if stage == "action" and cmd:
+            score = getattr(world, "_last_action_score", None)
+            duration_ms = getattr(world, "_last_action_duration_ms", None)
+            sent_speed = getattr(world, "_last_action_speed", speed)
+            _log_motion_event_and_state(app_state, cmd, sent_speed, score, duration_ms)
+        elif stage == "frame" and _demo_logging_active(app_state):
+            if app_state.logger is not None and not getattr(app_state, "logger_closed", True):
+                app_state.logger.log_state(world)
         refresh_brick_telemetry(app_state, read_vision=False)
     return _observer
 
@@ -1495,6 +1578,7 @@ class AppState:
         self.auto_prompt = False
         self.auto_request = None
         self.auto_running = False
+        self.auto_demo_logging_active = False
         self.auto_confirm_needed = False
         self.auto_confirm_event = threading.Event()
         self.last_enter_time = 0.0
@@ -2041,23 +2125,13 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
         if adjust_msg:
             log_line(adjust_msg)
         if cmd and speed > 0:
-            atype = "unknown"
-            if cmd == 'f': atype = "forward"
-            elif cmd == 'b': atype = "backward"
-            elif cmd == 'l': atype = "left_turn"
-            elif cmd == 'r': atype = "right_turn"
-            elif cmd == 'u': atype = "mast_up"
-            elif cmd == 'd': atype = "mast_down"
-            
+            atype = _cmd_to_motion_action_type(cmd)
             pwr = int(speed * 255)
             evt = MotionEvent(atype, pwr, int(dt*1000), speed_score=score)
             app_state.world.update_from_motion(evt)
-            if app_state.active_attempt:
-                app_state.logger.log_event(evt, app_state.world.step_state.value)
-            
-        # 4. Save Log (Image saving removed)
-        with app_state.lock:
-            if app_state.active_attempt and app_state.active_attempt != "NOMINAL":
+            _log_motion_event_and_state(app_state, cmd, speed, score, int(dt * 1000))
+        elif _demo_logging_active(app_state):
+            if app_state.logger is not None and not getattr(app_state, "logger_closed", True):
                 app_state.logger.log_state(app_state.world)
         
         # 5. Rate Limiting

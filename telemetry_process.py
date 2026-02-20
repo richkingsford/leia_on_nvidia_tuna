@@ -77,6 +77,7 @@ ALIGN_RECOVERY_SCAN_BURST_ACTS = 2
 ALIGN_RECOVERY_SCAN_OBSERVE_S = 0.6
 ALIGN_RECOVERY_LOST_VISIBLE_FRAMES = 3
 ALIGN_RECOVERY_LOST_VISIBLE_MIN_S = 0.20
+ALIGN_RECOVERY_PREMOVE_RECHECK_ROUNDS = 3
 
 MM_METRICS = {
     "xAxis_offset_abs",
@@ -3796,6 +3797,52 @@ def run_alignment_segment(
     confirm_callback=None,
     align_silent=False,
 ):
+    def _classify_align_delta_class(
+        *,
+        correction_type,
+        local_gate_before_action,
+        prev_log_correction_type,
+        prev_log_x_err,
+        prev_log_dist,
+    ):
+        ctype = str(correction_type or "").strip().lower()
+        if ctype == "distance":
+            dist_target = local_gate_before_action.get("dist_target")
+            dist_now = local_gate_before_action.get("dist")
+            try:
+                curr = abs(float(dist_now) - float(dist_target))
+            except (TypeError, ValueError):
+                return "unknown"
+            try:
+                if str(prev_log_correction_type or "").strip().lower() == "distance" and prev_log_dist is not None:
+                    prev = abs(float(prev_log_dist) - float(dist_target))
+                else:
+                    prev = None
+            except (TypeError, ValueError):
+                prev = None
+        else:
+            x_now = local_gate_before_action.get("x_err")
+            try:
+                curr = abs(float(x_now))
+            except (TypeError, ValueError):
+                return "unknown"
+            try:
+                if str(prev_log_correction_type or "").strip().lower() == "x_axis" and prev_log_x_err is not None:
+                    prev = abs(float(prev_log_x_err))
+                else:
+                    prev = None
+            except (TypeError, ValueError):
+                prev = None
+
+        if prev is None:
+            return "unknown"
+        delta = float(prev) - float(curr)
+        if abs(delta) < 0.05:
+            return "unchanged"
+        if delta > 0.0:
+            return "closer"
+        return "backward"
+
     def _emit_align_shorthand_action_line(
         *,
         local_gate_before_action,
@@ -3807,6 +3854,7 @@ def run_alignment_segment(
         action_meta,
         action_index,
         settle=False,
+        force_gap_switch=False,
     ):
         cmd_key = str(cmd).strip().lower()
         if cmd_key in ("f", "b"):
@@ -3828,82 +3876,159 @@ def run_alignment_segment(
         metric_color = COLOR_YELLOW
         metric_text = ""
         metric_name = "x_err"
+        switch_message = None
+        prev_type = str(prev_log_correction_type or "").strip().lower()
+        switched_gap_type = bool(force_gap_switch) or (
+            prev_type in {"distance", "x_axis"} and prev_type != correction_type
+        )
 
         if correction_type == "distance":
             metric_name = "dist_err"
             try:
-                curr_metric = abs(float(dist_now) - float(dist_target))
+                curr_err = float(dist_now) - float(dist_target)
+                curr_metric = abs(float(curr_err))
+                curr_abs_val = float(dist_target) + float(curr_err)
             except (TypeError, ValueError):
+                curr_err = None
                 curr_metric = None
+                curr_abs_val = None
             prev_metric = None
+            prev_err = None
+            prev_err_any = None
             try:
                 if prev_log_dist is not None:
-                    prev_metric = abs(float(prev_log_dist) - float(dist_target))
+                    prev_err_any = float(prev_log_dist) - float(dist_target)
+                if prev_log_correction_type == "distance" and prev_log_dist is not None:
+                    prev_err = float(prev_log_dist) - float(dist_target)
+                    prev_metric = abs(float(prev_err))
             except (TypeError, ValueError):
                 prev_metric = None
+                prev_err = None
+                prev_err_any = None
 
             if curr_metric is None:
                 metric_text = "unknown"
                 metric_color = COLOR_WHITE
             else:
-                if prev_metric is None:
+                if prev_metric is None or prev_err is None:
                     metric_color = COLOR_YELLOW
-                    metric_text = f"{curr_metric:+.2f}mm (initial)"
+                    delta_text = "(na)"
                 else:
                     delta = float(prev_metric) - float(curr_metric)
                     if abs(delta) < 0.05:
                         metric_color = COLOR_YELLOW
-                        metric_text = f"{curr_metric:+.2f}mm (~unchanged)"
+                        delta_text = f"(~unchanged; previous {metric_name}={float(prev_err):+.2f}mm)"
                     elif delta > 0:
                         metric_color = COLOR_GREEN
-                        metric_text = f"{curr_metric:+.2f}mm ({delta:+.2f}mm better)"
+                        delta_text = f"({delta:+.2f}mm better than previous {metric_name}={float(prev_err):+.2f}mm)"
                     else:
                         metric_color = COLOR_RED
-                        metric_text = f"{curr_metric:+.2f}mm ({delta:+.2f}mm worse)"
-            target_text = f"{float(dist_target):.2f}mm"
-            tol_text = f"{float(dist_tol):.2f}mm"
+                        delta_text = f"({delta:+.2f}mm worse than previous {metric_name}={float(prev_err):+.2f}mm)"
+                abs_text = f"{metric_color}{float(curr_abs_val):.2f}mm{COLOR_RESET}"
+                metric_text = (
+                    f"target ({float(dist_target):.2f}mm ±{float(dist_tol):.2f}mm) "
+                    f"{float(curr_err):+.2f}mm={abs_text} {delta_text}"
+                )
+                if switched_gap_type:
+                    if prev_err_any is None:
+                        switch_delta_text = "(na)"
+                    else:
+                        delta_any = abs(float(prev_err_any)) - abs(float(curr_err))
+                        if abs(delta_any) < 0.05:
+                            switch_delta_text = (
+                                f"(~unchanged; previous {metric_name}={float(prev_err_any):+.2f}mm)"
+                            )
+                        elif delta_any > 0:
+                            switch_delta_text = (
+                                f"({delta_any:+.2f}mm better than previous {metric_name}={float(prev_err_any):+.2f}mm)"
+                            )
+                        else:
+                            switch_delta_text = (
+                                f"({delta_any:+.2f}mm worse than previous {metric_name}={float(prev_err_any):+.2f}mm)"
+                            )
+                    switch_message = (
+                        f"Switched gap type to {metric_name} "
+                        f"(the last act resulted in {metric_name}=target ({float(dist_target):.2f}mm ±{float(dist_tol):.2f}mm) "
+                        f"{float(curr_err):+.2f}mm={float(curr_abs_val):.2f}mm {switch_delta_text})"
+                    )
         else:
             try:
-                curr_metric = float(x_err_now)
+                curr_err = float(x_err_now)
+                curr_metric = abs(float(curr_err))
+                curr_abs_val = float(x_target) + float(curr_err)
             except (TypeError, ValueError):
+                curr_err = None
                 curr_metric = None
+                curr_abs_val = None
             prev_metric = None
+            prev_err = None
+            prev_err_any = None
             try:
                 if prev_log_x_err is not None:
-                    prev_metric = float(prev_log_x_err)
+                    prev_err_any = float(prev_log_x_err)
+                if prev_log_correction_type == "x_axis" and prev_log_x_err is not None:
+                    prev_err = float(prev_log_x_err)
+                    prev_metric = abs(float(prev_err))
             except (TypeError, ValueError):
                 prev_metric = None
+                prev_err = None
+                prev_err_any = None
 
             if curr_metric is None:
                 metric_text = "unknown"
                 metric_color = COLOR_WHITE
             else:
                 overshot = False
-                if prev_metric is not None:
+                if prev_err is not None:
                     overshot = (
-                        (float(prev_metric) * float(curr_metric)) < 0.0
-                        and abs(float(prev_metric)) > 0.30
-                        and abs(float(curr_metric)) > 0.30
+                        (float(prev_err) * float(curr_err)) < 0.0
+                        and abs(float(prev_err)) > 0.30
+                        and abs(float(curr_err)) > 0.30
                     )
-                if prev_metric is None:
+                if prev_metric is None or prev_err is None:
                     metric_color = COLOR_YELLOW
-                    metric_text = f"{curr_metric:+.2f}mm (initial)"
+                    delta_text = "(na)"
                 elif overshot:
                     metric_color = COLOR_RED
-                    metric_text = f"{curr_metric:+.2f}mm (overshot target)"
+                    delta_text = f"(overshot target; previous {metric_name}={float(prev_err):+.2f}mm)"
                 else:
-                    delta = abs(float(prev_metric)) - abs(float(curr_metric))
+                    delta = abs(float(prev_err)) - abs(float(curr_err))
                     if abs(delta) < 0.05:
                         metric_color = COLOR_YELLOW
-                        metric_text = f"{curr_metric:+.2f}mm (~unchanged)"
+                        delta_text = f"(~unchanged; previous {metric_name}={float(prev_err):+.2f}mm)"
                     elif delta > 0:
                         metric_color = COLOR_GREEN
-                        metric_text = f"{curr_metric:+.2f}mm ({delta:+.2f}mm better)"
+                        delta_text = f"({delta:+.2f}mm better than previous {metric_name}={float(prev_err):+.2f}mm)"
                     else:
                         metric_color = COLOR_RED
-                        metric_text = f"{curr_metric:+.2f}mm ({delta:+.2f}mm worse)"
-            target_text = f"{float(x_target):+.2f}mm"
-            tol_text = f"{float(x_tol):.2f}mm"
+                        delta_text = f"({delta:+.2f}mm worse than previous {metric_name}={float(prev_err):+.2f}mm)"
+                abs_text = f"{metric_color}{float(curr_abs_val):+.2f}mm{COLOR_RESET}"
+                metric_text = (
+                    f"target ({float(x_target):+.2f}mm ±{float(x_tol):.2f}mm) "
+                    f"{float(curr_err):+.2f}mm={abs_text} {delta_text}"
+                )
+                if switched_gap_type:
+                    if prev_err_any is None:
+                        switch_delta_text = "(na)"
+                    else:
+                        delta_any = abs(float(prev_err_any)) - abs(float(curr_err))
+                        if abs(delta_any) < 0.05:
+                            switch_delta_text = (
+                                f"(~unchanged; previous {metric_name}={float(prev_err_any):+.2f}mm)"
+                            )
+                        elif delta_any > 0:
+                            switch_delta_text = (
+                                f"({delta_any:+.2f}mm better than previous {metric_name}={float(prev_err_any):+.2f}mm)"
+                            )
+                        else:
+                            switch_delta_text = (
+                                f"({delta_any:+.2f}mm worse than previous {metric_name}={float(prev_err_any):+.2f}mm)"
+                            )
+                    switch_message = (
+                        f"Switched gap type to {metric_name} "
+                        f"(the last act resulted in {metric_name}=target ({float(x_target):+.2f}mm ±{float(x_tol):.2f}mm) "
+                        f"{float(curr_err):+.2f}mm={float(curr_abs_val):+.2f}mm {switch_delta_text})"
+                    )
 
         try:
             score_display = int(round(float(score_effective))) if score_effective is not None else 0
@@ -3929,11 +4054,15 @@ def run_alignment_segment(
 
         trial_num = int(getattr(world, "loop_id", 0) or 0)
         phase_label = "ALIGN_SETTLE" if bool(settle) else "ALIGN"
+        if switch_message:
+            print(
+                f"{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}] "
+                f"{switch_message}{COLOR_RESET}"
+            )
         print(
             f"{COLOR_CYAN}[T{trial_num}.{int(action_index)} {phase_label}]{COLOR_RESET} "
-            f"{metric_name}={metric_color}{metric_text}{COLOR_RESET} "
-            f"(target {target_text} ±{tol_text}) → "
-            f"{COLOR_WHITE}{str(cmd).lower()} {int(score_display)}%{COLOR_RESET}{motor_details}"
+            f"{metric_name}={metric_text} → "
+            f"{COLOR_ORANGE_BRIGHT}{str(cmd).lower()} {int(score_display)}%{COLOR_RESET}{motor_details}"
         )
 
     def _dominant_turn_from_steps(motion_steps):
@@ -4087,6 +4216,7 @@ def run_alignment_segment(
     stale_frame_streak = 0
     not_visible_streak = 0
     last_visible_ts = time.time()
+    force_gap_switch_after_recovery = False
     last_align_action = None
     last_align_signature = None
     recent_align_acts = collections.deque(maxlen=32)
@@ -4172,6 +4302,7 @@ def run_alignment_segment(
                 return True
 
         if not align_silent:
+            print(format_headline("[RECOVERY] Reverse phase did not restore visibility; switching to scan phase.", COLOR_ORANGE_BRIGHT))
             print(format_headline("[RECOVERY] Scanning for brick...", COLOR_WHITE))
         for i in range(1, int(ALIGN_RECOVERY_SCAN_MAX_ATTEMPTS) + 1):
             block = int((i - 1) // int(max(1, ALIGN_RECOVERY_SCAN_BURST_ACTS)))
@@ -4201,6 +4332,51 @@ def run_alignment_segment(
         if not align_silent:
             print(format_headline("[RECOVERY] Failed to restore visibility.", COLOR_RED))
         return False
+
+    def _hold_and_recheck_visibility(rounds=ALIGN_RECOVERY_PREMOVE_RECHECK_ROUNDS):
+        try:
+            rounds_local = max(1, int(rounds))
+        except (TypeError, ValueError):
+            rounds_local = int(ALIGN_RECOVERY_PREMOVE_RECHECK_ROUNDS)
+        hold_window_s = max(float(CONTROL_DT), float(VISIBILITY_LOST_HOLD_S))
+        if robot:
+            robot.stop()
+        record_hold_display(world, step, f"visibility recheck x{int(rounds_local)}")
+        for idx in range(1, int(rounds_local) + 1):
+            if robot:
+                robot.stop()
+            if not align_silent:
+                print(
+                    format_headline(
+                        f"[RECOVERY] pre-move check {idx}/{int(rounds_local)}: hold still and re-check visibility ({float(hold_window_s):.2f}s)",
+                        COLOR_WHITE,
+                    )
+                )
+            if _observe_visible(float(hold_window_s)):
+                if not align_silent:
+                    print(
+                        format_headline(
+                            f"[RECOVERY] pre-move recheck result: restored on round {idx}/{int(rounds_local)}.",
+                            COLOR_GREEN,
+                        )
+                    )
+                return {
+                    "visible": True,
+                    "round_hit": int(idx),
+                    "rounds_total": int(rounds_local),
+                }
+        if not align_silent:
+            print(
+                format_headline(
+                    f"[RECOVERY] pre-move recheck result: visibility still lost after {int(rounds_local)}/{int(rounds_local)} rounds.",
+                    COLOR_ORANGE_BRIGHT,
+                )
+            )
+        return {
+            "visible": False,
+            "round_hit": None,
+            "rounds_total": int(rounds_local),
+        }
 
     while True:
         loop_id += 1
@@ -4267,11 +4443,27 @@ def run_alignment_segment(
                 f"for {int(not_visible_streak)} consecutive frames and {float(lost_for_s):.2f}s "
                 f"(threshold {int(ALIGN_RECOVERY_LOST_VISIBLE_FRAMES)} frames / {float(ALIGN_RECOVERY_LOST_VISIBLE_MIN_S):.2f}s)"
             )
+            premove_recheck = _hold_and_recheck_visibility()
+            if bool((premove_recheck or {}).get("visible")):
+                stale_pre_obs_streak = 0
+                stale_frame_streak = 0
+                not_visible_streak = 0
+                last_visible_ts = time.time()
+                prev_log_correction_type = None
+                prev_log_x_err = None
+                prev_log_dist = None
+                force_gap_switch_after_recovery = True
+                last_align_signature = None
+                continue
             if _recover_visibility(source="align_observe", reason=reason):
                 stale_pre_obs_streak = 0
                 stale_frame_streak = 0
                 not_visible_streak = 0
                 last_visible_ts = time.time()
+                prev_log_correction_type = None
+                prev_log_x_err = None
+                prev_log_dist = None
+                force_gap_switch_after_recovery = True
                 last_align_signature = None
                 continue
             return False, "lost_vision"
@@ -4393,6 +4585,10 @@ def run_alignment_segment(
                         stale_frame_streak = 0
                         not_visible_streak = 0
                         last_visible_ts = time.time()
+                        prev_log_correction_type = None
+                        prev_log_x_err = None
+                        prev_log_dist = None
+                        force_gap_switch_after_recovery = True
                         last_align_signature = None
                         continue
                     return False, "lost_vision_stale_observation"
@@ -4408,7 +4604,19 @@ def run_alignment_segment(
                     action_meta=action_meta,
                     action_index=align_action_idx,
                     settle=False,
+                    force_gap_switch=force_gap_switch_after_recovery,
                 )
+                force_gap_switch_after_recovery = False
+            if suppress_auto_diag:
+                correction_type_for_stats = "distance" if cmd in ("f", "b") else "x_axis" if cmd in ("l", "r") else None
+                delta_class = _classify_align_delta_class(
+                    correction_type=correction_type_for_stats,
+                    local_gate_before_action=local_gate_before_action,
+                    prev_log_correction_type=prev_log_correction_type,
+                    prev_log_x_err=prev_log_x_err,
+                    prev_log_dist=prev_log_dist,
+                )
+                _record_auto_step_action_stats(world, step, delta_class)
             action_detail = None
             if not suppress_auto_diag:
                 action_detail = auto_action_detail_text(
@@ -4454,7 +4662,10 @@ def run_alignment_segment(
                         hist_score = int(round(float(speed_score))) if speed_score is not None else int(DEFAULT_SPEED_SCORE)
                     except (TypeError, ValueError):
                         hist_score = int(DEFAULT_SPEED_SCORE)
-                recent_align_acts.append({"cmd": str(cmd), "score": int(hist_score)})
+                hist_cmd = str(cmd_sent or cmd).strip().lower()
+                if hist_cmd not in ("f", "b", "l", "r"):
+                    hist_cmd = str(cmd).strip().lower()
+                recent_align_acts.append({"cmd": str(hist_cmd), "score": int(hist_score)})
                 if isinstance(action_meta, dict):
                     last_align_action = {
                         "cmd": str(action_meta.get("cmd_sent") or cmd),
@@ -4526,6 +4737,10 @@ def run_alignment_segment(
                         stale_frame_streak = 0
                         not_visible_streak = 0
                         last_visible_ts = time.time()
+                        prev_log_correction_type = None
+                        prev_log_x_err = None
+                        prev_log_dist = None
+                        force_gap_switch_after_recovery = True
                         last_align_signature = None
                         continue
                     return False, "lost_vision_stale_frames"
