@@ -14,7 +14,7 @@
     },
     "f": {
       "cmd": "b",
-      "score": 1
+      "score": 10
     },
     "t": {
       "cmd": "f",
@@ -48,13 +48,31 @@
       "cmd": "r",
       "score": 100
     },
-    "p": {
+    "o": {
+      "cmd": "u",
+      "score": 1,
+      "pwm": 33,
+      "power": 0.033,
+      "duration_ms": 250
+    },
+    "k": {
+      "cmd": "d",
+      "score": 1,
+      "pwm": 27,
+      "power": 0.033,
+      "duration_ms": 250
+    },
+    "u": {
       "cmd": "u",
       "score": 50
     },
+    "p": {
+      "cmd": "u",
+      "score": 100
+    },
     "l": {
       "cmd": "d",
-      "score": 50
+      "score": 100
     }
   },
   "min_pwm": 36,
@@ -117,14 +135,6 @@
     "r": 59.25
   },
   "auto_turn_speed_boost_pct": 4.0,
-  "auto_micro_adjustments": {
-    "ALIGN_BRICK": {
-      "forward": {
-        "creep_ms": 20,
-        "segment_ms": 25
-      }
-    }
-  },
   "x_axis_turn_calibration": {
     "schema_version": 1,
     "run_id": 1771290893,
@@ -252,12 +262,47 @@
     "1": 0.065
   },
   "speed_score_seconds_turn_meta": {
-    "mini_x_axis_last_run_epoch_s": 1771522275.331,
-    "mini_x_axis_last_run_iso_utc": "2026-02-19T17:31:15Z",
+    "mini_x_axis_last_run_epoch_s": 1771881478.145,
+    "mini_x_axis_last_run_iso_utc": "2026-02-23T21:17:58Z",
     "mini_x_axis_last_run_step": "ALIGN_BRICK",
     "mini_x_axis_last_run_ok": true,
     "mini_x_axis_last_run_confident": false,
-    "mini_x_axis_last_run_seconds": 20.471,
-    "mini_x_axis_min_interval_hours": 12.0
+    "mini_x_axis_last_run_seconds": 7.44,
+    "mini_x_axis_min_interval_hours": 12.0,
+    "mini_x_axis_tiny_profile_pct": 0.01,
+    "mini_x_axis_tiny_profile_last_updated_epoch_s": 1771881476.042,
+    "mini_x_axis_tiny_profile_last_updated_iso_utc": "2026-02-23T21:17:56Z",
+    "mini_x_axis_tiny_profile_notches": {
+      "l": -7,
+      "r": -9
+    }
+  },
+  "hotkey_motion_discovery_meta": {
+    "last_updated_epoch_s": 1771879126.935,
+    "last_updated_iso_utc": "2026-02-23T20:38:46Z",
+    "confirm_frames": 3,
+    "start_below_score_steps": 5,
+    "hotkeys": {
+      "r": {
+        "cmd": "f",
+        "score": 1
+      }
+    }
+  },
+  "turn_intensity_posts_turn_left": {
+    "0.01": {
+      "score": 1,
+      "duration_scale": 0.3,
+      "notch": -7,
+      "source": "mini_x_axis_discovery"
+    }
+  },
+  "turn_intensity_posts_turn_right": {
+    "0.01": {
+      "score": 1,
+      "duration_scale": 0.1,
+      "notch": -9,
+      "source": "mini_x_axis_discovery"
+    }
   }
 }

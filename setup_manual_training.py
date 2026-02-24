@@ -30,6 +30,10 @@ from helper_mini_x_axis_calibrate import (
     RUN_LOG_FILE_DEFAULT as MINI_X_AXIS_LOG_DEFAULT,
     run_mini_x_axis_calibration,
 )
+from helper_mini_hotkey_motion_calibrate import (
+    RUN_LOG_FILE_DEFAULT as MINI_HOTKEY_MOTION_LOG_DEFAULT,
+    run_mini_hotkey_motion_calibration,
+)
 import telemetry_robot as telemetry_robot_module
 from telemetry_robot import (
     WorldModel,
@@ -37,7 +41,6 @@ from telemetry_robot import (
     MotionEvent,
     StepState,
     draw_telemetry_overlay,
-    manual_key_action,
     HOTKEY_SPEED_SCORES,
     step_sequence,
     quantize_speed,
@@ -50,6 +53,7 @@ from telemetry_process import (
     nominal_actions_from_events,
     reset_auto_step_action_stats,
     send_robot_command,
+    send_robot_command_pwm,
     step_requires_start_gates,
 )
 from autobuild import (
@@ -123,7 +127,7 @@ PROCESS_MODEL_FILE = Path(__file__).resolve().parent / "world_model_process.json
 DEMO_STEPS = step_sequence()
 CTRL_HELP_LINE = (
     "[CTRL] Drive: W/S 50%, R/F 1%, T/G 100%. Turn: A/D 50%, Q/E 1%, Z/C 100%. "
-    "Lift: U/L 50%. F action, ':' command, m auto, y edit hotkey vars, 1 trash log, Q quit"
+    "Lift: O/K 1%, U 50%, P/L 100%. F action, ':' command, m auto, y edit hotkey vars, 1 trash log, Q quit"
 )
 ANSI_ORANGE_BRIGHT = "\033[38;5;208m"
 ANSI_RESET = "\033[0m"
@@ -231,6 +235,19 @@ except (TypeError, ValueError):
     AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS = 12.0
 AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS = max(0.0, float(AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS))
 AUTO_MINI_X_AXIS_LOG = Path(_MANUAL_CONFIG.get("auto_mini_x_axis_log", str(MINI_X_AXIS_LOG_DEFAULT)))
+AUTO_PREFLIGHT_HOTKEY_MOTION_ENABLED = bool(_MANUAL_CONFIG.get("auto_preflight_hotkey_motion_enabled", True))
+AUTO_PREFLIGHT_HOTKEY_MOTION_LOG = Path(
+    _MANUAL_CONFIG.get("auto_preflight_hotkey_motion_log", str(MINI_HOTKEY_MOTION_LOG_DEFAULT))
+)
+AUTO_PREFLIGHT_HOTKEY_KEYS = ("r", "f", "o", "k")
+AUTO_PREFLIGHT_LIFT_GROUND_ENABLED = bool(_MANUAL_CONFIG.get("auto_preflight_lift_ground_enabled", True))
+LIFT_GROUND_PREFLIGHT_SAMPLE_FRAMES = int(_MANUAL_CONFIG.get("lift_ground_preflight_sample_frames", 4))
+LIFT_GROUND_PREFLIGHT_SAMPLE_TIMEOUT_S = float(_MANUAL_CONFIG.get("lift_ground_preflight_sample_timeout_s", 1.5))
+LIFT_GROUND_PREFLIGHT_MAX_DOWN_PULSES = int(_MANUAL_CONFIG.get("lift_ground_preflight_max_down_pulses", 10))
+LIFT_GROUND_PREFLIGHT_SETTLE_S = float(_MANUAL_CONFIG.get("lift_ground_preflight_settle_s", 0.05))
+LIFT_GROUND_PREFLIGHT_NO_MOVE_MM = float(_MANUAL_CONFIG.get("lift_ground_preflight_no_move_mm", 0.35))
+LIFT_GROUND_PREFLIGHT_STABLE_PULSES = int(_MANUAL_CONFIG.get("lift_ground_preflight_stable_pulses", 2))
+LIFT_GROUND_PREFLIGHT_MIN_CONF = float(_MANUAL_CONFIG.get("lift_ground_preflight_min_conf", 50.0))
 
 
 def _vision_mode_cli_value(mode):
@@ -269,6 +286,10 @@ STEP_NAMES = {obj.value.lower(): obj for obj in DEMO_STEPS}
 STEP_NAMES["wall"] = StepState.FIND_WALL
 STEP_NAMES["find"] = StepState.FIND_BRICK
 STEP_NAMES["align"] = StepState.ALIGN_BRICK
+STEP_NAMES["seat"] = StepState.SEAT_BRICK
+STEP_NAMES["scoop"] = StepState.SEAT_BRICK
+STEP_NAMES["elevate"] = StepState.ELEVATE_BRICK
+STEP_NAMES["lift"] = StepState.ELEVATE_BRICK
 STEP_NAMES["carry"] = StepState.FIND_WALL2
 STEP_NAMES["wall2"] = StepState.FIND_WALL2
 STEP_NAMES["position"] = StepState.POSITION_BRICK
@@ -361,6 +382,236 @@ def _log_motion_event_and_state(app_state, cmd, speed, score, duration_ms=None):
     app_state.logger.log_state(app_state.world)
 
 
+def _apply_manual_motion_telemetry_from_send(app_state, *, cmd, speed, score, send_result=None):
+    if app_state is None or app_state.world is None or not cmd:
+        return
+    result = send_result if isinstance(send_result, dict) else {}
+    cmd_for_motion = str(result.get("cmd_sent") or cmd).strip().lower()
+    if cmd_for_motion not in ("f", "b", "l", "r", "u", "d"):
+        cmd_for_motion = str(cmd or "").strip().lower()
+    action_type = _cmd_to_motion_action_type(cmd_for_motion)
+    if action_type == "unknown":
+        return
+    try:
+        power_used = float(result.get("power", speed))
+    except (TypeError, ValueError):
+        power_used = float(speed or 0.0)
+    power_used = max(0.0, min(1.0, power_used))
+    try:
+        duration_used_ms = int(round(float(result.get("duration_ms"))))
+    except (TypeError, ValueError):
+        duration_used_ms = None
+    if duration_used_ms is None or duration_used_ms <= 0:
+        try:
+            duration_used_ms = int(round(float(app_state.active_duration_ms)))
+        except (TypeError, ValueError):
+            duration_used_ms = int(CONTROL_DT * 1000)
+    evt = MotionEvent(
+        action_type,
+        int(round(power_used * 255.0)),
+        max(1, int(duration_used_ms)),
+        speed_score=score,
+    )
+    app_state.world.update_from_motion(evt)
+    _log_motion_event_and_state(app_state, cmd_for_motion, power_used, score, int(duration_used_ms))
+
+
+def _collect_lift_cam_h_samples(app_state, *, samples=4, timeout_s=1.5):
+    vals = []
+    vision = getattr(app_state, "vision", None)
+    if vision is None:
+        return vals
+    started = time.time()
+    requested = max(1, int(samples or 1))
+    while len(vals) < requested and (time.time() - started) < float(timeout_s) and app_state.running:
+        with app_state.vision_io_lock:
+            found, angle, dist, offset_x, conf, cam_h, brick_above, brick_below = vision.read()
+        try:
+            conf_val = float(conf)
+        except (TypeError, ValueError):
+            conf_val = 0.0
+        try:
+            cam_h_val = float(cam_h)
+        except (TypeError, ValueError):
+            cam_h_val = 0.0
+        with app_state.lock:
+            app_state.world.update_vision(
+                bool(found),
+                float(dist or 0.0),
+                float(angle or 0.0),
+                conf_val,
+                float(offset_x or 0.0),
+                cam_h_val,
+                bool(brick_above),
+                bool(brick_below),
+            )
+        if bool(found) and conf_val >= float(LIFT_GROUND_PREFLIGHT_MIN_CONF) and cam_h_val > 0.0:
+            vals.append(float(cam_h_val))
+        time.sleep(0.02)
+    return vals
+
+
+def _current_hotkey_row(hotkey):
+    key = str(hotkey or "").strip().lower()
+    row = HOTKEY_SPEED_SCORES.get(key)
+    return row if isinstance(row, dict) else {}
+
+
+def run_lift_ground_level_preflight(app_state, *, force=False):
+    if app_state is None:
+        return {"ok": False, "error": "no app state"}
+    if not AUTO_PREFLIGHT_LIFT_GROUND_ENABLED and not force:
+        return {"ok": True, "skipped": True, "reason": "disabled"}
+
+    with app_state.lock:
+        already = bool(getattr(app_state, "lift_ground_preflight_done", False))
+        running = bool(getattr(app_state, "lift_ground_preflight_running", False))
+        if already and not force:
+            return {"ok": True, "skipped": True, "reason": "already calibrated"}
+        if running:
+            return {"ok": False, "busy": True}
+        app_state.lift_ground_preflight_running = True
+
+    try:
+        if app_state.robot is None or app_state.vision is None:
+            log_line("[PREFLIGHT LIFT] Skipped (robot/vision unavailable).")
+            return {"ok": True, "skipped": True, "reason": "robot/vision unavailable"}
+
+        log_line("[PREFLIGHT LIFT] Discovering lift micro movement (O/K) and finding ground level...")
+
+        # Reuse the existing mini motion calibrator so lift minimal movement is tuned
+        # together with the same logic we use for other hotkeys.
+        with app_state.vision_io_lock:
+            mini_result = run_mini_hotkey_motion_calibration(
+                robot=app_state.robot,
+                vision=app_state.vision,
+                hotkeys=("o", "k"),
+                log_path=AUTO_PREFLIGHT_HOTKEY_MOTION_LOG,
+                log_fn=log_line,
+            )
+        if not bool(mini_result.get("ok")):
+            log_line(f"[PREFLIGHT LIFT] Lift mini discovery failed ({mini_result.get('error')}).")
+        else:
+            with app_state.lock:
+                app_state.preflight_checked_hotkeys.update({"o", "k"})
+
+        baseline_vals = _collect_lift_cam_h_samples(
+            app_state,
+            samples=LIFT_GROUND_PREFLIGHT_SAMPLE_FRAMES,
+            timeout_s=LIFT_GROUND_PREFLIGHT_SAMPLE_TIMEOUT_S,
+        )
+        if not baseline_vals:
+            log_line("[PREFLIGHT LIFT] Could not see a brick marker to calibrate lift ground.")
+            return {"ok": False, "error": "no marker samples"}
+        baseline_cam_h = float(statistics.median(baseline_vals))
+
+        row_k = _current_hotkey_row("k")
+        cmd_down = str(row_k.get("cmd", "d")).strip().lower()
+        if cmd_down != "d":
+            cmd_down = "d"
+        try:
+            score_down = int(row_k.get("score", 1))
+        except (TypeError, ValueError):
+            score_down = 1
+        duration_down_ms = row_k.get("duration_ms")
+
+        stable_no_move = 0
+        pulses_sent = 0
+        last_cam_h = baseline_cam_h
+        pulse_records = []
+        for _ in range(max(1, int(LIFT_GROUND_PREFLIGHT_MAX_DOWN_PULSES))):
+            pulses_sent += 1
+            send_result = send_robot_command(
+                app_state.robot,
+                app_state.world,
+                app_state.world.step_state,
+                cmd_down,
+                0.0,
+                speed_score=score_down,
+                duration_override_ms=duration_down_ms,
+            )
+            _apply_manual_motion_telemetry_from_send(
+                app_state,
+                cmd=cmd_down,
+                speed=0.0,
+                score=score_down,
+                send_result=send_result,
+            )
+            try:
+                sleep_s = max(
+                    float(LIFT_GROUND_PREFLIGHT_SETTLE_S),
+                    min(0.25, float((send_result or {}).get("duration_ms", 0)) / 1000.0 + 0.02),
+                )
+            except Exception:
+                sleep_s = float(LIFT_GROUND_PREFLIGHT_SETTLE_S)
+            time.sleep(sleep_s)
+            vals = _collect_lift_cam_h_samples(
+                app_state,
+                samples=LIFT_GROUND_PREFLIGHT_SAMPLE_FRAMES,
+                timeout_s=LIFT_GROUND_PREFLIGHT_SAMPLE_TIMEOUT_S,
+            )
+            if not vals:
+                break
+            cam_h_now = float(statistics.median(vals))
+            delta_mm = float(cam_h_now - last_cam_h)
+            pulse_records.append({"pulse": int(pulses_sent), "cam_h": cam_h_now, "delta_mm": delta_mm})
+            if abs(delta_mm) <= float(LIFT_GROUND_PREFLIGHT_NO_MOVE_MM):
+                stable_no_move += 1
+            else:
+                stable_no_move = 0
+            last_cam_h = cam_h_now
+            if stable_no_move >= max(1, int(LIFT_GROUND_PREFLIGHT_STABLE_PULSES)):
+                break
+
+        final_vals = _collect_lift_cam_h_samples(
+            app_state,
+            samples=LIFT_GROUND_PREFLIGHT_SAMPLE_FRAMES,
+            timeout_s=LIFT_GROUND_PREFLIGHT_SAMPLE_TIMEOUT_S,
+        )
+        if not final_vals:
+            final_vals = [last_cam_h]
+        final_cam_h = float(statistics.median(final_vals))
+
+        with app_state.lock:
+            brick_height = float(app_state.world.height_mm or 0.0) if app_state.world.height_mm is not None else 0.0
+            app_state.world.lift_height = 0.0
+            app_state.world.lift_height_anchor = float(final_cam_h + brick_height)
+            app_state.lift_ground_preflight_done = True
+            app_state.lift_ground_preflight_cam_h = float(final_cam_h)
+            app_state.lift_ground_preflight_time = float(time.time())
+        refresh_brick_telemetry(app_state, read_vision=False)
+
+        log_line(
+            "[PREFLIGHT LIFT] Ground level calibrated: "
+            f"cam_h={final_cam_h:.2f}mm, anchor={float(app_state.world.lift_height_anchor):.2f}, "
+            f"down_pulses={int(pulses_sent)}."
+        )
+        return {
+            "ok": True,
+            "cam_h_ground": float(final_cam_h),
+            "anchor": float(app_state.world.lift_height_anchor),
+            "down_pulses": int(pulses_sent),
+            "pulse_records": pulse_records,
+            "mini_result_ok": bool(mini_result.get("ok")) if isinstance(mini_result, dict) else False,
+        }
+    finally:
+        with app_state.lock:
+            app_state.lift_ground_preflight_running = False
+
+
+def run_lift_preflight_check_if_needed(app_state, *, cmd=None, force=False):
+    cmd_key = str(cmd or "").strip().lower()
+    if not force and cmd_key not in ("u", "d"):
+        return True
+    result = run_lift_ground_level_preflight(app_state, force=force)
+    if result.get("busy"):
+        return False
+    if not bool(result.get("ok")) and not bool(result.get("skipped")):
+        # Do not block manual control forever; surface error and continue.
+        log_line(f"[PREFLIGHT LIFT] Continuing despite calibration issue ({result.get('error')}).")
+    return True
+
+
 def _begin_auto_demo_logging(app_state, obj_enum):
     ensure_log_open(app_state)
     marker = ATTEMPT_MARKERS["NOMINAL"][0]
@@ -435,7 +686,28 @@ def _manual_hotkey_duration_ms(app_state, cmd, duration_ms):
     return base_ms
 
 
-def _update_speed_model_vars_for_hotkey(cmd, score, pwm, power, duration_ms):
+def _update_speed_model_vars_for_hotkey(cmd, score, pwm, power, duration_ms, hotkey=None):
+    hotkey_norm = None
+    if isinstance(hotkey, str) and str(hotkey).strip():
+        hotkey_norm = str(hotkey).strip().lower()
+    elif isinstance(HOTKEY_SPEED_SCORES, dict):
+        cmd_norm = str(cmd or "").strip().lower()
+        try:
+            score_norm = int(telemetry_robot_module.normalize_speed_score(score))
+        except Exception:
+            score_norm = None
+        for key, row in HOTKEY_SPEED_SCORES.items():
+            if not isinstance(row, dict):
+                continue
+            row_cmd = str(row.get("cmd", "")).strip().lower()
+            try:
+                row_score = int(row.get("score"))
+            except (TypeError, ValueError):
+                continue
+            if row_cmd == cmd_norm and score_norm is not None and row_score == score_norm:
+                hotkey_norm = str(key).strip().lower()
+                break
+
     score_key = telemetry_robot_module.normalize_speed_score(score)
     pwm_clamped = telemetry_robot_module.clamp_pwm(pwm)
     try:
@@ -443,6 +715,65 @@ def _update_speed_model_vars_for_hotkey(cmd, score, pwm, power, duration_ms):
     except (TypeError, ValueError):
         power_clamped = telemetry_robot_module.pwm_to_power(pwm_clamped) or 0.0
     duration_clamped = max(1, int(round(float(duration_ms))))
+
+    def _apply_hotkey_override_to_memory():
+        if not hotkey_norm or not isinstance(HOTKEY_SPEED_SCORES, dict):
+            return
+        existing_hotkey = HOTKEY_SPEED_SCORES.get(hotkey_norm)
+        if not isinstance(existing_hotkey, dict):
+            existing_hotkey = {}
+        HOTKEY_SPEED_SCORES[hotkey_norm] = {
+            **existing_hotkey,
+            "cmd": str(cmd),
+            "score": int(score_key),
+            "pwm": int(pwm_clamped),
+            "power": float(power_clamped),
+            "duration_ms": int(duration_clamped),
+        }
+
+    def _apply_hotkey_override_to_model(model):
+        if not hotkey_norm or not isinstance(model, dict):
+            return
+        hotkeys_map = model.get("hotkey_speed_scores")
+        if not isinstance(hotkeys_map, dict):
+            hotkeys_map = {}
+            model["hotkey_speed_scores"] = hotkeys_map
+        existing_row = hotkeys_map.get(hotkey_norm)
+        if not isinstance(existing_row, dict):
+            existing_row = {}
+        hotkeys_map[hotkey_norm] = {
+            **existing_row,
+            "cmd": str(cmd),
+            "score": int(score_key),
+            "pwm": int(pwm_clamped),
+            "power": float(power_clamped),
+            "duration_ms": int(duration_clamped),
+        }
+
+    # Lift/mast hotkeys are calibrated per-key and must not mutate shared drive
+    # score maps used by auto alignment (f/b).
+    if cmd in ("u", "d") and hotkey_norm:
+        _apply_hotkey_override_to_memory()
+
+        model_path = getattr(telemetry_robot_module, "ROBOT_MODEL_FILE", None)
+        if not isinstance(model_path, Path):
+            return False, "Robot model path unavailable."
+        try:
+            if model_path.exists():
+                try:
+                    model = json.loads(model_path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    model = {}
+            else:
+                model = {}
+            if not isinstance(model, dict):
+                model = {}
+            _apply_hotkey_override_to_model(model)
+            model_path.write_text(json.dumps(model, indent=2) + "\n")
+        except OSError as exc:
+            return False, f"Failed to persist world model: {exc}"
+
+        return True, None
 
     if cmd == "l":
         score_map = getattr(telemetry_robot_module, "SCORE_POWER_PWM_TURN_LEFT", None)
@@ -520,6 +851,11 @@ def _update_speed_model_vars_for_hotkey(cmd, score, pwm, power, duration_ms):
             model[duration_key] = speed_seconds
         speed_seconds[score_text] = round(float(duration_clamped) / 1000.0, 3)
 
+        # Also persist the explicit hotkey row that was edited (if any). This is
+        # required for custom/manual hotkeys that use per-key PWM/duration overrides.
+        _apply_hotkey_override_to_memory()
+        _apply_hotkey_override_to_model(model)
+
         model_path.write_text(json.dumps(model, indent=2) + "\n")
     except OSError as exc:
         return False, f"Failed to persist world model: {exc}"
@@ -527,7 +863,7 @@ def _update_speed_model_vars_for_hotkey(cmd, score, pwm, power, duration_ms):
     return True, None
 
 
-def maybe_prompt_hotkey_var_update(app_state, cmd, score, *, enter_edit=False):
+def maybe_prompt_hotkey_var_update(app_state, cmd, score, *, enter_edit=False, hotkey=None):
     try:
         _, pwm, score_used, duration_model_ms = telemetry_robot_module.speed_power_pwm_for_cmd(cmd, score)
         power = telemetry_robot_module.pwm_to_power(pwm)
@@ -538,6 +874,65 @@ def maybe_prompt_hotkey_var_update(app_state, cmd, score, *, enter_edit=False):
     if power is None:
         power = 0.0
     duration_used_ms = _manual_hotkey_duration_ms(app_state, cmd, duration_model_ms)
+
+    hotkey_target = None
+    hotkey_explicit = str(hotkey or "").strip().lower()
+    if hotkey_explicit:
+        hotkey_target = hotkey_explicit
+    target = app_state.hotkey_edit_target if isinstance(app_state.hotkey_edit_target, dict) else None
+    if hotkey_target is None and isinstance(target, dict):
+        target_cmd = str(target.get("cmd", "")).strip().lower()
+        try:
+            target_score = int(target.get("score"))
+        except (TypeError, ValueError):
+            target_score = None
+        target_hotkey = str(target.get("hotkey", "")).strip().lower()
+        if target_hotkey and target_cmd == str(cmd).strip().lower() and target_score == int(score_used):
+            hotkey_target = target_hotkey
+    if hotkey_target is None and isinstance(HOTKEY_SPEED_SCORES, dict):
+        for key, row in HOTKEY_SPEED_SCORES.items():
+            if not isinstance(row, dict):
+                continue
+            row_cmd = str(row.get("cmd", "")).strip().lower()
+            try:
+                row_score = int(row.get("score"))
+            except (TypeError, ValueError):
+                continue
+            if row_cmd == str(cmd).strip().lower() and row_score == int(score_used):
+                hotkey_target = str(key).strip().lower()
+                break
+
+    # If a specific hotkey row exists, show/edit the values that manual hotkeys
+    # actually use (including per-hotkey pwm/duration overrides), not only the
+    # generic cmd+score model values.
+    if hotkey_target and isinstance(HOTKEY_SPEED_SCORES, dict):
+        hotkey_row = HOTKEY_SPEED_SCORES.get(hotkey_target)
+        if isinstance(hotkey_row, dict):
+            row_cmd = str(hotkey_row.get("cmd", "")).strip().lower()
+            try:
+                row_score = int(hotkey_row.get("score"))
+            except (TypeError, ValueError):
+                row_score = None
+            if row_cmd == str(cmd).strip().lower() and row_score == int(score_used):
+                try:
+                    pwm_row = int(round(float(hotkey_row.get("pwm"))))
+                except (TypeError, ValueError):
+                    pwm_row = None
+                if pwm_row is not None and pwm_row > 0:
+                    pwm = int(telemetry_robot_module.clamp_pwm(pwm_row))
+                    power_row = hotkey_row.get("power")
+                    try:
+                        power = max(0.0, min(1.0, float(power_row)))
+                    except (TypeError, ValueError):
+                        power_from_pwm = telemetry_robot_module.pwm_to_power(pwm)
+                        power = float(power_from_pwm) if power_from_pwm is not None else float(power or 0.0)
+                try:
+                    duration_row = int(round(float(hotkey_row.get("duration_ms"))))
+                except (TypeError, ValueError):
+                    duration_row = None
+                if duration_row is not None and duration_row > 0:
+                    duration_used_ms = int(duration_row)
+
     if not enter_edit:
         log_line(
             f"[HOTKEY] {str(cmd).upper()} {int(score_used)}% "
@@ -560,7 +955,14 @@ def maybe_prompt_hotkey_var_update(app_state, cmd, score, *, enter_edit=False):
             log_line("[HOTKEY] Invalid input. Enter exactly 3 numbers: pwm power duration_ms")
             continue
         pwm_new, power_new, duration_new = parsed
-        ok, err = _update_speed_model_vars_for_hotkey(cmd, score_used, pwm_new, power_new, duration_new)
+        ok, err = _update_speed_model_vars_for_hotkey(
+            cmd,
+            score_used,
+            pwm_new,
+            power_new,
+            duration_new,
+            hotkey=hotkey_target,
+        )
         if not ok:
             log_line(f"[HOTKEY] Update failed: {err}")
             return
@@ -809,6 +1211,8 @@ def run_auto_step(app_state, obj_enum):
     reset_auto_step_action_stats(app_state.world, step_key)
     observer = make_auto_observer(app_state)
     confirm_callback = None
+    prior_suppress_skip_start_log = bool(getattr(app_state.world, "_suppress_start_gate_skip_log", False))
+    app_state.world._suppress_start_gate_skip_log = True
     try:
         ok, reason = replay_segment(
             segment,
@@ -822,6 +1226,7 @@ def run_auto_step(app_state, obj_enum):
             align_silent=quiet_align,
         )
     finally:
+        app_state.world._suppress_start_gate_skip_log = prior_suppress_skip_start_log
         _end_auto_demo_logging(app_state, obj_enum)
     if ok:
         reason_text = reason.replace("_", " ") if isinstance(reason, str) else "success criteria met"
@@ -852,6 +1257,103 @@ def run_auto_step(app_state, obj_enum):
     else:
         log_line(f"[AUTO] {step_key} failed ({reason}).")
     return ok
+
+
+def _preflight_hotkey_for_motion(*, hotkey, cmd, score):
+    hotkey_norm = str(hotkey or "").strip().lower()
+    if hotkey_norm in AUTO_PREFLIGHT_HOTKEY_KEYS:
+        return hotkey_norm
+
+    cmd_norm = str(cmd or "").strip().lower()
+    try:
+        score_norm = int(score)
+    except (TypeError, ValueError):
+        score_norm = None
+
+    for key in AUTO_PREFLIGHT_HOTKEY_KEYS:
+        row = HOTKEY_SPEED_SCORES.get(key)
+        if not isinstance(row, dict):
+            continue
+        row_cmd = str(row.get("cmd", "")).strip().lower()
+        try:
+            row_score = int(row.get("score"))
+        except (TypeError, ValueError):
+            continue
+        if row_cmd == cmd_norm and score_norm is not None and row_score == int(score_norm):
+            return str(key)
+    return None
+
+
+def run_hotkey_preflight_check_if_needed(app_state, *, hotkey, cmd, score):
+    if not AUTO_PREFLIGHT_HOTKEY_MOTION_ENABLED:
+        return True
+
+    target_hotkey = _preflight_hotkey_for_motion(hotkey=hotkey, cmd=cmd, score=score)
+    if target_hotkey is None:
+        return True
+
+    with app_state.lock:
+        if target_hotkey in app_state.preflight_checked_hotkeys:
+            return True
+        if target_hotkey in app_state.preflight_running_hotkeys:
+            return False
+        app_state.preflight_running_hotkeys.add(target_hotkey)
+
+    try:
+        cmd_text = str(cmd or "").upper()
+        try:
+            score_text = str(int(score))
+        except (TypeError, ValueError):
+            score_text = "?"
+        log_line(
+            f"[PREFLIGHT CHECK] {target_hotkey.upper()} -> {cmd_text} "
+            f"score={score_text} starting."
+        )
+
+        if app_state.robot is None or app_state.vision is None:
+            log_line(
+                f"[PREFLIGHT CHECK] {target_hotkey.upper()} skipped "
+                "(robot/vision unavailable)."
+            )
+            return True
+
+        with app_state.vision_io_lock:
+            result = run_mini_hotkey_motion_calibration(
+                robot=app_state.robot,
+                vision=app_state.vision,
+                hotkeys=(target_hotkey,),
+                log_path=AUTO_PREFLIGHT_HOTKEY_MOTION_LOG,
+                log_fn=log_line,
+            )
+
+        if not bool(result.get("ok")):
+            log_line(
+                f"[PREFLIGHT CHECK] {target_hotkey.upper()} failed; continuing "
+                f"({result.get('error')})."
+            )
+            return True
+
+        selected_score = None
+        hotkeys_result = result.get("hotkeys")
+        if isinstance(hotkeys_result, dict):
+            row = hotkeys_result.get(target_hotkey)
+            if isinstance(row, dict):
+                try:
+                    selected_score = int(row.get("selected_score"))
+                except (TypeError, ValueError):
+                    selected_score = None
+        if selected_score is not None:
+            log_line(
+                f"[PREFLIGHT CHECK] {target_hotkey.upper()} complete: "
+                f"selected score {selected_score}."
+            )
+        else:
+            log_line(f"[PREFLIGHT CHECK] {target_hotkey.upper()} complete.")
+        return True
+    finally:
+        with app_state.lock:
+            app_state.preflight_running_hotkeys.discard(target_hotkey)
+            app_state.preflight_checked_hotkeys.add(target_hotkey)
 
 
 def update_brick_analytics(app_state):
@@ -1004,6 +1506,8 @@ def _average_frames(frames):
         "dist": mean([f["dist"] for f in frames]),
         "angle": mean([f["angle"] for f in frames]),
         "offset_x": mean([f["offset_x"] for f in frames]),
+        "offset_y": mean([f.get("offset_y", f.get("cam_h", 0.0)) for f in frames]),
+        "y_axis": mean([f.get("y_axis", f.get("offset_y", f.get("cam_h", 0.0))) for f in frames]),
         "conf": mean([f["conf"] for f in frames]),
         "cam_h": mean([f["cam_h"] for f in frames]),
         "brick_above": majority([f["brick_above"] for f in frames]),
@@ -1030,6 +1534,8 @@ def _markerless_average_frames(frames):
         "dist": median([frame["dist"] for frame in found_frames]),
         "angle": median([frame["angle"] for frame in found_frames]),
         "offset_x": median([frame["offset_x"] for frame in found_frames]),
+        "offset_y": median([frame.get("offset_y", frame.get("cam_h", 0.0)) for frame in found_frames]),
+        "y_axis": median([frame.get("y_axis", frame.get("offset_y", frame.get("cam_h", 0.0))) for frame in found_frames]),
         "conf": mean([frame["conf"] for frame in found_frames]),
         "cam_h": mean([frame["cam_h"] for frame in found_frames]),
         "brick_above": majority([frame["brick_above"] for frame in found_frames]),
@@ -1359,6 +1865,7 @@ def print_command_help(app_state=None):
     log_line("[CMD] Auto mode: press step number to auto-run.")
     log_line("[CMD] Auto-run: press step number.")
     log_line("[CMD] Hotkey tuning: press a movement hotkey, then press y to edit that hotkey's vars.")
+    log_line("[CMD] Lift preflight: :liftcal (discover O/K micro movement + find ground level).")
     log_line("[CMD] End attempt: press ':' to finish and return to the command prompt.")
     log_line("[CMD] Step codes:")
     for idx, obj in enumerate(DEMO_STEPS):
@@ -1377,7 +1884,7 @@ def format_hotkey_speeds():
     key_order = {key: idx for idx, key in enumerate([
         "W", "S", "R", "F", "T", "G",
         "A", "D", "Q", "E", "Z", "C",
-        "P", "L",
+        "O", "K", "U", "P", "L",
     ])}
     grouped = {}
     for key, info in HOTKEY_SPEED_SCORES.items():
@@ -1414,6 +1921,7 @@ def handle_command_line(app_state, cmd):
     do_help = False
     exit_mode = False
     ended_info = None
+    run_lift_preflight_cmd = False
 
     with app_state.lock:
         if cmd_lower in ("", ":"):
@@ -1435,6 +1943,8 @@ def handle_command_line(app_state, cmd):
             obj = app_state.world.step_state
             attempt = app_state.active_attempt or "NONE"
             messages.append(f"[STATE] Step={step_label(obj)} Attempt={attempt}")
+        elif cmd_lower in ("liftcal", "lift_cal", "lift-ground", "groundlift"):
+            run_lift_preflight_cmd = True
         elif cmd_lower in ("end", "stop", "done"):
             ok, msg, obj_enum, attempt_type, should_close = end_attempt(app_state)
             messages.append(msg)
@@ -1458,6 +1968,15 @@ def handle_command_line(app_state, cmd):
                         messages.append("[CMD] Press ':' to finish and return to the command prompt.")
                 if ended:
                     ended_info = ended
+
+    if run_lift_preflight_cmd:
+        result = run_lift_ground_level_preflight(app_state, force=True)
+        if bool(result.get("ok")):
+            messages.append("[PREFLIGHT LIFT] Complete.")
+        elif bool(result.get("busy")):
+            messages.append("[PREFLIGHT LIFT] Already running.")
+        else:
+            messages.append(f"[PREFLIGHT LIFT] Failed ({result.get('error')}).")
 
     return exit_mode, do_help, messages, ended_info
 
@@ -1538,11 +2057,20 @@ class AppState:
     def __init__(self):
         self.running = True
         self.active_command = None
+        self.active_hotkey = None
         self.active_speed = 0.0
         self.active_speed_score = None
+        self.active_duration_ms = None
+        self.active_pwm_override = None
         self.last_key_time = 0
         self.micro_speed_state = {}
         self.hotkey_edit_target = None
+        self.preflight_checked_hotkeys = set()
+        self.preflight_running_hotkeys = set()
+        self.lift_ground_preflight_done = False
+        self.lift_ground_preflight_running = False
+        self.lift_ground_preflight_cam_h = None
+        self.lift_ground_preflight_time = 0.0
         
         # Job Status
         self.job_success = False
@@ -1555,6 +2083,7 @@ class AppState:
         # Job Status
         
         self.lock = threading.Lock()
+        self.vision_io_lock = threading.Lock()
         self.current_frame = None
         self.step_open = False
         self.open_step = None
@@ -1666,8 +2195,11 @@ def keyboard_thread(app_state):
                             app_state.last_key_time = time.time()
                             app_state.auto_request = obj_enum
                             app_state.active_command = None
+                            app_state.active_hotkey = None
                             app_state.active_speed = 0.0
                             app_state.active_speed_score = None
+                            app_state.active_duration_ms = None
+                            app_state.active_pwm_override = None
         elif auto_prompt:
             with app_state.lock:
                 app_state.last_key_time = time.time()
@@ -1680,8 +2212,11 @@ def keyboard_thread(app_state):
                         app_state.auto_prompt = False
                         app_state.auto_request = obj_enum
                         app_state.active_command = None
+                        app_state.active_hotkey = None
                         app_state.active_speed = 0.0
                         app_state.active_speed_score = None
+                        app_state.active_duration_ms = None
+                        app_state.active_pwm_override = None
                     else:
                         messages.append("[AUTO] Unknown step code.")
         elif ch_lower == ':':
@@ -1693,8 +2228,12 @@ def keyboard_thread(app_state):
                     end_msg = msg
 
                 app_state.active_command = None
+                app_state.active_hotkey = None
                 app_state.active_speed = 0.0
                 app_state.active_speed_score = None
+                app_state.active_duration_ms = None
+                app_state.active_pwm_override = None
+                app_state.active_pwm_override = None
             if end_msg:
                 log_line(end_msg)
             log_line("[CMD] Enter command (ex: 4s, 4f, help). Use ':' or blank to exit.")
@@ -1732,8 +2271,11 @@ def keyboard_thread(app_state):
                 app_state.last_key_time = time.time()
                 app_state.auto_prompt = True
                 app_state.active_command = None
+                app_state.active_hotkey = None
                 app_state.active_speed = 0.0
                 app_state.active_speed_score = None
+                app_state.active_duration_ms = None
+                app_state.active_pwm_override = None
             messages.append("[AUTO] Select a step code to run autonomously (press 'm' again to cancel).")
         elif ch_lower == 'y':
             with app_state.lock:
@@ -1752,27 +2294,56 @@ def keyboard_thread(app_state):
             with app_state.lock:
                 app_state.last_key_time = time.time()
                 # MOVEMENT (Heartbeat triggers)
-                action = manual_key_action(ch_lower)
-                if action:
-                    cmd, score = action
+                entry = HOTKEY_SPEED_SCORES.get(ch_lower) if isinstance(HOTKEY_SPEED_SCORES, dict) else None
+                if isinstance(entry, dict):
+                    cmd = str(entry.get("cmd", "")).strip().lower()
+                    try:
+                        score = int(entry.get("score"))
+                    except (TypeError, ValueError):
+                        score = None
+                    try:
+                        duration_ms = int(round(float(entry.get("duration_ms"))))
+                    except (TypeError, ValueError):
+                        duration_ms = None
+                    if duration_ms is not None and duration_ms <= 0:
+                        duration_ms = None
+                    try:
+                        pwm_override = int(round(float(entry.get("pwm"))))
+                    except (TypeError, ValueError):
+                        pwm_override = None
+                    if pwm_override is not None and pwm_override <= 0:
+                        pwm_override = None
+                else:
+                    cmd = None
+                    score = None
+                    duration_ms = None
+                    pwm_override = None
+                if cmd and score is not None:
                     app_state.active_command = None
+                    app_state.active_hotkey = None
                     app_state.active_speed = 0.0
                     app_state.active_speed_score = None
-                    pending_hotkey_action = (cmd, score)
+                    app_state.active_duration_ms = None
+                    app_state.active_pwm_override = None
+                    pending_hotkey_action = (cmd, score, ch_lower, duration_ms, pwm_override)
                 elif ch_lower in ('h', '?'):
                     print_command_help(app_state)
 
         if pending_hotkey_action and app_state.running:
-            cmd, score = pending_hotkey_action
+            cmd, score, hotkey, duration_ms, pwm_override = pending_hotkey_action
             with app_state.lock:
                 app_state.last_key_time = time.time()
                 app_state.active_command = cmd
+                app_state.active_hotkey = str(hotkey).lower()
                 app_state.active_speed_score = score
+                app_state.active_duration_ms = int(duration_ms) if duration_ms is not None else None
+                app_state.active_pwm_override = int(pwm_override) if pwm_override is not None else None
             # Execute the hotkey act first, then offer var editing for that act.
             time.sleep(1.0 / max(COMMAND_RATE_HZ, 1e-3))
-            score_used = maybe_prompt_hotkey_var_update(app_state, cmd, score, enter_edit=False)
+            score_used = maybe_prompt_hotkey_var_update(app_state, cmd, score, enter_edit=False, hotkey=hotkey)
             with app_state.lock:
                 app_state.hotkey_edit_target = {
+                    "hotkey": str(hotkey).lower(),
                     "cmd": cmd,
                     "score": int(score_used) if score_used is not None else int(score),
                     "timestamp": time.time(),
@@ -2006,8 +2577,10 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
                 app_state.auto_request = None
                 app_state.auto_running = True
                 app_state.active_command = None
+                app_state.active_hotkey = None
                 app_state.active_speed = 0.0
                 app_state.active_speed_score = None
+                app_state.active_duration_ms = None
 
         if auto_obj:
             if app_state.vision is None:
@@ -2017,8 +2590,11 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
             with app_state.lock:
                 app_state.auto_running = False
                 app_state.active_command = None
+                app_state.active_hotkey = None
                 app_state.active_speed = 0.0
                 app_state.active_speed_score = None
+                app_state.active_duration_ms = None
+                app_state.active_pwm_override = None
             continue
             
         # 1. Vision
@@ -2026,7 +2602,8 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
         if vision is None:
             time.sleep(dt)
             continue
-        found, angle, dist, offset_x, conf, cam_h, brick_above, brick_below = vision.read()
+        with app_state.vision_io_lock:
+            found, angle, dist, offset_x, conf, cam_h, brick_above, brick_below = vision.read()
         
         # 2. Telemetry Update
         study = None
@@ -2036,6 +2613,8 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
                 "dist": float(dist),
                 "angle": float(angle),
                 "offset_x": float(offset_x),
+                "offset_y": float(cam_h),
+                "y_axis": float(cam_h),
                 "conf": float(conf),
                 "cam_h": float(cam_h),
                 "brick_above": bool(brick_above),
@@ -2124,13 +2703,9 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
         )
         if adjust_msg:
             log_line(adjust_msg)
-        if cmd and speed > 0:
-            atype = _cmd_to_motion_action_type(cmd)
-            pwr = int(speed * 255)
-            evt = MotionEvent(atype, pwr, int(dt*1000), speed_score=score)
-            app_state.world.update_from_motion(evt)
-            _log_motion_event_and_state(app_state, cmd, speed, score, int(dt * 1000))
-        elif _demo_logging_active(app_state):
+        # Manual pulses are one-shot and are integrated/logged at send time in
+        # command_loop() using the actual returned duration/PWM.
+        if not (cmd and speed > 0) and _demo_logging_active(app_state):
             if app_state.logger is not None and not getattr(app_state, "logger_closed", True):
                 app_state.logger.log_state(app_state.world)
         
@@ -2142,21 +2717,29 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
 
 def command_loop(app_state):
     dt = 1.0 / max(COMMAND_RATE_HZ, 1e-3)
-    was_moving = False
     while app_state.running:
         loop_start = time.time()
         with app_state.lock:
             if app_state.auto_running or app_state.auto_request is not None:
                 app_state.active_command = None
+                app_state.active_hotkey = None
                 app_state.active_speed = 0.0
                 app_state.active_speed_score = None
+                app_state.active_duration_ms = None
+                app_state.active_pwm_override = None
             if time.time() - app_state.last_key_time > HEARTBEAT_TIMEOUT:
                 app_state.active_command = None
+                app_state.active_hotkey = None
                 app_state.active_speed = 0.0
                 app_state.active_speed_score = None
+                app_state.active_duration_ms = None
+                app_state.active_pwm_override = None
 
             cmd = app_state.active_command
+            hotkey = app_state.active_hotkey
             score = app_state.active_speed_score
+            duration_override_ms = app_state.active_duration_ms
+            pwm_override = app_state.active_pwm_override
 
         score_used = score
         if cmd and score is not None:
@@ -2174,18 +2757,103 @@ def command_loop(app_state):
         if cmd and score_used is not None and (
             speed > 0 or score_used == telemetry_robot_module.SPEED_SCORE_MIN
         ):
-            send_robot_command(
-                app_state.robot,
-                app_state.world,
-                app_state.world.step_state,
-                cmd,
-                speed,
-                speed_score=score_used,
+            send_result = None
+            if pwm_override is not None:
+                try:
+                    pwm_override_val = telemetry_robot_module.clamp_pwm(int(pwm_override))
+                except (TypeError, ValueError):
+                    pwm_override_val = None
+                if pwm_override_val is not None and pwm_override_val > 0:
+                    try:
+                        power_for_pwm = telemetry_robot_module.pwm_to_power(pwm_override_val)
+                    except Exception:
+                        power_for_pwm = None
+                    if power_for_pwm is None:
+                        power_for_pwm = float(speed)
+                    if duration_override_ms is not None:
+                        try:
+                            duration_used_ms = max(1, int(round(float(duration_override_ms))))
+                        except (TypeError, ValueError):
+                            duration_used_ms = None
+                    else:
+                        try:
+                            _, _, _, duration_used_ms = telemetry_robot_module.speed_power_pwm_for_cmd(cmd, score_used)
+                        except Exception:
+                            duration_used_ms = None
+                    if duration_used_ms is None or duration_used_ms <= 0:
+                        duration_used_ms = int(getattr(telemetry_robot_module, "ACT_DURATION_MS", 250) or 250)
+                    send_result = send_robot_command_pwm(
+                        app_state.robot,
+                        app_state.world,
+                        app_state.world.step_state,
+                        cmd,
+                        float(power_for_pwm),
+                        int(pwm_override_val),
+                        int(duration_used_ms),
+                        speed_score=score_used,
+                        auto_mode=False,
+                    )
+                else:
+                    send_result = send_robot_command(
+                        app_state.robot,
+                        app_state.world,
+                        app_state.world.step_state,
+                        cmd,
+                        speed,
+                        speed_score=score_used,
+                        duration_override_ms=duration_override_ms,
+                    )
+            else:
+                send_result = send_robot_command(
+                    app_state.robot,
+                    app_state.world,
+                    app_state.world.step_state,
+                    cmd,
+                    speed,
+                    speed_score=score_used,
+                    duration_override_ms=duration_override_ms,
+                )
+            _apply_manual_motion_telemetry_from_send(
+                app_state,
+                cmd=cmd,
+                speed=speed,
+                score=score_used,
+                send_result=send_result,
             )
-            was_moving = True
-        elif was_moving:
-            app_state.robot.stop()
-            was_moving = False
+            if (
+                hotkey
+                and isinstance(send_result, dict)
+                and (pwm_override is not None or duration_override_ms is not None)
+            ):
+                try:
+                    pwm_sent = int(round(float(send_result.get("pwm"))))
+                except (TypeError, ValueError):
+                    pwm_sent = None
+                try:
+                    dur_sent = int(round(float(send_result.get("duration_ms"))))
+                except (TypeError, ValueError):
+                    dur_sent = None
+                cmd_sent = str(send_result.get("cmd_sent") or cmd).strip().lower()
+                wire = getattr(app_state.robot, "last_command", None)
+                wire_tail = f" | wire={wire}" if wire else ""
+                log_line(
+                    "[HOTKEY SEND] "
+                    f"{str(hotkey).upper()} -> {cmd_sent.upper()} "
+                    f"pwm={pwm_sent if pwm_sent is not None else '?'} "
+                    f"dur={dur_sent if dur_sent is not None else '?'}ms"
+                    f"{wire_tail}"
+                )
+            refresh_brick_telemetry(app_state, read_vision=False)
+            # One-shot hotkey behavior: each keypress sends one timed pulse.
+            # This prevents command-loop replays when a key remains active.
+            with app_state.lock:
+                if app_state.active_command == cmd and app_state.active_hotkey == hotkey:
+                    app_state.active_command = None
+                    app_state.active_hotkey = None
+                    app_state.active_speed = 0.0
+                    app_state.active_speed_score = None
+                    app_state.active_duration_ms = None
+                    app_state.active_pwm_override = None
 
         elapsed = time.time() - loop_start
         if elapsed < dt:

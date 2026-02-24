@@ -50,11 +50,12 @@ from telemetry_process import (
 from helper_gate_utils import load_process_steps, gate_satisfied, SuccessGateTracker, update_gatecheck
 from telemetry_process import evaluate_gate_status
 from helper_align_profile import build_align_profile_from_results_payload, promote_align_profile_if_better
+from helper_mini_x_axis_calibrate import run_mini_x_axis_calibration
 
 # Experiment Config
 # Goal reminder: minimize total acts and avoid overshoots/worse acts while staying robust to distance.
-NUM_TRIALS = 20
-EXPERIMENT_TRIALS = 15  # Only first N trials should explore/adapt learning knobs
+NUM_TRIALS = 12
+EXPERIMENT_TRIALS = 4  # Only first N trials should explore/adapt learning knobs
 DATA_FILE = "world_model_align.json"
 RESULTS_FILE = str(
     Path(DATA_FILE).with_name(f"{Path(DATA_FILE).stem}_results{Path(DATA_FILE).suffix}")
@@ -178,6 +179,12 @@ RECOVERY_REVERSE_SCORE = 6
 RECOVERY_SCAN_SCORE = 8
 RECOVERY_SCAN_BURST_ACTS = 2
 RECOVERY_SCAN_OBSERVE_S = 0.6
+
+# Always run one mini x-axis pre-calibration before ALIGN experiment.
+PRECAL_MINI_X_AXIS_ENABLED = True
+PRECAL_MINI_X_AXIS_TRIALS = 1
+PRECAL_MINI_X_AXIS_LOG = "world_model_x_axis.json"
+PRECAL_MINI_X_AXIS_MIN_INTERVAL_HOURS = 0.0
 
 class AlignCalibrator:
     def __init__(self):
@@ -615,7 +622,7 @@ class AlignCalibrator:
         return event
 
 
-    def send_coarse_command(self, cmd, score, reason=None, extra=None):
+    def send_coarse_command(self, cmd, score, reason=None, extra=None, turn_intensity=None):
         sent = send_robot_command(
             self.robot,
             self.world,
@@ -623,6 +630,8 @@ class AlignCalibrator:
             cmd,
             0.0,
             speed_score=score,
+            turn_intensity=turn_intensity,
+            half_first_turn_pulse=False,
         )
         if not isinstance(sent, dict):
             print(
@@ -662,6 +671,7 @@ class AlignCalibrator:
             pwm,
             duration_ms,
             speed_score=PRECISION_SCORE_BASE,  # Report as score 1, not PWM-quantized
+            half_first_turn_pulse=False,
         )
         if not isinstance(sent, dict):
             print(
@@ -1835,6 +1845,29 @@ class AlignCalibrator:
             print()
 
     def run_experiment(self):
+        if bool(PRECAL_MINI_X_AXIS_ENABLED):
+            print(
+                "[ALIGN] Running mini x-axis pre-calibration "
+                f"({int(PRECAL_MINI_X_AXIS_TRIALS)} trial) before ALIGN experiment..."
+            )
+            try:
+                mini_result = run_mini_x_axis_calibration(
+                    robot=self.robot,
+                    vision=self.vision,
+                    step_key="ALIGN_BRICK",
+                    trials=int(PRECAL_MINI_X_AXIS_TRIALS),
+                    log_path=Path(PRECAL_MINI_X_AXIS_LOG),
+                    min_interval_hours=float(PRECAL_MINI_X_AXIS_MIN_INTERVAL_HOURS),
+                    log_fn=print,
+                )
+                if not bool((mini_result or {}).get("ok")):
+                    print(
+                        "[ALIGN] Mini x-axis pre-calibration failed; "
+                        f"continuing ALIGN experiment ({(mini_result or {}).get('error')})."
+                    )
+            except Exception as exc:
+                print(f"[ALIGN] Mini x-axis pre-calibration threw error; continuing ({exc}).")
+
         # WIPE DATA FILE ON START
         if Path(DATA_FILE).exists():
             print(f"[ALIGN] Wiping {DATA_FILE} for fresh learning...")
@@ -2435,6 +2468,11 @@ class AlignCalibrator:
                         # Update previous distance error after taking this action
                         prev_dist_err = float(dist_err)
                     else:
+                        x_turn_score_raw = act_plan.get("score")
+                        try:
+                            x_turn_intensity = float(x_turn_score_raw)
+                        except (TypeError, ValueError):
+                            x_turn_intensity = float(planned_score)
                         x_turn_score = int(planned_score)
                         event = self.send_coarse_command(
                             align_dir,
@@ -2444,7 +2482,9 @@ class AlignCalibrator:
                                 "worst_metric": prod_worst_metric,
                                 "x_error_mm": x_err,
                                 "x_turn_score": int(x_turn_score),
+                                "x_turn_intensity_requested": float(x_turn_intensity),
                             },
+                            turn_intensity=x_turn_intensity,
                         )
                         # Print act with motor details
                         motor_details = ""
@@ -2501,6 +2541,22 @@ class AlignCalibrator:
                             f"(target {X_TARGET_MM:+.2f}mm ±{X_TOL_MM:.2f}mm) → "
                             f"{COLOR_WHITE}{align_dir} {int(x_turn_score)}%{COLOR_RESET}{motor_details}"
                         )
+                        if isinstance(event, dict):
+                            try:
+                                ti_req = event.get("turn_intensity_requested")
+                                ti_eff = event.get("turn_intensity_effective")
+                                if ti_req is not None:
+                                    if ti_eff is not None:
+                                        print(
+                                            f"{COLOR_GRAY}             turn_intensity requested={float(ti_req):.2f}% "
+                                            f"effective={float(ti_eff):.2f}%{COLOR_RESET}"
+                                        )
+                                    else:
+                                        print(
+                                            f"{COLOR_GRAY}             turn_intensity requested={float(ti_req):.2f}%{COLOR_RESET}"
+                                        )
+                            except (TypeError, ValueError):
+                                pass
                         # Update previous x-axis error after taking this action
                         prev_align_x_err = float(x_err)
                     

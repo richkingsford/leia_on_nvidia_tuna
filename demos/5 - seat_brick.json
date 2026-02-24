@@ -1,0 +1,44 @@
+[
+  {
+    "type": "keyframe",
+    "timestamp": 1769826675.369,
+    "marker": "NOMINAL_START",
+    "step": "SEAT_BRICK"
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826676.583,
+    "command": "forward",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826677.174,
+    "command": "forward",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826677.775,
+    "command": "forward",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826677.8,
+    "command": "forward",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826677.9,
+    "command": "forward",
+    "speedScore": 1
+  },
+  {
+    "type": "keyframe",
+    "timestamp": 1769826677.9,
+    "marker": "NOMINAL_END",
+    "step": "SEAT_BRICK"
+  }
+]

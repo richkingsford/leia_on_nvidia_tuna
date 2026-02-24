@@ -1,10 +1,18 @@
 {
   "source": "calibrate_align",
-  "source_run_id": 1771463897,
-  "generated_at": 1771464523.3677306,
+  "source_run_id": 1771626378,
+  "generated_at": 1771626828.2987156,
   "turn_speed_scale": 1.09,
-  "dist_speed_scale": 0.99,
+  "dist_speed_scale": 1.05,
   "max_speed_score": 20,
+  "stats": {
+    "trials": 12,
+    "success_rate": 1.0,
+    "overshoot_rate": 0.0,
+    "median_success_adjusts": 15.0,
+    "lost_vision_failures": 0,
+    "median_learned_speed_score": 18.0
+  },
   "x_axis_turn_curve": {
     "model": "power_curve",
     "decision_line": "score = clamp(round(1 + (cap - 1) * (min(|x_err_mm|, max_err_mm)/max_err_mm)^alpha), min_score, max_score) where alpha=1.67, cap=24.78, max_err_mm=22.0, min_score=1, max_score=25",
@@ -13,13 +21,5 @@
     "max_err_mm": 22.0,
     "min_score": 1,
     "max_score": 25
-  },
-  "stats": {
-    "trials": 20,
-    "success_rate": 0.95,
-    "overshoot_rate": 0.0035714285714285713,
-    "median_success_adjusts": 13.0,
-    "lost_vision_failures": 1,
-    "median_learned_speed_score": 23.0
   }
 }

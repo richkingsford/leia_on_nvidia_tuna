@@ -75,6 +75,22 @@ def metric_value_from_measurement(measurement, metric):
         return None
     if metric == "visible":
         return bool(measurement.get("visible"))
+    if metric in ("brick_above", "brickAbove"):
+        if "brick_above" in measurement:
+            value = measurement.get("brick_above")
+            return None if value is None else bool(value)
+        if "brickAbove" in measurement:
+            value = measurement.get("brickAbove")
+            return None if value is None else bool(value)
+        return None
+    if metric in ("brick_below", "brickBelow"):
+        if "brick_below" in measurement:
+            value = measurement.get("brick_below")
+            return None if value is None else bool(value)
+        if "brickBelow" in measurement:
+            value = measurement.get("brickBelow")
+            return None if value is None else bool(value)
+        return None
     if metric == "angle_abs":
         value = measurement.get("angle")
         return abs(value) if value is not None else None
@@ -83,10 +99,20 @@ def metric_value_from_measurement(measurement, metric):
         if value is None:
             value = measurement.get("offset_x")
         return float(value) if value is not None else None
+    if metric == "yAxis_offset_abs":
+        value = measurement.get("y_axis")
+        if value is None:
+            value = measurement.get("offset_y")
+        return float(value) if value is not None else None
     if metric == "xAxis_offset":
         value = measurement.get("x_axis")
         if value is None:
             value = measurement.get("offset_x")
+        return float(value) if value is not None else None
+    if metric == "yAxis_offset":
+        value = measurement.get("y_axis")
+        if value is None:
+            value = measurement.get("offset_y")
         return float(value) if value is not None else None
     if metric == "dist":
         value = measurement.get("dist")
@@ -97,6 +123,11 @@ def metric_value_from_measurement(measurement, metric):
         value = measurement.get("x_axis")
         if value is None:
             value = measurement.get("offset_x")
+        return value
+    if metric == "y_axis":
+        value = measurement.get("y_axis")
+        if value is None:
+            value = measurement.get("offset_y")
         return value
     if metric == "distance":
         return measurement.get("dist")
@@ -207,6 +238,14 @@ class SuccessGateTracker:
     total_pass: int = 0
 
     def update(self, success_ok):
+        consecutive_pass_required = max(
+            1,
+            int(getattr(self, "consecutive_pass_required", self.consecutive_required)),
+        )
+        majority_pass_required = max(
+            1,
+            int(getattr(self, "majority_pass_required", self.majority_required)),
+        )
         self.total_checks += 1
         if success_ok:
             self.total_pass += 1
@@ -216,12 +255,9 @@ class SuccessGateTracker:
         self.window.append(bool(success_ok))
         if len(self.window) > max(1, int(self.majority_window)):
             self.window.pop(0)
-        if self.consecutive >= max(1, int(self.consecutive_required)):
+        if self.consecutive >= consecutive_pass_required:
             return True
-        if (
-            len(self.window) == max(1, int(self.majority_window))
-            and sum(self.window) >= max(1, int(self.majority_required))
-        ):
+        if sum(self.window) >= majority_pass_required:
             return True
         return False
 
@@ -240,10 +276,12 @@ def update_gatecheck(world, step, tracker, success_ok, phase=None):
     window_size = int(len(window_vals))
     window_total = max(1, int(getattr(tracker, "majority_window", 1)))
     window_need = max(1, int(getattr(tracker, "majority_required", 1)))
+    window_need_pass = max(1, int(getattr(tracker, "majority_pass_required", window_need)))
     streak = int(getattr(tracker, "consecutive", 0))
     need = max(1, int(getattr(tracker, "consecutive_required", 1)))
-    consecutive_ok = streak >= need
-    majority_ok = window_size >= window_total and window_pass >= window_need
+    need_pass = max(1, int(getattr(tracker, "consecutive_pass_required", need)))
+    consecutive_ok = streak >= need_pass
+    majority_ok = window_pass >= window_need_pass
     truth_ok = consecutive_ok or majority_ok
     if consecutive_ok:
         truth_by = "consecutive"
@@ -265,11 +303,13 @@ def update_gatecheck(world, step, tracker, success_ok, phase=None):
         "fail": max(0, checks - passed),
         "streak": streak,
         "need": need,
+        "need_pass": need_pass,
         "consecutive_ok": bool(consecutive_ok),
         "window_pass": window_pass,
         "window_size": window_size,
         "window_total": window_total,
         "window_need": window_need,
+        "window_need_pass": window_need_pass,
         "majority_ok": bool(majority_ok),
         "truth_ok": bool(truth_ok),
         "truth_by": truth_by,

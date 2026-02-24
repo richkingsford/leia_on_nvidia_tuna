@@ -78,9 +78,18 @@ ALIGN_RECOVERY_SCAN_OBSERVE_S = 0.6
 ALIGN_RECOVERY_LOST_VISIBLE_FRAMES = 3
 ALIGN_RECOVERY_LOST_VISIBLE_MIN_S = 0.20
 ALIGN_RECOVERY_PREMOVE_RECHECK_ROUNDS = 3
+ALIGN_BRICK_TOPMOST_CONFIRM_FRAMES = 3
+ALIGN_BRICK_TOPMOST_LIFT_SCORE = 1
+ALIGN_BRICK_TOPMOST_BACKUP_SCORE = 50
+ALIGN_BRICK_TOPMOST_MAX_ACTS = 70
+ALIGN_BRICK_TOPMOST_TIMEOUT_S = 8.0
+ALIGN_BRICK_TOPMOST_GATECHECK_MAX_TRIES = 3
+ALIGN_BRICK_SECOND_UPPERMOST_DESCENT_HOTKEY = "l"
+ALIGN_BRICK_SECOND_UPPERMOST_DESCENT_PULSES = 3
 
 MM_METRICS = {
     "xAxis_offset_abs",
+    "yAxis_offset_abs",
     "dist",
     "distance",
     "lift_height",
@@ -494,27 +503,33 @@ def success_frames_required(step):
 
 def new_success_tracker(step, process_rules=None):
     lite_frames = lite_gate_unique_frames(step)
-    if lite_frames is not None:
-        tracker = gate_utils.SuccessGateTracker(1, 1, 1)
-        tracker.lite_unique_frames = int(lite_frames)
-        return tracker
     consecutive_required = int(GATECHECK_CONSECUTIVE_REQUIRED)
     majority_window = int(GATECHECK_MAJORITY_WINDOW)
     majority_required = int(GATECHECK_MAJORITY_REQUIRED)
+    visible_only = isinstance(process_rules, dict) and next_module.success_gates_visible_only(process_rules, step)
 
     # Visible-only gates can be noisy; confirm success ("positive") for ~2x as long as
-    # we confirm not-success ("negative"). With the default 8-frame positive, this
-    # becomes a 12-frame majority window requiring 8 passes (8 pass / 4 fail).
-    if isinstance(process_rules, dict) and next_module.success_gates_visible_only(process_rules, step):
+    # we confirm not-success ("negative"), then accept success as soon as either:
+    # - 50% of the consecutive window passes in a row, or
+    # - 50% of the majority window has passes.
+    if visible_only:
         negative_frames = max(1, consecutive_required // 2)
         majority_window = max(1, consecutive_required + negative_frames)
-        majority_required = max(1, min(consecutive_required, majority_window))
+        majority_required = max(1, int(math.ceil(float(majority_window) / 2.0)))
 
-    return gate_utils.SuccessGateTracker(
+    tracker = gate_utils.SuccessGateTracker(
         consecutive_required,
         majority_window,
         majority_required,
     )
+    if visible_only:
+        tracker.consecutive_pass_required = max(1, int(math.ceil(float(consecutive_required) / 2.0)))
+        tracker.majority_pass_required = max(1, int(majority_required))
+    if lite_frames is not None:
+        # Lite check is a precheck only; full gate tracking still uses
+        # traditional consecutive/majority confirmation.
+        tracker.lite_unique_frames = int(lite_frames)
+    return tracker
 
 
 def round_value(value, decimals=2):
@@ -966,7 +981,7 @@ def _remap_cmd_for_display(cmd):
     return cmd
 
 
-def _duration_used_ms_for_cmd(robot, cmd, duration_ms, *, auto_mode=False):
+def _duration_used_ms_for_cmd(robot, cmd, duration_ms, *, auto_mode=False, half_first_turn_pulse=True):
     try:
         duration_used_ms = int(duration_ms)
     except (TypeError, ValueError):
@@ -993,7 +1008,7 @@ def _duration_used_ms_for_cmd(robot, cmd, duration_ms, *, auto_mode=False):
                 duration_used_ms = max(int(floor_ms), int(duration_used_ms))
         else:
             # Manual hotkeys: first turn pulse should be half the sequential pulse.
-            if last_turn_cmd != cmd:
+            if bool(half_first_turn_pulse) and last_turn_cmd != cmd:
                 duration_used_ms = max(1, int(round(duration_used_ms * 0.5)))
         try:
             robot._last_turn_cmd = cmd
@@ -1035,6 +1050,10 @@ def _apply_find_brick_turn_speed_policy(step, cmd, score, *, phase=None):
     move_cap = telemetry_robot_module.normalize_speed_score(FIND_BRICK_TURN_MOVE_MAX_SCORE)
     check_cap = telemetry_robot_module.normalize_speed_score(FIND_BRICK_TURN_CHECK_MAX_SCORE)
     phase_key = str(phase or "").strip().lower()
+    # Honor recorded demo turn scores for FIND_BRICK; caps apply to synthetic
+    # auto-cycle move/check phases only.
+    if phase_key == "demo":
+        return int(score_val)
     cap = check_cap if phase_key == "check" else move_cap
     cap = max(int(min_score), int(cap))
     return min(int(score_val), int(cap))
@@ -1045,7 +1064,20 @@ def _auto_uses_demo_speed(step):
     return step_key in AUTO_DEMO_SPEED_STEPS
 
 
-def send_robot_command_pwm(robot, world, step, cmd, power, pwm, duration_ms, speed_score=None, auto_mode=False):
+def send_robot_command_pwm(
+    robot,
+    world,
+    step,
+    cmd,
+    power,
+    pwm,
+    duration_ms,
+    speed_score=None,
+    auto_mode=False,
+    turn_intensity_requested=None,
+    turn_intensity_effective=None,
+    half_first_turn_pulse=True,
+):
     if robot is None or cmd is None:
         return None
     try:
@@ -1064,7 +1096,13 @@ def send_robot_command_pwm(robot, world, step, cmd, power, pwm, duration_ms, spe
         power_val = 0.0
     power_val = max(0.0, min(1.0, power_val))
 
-    duration_used_ms = _duration_used_ms_for_cmd(robot, cmd, duration_ms, auto_mode=auto_mode)
+    duration_used_ms = _duration_used_ms_for_cmd(
+        robot,
+        cmd,
+        duration_ms,
+        auto_mode=auto_mode,
+        half_first_turn_pulse=half_first_turn_pulse,
+    )
     cmd_remap = getattr(telemetry_robot_module, "COMMAND_REMAP", None)
     if not isinstance(cmd_remap, dict):
         cmd_remap = {}
@@ -1188,12 +1226,58 @@ def send_robot_command_pwm(robot, world, step, cmd, power, pwm, duration_ms, spe
         "duration_ms": int(duration_used_ms),
         "score_model": speed_score,
         "score_effective": score_effective,
+        "turn_intensity_requested": turn_intensity_requested,
+        "turn_intensity_effective": turn_intensity_effective,
     }
 
 
-def send_robot_command(robot, world, step, cmd, speed, speed_score=None, auto_mode=False):
+def send_robot_command(
+    robot,
+    world,
+    step,
+    cmd,
+    speed,
+    speed_score=None,
+    auto_mode=False,
+    turn_intensity=None,
+    duration_override_ms=None,
+    half_first_turn_pulse=True,
+):
     if robot is None or cmd is None:
         return None
+
+    turn_intensity_requested = None
+    turn_intensity_effective = None
+
+    if cmd in ("l", "r") and turn_intensity is not None:
+        try:
+            turn_intensity_requested = float(turn_intensity)
+        except (TypeError, ValueError):
+            turn_intensity_requested = None
+        if turn_intensity_requested is not None:
+            power, pwm, score_used, duration_ms, turn_intensity_effective = telemetry_robot_module.speed_power_pwm_for_turn_intensity(
+                cmd,
+                turn_intensity_requested,
+            )
+            if auto_mode:
+                score_used = telemetry_robot_module.normalize_speed_score(score_used)
+                score_used = _cap_auto_speed_score(score_used)
+                power, pwm, score_used, duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd(cmd, score_used)
+                turn_intensity_effective = None
+            return send_robot_command_pwm(
+                robot,
+                world,
+                step,
+                cmd,
+                power,
+                pwm,
+                duration_ms,
+                speed_score=score_used,
+                auto_mode=auto_mode,
+                turn_intensity_requested=turn_intensity_requested,
+                turn_intensity_effective=turn_intensity_effective,
+                half_first_turn_pulse=half_first_turn_pulse,
+            )
 
     score_used = speed_score
     if score_used is None:
@@ -1206,6 +1290,12 @@ def send_robot_command(robot, world, step, cmd, speed, speed_score=None, auto_mo
         score_used = telemetry_robot_module.normalize_speed_score(score_used)
         score_used = _cap_auto_speed_score(score_used)
     power, pwm, score_used, duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd(cmd, score_used)
+    try:
+        duration_override_val = int(round(float(duration_override_ms)))
+    except (TypeError, ValueError):
+        duration_override_val = None
+    if duration_override_val is not None and duration_override_val > 0:
+        duration_ms = int(duration_override_val)
 
     return send_robot_command_pwm(
         robot,
@@ -1217,6 +1307,9 @@ def send_robot_command(robot, world, step, cmd, speed, speed_score=None, auto_mo
         duration_ms,
         speed_score=score_used,
         auto_mode=auto_mode,
+        turn_intensity_requested=turn_intensity_requested,
+        turn_intensity_effective=turn_intensity_effective,
+        half_first_turn_pulse=half_first_turn_pulse,
     )
 
 
@@ -1414,6 +1507,69 @@ def print_gate_summary_line(world, tracker=None):
             COLOR_WHITE,
         )
     )
+
+
+def print_gatecheck_progress_line(world, step=None, *, log=True, force=False):
+    if not log or world is None:
+        return
+    status = getattr(world, "_gatecheck_status", None)
+    if not isinstance(status, dict):
+        return
+
+    step_key = normalize_step_label(step) or normalize_step_label(status.get("step")) or "UNKNOWN"
+    phase = str(status.get("phase") or "run").strip().lower()
+    mode = str(status.get("mode") or "traditional").strip().lower()
+    checks = int(status.get("checks", 0) or 0)
+    truth_ok = bool(status.get("truth_ok", False))
+
+    if mode == "lite":
+        if not force:
+            return
+        lite_collected = max(0, int(status.get("lite_collected", 0) or 0))
+        lite_required = max(1, int(status.get("lite_required", 1) or 1))
+        state = "pass" if truth_ok else "wait"
+        text = (
+            f"[GATECHECK] {step_key} {phase}: "
+            f"lite {lite_collected}/{lite_required} {state} "
+            f"(checks={checks})"
+        )
+        sig = (
+            step_key,
+            phase,
+            mode,
+            checks,
+            lite_collected,
+            lite_required,
+            truth_ok,
+        )
+    else:
+        streak = int(status.get("streak", 0) or 0)
+        need = max(1, int(status.get("need", 1) or 1))
+        window_pass = int(status.get("window_pass", 0) or 0)
+        window_total = max(1, int(status.get("window_total", 1) or 1))
+        state = "pass" if truth_ok else "wait"
+        text = (
+            f"[GATECHECK] {step_key} {phase}: "
+            f"consec {streak}/{need}, majority {window_pass}/{window_total} {state} "
+            f"(checks={checks})"
+        )
+        sig = (
+            step_key,
+            phase,
+            mode,
+            checks,
+            streak,
+            need,
+            window_pass,
+            window_total,
+            truth_ok,
+        )
+
+    last_sig = getattr(world, "_last_gatecheck_progress_sig", None)
+    if not force and sig == last_sig:
+        return
+    world._last_gatecheck_progress_sig = sig
+    print(format_headline(text, COLOR_WHITE))
 
 
 def pause_after_fail(robot):
@@ -2088,6 +2244,9 @@ def _record_smoothed_frame_snapshot(world):
     x_axis = brick.get("x_axis")
     if x_axis is None:
         x_axis = brick.get("offset_x")
+    y_axis = brick.get("y_axis")
+    if y_axis is None:
+        y_axis = brick.get("offset_y")
     history.append(
         {
             "frame_id": frame_id,
@@ -2097,7 +2256,11 @@ def _record_smoothed_frame_snapshot(world):
             "angle": float(brick.get("angle", 0.0) or 0.0),
             "x_axis": float(x_axis or 0.0),
             "offset_x": float(brick.get("offset_x", x_axis if x_axis is not None else 0.0) or 0.0),
+            "y_axis": float(y_axis or 0.0),
+            "offset_y": float(brick.get("offset_y", y_axis if y_axis is not None else 0.0) or 0.0),
             "confidence": float(brick.get("confidence", 0.0) or 0.0),
+            "brick_above": brick.get("brickAbove"),
+            "brick_below": brick.get("brickBelow"),
         }
     )
     if len(history) > 120:
@@ -2142,6 +2305,8 @@ def update_world_from_vision(world, vision, log=True):
         "dist": float(dist),
         "angle": float(angle),
         "offset_x": float(offset_x),
+        "offset_y": float(cam_h),
+        "y_axis": float(cam_h),
         "conf": float(conf),
         "cam_h": float(cam_h),
         "brick_above": bool(brick_above),
@@ -2181,8 +2346,6 @@ def update_world_from_vision(world, vision, log=True):
             avg["brick_above"],
             avg["brick_below"],
         )
-        if fresh_input_frame:
-            _record_smoothed_frame_snapshot(world)
         if log:
             current_obj = getattr(world, "step_state", None)
             current_name = getattr(current_obj, "value", None)
@@ -2199,8 +2362,10 @@ def update_world_from_vision(world, vision, log=True):
         world.brick["angle"] = 0.0
         world.brick["offset_x"] = 0.0
         world.brick["x_axis"] = 0.0
-        world.brick["brickAbove"] = False
-        world.brick["brickBelow"] = False
+        world.brick["offset_y"] = 0.0
+        world.brick["y_axis"] = 0.0
+        world.brick["brickAbove"] = None
+        world.brick["brickBelow"] = None
     else:
         world._brick_inconsistent = True
         world.brick["visible"] = False
@@ -2209,8 +2374,10 @@ def update_world_from_vision(world, vision, log=True):
         world.brick["angle"] = 0.0
         world.brick["offset_x"] = 0.0
         world.brick["x_axis"] = 0.0
-        world.brick["brickAbove"] = False
-        world.brick["brickBelow"] = False
+        world.brick["offset_y"] = 0.0
+        world.brick["y_axis"] = 0.0
+        world.brick["brickAbove"] = None
+        world.brick["brickBelow"] = None
     visible_now = bool(world.brick.get("visible"))
     lost_frames = getattr(world, "_visibility_lost_frames", 0)
     if visible_now:
@@ -2226,6 +2393,10 @@ def update_world_from_vision(world, vision, log=True):
         if not reasons:
             reasons.append("no brick detected")
         world._vision_lost_reason = "; ".join(reasons)
+    if fresh_input_frame:
+        # Track every fresh frame's final brick snapshot, including visible=false,
+        # so lite precheck can advance on disappearance-style success gates.
+        _record_smoothed_frame_snapshot(world)
     update_stream_frame(world, vision)
 
 
@@ -2648,6 +2819,67 @@ def _auto_diag_delta_phrase(metric, pre_distance, post_distance):
     )
 
 
+def _auto_diag_prev_observation_phrase(world, step, focus):
+    if world is None or not isinstance(focus, dict):
+        return None, None
+    step_key = normalize_step_label(step)
+    if not step_key:
+        return None, None
+    focus_map = getattr(world, "_auto_diag_last_pre_focus_by_step", None)
+    if not isinstance(focus_map, dict):
+        return None, None
+    prev = focus_map.get(step_key)
+    if not isinstance(prev, dict):
+        return None, None
+
+    metric = focus.get("metric")
+    prev_metric = prev.get("metric")
+    if not metric:
+        return None, None
+    if prev_metric and prev_metric != metric:
+        prev_metric_text = _fmt_metric_value_with_unit(prev_metric, prev.get("value"))
+        curr_metric_text = _fmt_metric_value_with_unit(metric, focus.get("value"))
+        return (
+            "unchanged",
+            (
+                f"obs switched {prev_metric}={prev_metric_text} → "
+                f"{metric}={curr_metric_text}"
+            ),
+        )
+
+    if metric == "visible":
+        prev_val = prev.get("value")
+        curr_val = focus.get("value")
+        if prev_val is None or curr_val is None:
+            return None, None
+        prev_bool = bool(prev_val)
+        curr_bool = bool(curr_val)
+        prev_txt = _fmt_gate_value(prev_bool)
+        curr_txt = _fmt_gate_value(curr_bool)
+        if prev_bool == curr_bool:
+            return "unchanged", f"obs unchanged vs previous (visible={curr_txt})"
+        if curr_bool and not prev_bool:
+            return "closer", f"obs changed vs previous (visible={prev_txt}→{curr_txt})"
+        return "backward", f"obs changed vs previous (visible={prev_txt}→{curr_txt})"
+
+    prev_distance = prev.get("distance")
+    curr_distance = focus.get("distance")
+    if prev_distance is None or curr_distance is None:
+        return None, None
+    try:
+        delta = float(prev_distance) - float(curr_distance)
+    except (TypeError, ValueError):
+        return None, None
+    unit = _metric_display_unit(metric)
+    magnitude = f"{abs(delta):.1f}{unit}" if unit else f"{abs(delta):.1f}"
+    prev_metric_text = _fmt_metric_value_with_unit(metric, prev.get("value"))
+    if abs(delta) <= 1e-6:
+        return "unchanged", f"obs unchanged vs previous ({metric}={prev_metric_text})"
+    if delta > 0.0:
+        return "closer", f"obs {magnitude} better than previous ({metric}={prev_metric_text})"
+    return "backward", f"obs {magnitude} worse than previous ({metric}={prev_metric_text})"
+
+
 def _ansi_to_stream_segments(colored_text):
     text = str(colored_text or "")
     if not text:
@@ -2788,6 +3020,10 @@ def _build_auto_step_diagnostic(
 
     action_plain = str(action_text)
     post_tail = f" ({post_obs})" if post_obs and post_obs != "none" else ""
+    post_snapshot = _auto_diag_focus_snapshot(post_focus, include_requirement=True)
+    post_tail_with_requirement = (
+        f" ({post_snapshot})" if post_snapshot and post_snapshot != "none" else post_tail
+    )
     action_cmd, action_score = _auto_action_cmd_score(action_plain)
     pre_obs_text = pre_snapshot
 
@@ -2799,6 +3035,13 @@ def _build_auto_step_diagnostic(
             success_hit = bool(success_override)
         else:
             success_hit = bool(post_focus.get("matched")) if isinstance(post_focus, dict) else False
+        gate_status = getattr(world, "_gatecheck_status", None)
+        if not isinstance(gate_status, dict):
+            gate_status = {}
+        lite_required = max(0, int(gate_status.get("lite_required", 0) or 0))
+        lite_collected = max(0, int(gate_status.get("lite_collected", 0) or 0))
+        truth_ok = bool(gate_status.get("truth_ok", False))
+        gate_mode = str(gate_status.get("mode") or "").strip().lower()
         pre_matched = selected_pre.get("matched") if isinstance(selected_pre, dict) else None
         post_matched = post_focus.get("matched") if isinstance(post_focus, dict) else None
         if isinstance(pre_matched, bool) and isinstance(post_matched, bool):
@@ -2812,21 +3055,39 @@ def _build_auto_step_diagnostic(
             delta_class = "closer"
         else:
             delta_class = "unknown"
+        awaiting_confirmation = bool(post_matched) and not bool(success_hit)
+        if awaiting_confirmation and gate_mode == "lite" and lite_required > 0:
+            awaiting_confirmation = lite_collected < lite_required or not truth_ok
         if success_hit:
             result_delta_obj = {
                 "delta_class": "closer",
-                "delta_text": f"success gates met{post_tail}",
+                "delta_text": f"success gates met{post_tail_with_requirement}",
+            }
+        elif awaiting_confirmation:
+            result_delta_obj = {
+                "delta_class": delta_class,
+                "delta_text": f"gate matched; awaiting confirmation{post_tail_with_requirement}",
             }
         else:
             result_delta_obj = {
                 "delta_class": delta_class,
-                "delta_text": f"not meeting success gates{post_tail}",
+                "delta_text": f"not meeting success gates{post_tail_with_requirement}",
             }
     else:
         result_delta_obj = {
             "delta_class": delta_class,
             "delta_text": f"{delta_plain}{post_tail}",
         }
+
+    obs_delta_class, obs_delta_text = _auto_diag_prev_observation_phrase(world, step, selected_pre)
+    if obs_delta_text:
+        base_text = str((result_delta_obj or {}).get("delta_text", "") or "").strip()
+        if base_text:
+            result_delta_obj["delta_text"] = f"{base_text}; {obs_delta_text}"
+        else:
+            result_delta_obj["delta_text"] = obs_delta_text
+        if (result_delta_obj or {}).get("delta_class") in (None, "unknown"):
+            result_delta_obj["delta_class"] = obs_delta_class or "unchanged"
 
     trial_num = int(getattr(world, "loop_id", 0) or 0)
     phase_upper = str(step_key or str(step) or "?").upper()
@@ -2862,6 +3123,7 @@ def _build_auto_step_diagnostic(
         "success_hit": bool(success_hit),
         "delta_class": (result_delta_obj or {}).get("delta_class"),
         "segments": _ansi_to_stream_segments(colored),
+        "selected_pre": dict(selected_pre) if isinstance(selected_pre, dict) else None,
     }
 
 
@@ -2887,23 +3149,38 @@ def _current_success_ok(world, step):
         world._gatecheck_mode = "traditional"
         world._gatecheck_lite_required = 0
         world._gatecheck_lite_collected = 0
-        visibility_grace_s = _visibility_grace_s(world, step)
-        brick_success = telemetry_brick.evaluate_success_gates(
+        brick_ok = _evaluate_traditional_brick_success(
             world,
             step,
             telemetry_rules,
             process_rules,
-            visibility_grace_s=visibility_grace_s,
         )
-        brick_ok = bool(brick_success.ok)
+    elif not lite_brick_ok:
+        world._gatecheck_mode = "lite"
+        brick_ok = False
     else:
-        brick_ok = bool(lite_brick_ok)
+        world._gatecheck_mode = "traditional"
+        brick_ok = _evaluate_traditional_brick_success(
+            world,
+            step,
+            telemetry_rules,
+            process_rules,
+        )
     wall_ok = bool(telemetry_wall.evaluate_success_gates(world, step, world.wall_envelope).ok)
     robot_ok = bool(telemetry_robot_module.evaluate_success_gates(world, step, telemetry_rules, process_rules).ok)
     return brick_ok and wall_ok and robot_ok
 
 
-def _store_auto_step_diagnostic(world, step, line, sent_snapshot=None, *, colored_line=None, segments=None):
+def _store_auto_step_diagnostic(
+    world,
+    step,
+    line,
+    sent_snapshot=None,
+    *,
+    colored_line=None,
+    segments=None,
+    selected_pre=None,
+):
     if world is None:
         return
     world._last_auto_step_diag_line = str(line)
@@ -2915,6 +3192,18 @@ def _store_auto_step_diagnostic(world, step, line, sent_snapshot=None, *, colore
     world._last_auto_step_diag_step = normalize_step_label(step)
     world._last_auto_step_diag_time = time.time()
     world._last_auto_step_diag_sent = sent_snapshot if isinstance(sent_snapshot, dict) else None
+    step_key = normalize_step_label(step)
+    if step_key and isinstance(selected_pre, dict):
+        focus_map = getattr(world, "_auto_diag_last_pre_focus_by_step", None)
+        if not isinstance(focus_map, dict):
+            focus_map = {}
+            world._auto_diag_last_pre_focus_by_step = focus_map
+        focus_map[step_key] = {
+            "metric": selected_pre.get("metric"),
+            "value": selected_pre.get("value"),
+            "distance": selected_pre.get("distance"),
+            "matched": selected_pre.get("matched"),
+        }
 
 
 def clear_pending_auto_step_diagnostic(world):
@@ -2926,8 +3215,12 @@ def clear_pending_auto_step_diagnostic(world):
 def reset_auto_step_action_stats(world, step):
     if world is None:
         return
+    step_key = normalize_step_label(step)
+    focus_map = getattr(world, "_auto_diag_last_pre_focus_by_step", None)
+    if isinstance(focus_map, dict) and step_key in focus_map:
+        focus_map.pop(step_key, None)
     world._auto_step_action_stats = {
-        "step": normalize_step_label(step),
+        "step": step_key,
         "total": 0,
         "closer": 0,
         "backward": 0,
@@ -3058,6 +3351,7 @@ def flush_auto_step_diagnostic(world, step=None, *, force=False, emit=True):
         sent_snapshot=sent_snapshot,
         colored_line=diag.get("colored"),
         segments=diag.get("segments"),
+        selected_pre=diag.get("selected_pre"),
     )
     clear_pending_auto_step_diagnostic(world)
     return line
@@ -3094,6 +3388,7 @@ def emit_auto_step_diagnostic(
         sent_snapshot=sent_snapshot,
         colored_line=diag.get("colored"),
         segments=diag.get("segments"),
+        selected_pre=diag.get("selected_pre"),
     )
     return line
 
@@ -3405,6 +3700,7 @@ def refresh_world_after_action(world, vision, log=True, attempts=8):
                 "dist": world.brick.get("dist"),
                 "angle": world.brick.get("angle"),
                 "x_axis": world.brick.get("x_axis"),
+                "y_axis": world.brick.get("y_axis", world.brick.get("offset_y")),
                 "frame_id": frame_id,
             }
         # Prefer a new observed frame over fixed sleeps.
@@ -3480,14 +3776,28 @@ def _average_smoothed_frames(frames):
         values = [bool(frame.get(key)) for frame in frames]
         return sum(1 for value in values if value) >= (len(values) / 2.0)
 
+    def majority_optional_bool(key):
+        vals = [frame.get(key) for frame in frames if frame.get(key) is not None]
+        if not vals:
+            return None
+        bool_vals = [bool(v) for v in vals]
+        return sum(1 for value in bool_vals if value) >= (len(bool_vals) / 2.0)
+
     x_axis = mean("x_axis")
+    y_axis = mean("y_axis")
     return {
         "visible": majority("visible"),
         "dist": mean("dist"),
         "angle": mean("angle"),
         "x_axis": x_axis,
         "offset_x": mean("offset_x"),
+        "y_axis": y_axis,
+        "offset_y": mean("offset_y"),
         "confidence": mean("confidence"),
+        "brick_above": majority_optional_bool("brick_above"),
+        "brick_below": majority_optional_bool("brick_below"),
+        "brickAbove": majority_optional_bool("brick_above"),
+        "brickBelow": majority_optional_bool("brick_below"),
     }
 
 
@@ -3516,6 +3826,18 @@ def _evaluate_lite_gate_brick_success(world, step, process_rules):
     return gate_utils.gate_satisfied(measurement, success_gates)
 
 
+def _evaluate_traditional_brick_success(world, step, telemetry_rules, process_rules):
+    visibility_grace_s = _visibility_grace_s(world, step)
+    brick_success = telemetry_brick.evaluate_success_gates(
+        world,
+        step,
+        telemetry_rules,
+        process_rules,
+        visibility_grace_s=visibility_grace_s,
+    )
+    return bool(brick_success.ok)
+
+
 def evaluate_gate_status(world, step):
     process_rules = world.process_rules or {}
     telemetry_rules = {}
@@ -3524,23 +3846,75 @@ def evaluate_gate_status(world, step):
         world._gatecheck_mode = "traditional"
         world._gatecheck_lite_required = 0
         world._gatecheck_lite_collected = 0
-        visibility_grace_s = _visibility_grace_s(world, step)
-        brick_success = telemetry_brick.evaluate_success_gates(
+        brick_ok = _evaluate_traditional_brick_success(
             world,
             step,
             telemetry_rules,
             process_rules,
-            visibility_grace_s=visibility_grace_s,
         )
-        brick_ok = bool(brick_success.ok)
+    elif not lite_brick_ok:
+        # Lite is a precheck; do not claim success until it passes.
+        world._gatecheck_mode = "lite"
+        brick_ok = False
     else:
-        brick_ok = bool(lite_brick_ok)
+        # As soon as lite precheck passes, switch to full confirmation checks.
+        world._gatecheck_mode = "traditional"
+        brick_ok = _evaluate_traditional_brick_success(
+            world,
+            step,
+            telemetry_rules,
+            process_rules,
+        )
     wall_success = telemetry_wall.evaluate_success_gates(world, step, world.wall_envelope)
     robot_success = telemetry_robot_module.evaluate_success_gates(world, step, telemetry_rules, process_rules)
 
     success_ok = brick_ok and wall_success.ok and robot_success.ok
     confidence = step_confidence(success_ok, world, step)
     return success_ok, confidence
+
+
+def update_gatecheck_with_precheck(world, step, tracker, success_ok, *, phase, log=True):
+    if tracker is None:
+        return False
+    mode = str(getattr(world, "_gatecheck_mode", "traditional") or "traditional").strip().lower()
+    if mode == "lite":
+        lite_checks = int(getattr(world, "_gatecheck_lite_checks", 0) or 0) + 1
+        world._gatecheck_lite_checks = lite_checks
+        world._gatecheck_status = {
+            "step": normalize_step_label(step) or str(step),
+            "phase": phase or "run",
+            "mode": "lite",
+            "checks": lite_checks,
+            "pass": 0,
+            "fail": lite_checks,
+            "streak": 0,
+            "need": max(1, int(getattr(tracker, "consecutive_required", 1) or 1)),
+            "consecutive_ok": False,
+            "window_pass": 0,
+            "window_size": 0,
+            "window_total": max(1, int(getattr(tracker, "majority_window", 1) or 1)),
+            "window_need": max(1, int(getattr(tracker, "majority_required", 1) or 1)),
+            "majority_ok": False,
+            "truth_ok": False,
+            "truth_by": None,
+            "lite_required": int(getattr(world, "_gatecheck_lite_required", 0) or 0),
+            "lite_collected": int(getattr(world, "_gatecheck_lite_collected", 0) or 0),
+            "frame_id": int(getattr(world, "_frame_id", 0) or 0),
+            "timestamp": time.time(),
+        }
+        return False
+
+    world._gatecheck_lite_checks = 0
+    success_met = gate_utils.update_gatecheck(
+        world,
+        step,
+        tracker,
+        success_ok,
+        phase=phase,
+    )
+    if log:
+        print_gatecheck_progress_line(world, step, log=log)
+    return success_met
 
 
 def gatecheck_after_move(world, step, tracker, phase, log=True):
@@ -3550,12 +3924,13 @@ def gatecheck_after_move(world, step, tracker, phase, log=True):
     gate_utils.record_success_gate_entry(world, step, success_ok)
     if log:
         log_confidence(world, confidence, step)
-    return gate_utils.update_gatecheck(
+    return update_gatecheck_with_precheck(
         world,
         step,
         tracker,
         success_ok,
         phase=phase,
+        log=log,
     )
 
 
@@ -3641,11 +4016,15 @@ def wait_for_start_gates(
             )
             precheck_frames = 1
             if success_tracker is not None:
-                precheck_frames = max(
-                    int(getattr(success_tracker, "majority_window", 1)),
-                    int(getattr(success_tracker, "required_consecutive", 1)),
-                    1,
-                )
+                lite_required = int(getattr(success_tracker, "lite_unique_frames", 0) or 0)
+                if lite_required > 0:
+                    precheck_frames = max(1, lite_required)
+                else:
+                    precheck_frames = max(
+                        int(getattr(success_tracker, "majority_window", 1)),
+                        int(getattr(success_tracker, "consecutive_required", 1)),
+                        1,
+                    )
             for _ in range(precheck_frames):
                 update_world_from_vision(world, vision, log=log)
                 if observer:
@@ -3656,12 +4035,13 @@ def wait_for_start_gates(
                 gate_utils.record_success_gate_entry(world, step, success_ok)
                 if log:
                     log_confidence(world, confidence, step)
-                success_met = gate_utils.update_gatecheck(
+                success_met = update_gatecheck_with_precheck(
                     world,
                     step,
                     success_tracker,
                     success_ok,
                     phase="start",
+                    log=log,
                 )
                 if success_met:
                     gate_utils.store_gate_summary(world, success_tracker)
@@ -3670,7 +4050,8 @@ def wait_for_start_gates(
                     if log:
                         print(format_headline(f"[START] {step_key} success gates already met", COLOR_GREEN))
                     return "success"
-        if log:
+        suppress_skip_log = bool(getattr(world, "_suppress_start_gate_skip_log", False)) if world is not None else False
+        if log and not suppress_skip_log:
             print(format_headline(f"[START] {step_key} start gates skipped", COLOR_WHITE))
         return "start"
     start_time = time.time()
@@ -3709,12 +4090,13 @@ def wait_for_start_gates(
             gate_utils.record_success_gate_entry(world, step, success_ok)
             if log:
                 log_confidence(world, confidence, step)
-            success_met = gate_utils.update_gatecheck(
+            success_met = update_gatecheck_with_precheck(
                 world,
                 step,
                 success_tracker,
                 success_ok,
                 phase="start",
+                log=log,
             )
             if success_ok and not success_seen and robot:
                 robot.stop()
@@ -4217,6 +4599,8 @@ def run_alignment_segment(
     not_visible_streak = 0
     last_visible_ts = time.time()
     force_gap_switch_after_recovery = False
+    last_align_gap_correction_type = None
+    skip_align_gap_correction_type_once = None
     last_align_action = None
     last_align_signature = None
     recent_align_acts = collections.deque(maxlen=32)
@@ -4253,7 +4637,7 @@ def run_alignment_segment(
                 pass
         return ", ".join(parts)
 
-    def _recover_visibility(source="unknown", reason=None):
+    def _recover_visibility(source="unknown", reason=None, reverse_max_acts=None):
         source_key = str(source or "").strip().lower()
         if not align_silent:
             reason_text = str(reason or "confident visibility loss").strip()
@@ -4267,7 +4651,12 @@ def run_alignment_segment(
             print(format_headline(f"[RECOVERY] {source_key}: reversing recent acts...", COLOR_WHITE))
 
         plan = []
-        for row in reversed(list(recent_align_acts)[-int(ALIGN_RECOVERY_REVERSE_MAX_ACTS):]):
+        try:
+            reverse_limit = int(reverse_max_acts) if reverse_max_acts is not None else int(ALIGN_RECOVERY_REVERSE_MAX_ACTS)
+        except (TypeError, ValueError):
+            reverse_limit = int(ALIGN_RECOVERY_REVERSE_MAX_ACTS)
+        reverse_limit = max(1, int(reverse_limit))
+        for row in reversed(list(recent_align_acts)[-int(reverse_limit):]):
             inv = _inverse_cmd(row.get("cmd"))
             if inv is None:
                 continue
@@ -4378,6 +4767,406 @@ def run_alignment_segment(
             "rounds_total": int(rounds_local),
         }
 
+    def _seek_align_brick_topmost_target():
+        if normalize_step_label(step) != "ALIGN_BRICK":
+            return "ready"
+        nonlocal last_align_action
+
+        confirm_needed = max(1, int(ALIGN_BRICK_TOPMOST_CONFIRM_FRAMES))
+        lift_score = max(1, int(ALIGN_BRICK_TOPMOST_LIFT_SCORE))
+        max_acts = max(1, int(ALIGN_BRICK_TOPMOST_MAX_ACTS))
+        deadline = time.time() + max(float(CONTROL_DT), float(ALIGN_BRICK_TOPMOST_TIMEOUT_S))
+        confirm_streak = 0
+        acts = 0
+        last_status_line = None
+        top_not_visible_streak = 0
+        top_last_visible_ts = time.time()
+
+        if not align_silent:
+            print(
+                format_headline(
+                    "[ALIGN_TOP] Seek uppermost brick first (need brickAbove=NO and brickBelow=YES).",
+                    COLOR_WHITE,
+                )
+            )
+
+        while time.time() < deadline and acts < max_acts:
+            update_world_from_vision(world, vision, log=not align_silent)
+            if observer:
+                observer("frame", world, vision, None, None, None)
+
+            brick = getattr(world, "brick", {}) or {}
+            visible_now = bool(brick.get("visible"))
+            above_now = brick.get("brickAbove") if visible_now else None
+            below_now = brick.get("brickBelow") if visible_now else None
+            x_now = brick.get("x_axis", brick.get("offset_x"))
+            y_now = brick.get("y_axis", brick.get("offset_y"))
+            dist_now = brick.get("dist")
+            if visible_now:
+                top_not_visible_streak = 0
+                top_last_visible_ts = time.time()
+            else:
+                top_not_visible_streak = int(top_not_visible_streak) + 1
+
+            if visible_now and (above_now is False) and (below_now is True):
+                confirm_streak += 1
+            else:
+                confirm_streak = 0
+
+            if not align_silent:
+                above_txt = "?" if above_now is None else str(bool(above_now)).lower()
+                below_txt = "?" if below_now is None else str(bool(below_now)).lower()
+                status_line = (
+                    f"[ALIGN_TOP] visible={str(visible_now).lower()} "
+                    f"brickAbove={above_txt} brickBelow={below_txt} "
+                    f"confirm={int(confirm_streak)}/{int(confirm_needed)} "
+                    f"x={float(x_now or 0.0):+.1f} y={float(y_now or 0.0):+.1f} dist={float(dist_now or 0.0):.1f}"
+                )
+                if status_line != last_status_line:
+                    print(format_headline(status_line, COLOR_WHITE))
+                    last_status_line = status_line
+
+            if confirm_streak >= confirm_needed:
+                if robot:
+                    robot.stop()
+                # We confirm the top brick first for stack confidence, then intentionally
+                # step down to the 2nd uppermost brick before gap-closing.
+                descent_hotkey = str(ALIGN_BRICK_SECOND_UPPERMOST_DESCENT_HOTKEY or "l").strip().lower() or "l"
+                descent_pulses = max(0, int(ALIGN_BRICK_SECOND_UPPERMOST_DESCENT_PULSES))
+                hotkey_action = None
+                try:
+                    hotkey_action = telemetry_robot_module.manual_key_action(descent_hotkey)
+                except Exception:
+                    hotkey_action = None
+                if isinstance(hotkey_action, (tuple, list)) and len(hotkey_action) >= 2:
+                    descent_cmd = str(hotkey_action[0] or "d").strip().lower() or "d"
+                    try:
+                        descent_score = int(round(float(hotkey_action[1])))
+                    except (TypeError, ValueError):
+                        descent_score = int(getattr(telemetry_robot_module, "SPEED_SCORE_MAX", 100))
+                else:
+                    descent_cmd = "d"
+                    descent_score = int(getattr(telemetry_robot_module, "SPEED_SCORE_MAX", 100))
+                if descent_cmd != "d":
+                    # This phase must move the lift downward. Keep the l-hotkey speed intent
+                    # but force the logical command to lift-down if the hotkey mapping drifts.
+                    descent_cmd = "d"
+                descent_score = max(
+                    int(getattr(telemetry_robot_module, "SPEED_SCORE_MIN", 1)),
+                    min(int(descent_score), int(getattr(telemetry_robot_module, "SPEED_SCORE_MAX", 100))),
+                )
+
+                if descent_pulses > 0:
+                    if not align_silent:
+                        print(
+                            format_headline(
+                                f"[ALIGN_TOP] Uppermost brick confirmed. Stepping down to 2nd uppermost brick ({int(descent_pulses)}x {descent_hotkey.upper()} hotkey speed).",
+                                COLOR_GREEN,
+                            )
+                        )
+                    for drop_idx in range(1, int(descent_pulses) + 1):
+                        if acts >= max_acts:
+                            if not align_silent:
+                                print(format_headline("[ALIGN_TOP] Cannot step down further: top-seek act budget reached.", COLOR_ORANGE_BRIGHT))
+                            return "topmost seek act budget reached"
+                        descent_speed = telemetry_robot_module.manual_speed_for_cmd(descent_cmd, descent_score)
+                        if confirm_callback:
+                            if not confirm_callback(world, vision):
+                                return "confirm cancelled"
+                        if observer:
+                            observer("analysis", world, vision, descent_cmd, descent_speed, "align_top_step_down")
+                        action_meta = send_robot_command(
+                            robot,
+                            world,
+                            step,
+                            descent_cmd,
+                            descent_speed,
+                            speed_score=descent_score,
+                            auto_mode=True,
+                        )
+                        acts += 1
+                        if not align_silent:
+                            print(
+                                format_headline(
+                                    f"[ALIGN_TOP] step down {int(drop_idx)}/{int(descent_pulses)}: {descent_hotkey.upper()} hotkey -> {descent_cmd.upper()} {int(descent_score)}%",
+                                    COLOR_CYAN,
+                                )
+                            )
+                        try:
+                            hist_score = (
+                                action_meta.get("score_effective")
+                                if isinstance(action_meta, dict)
+                                else None
+                            )
+                            if hist_score is None and isinstance(action_meta, dict):
+                                hist_score = action_meta.get("score_model")
+                            if hist_score is None:
+                                hist_score = descent_score
+                            hist_score = int(round(float(hist_score)))
+                        except (TypeError, ValueError):
+                            hist_score = int(descent_score)
+                        hist_cmd = str(
+                            (action_meta.get("cmd_sent") if isinstance(action_meta, dict) else None) or descent_cmd
+                        ).strip().lower()
+                        if hist_cmd not in ("f", "b", "l", "r", "u", "d"):
+                            hist_cmd = str(descent_cmd).strip().lower()
+                        recent_align_acts.append({"cmd": str(hist_cmd), "score": int(hist_score)})
+                        if isinstance(action_meta, dict):
+                            last_align_action = {
+                                "cmd": str(action_meta.get("cmd_sent") or descent_cmd),
+                                "score": hist_score,
+                                "pwm": action_meta.get("pwm"),
+                                "power": action_meta.get("power"),
+                                "duration_ms": action_meta.get("duration_ms"),
+                            }
+                        else:
+                            last_align_action = {"cmd": str(descent_cmd), "score": hist_score}
+                        if confirm_callback and robot:
+                            robot.stop()
+                        post_act_analysis(
+                            world,
+                            vision,
+                            step=step,
+                            log=not align_silent,
+                            include_pause=False,
+                        )
+                        if observer:
+                            observer("action", world, vision, descent_cmd, descent_speed, "align_top_step_down")
+                        if not bool((getattr(world, "brick", None) or {}).get("visible")):
+                            premove_recheck = _hold_and_recheck_visibility()
+                            if not bool((premove_recheck or {}).get("visible")):
+                                if not _recover_visibility(
+                                    source="align_top_step_down",
+                                    reason="lost visibility while stepping down to 2nd uppermost brick",
+                                    reverse_max_acts=3,
+                                ):
+                                    return "lost_vision"
+                        time.sleep(CONTROL_DT)
+
+                update_world_from_vision(world, vision, log=not align_silent)
+                if observer:
+                    observer("frame", world, vision, None, None, None)
+                # Explicit full gate check before closing x/y/dist gaps on the target brick
+                # we will actually align against (2nd uppermost after the step-down pulses).
+                success_ok, confidence = evaluate_gate_status(world, step)
+                local_gate = next_module.align_local_gate_status(
+                    world,
+                    step,
+                    process_rules=world.process_rules or {},
+                )
+                success_truth_ok = bool(success_ok and local_gate.get("ok", True))
+                if not align_silent:
+                    print(format_headline("[ALIGN_TOP] 2nd uppermost brick selected. Running full gate check...", COLOR_GREEN))
+                    log_confidence(world, confidence, step)
+                if success_truth_ok:
+                    if not align_silent:
+                        print(format_headline(f"[SUCCESS] {step} criteria met", COLOR_GREEN))
+                        print_gate_summary_line(world, success_tracker)
+                        print_success_events(world, step)
+                    return "success"
+                if not align_silent:
+                    print(format_headline("[ALIGN_TOP] Full gate check not yet satisfied; proceeding to close x/y/dist gaps.", COLOR_WHITE))
+                return "ready"
+
+            # In this pre-phase, prefer lift-up to find the topmost brick. But if we can see
+            # a brick with no detected brick above or below, back up first to reveal more of
+            # the stack (like pressing manual 's') before continuing lift seeks.
+            if not visible_now:
+                lost_for_s = max(0.0, float(time.time()) - float(top_last_visible_ts))
+                confident_loss = bool(
+                    int(top_not_visible_streak) >= int(ALIGN_RECOVERY_LOST_VISIBLE_FRAMES)
+                    and float(lost_for_s) >= float(ALIGN_RECOVERY_LOST_VISIBLE_MIN_S)
+                )
+                if confident_loss:
+                    reason = (
+                        "ALIGN_TOP brick invisible "
+                        f"for {int(top_not_visible_streak)} consecutive frames and {float(lost_for_s):.2f}s "
+                        f"(threshold {int(ALIGN_RECOVERY_LOST_VISIBLE_FRAMES)} frames / {float(ALIGN_RECOVERY_LOST_VISIBLE_MIN_S):.2f}s)"
+                    )
+                    premove_recheck = _hold_and_recheck_visibility()
+                    if bool((premove_recheck or {}).get("visible")):
+                        top_not_visible_streak = 0
+                        top_last_visible_ts = time.time()
+                        continue
+                    if _recover_visibility(
+                        source="align_top",
+                        reason=reason,
+                        reverse_max_acts=3,
+                    ):
+                        top_not_visible_streak = 0
+                        top_last_visible_ts = time.time()
+                        continue
+                    return "lost_vision"
+                if robot:
+                    robot.stop()
+                record_hold_display(world, step, "align_top: waiting for visible brick")
+                if observer:
+                    observer("action", world, vision, None, 0.0, "align_top_wait_visible")
+                time.sleep(CONTROL_DT)
+                continue
+
+            # Do not move while stack visibility is uncertain. Keep sampling frames so the
+            # stack gate can reach a confident YES/NO on above/below first.
+            if (above_now is None) or (below_now is None):
+                if robot:
+                    robot.stop()
+                record_hold_display(world, step, "align_top: waiting for stack confidence")
+                if observer:
+                    observer("action", world, vision, None, 0.0, "align_top_wait_stack_confidence")
+                time.sleep(CONTROL_DT)
+                continue
+
+            if (above_now is False) and (below_now is False):
+                cmd = "b"
+                speed_score = max(1, int(ALIGN_BRICK_TOPMOST_BACKUP_SCORE))
+                action_tag = "align_top_back_up"
+                action_label = f"back up to reveal lower brick {int(acts + 1)}/{int(max_acts)}: B {int(speed_score)}%"
+            else:
+                cmd = "u"
+                speed_score = lift_score
+                action_tag = "align_top_seek"
+                action_label = f"lift seek {int(acts + 1)}/{int(max_acts)}: U {int(speed_score)}%"
+            speed = telemetry_robot_module.manual_speed_for_cmd(cmd, speed_score)
+            if confirm_callback:
+                if not confirm_callback(world, vision):
+                    return "confirm cancelled"
+            if observer:
+                observer("analysis", world, vision, cmd, speed, action_tag)
+            action_meta = send_robot_command(
+                robot,
+                world,
+                step,
+                cmd,
+                speed,
+                speed_score=speed_score,
+                auto_mode=True,
+            )
+            acts += 1
+            if not align_silent:
+                print(
+                    format_headline(
+                        f"[ALIGN_TOP] {action_label}",
+                        COLOR_CYAN,
+                    )
+                )
+
+            try:
+                hist_score = (
+                    action_meta.get("score_effective")
+                    if isinstance(action_meta, dict)
+                    else None
+                )
+                if hist_score is None and isinstance(action_meta, dict):
+                    hist_score = action_meta.get("score_model")
+                if hist_score is None:
+                    hist_score = speed_score
+                hist_score = int(round(float(hist_score)))
+            except (TypeError, ValueError):
+                hist_score = int(max(1, int(speed_score or telemetry_robot_module.SPEED_SCORE_MIN)))
+            hist_cmd = str(
+                (action_meta.get("cmd_sent") if isinstance(action_meta, dict) else None) or cmd
+            ).strip().lower()
+            if hist_cmd not in ("f", "b", "l", "r", "u", "d"):
+                hist_cmd = str(cmd).strip().lower()
+            recent_align_acts.append({"cmd": str(hist_cmd), "score": int(hist_score)})
+            if isinstance(action_meta, dict):
+                last_align_action = {
+                    "cmd": str(action_meta.get("cmd_sent") or cmd),
+                    "score": hist_score,
+                    "pwm": action_meta.get("pwm"),
+                    "power": action_meta.get("power"),
+                    "duration_ms": action_meta.get("duration_ms"),
+                }
+            else:
+                last_align_action = {"cmd": str(cmd), "score": hist_score}
+
+            segments = []
+            if isinstance(action_meta, dict) and isinstance(action_meta.get("segments"), list):
+                segments = [seg for seg in action_meta.get("segments") if isinstance(seg, dict)]
+            elif isinstance(action_meta, dict):
+                segments = [action_meta]
+            for seg in segments:
+                duration_ms = seg.get("duration_model_ms") or seg.get("duration_ms") or int(CONTROL_DT * 1000)
+                power_used = seg.get("power")
+                if power_used is None:
+                    power_used = speed
+                evt = MotionEvent(
+                    cmd_to_motion_type(cmd),
+                    int(float(power_used) * 255),
+                    int(duration_ms),
+                    speed_score=seg.get("score_effective") or seg.get("score_model"),
+                )
+                world.update_from_motion(evt)
+
+            if confirm_callback and robot:
+                robot.stop()
+            post_act_analysis(
+                world,
+                vision,
+                step=step,
+                log=not align_silent,
+                include_pause=False,
+            )
+            if observer:
+                observer("action", world, vision, cmd, speed, action_tag)
+            time.sleep(CONTROL_DT)
+
+        if robot:
+            robot.stop()
+        if not align_silent:
+            print(
+                format_headline(
+                    "[ALIGN_TOP] Failed to confirm uppermost brick (need brickAbove=NO and brickBelow=YES).",
+                    COLOR_RED,
+                )
+            )
+        return "topmost target not confirmed"
+
+    topmost_seek_status = "ready"
+    topmost_try_limit = max(1, int(ALIGN_BRICK_TOPMOST_GATECHECK_MAX_TRIES))
+    if normalize_step_label(step) == "ALIGN_BRICK":
+        for top_try in range(1, topmost_try_limit + 1):
+            if not align_silent:
+                print(
+                    format_headline(
+                        f"[ALIGN_TOP] gatecheck attempt {int(top_try)}/{int(topmost_try_limit)}",
+                        COLOR_WHITE,
+                    )
+                )
+            if top_try > 1:
+                # Restart stack-visibility confirmation from a clean state for each full attempt.
+                try:
+                    world._stack_visibility_gate = None
+                    world._stack_gatecheck_log_sig = None
+                    world.brick["brickAbove"] = None
+                    world.brick["brickBelow"] = None
+                except Exception:
+                    pass
+            prev_stack_gatecheck_log_enabled = bool(getattr(world, "_stack_gatecheck_log_enabled", False))
+            world._stack_gatecheck_log_enabled = True
+            try:
+                topmost_seek_status = _seek_align_brick_topmost_target()
+            finally:
+                world._stack_gatecheck_log_enabled = prev_stack_gatecheck_log_enabled
+            if topmost_seek_status in {"success", "ready", "confirm cancelled"}:
+                break
+            if not align_silent and top_try < topmost_try_limit:
+                print(
+                    format_headline(
+                        f"[ALIGN_TOP] attempt {int(top_try)}/{int(topmost_try_limit)} failed: {str(topmost_seek_status)}",
+                        COLOR_ORANGE_BRIGHT,
+                    )
+                )
+
+    if topmost_seek_status == "success":
+        if robot:
+            robot.stop()
+        return True, "success gate"
+    if topmost_seek_status != "ready":
+        if topmost_seek_status != "confirm cancelled":
+            pause_after_fail(robot)
+        return False, str(topmost_seek_status or "topmost target not confirmed")
+
     while True:
         loop_id += 1
         world.loop_id = loop_id
@@ -4405,12 +5194,13 @@ def run_alignment_segment(
         gate_utils.record_success_gate_entry(world, step, success_truth_ok)
         if not align_silent:
             log_confidence(world, confidence, step)
-        success_met = gate_utils.update_gatecheck(
+        success_met = update_gatecheck_with_precheck(
             world,
             step,
             success_tracker,
             success_truth_ok,
             phase="align",
+            log=not align_silent,
         )
         if success_truth_ok:
             if robot:
@@ -4449,6 +5239,7 @@ def run_alignment_segment(
                 stale_frame_streak = 0
                 not_visible_streak = 0
                 last_visible_ts = time.time()
+                skip_align_gap_correction_type_once = str(last_align_gap_correction_type or "").strip().lower() or None
                 prev_log_correction_type = None
                 prev_log_x_err = None
                 prev_log_dist = None
@@ -4460,6 +5251,7 @@ def run_alignment_segment(
                 stale_frame_streak = 0
                 not_visible_streak = 0
                 last_visible_ts = time.time()
+                skip_align_gap_correction_type_once = str(last_align_gap_correction_type or "").strip().lower() or None
                 prev_log_correction_type = None
                 prev_log_x_err = None
                 prev_log_dist = None
@@ -4472,16 +5264,23 @@ def run_alignment_segment(
             brick = getattr(world, "brick", {}) or {}
             act_plan = next_module.select_align_brick_next_act(
                 process_rules=world.process_rules or {},
+                learned_rules=world.learned_rules or {},
                 x_axis_mm=brick.get("x_axis", brick.get("offset_x")),
+                y_axis_mm=brick.get("y_axis", brick.get("offset_y")),
                 dist_mm=brick.get("dist"),
                 visible=bool(brick.get("visible")),
                 angle_deg=brick.get("angle", 0.0),
                 duration_s=CONTROL_DT,
+                previous_correction_type=last_align_gap_correction_type,
+                avoid_correction_type=skip_align_gap_correction_type_once,
             )
             cmd = act_plan.get("cmd")
             cmd_reason = act_plan.get("reason") or "align"
             speed_score = act_plan.get("score")
             speed = telemetry_robot_module.manual_speed_for_cmd(cmd, speed_score) if cmd and speed_score is not None else 0.0
+            planned_corr_type = str(act_plan.get("correction_type") or "").strip().lower() or None
+            if skip_align_gap_correction_type_once and planned_corr_type and planned_corr_type != str(skip_align_gap_correction_type_once):
+                skip_align_gap_correction_type_once = None
         else:
             analytics = next_module.compute_alignment_decision(
                 world=world,
@@ -4553,6 +5352,10 @@ def run_alignment_segment(
                 except (TypeError, ValueError):
                     x_sig = None
                 try:
+                    y_sig = round(float(local_gate_before_action.get("y_err")), 2)
+                except (TypeError, ValueError):
+                    y_sig = None
+                try:
                     d_sig = round(float(local_gate_before_action.get("dist")), 1)
                 except (TypeError, ValueError):
                     d_sig = None
@@ -4560,7 +5363,7 @@ def run_alignment_segment(
                     s_sig = int(round(float(score_effective))) if score_effective is not None else None
                 except (TypeError, ValueError):
                     s_sig = None
-                sig = (x_sig, d_sig, str(cmd), s_sig)
+                sig = (x_sig, y_sig, d_sig, str(cmd), s_sig)
                 if sig == last_align_signature:
                     stale_pre_obs_streak = int(stale_pre_obs_streak) + 1
                 else:
@@ -4585,6 +5388,7 @@ def run_alignment_segment(
                         stale_frame_streak = 0
                         not_visible_streak = 0
                         last_visible_ts = time.time()
+                        skip_align_gap_correction_type_once = str(last_align_gap_correction_type or "").strip().lower() or None
                         prev_log_correction_type = None
                         prev_log_x_err = None
                         prev_log_dist = None
@@ -4630,8 +5434,12 @@ def run_alignment_segment(
                 prev_log_correction_type = "distance"
             elif cmd in ("l", "r"):
                 prev_log_correction_type = "x_axis"
+            elif cmd in ("u", "d"):
+                prev_log_correction_type = "y_axis"
             else:
                 prev_log_correction_type = None
+            if step_norm == "ALIGN_BRICK":
+                last_align_gap_correction_type = str(prev_log_correction_type or "").strip().lower() or None
             sent_snapshot = _capture_sent_action_snapshot(world) if not suppress_auto_diag else None
             segments = []
             if isinstance(action_meta, dict) and isinstance(action_meta.get("segments"), list):
@@ -4737,6 +5545,7 @@ def run_alignment_segment(
                         stale_frame_streak = 0
                         not_visible_streak = 0
                         last_visible_ts = time.time()
+                        skip_align_gap_correction_type_once = str(last_align_gap_correction_type or "").strip().lower() or None
                         prev_log_correction_type = None
                         prev_log_x_err = None
                         prev_log_dist = None
@@ -4757,6 +5566,7 @@ def run_alignment_segment(
                 "dist": world.brick.get("dist"),
                 "angle": world.brick.get("angle"),
                 "x_axis": world.brick.get("x_axis"),
+                "y_axis": world.brick.get("y_axis", world.brick.get("offset_y")),
             }
             if current_frame == last_action_frame:
                 print(format_headline("[ERROR] Frame unchanged before/after action", COLOR_RED))
@@ -4806,16 +5616,23 @@ def run_alignment_segment(
             brick = getattr(world, "brick", {}) or {}
             act_plan = next_module.select_align_brick_next_act(
                 process_rules=world.process_rules or {},
+                learned_rules=world.learned_rules or {},
                 x_axis_mm=brick.get("x_axis", brick.get("offset_x")),
+                y_axis_mm=brick.get("y_axis", brick.get("offset_y")),
                 dist_mm=brick.get("dist"),
                 visible=bool(brick.get("visible")),
                 angle_deg=brick.get("angle", 0.0),
                 duration_s=CONTROL_DT,
+                previous_correction_type=last_align_gap_correction_type,
+                avoid_correction_type=skip_align_gap_correction_type_once,
             )
             cmd = act_plan.get("cmd")
             cmd_reason = act_plan.get("reason") or "align"
             speed_score = act_plan.get("score")
             speed = telemetry_robot_module.manual_speed_for_cmd(cmd, speed_score) if cmd and speed_score is not None else 0.0
+            planned_corr_type = str(act_plan.get("correction_type") or "").strip().lower() or None
+            if skip_align_gap_correction_type_once and planned_corr_type and planned_corr_type != str(skip_align_gap_correction_type_once):
+                skip_align_gap_correction_type_once = None
         else:
             analytics = next_module.compute_alignment_decision(
                 world=world,
@@ -4901,8 +5718,12 @@ def run_alignment_segment(
                 prev_log_correction_type = "distance"
             elif cmd in ("l", "r"):
                 prev_log_correction_type = "x_axis"
+            elif cmd in ("u", "d"):
+                prev_log_correction_type = "y_axis"
             else:
                 prev_log_correction_type = None
+            if step_norm == "ALIGN_BRICK":
+                last_align_gap_correction_type = str(prev_log_correction_type or "").strip().lower() or None
             sent_snapshot = _capture_sent_action_snapshot(world) if not suppress_auto_diag else None
             evt = MotionEvent(
                 cmd_to_motion_type(cmd),
@@ -5290,7 +6111,6 @@ def replay_segment(
                 if replay_action_start_time is None:
                     replay_action_start_time = now
                 update_world_from_vision(world, vision)
-                flush_auto_step_diagnostic(world, step_key, emit=True)
                 if observer:
                     observer("frame", world, vision, None, None, None)
 
@@ -5333,12 +6153,13 @@ def replay_segment(
                     success_ok, confidence = evaluate_gate_status(world, step_key)
                     gate_utils.record_success_gate_entry(world, step_key, success_ok)
                     log_confidence(world, confidence, step_key)
-                    success_met = gate_utils.update_gatecheck(
+                    success_met = update_gatecheck_with_precheck(
                         world,
                         step_key,
                         success_tracker,
                         success_ok,
                         phase="replay",
+                        log=True,
                     )
                     if success_met:
                         step_success_met = True
@@ -5348,6 +6169,7 @@ def replay_segment(
                         phase = "check"
                         desired_score = check_score
 
+                flush_auto_step_diagnostic(world, step_key, emit=True)
                 cmd = motion_step.cmd
                 if cmd:
                     pre_gate_text = _auto_gate_snapshot_text(world, step_key, include_requirements=True)
@@ -5418,7 +6240,6 @@ def replay_segment(
         if replay_action_start_time is None:
             replay_action_start_time = now
         update_world_from_vision(world, vision)
-        flush_auto_step_diagnostic(world, step_key, emit=True)
         if observer:
             observer("frame", world, vision, None, None, None)
         replay_action_elapsed_s = now - replay_action_start_time
@@ -5452,12 +6273,13 @@ def replay_segment(
             success_ok, confidence = evaluate_gate_status(world, step_key)
             gate_utils.record_success_gate_entry(world, step_key, success_ok)
             log_confidence(world, confidence, step_key)
-            success_met = gate_utils.update_gatecheck(
+            success_met = update_gatecheck_with_precheck(
                 world,
                 step_key,
                 settle_tracker,
                 success_ok,
                 phase="settle",
+                log=True,
             )
             if success_met:
                 flush_auto_step_diagnostic(world, step_key, force=True, emit=True)
@@ -5470,6 +6292,7 @@ def replay_segment(
                 phase = "check"
                 desired_score = check_score
 
+        flush_auto_step_diagnostic(world, step_key, emit=True)
         if last_cmd:
             pre_gate_text = _auto_gate_snapshot_text(world, step_key, include_requirements=True)
             pre_focus = _capture_auto_diag_focus(world, step_key)
@@ -5526,7 +6349,6 @@ def replay_segment(
             if replay_action_start_time is None:
                 replay_action_start_time = now
             update_world_from_vision(world, vision)
-            flush_auto_step_diagnostic(world, step_key, emit=True)
             if observer:
                 observer("frame", world, vision, None, None, None)
 
@@ -5561,12 +6383,13 @@ def replay_segment(
                 success_ok, confidence = evaluate_gate_status(world, step_key)
                 gate_utils.record_success_gate_entry(world, step_key, success_ok)
                 log_confidence(world, confidence, step_key)
-                success_met = gate_utils.update_gatecheck(
+                success_met = update_gatecheck_with_precheck(
                     world,
                     step_key,
                     tail_tracker,
                     success_ok,
                     phase="tail",
+                    log=True,
                 )
                 if success_met:
                     flush_auto_step_diagnostic(world, step_key, force=True, emit=True)
@@ -5581,6 +6404,7 @@ def replay_segment(
                     phase = "check"
                     desired_score = check_score
 
+            flush_auto_step_diagnostic(world, step_key, emit=True)
             if last_cmd:
                 pre_gate_text = _auto_gate_snapshot_text(world, step_key, include_requirements=True)
                 pre_focus = _capture_auto_diag_focus(world, step_key)

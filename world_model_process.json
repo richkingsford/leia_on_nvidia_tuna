@@ -1,4 +1,41 @@
 {
+    "lite_gate_check": {
+        "default_unique_smoothed_frames": 3,
+        "steps": {
+            "FIND_WALL": {
+                "enabled": true,
+                "unique_smoothed_frames": 3
+            },
+            "EXIT_WALL": {
+                "enabled": true,
+                "unique_smoothed_frames": 3
+            },
+            "FIND_BRICK": {
+                "enabled": true,
+                "unique_smoothed_frames": 3
+            },
+            "ALIGN_BRICK": {
+                "enabled": true,
+                "unique_smoothed_frames": 3
+            },
+            "SEAT_BRICK": {
+                "enabled": true,
+                "unique_smoothed_frames": 3
+            },
+            "ELEVATE_BRICK": {
+                "enabled": true,
+                "unique_smoothed_frames": 3
+            },
+            "FIND_WALL2": {
+                "enabled": true,
+                "unique_smoothed_frames": 3
+            },
+            "POSITION_BRICK": {
+                "enabled": true,
+                "unique_smoothed_frames": 3
+            }
+        }
+    },
     "steps": {
         "FIND_WALL": {
             "success_gates": {
@@ -35,17 +72,26 @@
                     "min": true
                 },
                 "xAxis_offset_abs": {
-                    "target": -1.44,
+                    "target": -4.39,
                     "tol": 1.4
                 },
                 "dist": {
-                    "target": 102.0,
+                    "target": 97.0,
                     "tol": 1.5
                 }
             }
         },
-        "SCOOP": {
+        "SEAT_BRICK": {
+            "success_metrics": [
+                "visible",
+                "dist"
+            ],
             "nominalDemosOnly": true
+        },
+        "ELEVATE_BRICK": {
+            "success_metrics": [
+                "visible"
+            ]
         },
         "FIND_WALL2": {
             "success_gates": {

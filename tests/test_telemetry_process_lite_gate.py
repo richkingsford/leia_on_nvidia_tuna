@@ -69,6 +69,16 @@ class TestTelemetryProcessLiteGate(unittest.TestCase):
                 }
             }
         }
+        world.brick.update(
+            {
+                "visible": True,
+                "dist": 80.0,
+                "angle": 0.0,
+                "offset_x": -2.0,
+                "x_axis": -2.0,
+                "confidence": 92.0,
+            }
+        )
         world._smoothed_frame_history = [
             {
                 "frame_id": 11,
@@ -100,7 +110,7 @@ class TestTelemetryProcessLiteGate(unittest.TestCase):
         ]
         ok, _ = telemetry_process.evaluate_gate_status(world, "ALIGN_BRICK")
         self.assertTrue(ok)
-        self.assertEqual(world._gatecheck_mode, "lite")
+        self.assertEqual(world._gatecheck_mode, "traditional")
         self.assertEqual(world._gatecheck_lite_required, 3)
         self.assertEqual(world._gatecheck_lite_collected, 3)
 

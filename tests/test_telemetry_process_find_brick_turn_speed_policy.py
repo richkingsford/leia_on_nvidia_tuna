@@ -28,14 +28,14 @@ class TestTelemetryProcessFindBrickTurnSpeedPolicy(unittest.TestCase):
         )
         self.assertEqual(score, telemetry_robot.normalize_speed_score(2))
 
-    def test_find_brick_turn_demo_phase_caps_to_two_percent(self):
+    def test_find_brick_turn_demo_phase_preserves_demo_score(self):
         score = telemetry_process._apply_find_brick_turn_speed_policy(
             "FIND_BRICK",
             "r",
             9,
             phase="demo",
         )
-        self.assertEqual(score, telemetry_robot.normalize_speed_score(2))
+        self.assertEqual(score, telemetry_robot.normalize_speed_score(9))
 
     def test_non_turn_command_is_unchanged(self):
         score = telemetry_process._apply_find_brick_turn_speed_policy(

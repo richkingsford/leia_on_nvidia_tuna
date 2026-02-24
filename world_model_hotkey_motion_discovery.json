@@ -1,0 +1,45 @@
+[
+  {
+    "type": "hotkey_motion_discovery_session_reuse",
+    "run_id": 1771879186,
+    "timestamp": 1771879186.8932962,
+    "requested_hotkeys": [
+      "o",
+      "k"
+    ],
+    "discovery_by_hotkey": {
+      "o": {
+        "hotkey": "o",
+        "cmd": "u",
+        "metric": "cam_h",
+        "movement_threshold_mm": 0.6,
+        "current_score_before_scan": 1,
+        "current_duration_ms_before_scan": 20,
+        "start_score": 1,
+        "start_duration_ms": 20,
+        "selected_score": 1,
+        "selected_duration_ms": 20,
+        "duration_mode": "duration_notch",
+        "movement_detected": false,
+        "step_mm": 0.0,
+        "probes_recorded": 1
+      },
+      "k": {
+        "hotkey": "k",
+        "cmd": "d",
+        "metric": "cam_h",
+        "movement_threshold_mm": 0.6,
+        "current_score_before_scan": 1,
+        "current_duration_ms_before_scan": 20,
+        "start_score": 1,
+        "start_duration_ms": 20,
+        "selected_score": 1,
+        "selected_duration_ms": 20,
+        "duration_mode": "duration_notch",
+        "movement_detected": false,
+        "step_mm": 0.0,
+        "probes_recorded": 1
+      }
+    }
+  }
+]

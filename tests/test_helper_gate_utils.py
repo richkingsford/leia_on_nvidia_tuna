@@ -175,6 +175,72 @@ class TestHelperGateUtils(unittest.TestCase):
         self.assertEqual(info["required"], 3)
         self.assertEqual(info["advanced"], 3)
 
+    def test_gatecheck_visible_only_passes_on_half_consecutive(self):
+        class DummyWorld:
+            pass
+
+        world = DummyWorld()
+        world._frame_id = 100
+        tracker = helper_gate_utils.SuccessGateTracker(
+            consecutive_required=12,
+            majority_window=18,
+            majority_required=9,
+        )
+        tracker.consecutive_pass_required = 6
+        tracker.majority_pass_required = 9
+
+        success_met = False
+        for idx in range(6):
+            world._frame_id = 100 + idx
+            success_met = helper_gate_utils.update_gatecheck(
+                world,
+                "EXIT_WALL",
+                tracker,
+                True,
+                phase="replay",
+            )
+
+        self.assertTrue(success_met)
+        status = getattr(world, "_gatecheck_status", {}) or {}
+        self.assertEqual(status.get("truth_by"), "consecutive")
+        self.assertEqual(status.get("need"), 12)
+        self.assertEqual(status.get("need_pass"), 6)
+
+    def test_gatecheck_visible_only_passes_on_half_majority_without_full_window(self):
+        class DummyWorld:
+            pass
+
+        world = DummyWorld()
+        world._frame_id = 200
+        tracker = helper_gate_utils.SuccessGateTracker(
+            consecutive_required=12,
+            majority_window=18,
+            majority_required=9,
+        )
+        tracker.consecutive_pass_required = 6
+        tracker.majority_pass_required = 9
+
+        success_met = False
+        for idx in range(17):
+            world._frame_id = 200 + idx
+            success_ok = (idx % 2) == 0
+            success_met = helper_gate_utils.update_gatecheck(
+                world,
+                "EXIT_WALL",
+                tracker,
+                success_ok,
+                phase="replay",
+            )
+            if idx < 16:
+                self.assertFalse(success_met)
+
+        self.assertTrue(success_met)
+        status = getattr(world, "_gatecheck_status", {}) or {}
+        self.assertEqual(status.get("truth_by"), "majority")
+        self.assertEqual(status.get("window_pass"), 9)
+        self.assertEqual(status.get("window_size"), 17)
+        self.assertEqual(status.get("window_need_pass"), 9)
+
 
 if __name__ == "__main__":
     unittest.main()

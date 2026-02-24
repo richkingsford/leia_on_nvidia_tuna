@@ -3,7 +3,7 @@
 helper_mini_x_axis_calibrate.py
 --------------------------------
 Mini X-axis turn calibration helper used before auto ALIGN_BRICK / POSITION_BRICK
-steps to keep 1% L/R turns stable after power cycles.
+steps. This includes one-session discovery of the tiniest reliable 0.01% L/R turn profile.
 """
 
 from __future__ import annotations
@@ -40,6 +40,12 @@ ROBOT_MODEL_FILE_DEFAULT = Path(
 WORLD_MODEL_X_AXIS_SECTION_KEY = "x_axis_turn_calibration"
 WORLD_MODEL_SPEED_SECONDS_TURN_LEFT_KEY = "speed_score_seconds_turn_left"
 WORLD_MODEL_SPEED_SECONDS_TURN_RIGHT_KEY = "speed_score_seconds_turn_right"
+WORLD_MODEL_TURN_INTENSITY_POSTS_LEFT_KEY = str(
+    getattr(telemetry_robot_module, "TURN_INTENSITY_KEY_TURN_LEFT", "turn_intensity_posts_turn_left")
+)
+WORLD_MODEL_TURN_INTENSITY_POSTS_RIGHT_KEY = str(
+    getattr(telemetry_robot_module, "TURN_INTENSITY_KEY_TURN_RIGHT", "turn_intensity_posts_turn_right")
+)
 WORLD_MODEL_SPEED_SECONDS_TURN_META_KEY = "speed_score_seconds_turn_meta"
 WORLD_MODEL_AUTO_MINI_LAST_RUN_TS_KEY = "mini_x_axis_last_run_epoch_s"
 WORLD_MODEL_AUTO_MINI_LAST_RUN_ISO_KEY = "mini_x_axis_last_run_iso_utc"
@@ -90,9 +96,13 @@ STEP_TARGET_BANDS_MM = (
 )
 
 # "Below 1%" notch model: negative notches keep score=1 and shorten duration.
-TURN_NOTCH_MIN = -3
+TURN_NOTCH_MIN = -9
 TURN_NOTCH_MAX = 7
-TURN_NOTCH_DURATION_STEP = 0.20
+TURN_NOTCH_DURATION_STEP = 0.10
+TARGET_MICRO_INTENSITY_PCT = 0.01
+DISCOVERY_START_BELOW_CURRENT_NOTCHES = 5
+DISCOVERY_CONFIRM_FRAMES = 3
+DISCOVERY_SAMPLE_TIMEOUT_S = 1.5
 
 # Consume first-turn asymmetry by sending one sacrificial tiny pulse whenever
 # direction changes, then measure/control with the steady-state pulse.
@@ -109,6 +119,12 @@ CONF_SUBTLE_HIT_RATE = 0.85
 # Vision recovery: replay inverse of recent acts and check vision after each.
 RECOVERY_MAX_INVERSE_ACTS = 3
 RECOVERY_CHECK_TIMEOUT_S = 1.0
+
+_SESSION_TINY_TURN_DISCOVERY = {
+    "done": False,
+    "by_cmd": {},
+    "persist_result": {},
+}
 
 
 def _coerce_float(value, fallback):
@@ -352,12 +368,15 @@ class XAxisCalibrator:
         self.current_phase = "init"
         self.act_idx = 0
 
-        # Near-target 1% calibration state (per turn direction).
-        self.turn_notch_by_cmd = {"l": 0, "r": 0}
+        # Near-target micro-turn state (per turn direction).
+        self.turn_notch_by_cmd = self._load_current_tiny_notch_profiles()
         self.turn_step_mm_by_cmd = {"l": deque(maxlen=20), "r": deque(maxlen=20)}
         self._last_turn_cmd_for_trial = None
         self._last_turn_cmd_sent = None
         self.recent_turn_acts = deque(maxlen=24)
+        self.tiny_discovery_by_cmd = {}
+        self.tiny_discovery_persist_result = {}
+        self.tiny_discovery_ran_this_instance = False
 
         self._last_obs_offset_x = None
         self._last_obs_delta_offset_x = None
@@ -382,7 +401,7 @@ class XAxisCalibrator:
         )
         print(
             f"[X-AXIS] 1% goal: {STEP_TARGET_MIN_MM:.2f}-{STEP_TARGET_MAX_MM:.2f}mm/turn "
-            f"(probe from notch {TURN_NOTCH_MIN}..{TURN_NOTCH_MAX})"
+            f"(notch range {TURN_NOTCH_MIN}..{TURN_NOTCH_MAX}; session discovery target={TARGET_MICRO_INTENSITY_PCT:.2f}%)"
         )
         print(f"[X-AXIS] Log: {Path(log_path)}")
 
@@ -407,13 +426,362 @@ class XAxisCalibrator:
         """
         notch_clamped = max(int(TURN_NOTCH_MIN), min(int(TURN_NOTCH_MAX), int(notch)))
         if notch_clamped < 0:
-            duration_scale = max(0.20, 1.0 + (float(notch_clamped) * float(TURN_NOTCH_DURATION_STEP)))
+            duration_scale = max(0.05, 1.0 + (float(notch_clamped) * float(TURN_NOTCH_DURATION_STEP)))
             return 1, float(duration_scale), int(notch_clamped)
         candidates = self._score_candidates()
         if not candidates:
             return 1, 1.0, int(notch_clamped)
         idx = max(0, min(len(candidates) - 1, int(notch_clamped)))
         return int(candidates[idx]), 1.0, int(notch_clamped)
+
+    @staticmethod
+    def _intensity_entry_for_target(intensity_map: dict, target_pct: float):
+        if not isinstance(intensity_map, dict):
+            return None
+        target = float(target_pct)
+        for raw_key, value in intensity_map.items():
+            try:
+                key_pct = float(raw_key)
+            except (TypeError, ValueError):
+                continue
+            if abs(float(key_pct) - target) <= 1e-6 and isinstance(value, dict):
+                return value
+        return None
+
+    def _notch_from_profile_entry(self, entry: dict | None) -> int:
+        if not isinstance(entry, dict):
+            return 0
+
+        try:
+            explicit_notch = int(entry.get("notch"))
+            return int(max(TURN_NOTCH_MIN, min(TURN_NOTCH_MAX, explicit_notch)))
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            score = int(entry.get("score", 1))
+        except (TypeError, ValueError):
+            score = 1
+        try:
+            duration_scale = float(entry.get("duration_scale", 1.0))
+        except (TypeError, ValueError):
+            duration_scale = 1.0
+
+        if score <= 1:
+            try:
+                notch = int(round((float(duration_scale) - 1.0) / float(TURN_NOTCH_DURATION_STEP)))
+            except (TypeError, ValueError, ZeroDivisionError):
+                notch = 0
+            return int(max(TURN_NOTCH_MIN, min(TURN_NOTCH_MAX, notch)))
+
+        candidates = self._score_candidates()
+        if not candidates:
+            return 0
+        nearest_idx = min(range(len(candidates)), key=lambda idx: abs(int(candidates[idx]) - int(score)))
+        return int(max(TURN_NOTCH_MIN, min(TURN_NOTCH_MAX, nearest_idx)))
+
+    def _load_current_tiny_notch_profiles(self) -> dict:
+        model = _world_model_load(ROBOT_MODEL_FILE_DEFAULT)
+        out = {"l": 0, "r": 0}
+        for cmd, intensity_key in (
+            ("l", WORLD_MODEL_TURN_INTENSITY_POSTS_LEFT_KEY),
+            ("r", WORLD_MODEL_TURN_INTENSITY_POSTS_RIGHT_KEY),
+        ):
+            intensity_map = model.get(intensity_key)
+            entry = self._intensity_entry_for_target(intensity_map, TARGET_MICRO_INTENSITY_PCT)
+            out[cmd] = int(self._notch_from_profile_entry(entry))
+        return out
+
+    def _collect_offset_samples(self, *, samples=1, timeout_s=1.5) -> list[float]:
+        offsets: list[float] = []
+        start_t = time.time()
+        requested = max(1, int(samples))
+        while len(offsets) < requested and (time.time() - start_t) < float(timeout_s) and self.running:
+            found, angle, dist, offset_x, conf, cam_h, above, below = self.vision.read()
+            self._update_world(found, angle, dist, offset_x, conf, cam_h, above, below, self.vision.current_frame)
+            if found:
+                offsets.append(float(offset_x))
+                if len(offsets) < requested:
+                    time.sleep(OBSERVE_SLEEP_S)
+            else:
+                time.sleep(OBSERVE_SLEEP_S)
+        return offsets
+
+    def _persist_tiny_turn_profile_to_world_model(self, discovered_by_cmd: dict) -> dict:
+        model_path = ROBOT_MODEL_FILE_DEFAULT
+        try:
+            model = _world_model_load(model_path)
+            meta = model.get(WORLD_MODEL_SPEED_SECONDS_TURN_META_KEY)
+            if not isinstance(meta, dict):
+                meta = {}
+                model[WORLD_MODEL_SPEED_SECONDS_TURN_META_KEY] = meta
+
+            applied = {}
+            intensity_key_text = f"{float(TARGET_MICRO_INTENSITY_PCT):.2f}"
+            for cmd, intensity_key in (
+                ("l", WORLD_MODEL_TURN_INTENSITY_POSTS_LEFT_KEY),
+                ("r", WORLD_MODEL_TURN_INTENSITY_POSTS_RIGHT_KEY),
+            ):
+                row = discovered_by_cmd.get(cmd) if isinstance(discovered_by_cmd, dict) else None
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    notch = int(row.get("selected_notch"))
+                except (TypeError, ValueError):
+                    continue
+                score, duration_scale, _ = self._score_duration_for_notch(notch)
+                intensity_map = model.get(intensity_key)
+                if not isinstance(intensity_map, dict):
+                    intensity_map = {}
+                    model[intensity_key] = intensity_map
+                intensity_map[intensity_key_text] = {
+                    "score": int(score),
+                    "duration_scale": round(float(duration_scale), 3),
+                    "notch": int(notch),
+                    "source": "mini_x_axis_discovery",
+                }
+                applied[cmd] = {
+                    "notch": int(notch),
+                    "score": int(score),
+                    "duration_scale": round(float(duration_scale), 3),
+                }
+
+            now_s = float(time.time())
+            meta["mini_x_axis_tiny_profile_pct"] = float(TARGET_MICRO_INTENSITY_PCT)
+            meta["mini_x_axis_tiny_profile_last_updated_epoch_s"] = round(now_s, 3)
+            meta["mini_x_axis_tiny_profile_last_updated_iso_utc"] = _format_utc_timestamp(now_s)
+            meta["mini_x_axis_tiny_profile_notches"] = {
+                "l": int(self.turn_notch_by_cmd.get("l", 0)),
+                "r": int(self.turn_notch_by_cmd.get("r", 0)),
+            }
+
+            model_path.write_text(json.dumps(model, indent=2) + "\n")
+            return {
+                "ok": True,
+                "model_path": str(model_path),
+                "target_pct": float(TARGET_MICRO_INTENSITY_PCT),
+                "applied": applied,
+            }
+        except OSError as exc:
+            return {
+                "ok": False,
+                "model_path": str(model_path),
+                "error": str(exc),
+            }
+
+    def _discover_tiny_turn_profiles_once(self) -> dict:
+        global _SESSION_TINY_TURN_DISCOVERY
+
+        if bool(_SESSION_TINY_TURN_DISCOVERY.get("done")):
+            cached = _SESSION_TINY_TURN_DISCOVERY.get("by_cmd")
+            if isinstance(cached, dict):
+                for cmd in ("l", "r"):
+                    row = cached.get(cmd) if isinstance(cached.get(cmd), dict) else None
+                    if isinstance(row, dict):
+                        try:
+                            self.turn_notch_by_cmd[cmd] = int(row.get("selected_notch", self.turn_notch_by_cmd.get(cmd, 0)))
+                        except (TypeError, ValueError):
+                            pass
+                self.tiny_discovery_by_cmd = {k: dict(v) for k, v in cached.items() if isinstance(v, dict)}
+            cached_persist = _SESSION_TINY_TURN_DISCOVERY.get("persist_result")
+            self.tiny_discovery_persist_result = dict(cached_persist) if isinstance(cached_persist, dict) else {}
+            self.tiny_discovery_ran_this_instance = False
+            self.log.append(
+                {
+                    "type": "turn_tiny_profile_discovery_session_reuse",
+                    "run_id": self.run_id,
+                    "timestamp": time.time(),
+                    "target_pct": float(TARGET_MICRO_INTENSITY_PCT),
+                    "turn_notch_by_cmd": dict(self.turn_notch_by_cmd),
+                    "cached_discovery": self.tiny_discovery_by_cmd,
+                }
+            )
+            print(
+                f"[X-AXIS] Reusing session 0.01% profile: "
+                f"L notch {int(self.turn_notch_by_cmd.get('l', 0)):+d}, "
+                f"R notch {int(self.turn_notch_by_cmd.get('r', 0)):+d}"
+            )
+            return self.tiny_discovery_by_cmd
+
+        self.tiny_discovery_ran_this_instance = True
+        prev_phase = self.current_phase
+        self.current_phase = "probe_tiny"
+        discovered: dict[str, dict] = {}
+        self.log.append(
+            {
+                "type": "turn_tiny_profile_discovery_start",
+                "run_id": self.run_id,
+                "timestamp": time.time(),
+                "target_pct": float(TARGET_MICRO_INTENSITY_PCT),
+                "start_below_notches": int(DISCOVERY_START_BELOW_CURRENT_NOTCHES),
+                "confirm_frames": int(DISCOVERY_CONFIRM_FRAMES),
+                "movement_threshold_mm": float(STEP_MOVEMENT_DETECT_MM),
+                "starting_notches": dict(self.turn_notch_by_cmd),
+            }
+        )
+
+        try:
+            for cmd in ("l", "r"):
+                current_notch = int(self.turn_notch_by_cmd.get(cmd, 0))
+                start_notch = int(max(TURN_NOTCH_MIN, current_notch - int(DISCOVERY_START_BELOW_CURRENT_NOTCHES)))
+                selected_row = None
+                probe_count = 0
+
+                for notch in range(int(start_notch), int(TURN_NOTCH_MAX) + 1):
+                    probe_count += 1
+                    warmup_applied = self._direction_change_warmup(cmd, phase=self.current_phase)
+                    if warmup_applied:
+                        self._collect_offset_samples(samples=1, timeout_s=1.0)
+
+                    before_offsets = self._collect_offset_samples(
+                        samples=int(DISCOVERY_CONFIRM_FRAMES),
+                        timeout_s=float(DISCOVERY_SAMPLE_TIMEOUT_S),
+                    )
+                    if len(before_offsets) < int(DISCOVERY_CONFIRM_FRAMES):
+                        recovered = self._recover_from_lost_vision(source_phase=self.current_phase)
+                        if not recovered:
+                            print(
+                                f"[X-AXIS][0.01%] {cmd.upper()} probe ended early: insufficient pre-move vision samples."
+                            )
+                            break
+                        before_offsets = [float(recovered["offset_x"])] * int(DISCOVERY_CONFIRM_FRAMES)
+                    baseline_offset = float(statistics.mean(before_offsets))
+
+                    score, duration_scale, notch_used = self._score_duration_for_notch(notch)
+                    sent = self._send_turn(cmd, score, duration_scale=duration_scale, phase=self.current_phase)
+                    time.sleep(CONTROL_SLEEP_S)
+
+                    after_offsets = self._collect_offset_samples(
+                        samples=int(DISCOVERY_CONFIRM_FRAMES),
+                        timeout_s=float(DISCOVERY_SAMPLE_TIMEOUT_S),
+                    )
+                    if len(after_offsets) < int(DISCOVERY_CONFIRM_FRAMES):
+                        recovered = self._recover_from_lost_vision(source_phase=self.current_phase)
+                        if recovered is None:
+                            print(
+                                f"[X-AXIS][0.01%] {cmd.upper()} probe ended early: insufficient post-move vision samples."
+                            )
+                            break
+                        after_offsets = [float(recovered["offset_x"])] * int(DISCOVERY_CONFIRM_FRAMES)
+
+                    deltas = [abs(float(val) - float(baseline_offset)) for val in after_offsets]
+                    moved_frames = int(
+                        sum(1 for delta in deltas if float(delta) >= float(STEP_MOVEMENT_DETECT_MM))
+                    )
+                    movement_detected = bool(moved_frames >= int(DISCOVERY_CONFIRM_FRAMES))
+                    step_mm = float(max(deltas) if deltas else 0.0)
+
+                    row = {
+                        "cmd": str(cmd),
+                        "current_notch_before_scan": int(current_notch),
+                        "start_notch": int(start_notch),
+                        "probe_index": int(probe_count),
+                        "notch": int(notch_used),
+                        "score": int(score),
+                        "duration_scale": float(duration_scale),
+                        "before_offsets": [float(v) for v in before_offsets],
+                        "after_offsets": [float(v) for v in after_offsets],
+                        "baseline_offset": float(baseline_offset),
+                        "step_mm": float(step_mm),
+                        "moved_frames": int(moved_frames),
+                        "confirm_frames_required": int(DISCOVERY_CONFIRM_FRAMES),
+                        "movement_detected": bool(movement_detected),
+                        "warmup_applied": bool(warmup_applied),
+                        "sent": sent if isinstance(sent, dict) else None,
+                    }
+                    print(
+                        f"[X-AXIS][0.01%] Probe {cmd.upper()} #{probe_count}: "
+                        f"notch {int(notch_used):+d} -> {int(score)}% @ {float(duration_scale):.2f}x, "
+                        f"step {float(step_mm):.3f}mm, moved_frames {int(moved_frames)}/{int(DISCOVERY_CONFIRM_FRAMES)} "
+                        f"{'DETECTED' if movement_detected else 'no-detect'}"
+                    )
+                    self.log.append(
+                        {
+                            "type": "turn_tiny_profile_probe",
+                            "run_id": self.run_id,
+                            "trial": self.current_trial,
+                            "phase": self.current_phase,
+                            "timestamp": time.time(),
+                            **row,
+                        }
+                    )
+
+                    if movement_detected:
+                        selected_row = row
+                        break
+
+                if selected_row is None:
+                    selected_notch = int(max(TURN_NOTCH_MIN, min(TURN_NOTCH_MAX, current_notch)))
+                    score, duration_scale, _ = self._score_duration_for_notch(selected_notch)
+                    selected_row = {
+                        "cmd": str(cmd),
+                        "current_notch_before_scan": int(current_notch),
+                        "start_notch": int(start_notch),
+                        "selected_notch": int(selected_notch),
+                        "score": int(score),
+                        "duration_scale": float(duration_scale),
+                        "step_mm": 0.0,
+                        "movement_detected": False,
+                        "probes_recorded": int(probe_count),
+                    }
+                else:
+                    selected_row = {
+                        "cmd": str(cmd),
+                        "current_notch_before_scan": int(current_notch),
+                        "start_notch": int(start_notch),
+                        "selected_notch": int(selected_row.get("notch", current_notch)),
+                        "score": int(selected_row.get("score", 1)),
+                        "duration_scale": float(selected_row.get("duration_scale", 1.0)),
+                        "step_mm": float(selected_row.get("step_mm", 0.0)),
+                        "movement_detected": bool(selected_row.get("movement_detected")),
+                        "probes_recorded": int(probe_count),
+                    }
+
+                self.turn_notch_by_cmd[cmd] = int(selected_row["selected_notch"])
+                discovered[cmd] = dict(selected_row)
+                cmd_persist = self._persist_tiny_turn_profile_to_world_model({cmd: discovered[cmd]})
+                self.log.append(
+                    {
+                        "type": "turn_tiny_profile_cmd_persist",
+                        "run_id": self.run_id,
+                        "timestamp": time.time(),
+                        "cmd": str(cmd),
+                        "target_pct": float(TARGET_MICRO_INTENSITY_PCT),
+                        "selected_notch": int(selected_row["selected_notch"]),
+                        "persist_result": cmd_persist,
+                    }
+                )
+                print(
+                    f"[X-AXIS] 0.01% discovery {cmd.upper()}: "
+                    f"start notch {start_notch:+d} -> selected {int(selected_row['selected_notch']):+d} "
+                    f"({int(selected_row['score'])}% @ {float(selected_row['duration_scale']):.2f}x, "
+                    f"step {float(selected_row['step_mm']):.3f}mm)"
+                )
+
+            self.tiny_discovery_by_cmd = {k: dict(v) for k, v in discovered.items()}
+            self.tiny_discovery_persist_result = self._persist_tiny_turn_profile_to_world_model(self.tiny_discovery_by_cmd)
+            self.log.append(
+                {
+                    "type": "turn_tiny_profile_discovery_end",
+                    "run_id": self.run_id,
+                    "timestamp": time.time(),
+                    "target_pct": float(TARGET_MICRO_INTENSITY_PCT),
+                    "discovered_by_cmd": self.tiny_discovery_by_cmd,
+                    "turn_notch_by_cmd": dict(self.turn_notch_by_cmd),
+                    "persist_result": self.tiny_discovery_persist_result,
+                },
+                force=True,
+            )
+
+            discovery_complete = all(cmd in self.tiny_discovery_by_cmd for cmd in ("l", "r"))
+            _SESSION_TINY_TURN_DISCOVERY = {
+                "done": bool(discovery_complete),
+                "by_cmd": {k: dict(v) for k, v in self.tiny_discovery_by_cmd.items()},
+                "persist_result": dict(self.tiny_discovery_persist_result),
+            }
+            return self.tiny_discovery_by_cmd
+        finally:
+            self.current_phase = prev_phase
 
     @staticmethod
     def _step_target_band(abs_err_mm: float) -> tuple[float, float, float]:
@@ -462,7 +830,7 @@ class XAxisCalibrator:
             dur_scale = float(duration_scale)
         except (TypeError, ValueError):
             dur_scale = 1.0
-        dur_scale = max(0.20, min(3.0, dur_scale))
+        dur_scale = max(0.05, min(3.0, dur_scale))
 
         if cmd in ("l", "r"):
             prev_cmd = self._last_turn_cmd_sent
@@ -503,6 +871,14 @@ class XAxisCalibrator:
             pass
         sent["duration_scale"] = float(dur_scale)
         if cmd in ("l", "r"):
+            active_notch = int(self.turn_notch_by_cmd.get(cmd, 0))
+            active_score, active_scale, _ = self._score_duration_for_notch(active_notch)
+            sent["tiny_profile_target_pct"] = float(TARGET_MICRO_INTENSITY_PCT)
+            sent["tiny_profile_active_notch"] = int(active_notch)
+            sent["tiny_profile_active_score"] = int(active_score)
+            sent["tiny_profile_active_duration_scale"] = float(active_scale)
+            sent["tiny_profile_discovery_done_this_session"] = bool(_SESSION_TINY_TURN_DISCOVERY.get("done"))
+            sent["tiny_profile_discovery_ran_this_instance"] = bool(self.tiny_discovery_ran_this_instance)
             self._last_turn_cmd_sent = str(cmd)
             if bool(record_history):
                 self.recent_turn_acts.append(
@@ -514,6 +890,24 @@ class XAxisCalibrator:
                         "phase": str(phase) if phase else str(self.current_phase),
                     }
                 )
+            self.log.append(
+                {
+                    "type": "turn_runtime_profile",
+                    "run_id": self.run_id,
+                    "trial": self.current_trial,
+                    "phase": str(phase) if phase else str(self.current_phase),
+                    "timestamp": time.time(),
+                    "cmd": str(cmd),
+                    "score_requested": int(score),
+                    "duration_scale_requested": float(dur_scale),
+                    "tiny_profile_target_pct": float(TARGET_MICRO_INTENSITY_PCT),
+                    "tiny_profile_active_notch": int(active_notch),
+                    "tiny_profile_active_score": int(active_score),
+                    "tiny_profile_active_duration_scale": float(active_scale),
+                    "tiny_profile_discovery_done_this_session": bool(_SESSION_TINY_TURN_DISCOVERY.get("done")),
+                    "tiny_profile_discovery_ran_this_instance": bool(self.tiny_discovery_ran_this_instance),
+                }
+            )
         else:
             self._last_turn_cmd_sent = None
         return sent
@@ -576,7 +970,7 @@ class XAxisCalibrator:
                 duration_scale = float(act.get("duration_scale", 1.0))
             except (TypeError, ValueError):
                 duration_scale = 1.0
-            duration_scale = max(0.20, min(3.0, duration_scale))
+            duration_scale = max(0.05, min(3.0, duration_scale))
             plan.append(
                 {
                     "cmd": cmd,
@@ -1005,7 +1399,7 @@ class XAxisCalibrator:
                 duration_scale = float(entry.get("duration_scale", 1.0))
             except (TypeError, ValueError):
                 duration_scale = 1.0
-            duration_scale = max(0.20, min(3.0, duration_scale))
+            duration_scale = max(0.01, min(3.0, duration_scale))
             try:
                 target_min = float(entry.get("target_min_mm", STEP_TARGET_MIN_MM))
             except (TypeError, ValueError):
@@ -1158,6 +1552,33 @@ class XAxisCalibrator:
                 sec_map["1"] = round(float(seconds_val), 3)
                 applied_seconds[cmd] = round(float(seconds_val), 3)
 
+                # Also persist an explicit tiny turn-intensity post
+                # so turn interpolation can request tiny L/R pulses below score=1.
+                intensity_key = (
+                    WORLD_MODEL_TURN_INTENSITY_POSTS_LEFT_KEY
+                    if cmd == "l"
+                    else WORLD_MODEL_TURN_INTENSITY_POSTS_RIGHT_KEY
+                )
+                intensity_map = model.get(intensity_key)
+                if not isinstance(intensity_map, dict):
+                    intensity_map = {}
+                    model[intensity_key] = intensity_map
+                try:
+                    base_scale_1pct = float(cmd_row.get("recommended_duration_scale_1pct", 1.0))
+                except (TypeError, ValueError):
+                    base_scale_1pct = 1.0
+                duration_scale_01 = max(
+                    0.01,
+                    min(3.0, float(base_scale_1pct) * (float(TARGET_MICRO_INTENSITY_PCT) / 1.0)),
+                )
+                tiny_key = f"{float(TARGET_MICRO_INTENSITY_PCT):.2f}"
+                existing = intensity_map.get(tiny_key)
+                if not (isinstance(existing, dict) and str(existing.get("source")) == "mini_x_axis_discovery"):
+                    intensity_map[tiny_key] = {
+                        "score": 1,
+                        "duration_scale": round(float(duration_scale_01), 3),
+                    }
+
             model_path.write_text(json.dumps(model, indent=2) + "\n")
             return {
                 "ok": True,
@@ -1236,17 +1657,7 @@ class XAxisCalibrator:
             self.current_frame = display
 
     def _get_pose(self, *, samples=1, timeout_s=1.5):
-        poses = []
-        start_t = time.time()
-        while len(poses) < int(samples) and (time.time() - start_t) < float(timeout_s) and self.running:
-            found, angle, dist, offset_x, conf, cam_h, above, below = self.vision.read()
-            self._update_world(found, angle, dist, offset_x, conf, cam_h, above, below, self.vision.current_frame)
-            if found:
-                poses.append(float(offset_x))
-                if len(poses) < int(samples):
-                    time.sleep(OBSERVE_SLEEP_S)
-            else:
-                time.sleep(OBSERVE_SLEEP_S)
+        poses = self._collect_offset_samples(samples=samples, timeout_s=timeout_s)
         if not poses or not self.running:
             return None
         return {"offset_x": float(statistics.mean(poses))}
@@ -1282,6 +1693,10 @@ class XAxisCalibrator:
                     "turn_notch_min": TURN_NOTCH_MIN,
                     "turn_notch_max": TURN_NOTCH_MAX,
                     "turn_notch_duration_step": TURN_NOTCH_DURATION_STEP,
+                    "target_micro_intensity_pct": TARGET_MICRO_INTENSITY_PCT,
+                    "discovery_start_below_current_notches": DISCOVERY_START_BELOW_CURRENT_NOTCHES,
+                    "discovery_confirm_frames": DISCOVERY_CONFIRM_FRAMES,
+                    "discovery_sample_timeout_s": DISCOVERY_SAMPLE_TIMEOUT_S,
                     "turn_dir_warmup_enabled": TURN_DIR_WARMUP_ENABLED,
                     "turn_dir_warmup_notch": TURN_DIR_WARMUP_NOTCH,
                     "turn_reversal_settle_s": TURN_REVERSAL_SETTLE_S,
@@ -1447,6 +1862,7 @@ class XAxisCalibrator:
 
     def run(self):
         self._append_meta()
+        self._discover_tiny_turn_profiles_once()
         confidence_trials: list[dict] = []
 
         for trial in range(1, self.num_trials + 1):
@@ -1502,7 +1918,17 @@ class XAxisCalibrator:
 
             self.current_phase = "probe"
             for probe_cmd in ("l", "r"):
-                notch, step_mm, score, duration_scale, target_min_mm, target_max_mm, target_err_max_mm = self._probe_turn_notch(probe_cmd)
+                notch_locked = int(self.turn_notch_by_cmd.get(probe_cmd, 0))
+                score, duration_scale, notch = self._score_duration_for_notch(notch_locked)
+                discovery_row = (
+                    self.tiny_discovery_by_cmd.get(probe_cmd)
+                    if isinstance(self.tiny_discovery_by_cmd.get(probe_cmd), dict)
+                    else {}
+                )
+                step_mm = float(discovery_row.get("step_mm", 0.0))
+                target_min_mm = float(STEP_TARGET_MIN_MM)
+                target_max_mm = float(STEP_TARGET_MAX_MM)
+                target_err_max_mm = float(STEP_TARGET_BANDS_MM[0][0])
                 probe_summary[probe_cmd] = {
                     "notch": int(notch),
                     "step_mm": float(step_mm),
@@ -1511,11 +1937,13 @@ class XAxisCalibrator:
                     "target_min_mm": float(target_min_mm),
                     "target_max_mm": float(target_max_mm),
                     "target_err_max_mm": float(target_err_max_mm),
+                    "locked_from_session_discovery": True,
+                    "target_pct": float(TARGET_MICRO_INTENSITY_PCT),
                 }
                 print(
                     f"[X-AXIS] Trial {trial} probe {probe_cmd.upper()}: "
-                    f"notch {notch:+d} -> {score}% @ {duration_scale:.2f}x "
-                    f"(step {step_mm:.2f}mm vs target {target_min_mm:.2f}-{target_max_mm:.2f}mm)"
+                    f"locked 0.01% notch {notch:+d} -> {score}% @ {duration_scale:.2f}x "
+                    f"(discovered step {step_mm:.3f}mm)"
                 )
             self.log.append(
                 {
@@ -1592,7 +2020,7 @@ class XAxisCalibrator:
                         if pending.cmd in self.turn_step_mm_by_cmd:
                             self.turn_step_mm_by_cmd[pending.cmd].append(float(delta_step_mm))
 
-                        if pending.notch is not None:
+                        if pending.notch is not None and not bool(self.tiny_discovery_by_cmd):
                             next_notch = int(pending.notch)
                             if delta_step_mm < float(target_min_step):
                                 next_notch += 1
@@ -1619,6 +2047,20 @@ class XAxisCalibrator:
                                         "reason": "step_small" if delta_step_mm < float(target_min_step) else "step_large",
                                     }
                                 )
+                        elif pending.notch is not None and bool(self.tiny_discovery_by_cmd):
+                            self.log.append(
+                                {
+                                    "type": "turn_notch_adjust_skipped_locked_profile",
+                                    "run_id": self.run_id,
+                                    "trial": self.current_trial,
+                                    "phase": self.current_phase,
+                                    "act": pending.act,
+                                    "timestamp": time.time(),
+                                    "cmd": pending.cmd,
+                                    "notch_locked": int(pending.notch),
+                                    "reason": "session_0.01_profile_locked",
+                                }
+                            )
 
                     q_prev, q_next = self.policy.update(pending.cmd, pending.bin_idx, pending.score, reward)
                     self._log_learn(
@@ -1815,6 +2257,53 @@ class XAxisCalibrator:
                 f"R {subtle_rate_r:.1f}%/{float(criteria.get('min_subtle_rate', CONF_SUBTLE_HIT_RATE)) * 100.0:.1f}%."
             )
         print("[X-AXIS] Done.")
+
+    def run_tiny_turn_discovery_only(self) -> dict:
+        self._append_meta()
+        print(
+            f"[X-AXIS] Running 0.01% L/R tiny-turn discovery only "
+            f"(target={float(TARGET_MICRO_INTENSITY_PCT):.2f}%)."
+        )
+        discovered = self._discover_tiny_turn_profiles_once()
+        summary = {
+            "ok": True,
+            "run_id": int(self.run_id),
+            "target_pct": float(TARGET_MICRO_INTENSITY_PCT),
+            "turn_notch_by_cmd": dict(self.turn_notch_by_cmd),
+            "tiny_discovery_by_cmd": (
+                dict(discovered)
+                if isinstance(discovered, dict)
+                else {}
+            ),
+            "tiny_discovery_persist_result": (
+                dict(self.tiny_discovery_persist_result)
+                if isinstance(self.tiny_discovery_persist_result, dict)
+                else {}
+            ),
+            "tiny_discovery_ran_this_instance": bool(self.tiny_discovery_ran_this_instance),
+        }
+        self.log.append(
+            {
+                "type": "turn_tiny_profile_discovery_only_summary",
+                "run_id": self.run_id,
+                "timestamp": time.time(),
+                **summary,
+            },
+            force=True,
+        )
+        for cmd in ("l", "r"):
+            row = discovered.get(cmd) if isinstance(discovered, dict) else None
+            if not isinstance(row, dict):
+                continue
+            print(
+                f"[X-AXIS] 0.01% {cmd.upper()} summary: "
+                f"selected notch {int(row.get('selected_notch', self.turn_notch_by_cmd.get(cmd, 0))):+d}, "
+                f"step {float(row.get('step_mm', 0.0)):.3f}mm, "
+                f"detected={bool(row.get('movement_detected'))}."
+            )
+        print(f"[X-AXIS] 0.01% profile persist: {summary['tiny_discovery_persist_result']}")
+        print("[X-AXIS] Tiny-turn discovery only complete.")
+        return summary
 
     def close(self):
         self.running = False
@@ -2049,6 +2538,17 @@ def run_mini_x_axis_calibration(
         "confidence": confidence,
         "conclusion": data if isinstance(data, dict) else {},
         "persist_result": persist if isinstance(persist, dict) else {},
+        "tiny_discovery_by_cmd": (
+            dict(calibrator.tiny_discovery_by_cmd)
+            if isinstance(getattr(calibrator, "tiny_discovery_by_cmd", None), dict)
+            else {}
+        ),
+        "tiny_discovery_persist_result": (
+            dict(calibrator.tiny_discovery_persist_result)
+            if isinstance(getattr(calibrator, "tiny_discovery_persist_result", None), dict)
+            else {}
+        ),
+        "tiny_discovery_ran_this_instance": bool(getattr(calibrator, "tiny_discovery_ran_this_instance", False)),
     }
     confidence_dict = summary["confidence"] if isinstance(summary["confidence"], dict) else {}
     confident = bool(confidence_dict.get("confident")) if confidence_dict else None
@@ -2076,6 +2576,18 @@ def run_mini_x_axis_calibration(
             f"[AUTO] {step_name} mini x-axis calibration completed but world model update failed: "
             f"{summary['persist_result'].get('error')}"
         )
+    tiny_persist = summary.get("tiny_discovery_persist_result")
+    if isinstance(tiny_persist, dict):
+        if bool(tiny_persist.get("ok")):
+            logger(
+                f"[AUTO] {step_name} 0.01% turn profile updated "
+                f"({tiny_persist.get('applied')})."
+            )
+        elif tiny_persist:
+            logger(
+                f"[AUTO] {step_name} 0.01% turn profile update failed: "
+                f"{tiny_persist.get('error')}"
+            )
     if not bool(meta_result.get("ok")):
         logger(f"[AUTO] {step_name} mini x-axis run meta update failed: {meta_result.get('error')}")
     return summary
@@ -2087,6 +2599,11 @@ def main():
     parser.add_argument("--stream-port", type=int, default=STREAM_PORT_DEFAULT)
     parser.add_argument("--log", type=str, default=str(RUN_LOG_FILE_DEFAULT))
     parser.add_argument("--x-axis-sign", type=float, default=X_AXIS_SIGN_DEFAULT)
+    parser.add_argument(
+        "--discover-tiny-only",
+        action="store_true",
+        help="Run only 0.01% L/R tiny-turn discovery and persist profile updates.",
+    )
     parser.add_argument("--stream", dest="stream", action="store_true", help="Enable mini calibration livestream")
     parser.add_argument("--no-stream", dest="stream", action="store_false", help="Disable mini calibration livestream")
     parser.set_defaults(stream=False)
@@ -2100,7 +2617,11 @@ def main():
         enable_stream=bool(args.stream),
     )
     try:
-        calibrator.run()
+        if bool(args.discover_tiny_only):
+            summary = calibrator.run_tiny_turn_discovery_only()
+            print(json.dumps(summary, indent=2))
+        else:
+            calibrator.run()
     except KeyboardInterrupt:
         print("\n[X-AXIS] Interrupted.")
     finally:

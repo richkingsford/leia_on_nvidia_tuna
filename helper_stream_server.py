@@ -247,7 +247,7 @@ class StreamServer:
             controls_parts = ["<div class='controls'>"]
             if has_center_line_control:
                 controls_parts.append(
-                    "<label class='control-item'><input type='checkbox' id='showCenterLine' checked> Show center line</label>"
+                    "<label class='control-item'><input type='checkbox' id='showCenterLine' checked> Show center lines</label>"
                 )
             if has_vision_mode_control:
                 radio_parts = []

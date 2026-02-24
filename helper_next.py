@@ -71,6 +71,7 @@ METRIC_DIRECTIONS = {
     # This metric is treated as a signed offset with a target +/- tol band.
     # Use a non-one-sided direction so gate checks use abs(value-target) <= tol.
     "xAxis_offset_abs": "band",
+    "yAxis_offset_abs": "band",
     "dist": "low",
     "visible": "high",
     "confidence": "high",
@@ -921,11 +922,15 @@ def compute_alignment_decision(
 def select_align_brick_next_act(
     *,
     process_rules,
+    learned_rules=None,
     x_axis_mm,
+    y_axis_mm=None,
     dist_mm,
     visible=True,
     angle_deg=0.0,
     duration_s=0.05,
+    previous_correction_type=None,
+    avoid_correction_type=None,
 ):
     """
     Single source selector for ALIGN_BRICK next act (cmd + speed score).
@@ -939,7 +944,7 @@ def select_align_brick_next_act(
         world=None,
         step="ALIGN_BRICK",
         process_rules=process_rules,
-        learned_rules=None,
+        learned_rules=learned_rules,
         duration_s=duration_s,
         visible=bool(visible),
         x_axis=x_axis_mm,
@@ -954,36 +959,177 @@ def select_align_brick_next_act(
     x_stats = success_gates.get("xAxis_offset_abs") if isinstance(success_gates, dict) else {}
     if not isinstance(x_stats, dict):
         x_stats = {}
+    y_stats = success_gates.get("yAxis_offset_abs") if isinstance(success_gates, dict) else {}
+    if not isinstance(y_stats, dict):
+        y_stats = {}
     d_stats = success_gates.get("dist") if isinstance(success_gates, dict) else {}
     if not isinstance(d_stats, dict):
         d_stats = {}
 
     x_target = _coerce_float(x_stats.get("target"), 0.0) or 0.0
+    # `offset_y` is relative to the camera vertical center, so target remains 0 by default.
+    y_target = _coerce_float(y_stats.get("target"), 0.0)
+    if y_target is None:
+        y_target = 0.0
     dist_target = _coerce_float(d_stats.get("target"), 0.0) or 0.0
+
+    x_tol = abs(_coerce_float(x_stats.get("tol"), 0.0) or 0.0)
+    y_tol = _coerce_float(y_stats.get("tol"), None)
+    if y_tol is None:
+        y_tol = x_tol
+    y_tol = abs(float(y_tol) or 0.0)
+    dist_tol = abs(_coerce_float(d_stats.get("tol"), 0.0) or 0.0)
 
     x_axis_val = _coerce_float(x_axis_mm, 0.0) or 0.0
     x_err_mm = float(x_axis_val - x_target)
+    y_axis_val = _coerce_float(y_axis_mm, None)
+    y_err_mm = None if y_axis_val is None else float(y_axis_val - y_target)
     dist_val = _coerce_float(dist_mm, None)
     if dist_val is None:
         dist_err_mm = float("inf")
     else:
         dist_err_mm = abs(float(dist_val - dist_target))
 
+    def _gate_ratio(abs_err_mm, tol_mm):
+        try:
+            err = max(0.0, float(abs_err_mm) - float(max(0.0, tol_mm)))
+        except (TypeError, ValueError):
+            return 0.0
+        denom = max(float(tol_mm), 1.0)
+        return float(err) / float(denom)
+
+    x_ratio = _gate_ratio(abs(x_err_mm), x_tol)
+    y_ratio = _gate_ratio(abs(y_err_mm), y_tol) if y_err_mm is not None else 0.0
+    d_ratio = _gate_ratio(dist_err_mm, dist_tol) if dist_val is not None and dist_tol > 0.0 else 0.0
+
     if prod_cmd not in ("f", "b", "l", "r"):
         prod_cmd = "l" if x_err_mm <= 0.0 else "r"
         if not worst_metric:
             worst_metric = "xAxis_offset_abs"
 
-    if prod_cmd in ("f", "b"):
-        correction_type = "distance"
-        score_float = float(align_brick_dist_error_speed_score(dist_err_mm))
-        score_int = int(round(score_float))
-        reason = "distance_alignment"
+    candidates = {}
+
+    if x_ratio > 0.0:
+        candidates["x_axis"] = {
+            "cmd": "l" if x_err_mm <= 0.0 else "r",
+            "correction_type": "x_axis",
+            "score": int(align_brick_x_axis_one_shot_score(x_err_mm)),
+            "score_float": None,
+            "reason": "x_axis_alignment",
+            "worst_metric": "xAxis_offset_abs",
+            "ratio": float(x_ratio),
+        }
+
+    if y_err_mm is not None and y_ratio > 0.0:
+        candidates["y_axis"] = {
+            "cmd": "d" if float(y_err_mm) > 0.0 else "u",
+            "correction_type": "y_axis",
+            "score": int(align_brick_x_axis_one_shot_score(float(y_err_mm))),
+            "score_float": None,
+            "reason": "y_axis_alignment",
+            "worst_metric": "yAxis_offset_abs",
+            "ratio": float(y_ratio),
+        }
+
+    if dist_val is not None and d_ratio > 0.0:
+        if prod_cmd in ("f", "b"):
+            dist_cmd = str(prod_cmd)
+        else:
+            dist_cmd = "f" if float(dist_val) > float(dist_target) else "b"
+        score_float_dist = float(align_brick_dist_error_speed_score(dist_err_mm))
+        candidates["distance"] = {
+            "cmd": str(dist_cmd),
+            "correction_type": "distance",
+            "score": int(round(score_float_dist)),
+            "score_float": score_float_dist,
+            "reason": "distance_alignment",
+            "worst_metric": "dist",
+            "ratio": float(d_ratio),
+        }
+
+    # Preserve prior behavior for the default (non-rotation) first choice.
+    # Vertical camera-center alignment for step 4 (lift axis):
+    # Positive y offset means marker is below center, so move mast down (`d`) to
+    # bring the marker upward in the image. Negative y offset uses mast up (`u`).
+    use_y_axis_correction = bool(
+        "y_axis" in candidates
+        and prod_cmd not in ("f", "b")   # Keep distance safety priority when depth is the main issue.
+        and y_ratio >= x_ratio
+    )
+
+    if use_y_axis_correction:
+        chosen = dict(candidates["y_axis"])
+    elif prod_cmd in ("f", "b") and "distance" in candidates:
+        chosen = dict(candidates["distance"])
+    elif "x_axis" in candidates:
+        chosen = dict(candidates["x_axis"])
+    elif "distance" in candidates:
+        chosen = dict(candidates["distance"])
+    elif "y_axis" in candidates:
+        chosen = dict(candidates["y_axis"])
     else:
-        correction_type = "x_axis"
-        score_float = None
-        score_int = int(align_brick_x_axis_one_shot_score(x_err_mm))
-        reason = "x_axis_alignment"
+        chosen = {
+            "cmd": str(prod_cmd),
+            "correction_type": "x_axis",
+            "score": int(align_brick_x_axis_one_shot_score(x_err_mm)),
+            "score_float": None,
+            "reason": "x_axis_alignment",
+            "worst_metric": worst_metric or "xAxis_offset_abs",
+            "ratio": 0.0,
+        }
+
+    prev_corr = str(previous_correction_type or "").strip().lower()
+    avoid_corr = str(avoid_correction_type or "").strip().lower()
+
+    def _best_alternative(excluded_types):
+        viable = [
+            dict(v)
+            for k, v in candidates.items()
+            if str(k) not in excluded_types and float(v.get("ratio", 0.0) or 0.0) > 0.0
+        ]
+        if not viable:
+            return None
+        viable.sort(
+            key=lambda row: (
+                float(row.get("ratio", 0.0) or 0.0),
+                1.0 if str(row.get("correction_type")) == "y_axis" else 0.0,  # slight tie-breaker toward vertical gap rotation
+            ),
+            reverse=True,
+        )
+        return viable[0]
+
+    rotation_override = False
+    chosen_type = str(chosen.get("correction_type") or "").strip().lower()
+    if avoid_corr and chosen_type == avoid_corr:
+        alt = _best_alternative({avoid_corr})
+        if alt is not None:
+            chosen = alt
+            chosen_type = str(chosen.get("correction_type") or "").strip().lower()
+            rotation_override = True
+    elif prev_corr and chosen_type == prev_corr:
+        alt = _best_alternative({prev_corr})
+        if alt is not None:
+            chosen = alt
+            chosen_type = str(chosen.get("correction_type") or "").strip().lower()
+            rotation_override = True
+
+    correction_type = str(chosen.get("correction_type"))
+    score_float = chosen.get("score_float")
+    score_int = int(chosen.get("score"))
+    prod_cmd = str(chosen.get("cmd"))
+    reason = str(chosen.get("reason"))
+    worst_metric = chosen.get("worst_metric")
+
+    # When learned rules are provided (auto-step path), prefer the score chosen
+    # by the single-source analytics pipeline so calibration_profile scaling and
+    # speed caps are honored for ALIGN_BRICK.
+    if learned_rules is not None and correction_type != "y_axis" and str(analytics.get("cmd")) == str(prod_cmd):
+        analytics_score = analytics.get("speed_score")
+        if analytics_score is not None:
+            try:
+                score_int = int(normalize_speed_score(analytics_score))
+            except (TypeError, ValueError):
+                pass
 
     return {
         "cmd": str(prod_cmd),
@@ -992,9 +1138,13 @@ def select_align_brick_next_act(
         "score_float": score_float,
         "reason": str(reason),
         "worst_metric": worst_metric,
+        "rotation_override": bool(rotation_override),
         "x_err_mm": float(x_err_mm),
+        "y_err_mm": (None if y_err_mm is None else float(y_err_mm)),
         "dist_err_mm": float(dist_err_mm),
         "dist_target_mm": float(dist_target),
+        "x_tol_mm": float(x_tol),
+        "y_tol_mm": float(y_tol),
     }
 
 
@@ -1011,9 +1161,11 @@ def align_local_gate_status(world, step="ALIGN_BRICK", process_rules=None):
 
     visible = bool(brick.get("visible"))
     x_axis_raw = brick.get("x_axis", brick.get("offset_x"))
+    y_axis_raw = brick.get("y_axis", brick.get("offset_y"))
     dist_raw = brick.get("dist")
 
     x_axis = _coerce_float(x_axis_raw, None)
+    y_axis = _coerce_float(y_axis_raw, None)
     dist_val = _coerce_float(dist_raw, None)
 
     x_stats = success_gates.get("xAxis_offset_abs") if isinstance(success_gates, dict) else {}
@@ -1025,6 +1177,22 @@ def align_local_gate_status(world, step="ALIGN_BRICK", process_rules=None):
     x_abs_err = None if x_err is None else abs(float(x_err))
     x_within_tol = bool(x_abs_err is not None and x_abs_err <= x_tol)
 
+    step_key = _step_name(step)
+    y_stats = success_gates.get("yAxis_offset_abs") if isinstance(success_gates, dict) else {}
+    if not isinstance(y_stats, dict):
+        y_stats = {}
+    y_target = _coerce_float(y_stats.get("target"), 0.0)
+    if y_target is None:
+        y_target = 0.0
+    y_tol = _coerce_float(y_stats.get("tol"), None)
+    if y_tol is None:
+        y_tol = x_tol
+    y_tol = abs(float(y_tol) or 0.0)
+    y_err = None if y_axis is None else float(y_axis - y_target)
+    y_abs_err = None if y_err is None else abs(float(y_err))
+    y_within_tol = bool(y_abs_err is not None and y_abs_err <= y_tol)
+    y_required = bool(step_key == "ALIGN_BRICK")
+
     d_stats = success_gates.get("dist") if isinstance(success_gates, dict) else {}
     if not isinstance(d_stats, dict):
         d_stats = {}
@@ -1033,7 +1201,12 @@ def align_local_gate_status(world, step="ALIGN_BRICK", process_rules=None):
     dist_err = None if dist_val is None else abs(float(dist_val - d_target))
     dist_within_tol = bool(dist_err is not None and dist_err <= d_tol)
 
-    ok = bool(visible and x_within_tol and dist_within_tol)
+    ok = bool(
+        visible
+        and x_within_tol
+        and dist_within_tol
+        and (y_within_tol if y_required else True)
+    )
     return {
         "ok": ok,
         "visible": bool(visible),
@@ -1043,6 +1216,13 @@ def align_local_gate_status(world, step="ALIGN_BRICK", process_rules=None):
         "x_err": x_err,
         "x_abs_err": x_abs_err,
         "x_within_tol": x_within_tol,
+        "y_axis": y_axis,
+        "y_target": y_target,
+        "y_tol": y_tol,
+        "y_err": y_err,
+        "y_abs_err": y_abs_err,
+        "y_within_tol": y_within_tol,
+        "y_required": y_required,
         "dist": dist_val,
         "dist_target": d_target,
         "dist_tol": d_tol,

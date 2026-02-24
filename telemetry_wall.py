@@ -7,8 +7,8 @@ from typing import Optional
 
 from telemetry_brick import GateCheck, STEP_ALIASES, _step_name
 
-WALL_MODEL_FILE = Path(__file__).parent / "world_model_walls.json"
-WALL_MODEL_FALLBACK_FILE = Path(__file__).parent / "world_model_wall.json"
+WALL_MODEL_FILE = Path(__file__).parent / "world_model_wall.json"
+WALL_MODEL_FALLBACK_FILE = Path(__file__).parent / "world_model_walls.json"
 
 
 @dataclass

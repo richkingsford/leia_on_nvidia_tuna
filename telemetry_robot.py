@@ -45,6 +45,9 @@ SPEED_SECONDS_KEY = "speed_score_seconds"
 SPEED_SECONDS_KEY_TURN = "speed_score_seconds_turn"
 SPEED_SECONDS_KEY_TURN_LEFT = "speed_score_seconds_turn_left"
 SPEED_SECONDS_KEY_TURN_RIGHT = "speed_score_seconds_turn_right"
+TURN_INTENSITY_KEY_TURN = "turn_intensity_posts_turn"
+TURN_INTENSITY_KEY_TURN_LEFT = "turn_intensity_posts_turn_left"
+TURN_INTENSITY_KEY_TURN_RIGHT = "turn_intensity_posts_turn_right"
 
 ROBOT_MODEL_FILE = Path(__file__).resolve().parent / "world_model_robot.json"
 DEFAULT_SPEED_MODEL = {
@@ -64,8 +67,11 @@ DEFAULT_SPEED_MODEL = {
         "e": {"cmd": "r", "score": 1},
         "d": {"cmd": "r", "score": 50},
         "c": {"cmd": "r", "score": 100},
+        "o": {"cmd": "u", "score": 1},
+        "k": {"cmd": "d", "score": 1},
         "u": {"cmd": "u", "score": 50},
-        "l": {"cmd": "d", "score": 50},
+        "p": {"cmd": "u", "score": 100},
+        "l": {"cmd": "d", "score": 100},
     },
     SPEED_MAP_KEY_DRIVE: {
         "1": {"power": 0.064, "pwm": 50},
@@ -104,14 +110,35 @@ DEFAULT_SPEED_MODEL = {
         "1": 0.30,
         "100": 0.30,
     },
+    # Optional fractional turn-intensity anchors (%). Values are interpolated
+    # piecewise to produce PWM/power/duration for L/R turns.
+    TURN_INTENSITY_KEY_TURN: {
+        "0.5": {"score": 1, "duration_scale": 0.5},
+        "1.0": {"score": 1},
+        "5.0": {"score": 5},
+        "25.0": {"score": 25},
+        "100.0": {"score": 100},
+    },
+    TURN_INTENSITY_KEY_TURN_LEFT: {
+        "0.5": {"score": 1, "duration_scale": 0.5},
+        "1.0": {"score": 1},
+        "5.0": {"score": 5},
+        "25.0": {"score": 25},
+        "100.0": {"score": 100},
+    },
+    TURN_INTENSITY_KEY_TURN_RIGHT: {
+        "0.5": {"score": 1, "duration_scale": 0.5},
+        "1.0": {"score": 1},
+        "5.0": {"score": 5},
+        "25.0": {"score": 25},
+        "100.0": {"score": 100},
+    },
     "turn_efficiency": {
         "l": 300.0,
         "r": 300.0,
     },
     # Optional autonomous-only turn boost at score=1 (percent).
     "auto_turn_speed_boost_pct": 0.0,
-    # Optional autonomous micro-adjustment tuning by step/cmd.
-    "auto_micro_adjustments": {},
 }
 
 def _brick_module():
@@ -316,7 +343,34 @@ def _coerce_hotkeys(raw, fallback, score_levels):
         if not cmd:
             continue
         score = normalize_speed_score(value.get("score"), default=SPEED_SCORE_DEFAULT)
-        cleaned[str(key)] = {"cmd": str(cmd), "score": score}
+        row = {"cmd": str(cmd), "score": score}
+        pwm_raw = value.get("pwm")
+        try:
+            pwm_val = clamp_pwm(int(round(float(pwm_raw))))
+        except (TypeError, ValueError):
+            pwm_val = None
+        if pwm_val is not None and pwm_val > 0:
+            row["pwm"] = int(pwm_val)
+            power_from_pwm = _pwm_to_power(pwm_val)
+            if power_from_pwm is not None:
+                row["power"] = float(power_from_pwm)
+        else:
+            power_raw = value.get("power")
+            try:
+                power_val = float(power_raw)
+            except (TypeError, ValueError):
+                power_val = None
+            if power_val is not None:
+                power_val = max(0.0, min(1.0, float(power_val)))
+                row["power"] = float(power_val)
+        duration_raw = value.get("duration_ms")
+        try:
+            duration_ms = int(round(float(duration_raw)))
+        except (TypeError, ValueError):
+            duration_ms = None
+        if duration_ms is not None and duration_ms > 0:
+            row["duration_ms"] = int(duration_ms)
+        cleaned[str(key)] = row
     return cleaned
 
 
@@ -344,6 +398,142 @@ def _coerce_command_remap(raw):
         if key is None or value is None:
             continue
         cleaned[str(key)] = str(value)
+    return cleaned
+
+
+def _coerce_turn_intensity_posts(
+    raw,
+    fallback,
+    *,
+    cmd,
+    low_pwm,
+    high_pwm,
+    duration_map,
+    min_pwm=None,
+    max_pwm=None,
+):
+    def _duration_for_score(score_key):
+        exact = duration_map.get(int(score_key)) if isinstance(duration_map, dict) else None
+        if exact is not None:
+            try:
+                return max(1, int(round(float(exact))))
+            except (TypeError, ValueError):
+                pass
+        low = duration_map.get(SPEED_SCORE_MIN) if isinstance(duration_map, dict) else None
+        high = duration_map.get(SPEED_SCORE_MAX) if isinstance(duration_map, dict) else None
+        if low is None or high is None:
+            return int(DEFAULT_ACT_DURATION_MS)
+        try:
+            low = float(low)
+            high = float(high)
+        except (TypeError, ValueError):
+            return int(DEFAULT_ACT_DURATION_MS)
+        frac = (float(score_key) - float(SPEED_SCORE_MIN)) / float(SPEED_SCORE_MAX - SPEED_SCORE_MIN)
+        return max(1, int(round(low + (high - low) * frac)))
+
+    def _resolve_entry(entry):
+        if not isinstance(entry, dict):
+            return None
+        score_raw = entry.get("score")
+        score_val = None
+        if score_raw is not None:
+            try:
+                score_val = normalize_speed_score(score_raw)
+            except Exception:
+                score_val = None
+
+        pwm = entry.get("pwm")
+        power = entry.get("power")
+        duration_ms = entry.get("duration_ms")
+        duration_scale = entry.get("duration_scale")
+        duration_s = entry.get("duration_s")
+
+        if score_val is not None:
+            pwm_scored = interp_pwm_for_score(score_val, low_pwm, high_pwm)
+            if pwm_scored is not None:
+                pwm = pwm if pwm is not None else pwm_scored
+            if duration_ms is None:
+                duration_ms = _duration_for_score(score_val)
+
+        try:
+            pwm_val = int(round(float(pwm))) if pwm is not None else None
+        except (TypeError, ValueError):
+            pwm_val = None
+        try:
+            power_val = float(power) if power is not None else None
+        except (TypeError, ValueError):
+            power_val = None
+
+        if pwm_val is not None and power_val is not None:
+            power_val = _pwm_to_power(pwm_val, min_pwm=min_pwm, max_pwm=max_pwm)
+            pwm_val = clamp_pwm(pwm_val)
+        elif pwm_val is not None:
+            pwm_val = clamp_pwm(pwm_val)
+            power_val = _pwm_to_power(pwm_val, min_pwm=min_pwm, max_pwm=max_pwm)
+        elif power_val is not None:
+            power_val = max(0.0, min(1.0, float(power_val)))
+            pwm_val = _power_to_pwm(power_val, min_pwm=min_pwm, max_pwm=max_pwm)
+
+        if pwm_val is None or power_val is None:
+            return None
+
+        if duration_ms is None and duration_s is not None:
+            try:
+                duration_ms = max(1, int(round(float(duration_s) * 1000.0)))
+            except (TypeError, ValueError):
+                duration_ms = None
+        if duration_ms is None:
+            duration_ms = int(DEFAULT_ACT_DURATION_MS)
+        try:
+            duration_ms_val = max(1, int(round(float(duration_ms))))
+        except (TypeError, ValueError):
+            duration_ms_val = int(DEFAULT_ACT_DURATION_MS)
+
+        if duration_scale is not None:
+            try:
+                duration_ms_val = max(1, int(round(float(duration_ms_val) * float(duration_scale))))
+            except (TypeError, ValueError):
+                pass
+
+        if str(cmd) in ("l", "r") and pwm_val > 0:
+            pwm_val = max(turn_pwm_floor(), int(pwm_val))
+
+        return {
+            "pwm": int(pwm_val),
+            "power": max(0.0, min(1.0, float(power_val))),
+            "duration_ms": int(duration_ms_val),
+        }
+
+    source = raw if isinstance(raw, dict) else fallback
+    cleaned = {}
+    if isinstance(source, dict):
+        for key, entry in source.items():
+            try:
+                intensity = float(key)
+            except (TypeError, ValueError):
+                continue
+            if intensity <= 0.0:
+                continue
+            resolved = _resolve_entry(entry)
+            if resolved is None:
+                continue
+            cleaned[float(intensity)] = resolved
+
+    if cleaned:
+        return cleaned
+
+    # Last-resort default anchors from score interpolation.
+    fallback_posts = {
+        0.5: {"score": 1, "duration_scale": 0.5},
+        1.0: {"score": 1},
+        5.0: {"score": 5},
+        25.0: {"score": 25},
+        100.0: {"score": 100},
+    }
+    for intensity, entry in fallback_posts.items():
+        resolved = _resolve_entry(entry)
+        if resolved is not None:
+            cleaned[float(intensity)] = resolved
     return cleaned
 
 
@@ -461,6 +651,16 @@ def _load_speed_model(path):
         score_seconds_turn,
     )
 
+    turn_intensity_raw = model.get(TURN_INTENSITY_KEY_TURN)
+    if not isinstance(turn_intensity_raw, dict):
+        turn_intensity_raw = DEFAULT_SPEED_MODEL.get(TURN_INTENSITY_KEY_TURN, {})
+    turn_intensity_left_raw = model.get(TURN_INTENSITY_KEY_TURN_LEFT)
+    if not isinstance(turn_intensity_left_raw, dict):
+        turn_intensity_left_raw = turn_intensity_raw
+    turn_intensity_right_raw = model.get(TURN_INTENSITY_KEY_TURN_RIGHT)
+    if not isinstance(turn_intensity_right_raw, dict):
+        turn_intensity_right_raw = turn_intensity_raw
+
     if not score_seconds_turn:
         score_seconds_turn = dict(score_seconds)
     if not score_seconds_turn_left:
@@ -495,6 +695,44 @@ def _load_speed_model(path):
         entry = turn_right_map.get(score_key)
         if isinstance(entry, dict):
             entry["duration_ms"] = int(duration_ms)
+
+    low_pwm_left = ((turn_left_map.get(SPEED_SCORE_MIN) or {}).get("pwm") if isinstance(turn_left_map, dict) else None)
+    high_pwm_left = ((turn_left_map.get(SPEED_SCORE_MAX) or {}).get("pwm") if isinstance(turn_left_map, dict) else None)
+    low_pwm_right = ((turn_right_map.get(SPEED_SCORE_MIN) or {}).get("pwm") if isinstance(turn_right_map, dict) else None)
+    high_pwm_right = ((turn_right_map.get(SPEED_SCORE_MAX) or {}).get("pwm") if isinstance(turn_right_map, dict) else None)
+    try:
+        low_pwm_left = int(low_pwm_left)
+        high_pwm_left = int(high_pwm_left)
+    except (TypeError, ValueError):
+        low_pwm_left = int(MIN_PWM)
+        high_pwm_left = int(MAX_PWM)
+    try:
+        low_pwm_right = int(low_pwm_right)
+        high_pwm_right = int(high_pwm_right)
+    except (TypeError, ValueError):
+        low_pwm_right = int(MIN_PWM)
+        high_pwm_right = int(MAX_PWM)
+
+    turn_intensity_posts_left = _coerce_turn_intensity_posts(
+        turn_intensity_left_raw,
+        DEFAULT_SPEED_MODEL.get(TURN_INTENSITY_KEY_TURN_LEFT, {}),
+        cmd="l",
+        low_pwm=low_pwm_left,
+        high_pwm=high_pwm_left,
+        duration_map=duration_ms_by_score_turn_left,
+        min_pwm=min_pwm,
+        max_pwm=max_pwm,
+    )
+    turn_intensity_posts_right = _coerce_turn_intensity_posts(
+        turn_intensity_right_raw,
+        DEFAULT_SPEED_MODEL.get(TURN_INTENSITY_KEY_TURN_RIGHT, {}),
+        cmd="r",
+        low_pwm=low_pwm_right,
+        high_pwm=high_pwm_right,
+        duration_map=duration_ms_by_score_turn_right,
+        min_pwm=min_pwm,
+        max_pwm=max_pwm,
+    )
     hotkey_fallback = {} if loaded_from_file else DEFAULT_SPEED_MODEL["hotkey_speed_scores"]
     hotkeys = _coerce_hotkeys(model.get("hotkey_speed_scores"), hotkey_fallback, SPEED_SCORE_LEVELS)
     if not hotkeys and not loaded_from_file:
@@ -512,10 +750,6 @@ def _load_speed_model(path):
         auto_turn_speed_boost_pct = 0.0
     auto_turn_speed_boost_pct = max(0.0, min(100.0, auto_turn_speed_boost_pct))
 
-    auto_micro_adjustments = model.get("auto_micro_adjustments", DEFAULT_SPEED_MODEL.get("auto_micro_adjustments", {}))
-    if not isinstance(auto_micro_adjustments, dict):
-        auto_micro_adjustments = {}
-
     return (
         hotkeys,
         drive_map,
@@ -532,7 +766,8 @@ def _load_speed_model(path):
         cmd_remap,
         act_duration_ms,
         auto_turn_speed_boost_pct,
-        auto_micro_adjustments,
+        turn_intensity_posts_left,
+        turn_intensity_posts_right,
         min_pwm,
         max_pwm,
         min_turn_power,
@@ -555,7 +790,8 @@ def _load_speed_model(path):
     COMMAND_REMAP,
     ACT_DURATION_MS,
     AUTO_TURN_SPEED_BOOST_PCT,
-    AUTO_MICRO_ADJUSTMENTS,
+    TURN_INTENSITY_POSTS_LEFT,
+    TURN_INTENSITY_POSTS_RIGHT,
     MIN_PWM,
     MAX_PWM,
     MIN_TURN_POWER,
@@ -750,8 +986,18 @@ def _duration_ms_for_score(cmd, score):
             pass
     low = duration_map.get(SPEED_SCORE_MIN) if isinstance(duration_map, dict) else None
     high = duration_map.get(SPEED_SCORE_MAX) if isinstance(duration_map, dict) else None
-    if low is None or high is None:
+    if low is None and high is None:
         return int(ACT_DURATION_MS)
+    if low is None:
+        try:
+            return max(1, int(round(float(high))))
+        except (TypeError, ValueError):
+            return int(ACT_DURATION_MS)
+    if high is None:
+        try:
+            return max(1, int(round(float(low))))
+        except (TypeError, ValueError):
+            return int(ACT_DURATION_MS)
     try:
         low = float(low)
         high = float(high)
@@ -803,6 +1049,116 @@ def manual_speed_for_cmd(cmd, score):
     return power
 
 
+def _turn_intensity_posts_for_cmd(cmd):
+    if cmd == "l":
+        return TURN_INTENSITY_POSTS_LEFT if isinstance(TURN_INTENSITY_POSTS_LEFT, dict) else {}
+    if cmd == "r":
+        return TURN_INTENSITY_POSTS_RIGHT if isinstance(TURN_INTENSITY_POSTS_RIGHT, dict) else {}
+    return {}
+
+
+def speed_power_pwm_for_turn_intensity(cmd, intensity_pct):
+    """
+    Fractional turn intensity path for L/R commands.
+    Uses piecewise interpolation over configured intensity anchor posts.
+    Returns (power, pwm, score_estimate, duration_ms, intensity_effective).
+    """
+    if cmd not in ("l", "r"):
+        power, pwm, score_used, duration_ms = speed_power_pwm_for_cmd(cmd, intensity_pct)
+        return power, pwm, score_used, duration_ms, None
+
+    posts = _turn_intensity_posts_for_cmd(cmd)
+    if not posts:
+        power, pwm, score_used, duration_ms = speed_power_pwm_for_cmd(cmd, intensity_pct)
+        try:
+            intensity_eff = float(intensity_pct)
+        except (TypeError, ValueError):
+            intensity_eff = float(score_used)
+        return power, pwm, score_used, duration_ms, intensity_eff
+
+    try:
+        intensity = float(intensity_pct)
+    except (TypeError, ValueError):
+        intensity = 1.0
+
+    levels = sorted(float(level) for level in posts.keys())
+    if not levels:
+        power, pwm, score_used, duration_ms = speed_power_pwm_for_cmd(cmd, intensity_pct)
+        return power, pwm, score_used, duration_ms, float(intensity)
+
+    def _v(entry, key, default):
+        try:
+            return float(entry.get(key, default))
+        except (TypeError, ValueError, AttributeError):
+            return float(default)
+
+    # A discovered micro profile may persist only a single tiny anchor (e.g., 0.01%).
+    # Preserve that anchor for tiny requests, but use score-based scaling for normal
+    # turn intensities so ALIGN logic is not flattened to one PWM/duration.
+    if len(levels) == 1:
+        only_level = float(levels[0])
+        only = posts.get(float(only_level)) or {}
+        if float(intensity) <= float(only_level):
+            pwm_val = int(round(_v(only, "pwm", 0.0)))
+            pwm_val = clamp_pwm(pwm_val)
+            if pwm_val > 0:
+                pwm_val = max(turn_pwm_floor(), int(pwm_val))
+                pwm_val = max(int(baseline_pwm_floor_for_cmd(cmd)), int(pwm_val))
+            duration_ms = max(1, int(round(_v(only, "duration_ms", DEFAULT_ACT_DURATION_MS))))
+            power = _pwm_to_power(pwm_val)
+            if power is None:
+                power = 0.0
+            _, score_est = quantize_speed(cmd, speed=power)
+            if score_est is None:
+                score_est = SPEED_SCORE_MIN
+            return float(power), int(pwm_val), int(score_est), int(duration_ms), float(only_level)
+
+        power, pwm_val, score_est, duration_ms = speed_power_pwm_for_cmd(cmd, intensity)
+        anchor_duration_ms = max(1, int(round(_v(only, "duration_ms", float(duration_ms)))))
+        duration_ms = max(int(duration_ms), int(anchor_duration_ms))
+        return float(power), int(pwm_val), int(score_est), int(duration_ms), float(intensity)
+
+    intensity_eff = max(float(levels[0]), min(float(levels[-1]), float(intensity)))
+
+    low_level = levels[0]
+    high_level = levels[-1]
+    for level in levels:
+        if level <= intensity_eff:
+            low_level = level
+        if level >= intensity_eff:
+            high_level = level
+            break
+
+    low = posts.get(float(low_level)) or {}
+    high = posts.get(float(high_level)) or low
+
+    if float(high_level) <= float(low_level):
+        frac = 0.0
+    else:
+        frac = (float(intensity_eff) - float(low_level)) / (float(high_level) - float(low_level))
+        frac = max(0.0, min(1.0, frac))
+
+    low_pwm = _v(low, "pwm", 0.0)
+    high_pwm = _v(high, "pwm", low_pwm)
+    pwm_val = int(round(low_pwm + (high_pwm - low_pwm) * frac))
+    pwm_val = clamp_pwm(pwm_val)
+    if pwm_val > 0:
+        pwm_val = max(turn_pwm_floor(), int(pwm_val))
+        pwm_val = max(int(baseline_pwm_floor_for_cmd(cmd)), int(pwm_val))
+
+    low_ms = _v(low, "duration_ms", DEFAULT_ACT_DURATION_MS)
+    high_ms = _v(high, "duration_ms", low_ms)
+    duration_ms = max(1, int(round(low_ms + (high_ms - low_ms) * frac)))
+
+    power = _pwm_to_power(pwm_val)
+    if power is None:
+        power = 0.0
+    _, score_est = quantize_speed(cmd, speed=power)
+    if score_est is None:
+        score_est = SPEED_SCORE_MIN
+    return float(power), int(pwm_val), int(score_est), int(duration_ms), float(intensity_eff)
+
+
 def turn_duration_scale(cmd, turn_efficiency=None, min_scale=0.5, max_scale=1.5):
     """
     Convert turn efficiency into a duration multiplier.
@@ -841,6 +1197,7 @@ def _build_envelope(process_rules, learned_rules, step):
     return _brick_module().build_envelope(process_rules, learned_rules, step)
 
 METRICS_BY_STEP = {
+    "ELEVATE_BRICK": ("lift_height",),
     "LIFT": ("lift_height",),
     "PLACE": ("lift_height",),
 }
@@ -1012,8 +1369,10 @@ class StepState(Enum):
     EXIT_WALL = "EXIT_WALL"
     FIND_BRICK = "FIND_BRICK"
     ALIGN_BRICK = "ALIGN_BRICK"
-    SCOOP = "SCOOP"
-    LIFT = "LIFT"
+    SEAT_BRICK = "SEAT_BRICK"
+    SCOOP = "SEAT_BRICK"
+    ELEVATE_BRICK = "ELEVATE_BRICK"
+    LIFT = "ELEVATE_BRICK"
     FIND_WALL2 = "FIND_WALL2"
     POSITION_BRICK = "POSITION_BRICK"
     PLACE = "PLACE"
@@ -1201,10 +1560,12 @@ class WorldModel:
             "angle": 0,
             "offset_x": 0,
             "x_axis": 0,
+            "offset_y": 0,
+            "y_axis": 0,
             "confidence": 0,
             "held": False,
-            "brickAbove": False,
-            "brickBelow": False
+            "brickAbove": None,
+            "brickBelow": None
         }
 
         # Forklift
@@ -1237,6 +1598,8 @@ class WorldModel:
         self.scoop_forward_preferred = False
         self.last_seen_angle = None
         self.last_seen_offset_x = None
+        self.last_seen_offset_y = None
+        self.last_seen_y_axis = None
         self.last_seen_dist = None
         self.last_seen_confidence = None
         
@@ -1456,12 +1819,17 @@ class WorldModel:
     def to_dict(self):
         # Format Brick Data
         brick_fmt = self.brick.copy()
+        brick_fmt.pop("id", None)
+        brick_fmt.pop("confidence", None)
+        # Demo logs should store one canonical horizontal/vertical offset pair.
+        # Keep `x_axis`/`y_axis` and drop legacy aliases `offset_x`/`offset_y`.
+        brick_fmt.pop("offset_x", None)
+        brick_fmt.pop("offset_y", None)
         if self.step_state == StepState.FIND_BRICK:
             brick_fmt['dist'] = None
             brick_fmt['angle'] = None
-            brick_fmt['offset_x'] = None
             brick_fmt['x_axis'] = None
-            brick_fmt['confidence'] = None
+            brick_fmt['y_axis'] = None
             brick_fmt['brickAbove'] = None
             brick_fmt['brickBelow'] = None
         elif brick_fmt.get("visible"):
@@ -1469,18 +1837,15 @@ class WorldModel:
                 brick_fmt['dist'] = round(brick_fmt['dist'], 2)
             if brick_fmt.get("angle") is not None:
                 brick_fmt['angle'] = round(brick_fmt['angle'], 3)
-            if brick_fmt.get("offset_x") is not None:
-                brick_fmt['offset_x'] = round(brick_fmt['offset_x'], 2)
             if brick_fmt.get("x_axis") is not None:
                 brick_fmt['x_axis'] = round(brick_fmt['x_axis'], 2)
-            if brick_fmt.get("confidence") is not None:
-                brick_fmt['confidence'] = int(brick_fmt['confidence'])
+            if brick_fmt.get("y_axis") is not None:
+                brick_fmt['y_axis'] = round(brick_fmt['y_axis'], 2)
         else:
             brick_fmt['dist'] = None
             brick_fmt['angle'] = None
-            brick_fmt['offset_x'] = None
             brick_fmt['x_axis'] = None
-            brick_fmt['confidence'] = None
+            brick_fmt['y_axis'] = None
 
         # Format Wall Origin
         wall_fmt = None
@@ -1494,8 +1859,6 @@ class WorldModel:
             "origin": wall_fmt,
             "angle_deg": round(self.wall.get("angle_deg", 0.0), 3),
             "valid": bool(self.wall.get("valid", False)),
-            "source": self.wall.get("source"),
-            "contradiction": self.wall.get("contradiction_reason"),
         }
 
         return {
@@ -1509,7 +1872,6 @@ class WorldModel:
                 "theta": round(self.theta, 3),
                 "height_mm": None if self.height_mm is None else round(self.height_mm, 2)
             },
-            "wall_origin": wall_fmt,
             "wall": wall_state,
             "brick": brick_fmt,
             "lift_height": round(self.lift_height, 2)
@@ -1632,7 +1994,8 @@ class TelemetryLogger:
     def _print_terminal(self, data):
         p = data.get('robot_pose', {'x':0, 'y':0, 'theta':0})
         b = data.get('brick', {})
-        wall = "SET" if data.get('wall_origin') else "UNSET"
+        wall_state = data.get("wall") or {}
+        wall = "SET" if (wall_state.get("origin") if isinstance(wall_state, dict) else None) else "UNSET"
         print(f"{'='*40}")
         print(f"TIME: {data.get('timestamp', 0):.2f}s")
         if 'step' in data:
@@ -1651,7 +2014,6 @@ class TelemetryLogger:
             print(f"  Distance: {b.get('dist', 0):.2f} mm")
             print(f"  Angle: {b.get('angle', 0):.2f}°")
             print(f"  Offset: {b.get('offset_x', 0):.2f} mm")
-            print(f"  Confidence: {b.get('confidence', 0):.2f}%")
         print(f"{'-'*40}")
         
         print(f"{'='*40}")
@@ -1718,7 +2080,13 @@ def draw_telemetry_overlay(
                     cal_offset = json.load(f).get('calibration', {}).get('camera_center_offset_px', 0)
             except:
                 pass
-        cv2.line(frame, (int(w//2 + cal_offset), 0), (int(w//2 + cal_offset), h), (60, 60, 60), 1)
+        center_x = int(w // 2 + cal_offset)
+        center_x = max(0, min(w - 1, center_x))
+        center_y = int(h // 2)
+        center_y = max(0, min(h - 1, center_y))
+        guide_color = (60, 60, 60)
+        cv2.line(frame, (center_x, 0), (center_x, h - 1), guide_color, 1)
+        cv2.line(frame, (0, center_y), (w - 1, center_y), guide_color, 1)
 
     # 1. Background Panel (Left Side)
     if sidebar_mode:
@@ -1903,10 +2271,20 @@ def draw_telemetry_overlay(
     brick_conf = wm.brick.get("confidence")
     if brick_conf is None:
         brick_conf = 0.0
+    def _stack_hud_text(metric_key, brick_key):
+        if not visible_now:
+            return "-"
+        confirmed = wm.brick.get(brick_key)
+        if confirmed is True:
+            return "YES"
+        # Display defaults to NO unless stack visibility has confidently asserted YES.
+        # Internal telemetry still preserves None/unknown for auto-step safety.
+        return "NO"
+
     if visible_now:
         put_line(f"CONF:   {brick_conf:.0f}%", WHITE, 0.38, 1)
-        above_txt = "YES" if wm.brick.get("brickAbove") else "NO"
-        below_txt = "YES" if wm.brick.get("brickBelow") else "NO"
+        above_txt = _stack_hud_text("above", "brickAbove")
+        below_txt = _stack_hud_text("below", "brickBelow")
     else:
         put_line("CONF:   -", WHITE, 0.38, 1)
         above_txt = "-"

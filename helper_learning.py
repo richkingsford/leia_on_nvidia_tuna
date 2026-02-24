@@ -116,7 +116,7 @@ class BehavioralCloningPolicy:
                     # Angle: 0-90deg -> 0-1 (div by 90)
                     # Offset: 0-100mm -> 0-1 (div by 100)
                     
-                    f_offset = (brick.get("offset_x") or 0.0) / 100.0
+                    f_offset = (brick.get("x_axis", brick.get("offset_x")) or 0.0) / 100.0
                     f_angle = (brick.get("angle") or 0.0) / 90.0
                     f_dist = (brick.get("dist") or 0.0) / 500.0
                     
@@ -142,7 +142,7 @@ class BehavioralCloningPolicy:
         if not brick.get("visible"):
             return None, 0.0, 0.0
             
-        f_offset = (brick.get("offset_x") or 0.0) / 100.0
+        f_offset = (brick.get("x_axis", brick.get("offset_x")) or 0.0) / 100.0
         f_angle = (brick.get("angle") or 0.0) / 90.0
         f_dist = (brick.get("dist") or 0.0) / 500.0
         

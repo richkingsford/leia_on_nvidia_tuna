@@ -27,6 +27,8 @@ _ACTIVE_FIGURE = None
 DEFAULT_HEADLESS_GIF = Path("align_trials.gif")
 DEFAULT_FINAL_PNG = Path("align_trials_final.png")
 DEFAULT_PER_TRIAL_GIF_DIR = Path("align_trials_by_trial")
+CURRENT_TRIAL_ALPHA = 1.0
+PAST_TRIAL_ALPHA = 0.30
 
 
 def _is_noninteractive_backend() -> bool:
@@ -160,9 +162,24 @@ def animate_trials(
     final_markers = []
     for idx, trial in enumerate(trials):
         color = color_map(idx % 20)
-        (line,) = ax.plot([], [], color=color, linewidth=2.0, alpha=0.95, label=f"Trial {trial.trial}")
-        scatter = ax.scatter([], [], color=[color], s=22, alpha=0.95)
-        final_marker = ax.scatter([], [], color=[color], s=70, alpha=1.0, edgecolors="white", linewidths=0.9)
+        (line,) = ax.plot(
+            [],
+            [],
+            color=color,
+            linewidth=2.0,
+            alpha=CURRENT_TRIAL_ALPHA,
+            label=f"Trial {trial.trial}",
+        )
+        scatter = ax.scatter([], [], color=[color], s=22, alpha=CURRENT_TRIAL_ALPHA)
+        final_marker = ax.scatter(
+            [],
+            [],
+            color=[color],
+            s=70,
+            alpha=CURRENT_TRIAL_ALPHA,
+            edgecolors="white",
+            linewidths=0.9,
+        )
         lines.append(line)
         scatters.append(scatter)
         final_markers.append(final_marker)
@@ -188,6 +205,11 @@ def animate_trials(
         else:
             final_markers[idx].set_offsets([[math.nan, math.nan]])
 
+    def _set_trial_alpha(idx: int, alpha: float):
+        lines[idx].set_alpha(float(alpha))
+        scatters[idx].set_alpha(float(alpha))
+        final_markers[idx].set_alpha(float(alpha))
+
     def update(frame_idx: int):
         trial_slot = min(len(trials) - 1, frame_idx // frames_per_trial)
         local_frame = frame_idx % frames_per_trial
@@ -196,12 +218,14 @@ def animate_trials(
         for idx in range(len(trials)):
             if idx < trial_slot:
                 _set_visible_prefix(idx, len(trials[idx].x_err_mm))
+                _set_trial_alpha(idx, PAST_TRIAL_ALPHA)
             elif idx > trial_slot:
                 _set_empty(idx)
             else:
                 n_points = len(trials[idx].x_err_mm)
                 show_count = max(1, int(math.ceil(progress * n_points)))
                 _set_visible_prefix(idx, show_count)
+                _set_trial_alpha(idx, CURRENT_TRIAL_ALPHA)
 
         current_trial = trials[trial_slot]
         title_artist.set_text(
@@ -284,9 +308,24 @@ def export_per_trial_gifs(
         final_markers = []
         for idx, trial in enumerate(trials):
             color = color_map(idx % 20)
-            (line,) = ax.plot([], [], color=color, linewidth=2.0, alpha=0.95, label=f"Trial {trial.trial}")
-            scatter = ax.scatter([], [], color=[color], s=22, alpha=0.95)
-            final_marker = ax.scatter([], [], color=[color], s=70, alpha=1.0, edgecolors="white", linewidths=0.9)
+            (line,) = ax.plot(
+                [],
+                [],
+                color=color,
+                linewidth=2.0,
+                alpha=CURRENT_TRIAL_ALPHA,
+                label=f"Trial {trial.trial}",
+            )
+            scatter = ax.scatter([], [], color=[color], s=22, alpha=CURRENT_TRIAL_ALPHA)
+            final_marker = ax.scatter(
+                [],
+                [],
+                color=[color],
+                s=70,
+                alpha=CURRENT_TRIAL_ALPHA,
+                edgecolors="white",
+                linewidths=0.9,
+            )
             lines.append(line)
             scatters.append(scatter)
             final_markers.append(final_marker)
@@ -310,18 +349,25 @@ def export_per_trial_gifs(
             else:
                 final_markers[idx].set_offsets([[math.nan, math.nan]])
 
+        def _set_trial_alpha(idx: int, alpha: float):
+            lines[idx].set_alpha(float(alpha))
+            scatters[idx].set_alpha(float(alpha))
+            final_markers[idx].set_alpha(float(alpha))
+
         def update(frame_idx: int):
             progress = (frame_idx + 1) / float(frames_per_trial)
 
             for idx in range(len(trials)):
                 if idx < target_idx:
                     _set_visible_prefix(idx, len(trials[idx].x_err_mm))
+                    _set_trial_alpha(idx, PAST_TRIAL_ALPHA)
                 elif idx > target_idx:
                     _set_empty(idx)
                 else:
                     n_points = len(trials[idx].x_err_mm)
                     show_count = max(1, int(math.ceil(progress * n_points)))
                     _set_visible_prefix(idx, show_count)
+                    _set_trial_alpha(idx, CURRENT_TRIAL_ALPHA)
 
             title_artist.set_text(
                 f"{title} | Trial {target_trial.trial} ({target_idx + 1}/{len(trials)})"

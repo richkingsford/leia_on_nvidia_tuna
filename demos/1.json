@@ -16,22 +16,17 @@
       "theta": 0.0,
       "height_mm": null
     },
-    "wall_origin": null,
     "wall": {
       "origin": null,
       "angle_deg": 0.0,
-      "valid": false,
-      "source": null,
-      "contradiction": null
+      "valid": false
     },
     "brick": {
       "visible": false,
-      "id": null,
       "dist": null,
       "angle": null,
       "offset_x": null,
       "x_axis": null,
-      "confidence": null,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -49,22 +44,17 @@
       "theta": 0.0,
       "height_mm": null
     },
-    "wall_origin": null,
     "wall": {
       "origin": null,
       "angle_deg": 0.0,
-      "valid": false,
-      "source": null,
-      "contradiction": null
+      "valid": false
     },
     "brick": {
       "visible": false,
-      "id": null,
       "dist": null,
       "angle": null,
       "offset_x": null,
       "x_axis": null,
-      "confidence": null,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -88,22 +78,17 @@
       "theta": -0.462,
       "height_mm": null
     },
-    "wall_origin": null,
     "wall": {
       "origin": null,
       "angle_deg": 0.0,
-      "valid": false,
-      "source": null,
-      "contradiction": null
+      "valid": false
     },
     "brick": {
       "visible": false,
-      "id": null,
       "dist": null,
       "angle": null,
       "offset_x": null,
       "x_axis": null,
-      "confidence": null,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -127,22 +112,17 @@
       "theta": -0.924,
       "height_mm": null
     },
-    "wall_origin": null,
     "wall": {
       "origin": null,
       "angle_deg": 0.0,
-      "valid": false,
-      "source": null,
-      "contradiction": null
+      "valid": false
     },
     "brick": {
       "visible": false,
-      "id": null,
       "dist": null,
       "angle": null,
       "offset_x": null,
       "x_axis": null,
-      "confidence": null,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -166,22 +146,17 @@
       "theta": -1.386,
       "height_mm": null
     },
-    "wall_origin": null,
     "wall": {
       "origin": null,
       "angle_deg": 0.0,
-      "valid": false,
-      "source": null,
-      "contradiction": null
+      "valid": false
     },
     "brick": {
       "visible": false,
-      "id": null,
       "dist": null,
       "angle": null,
       "offset_x": null,
       "x_axis": null,
-      "confidence": null,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -199,22 +174,17 @@
       "theta": -1.386,
       "height_mm": null
     },
-    "wall_origin": null,
     "wall": {
       "origin": null,
       "angle_deg": 0.0,
-      "valid": false,
-      "source": null,
-      "contradiction": null
+      "valid": false
     },
     "brick": {
       "visible": false,
-      "id": null,
       "dist": null,
       "angle": null,
       "offset_x": null,
       "x_axis": null,
-      "confidence": null,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -232,22 +202,17 @@
       "theta": -1.386,
       "height_mm": null
     },
-    "wall_origin": null,
     "wall": {
       "origin": null,
       "angle_deg": 0.0,
-      "valid": false,
-      "source": null,
-      "contradiction": null
+      "valid": false
     },
     "brick": {
       "visible": false,
-      "id": null,
       "dist": null,
       "angle": null,
       "offset_x": null,
       "x_axis": null,
-      "confidence": null,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -265,22 +230,17 @@
       "theta": -1.386,
       "height_mm": null
     },
-    "wall_origin": null,
     "wall": {
       "origin": null,
       "angle_deg": 0.0,
-      "valid": false,
-      "source": null,
-      "contradiction": null
+      "valid": false
     },
     "brick": {
       "visible": false,
-      "id": null,
       "dist": null,
       "angle": null,
       "offset_x": null,
       "x_axis": null,
-      "confidence": null,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -304,22 +264,17 @@
       "theta": -1.849,
       "height_mm": null
     },
-    "wall_origin": null,
     "wall": {
       "origin": null,
       "angle_deg": 0.0,
-      "valid": false,
-      "source": null,
-      "contradiction": null
+      "valid": false
     },
     "brick": {
       "visible": false,
-      "id": null,
       "dist": null,
       "angle": null,
       "offset_x": null,
       "x_axis": null,
-      "confidence": null,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -337,22 +292,17 @@
       "theta": -1.849,
       "height_mm": null
     },
-    "wall_origin": null,
     "wall": {
       "origin": null,
       "angle_deg": 0.0,
-      "valid": false,
-      "source": null,
-      "contradiction": null
+      "valid": false
     },
     "brick": {
       "visible": false,
-      "id": null,
       "dist": null,
       "angle": null,
       "offset_x": null,
       "x_axis": null,
-      "confidence": null,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -370,22 +320,17 @@
       "theta": -1.849,
       "height_mm": null
     },
-    "wall_origin": null,
     "wall": {
       "origin": null,
       "angle_deg": 0.0,
-      "valid": false,
-      "source": null,
-      "contradiction": null
+      "valid": false
     },
     "brick": {
       "visible": false,
-      "id": null,
       "dist": null,
       "angle": null,
       "offset_x": null,
       "x_axis": null,
-      "confidence": null,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -403,22 +348,17 @@
       "theta": -1.849,
       "height_mm": null
     },
-    "wall_origin": null,
     "wall": {
       "origin": null,
       "angle_deg": 0.0,
-      "valid": false,
-      "source": null,
-      "contradiction": null
+      "valid": false
     },
     "brick": {
       "visible": false,
-      "id": null,
       "dist": null,
       "angle": null,
       "offset_x": null,
       "x_axis": null,
-      "confidence": null,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -436,22 +376,17 @@
       "theta": -1.849,
       "height_mm": null
     },
-    "wall_origin": null,
     "wall": {
       "origin": null,
       "angle_deg": 0.0,
-      "valid": false,
-      "source": null,
-      "contradiction": null
+      "valid": false
     },
     "brick": {
       "visible": false,
-      "id": null,
       "dist": null,
       "angle": null,
       "offset_x": null,
       "x_axis": null,
-      "confidence": null,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -469,22 +404,17 @@
       "theta": -1.849,
       "height_mm": null
     },
-    "wall_origin": null,
     "wall": {
       "origin": null,
       "angle_deg": 0.0,
-      "valid": false,
-      "source": null,
-      "contradiction": null
+      "valid": false
     },
     "brick": {
       "visible": false,
-      "id": null,
       "dist": null,
       "angle": null,
       "offset_x": null,
       "x_axis": null,
-      "confidence": null,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -502,22 +432,17 @@
       "theta": -1.849,
       "height_mm": null
     },
-    "wall_origin": null,
     "wall": {
       "origin": null,
       "angle_deg": 0.0,
-      "valid": false,
-      "source": null,
-      "contradiction": null
+      "valid": false
     },
     "brick": {
       "visible": false,
-      "id": null,
       "dist": null,
       "angle": null,
       "offset_x": null,
       "x_axis": null,
-      "confidence": null,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -535,22 +460,17 @@
       "theta": -1.849,
       "height_mm": null
     },
-    "wall_origin": null,
     "wall": {
       "origin": null,
       "angle_deg": 0.0,
-      "valid": false,
-      "source": null,
-      "contradiction": null
+      "valid": false
     },
     "brick": {
       "visible": false,
-      "id": null,
       "dist": null,
       "angle": null,
       "offset_x": null,
       "x_axis": null,
-      "confidence": null,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -568,22 +488,17 @@
       "theta": -1.849,
       "height_mm": null
     },
-    "wall_origin": null,
     "wall": {
       "origin": null,
       "angle_deg": 0.0,
-      "valid": false,
-      "source": null,
-      "contradiction": null
+      "valid": false
     },
     "brick": {
       "visible": false,
-      "id": null,
       "dist": null,
       "angle": null,
       "offset_x": null,
       "x_axis": null,
-      "confidence": null,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -601,11 +516,6 @@
       "theta": -1.849,
       "height_mm": 0.0
     },
-    "wall_origin": {
-      "x": 143.05,
-      "y": -7.39,
-      "theta": 0.0
-    },
     "wall": {
       "origin": {
         "x": 143.05,
@@ -613,18 +523,14 @@
         "theta": 0.0
       },
       "angle_deg": 0.0,
-      "valid": true,
-      "source": "FIND_WALL",
-      "contradiction": null
+      "valid": true
     },
     "brick": {
       "visible": false,
-      "id": null,
       "dist": null,
       "angle": null,
       "offset_x": null,
       "x_axis": null,
-      "confidence": null,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -642,11 +548,6 @@
       "theta": -1.849,
       "height_mm": 0.0
     },
-    "wall_origin": {
-      "x": 143.05,
-      "y": -7.39,
-      "theta": 0.0
-    },
     "wall": {
       "origin": {
         "x": 143.05,
@@ -654,18 +555,14 @@
         "theta": 0.0
       },
       "angle_deg": 0.0,
-      "valid": true,
-      "source": "FIND_WALL",
-      "contradiction": null
+      "valid": true
     },
     "brick": {
       "visible": true,
-      "id": null,
       "dist": 136.33,
       "angle": -2.409,
       "offset_x": -0.63,
       "x_axis": -0.63,
-      "confidence": 100,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -683,11 +580,6 @@
       "theta": -1.849,
       "height_mm": 0.0
     },
-    "wall_origin": {
-      "x": 143.05,
-      "y": -7.39,
-      "theta": 0.0
-    },
     "wall": {
       "origin": {
         "x": 143.05,
@@ -695,18 +587,14 @@
         "theta": 0.0
       },
       "angle_deg": 0.0,
-      "valid": true,
-      "source": "FIND_WALL",
-      "contradiction": null
+      "valid": true
     },
     "brick": {
       "visible": true,
-      "id": null,
       "dist": 136.4,
       "angle": -2.733,
       "offset_x": -0.62,
       "x_axis": -0.62,
-      "confidence": 100,
       "held": false,
       "brickAbove": false,
       "brickBelow": false
@@ -724,11 +612,6 @@
       "theta": -1.849,
       "height_mm": 0.0
     },
-    "wall_origin": {
-      "x": 143.05,
-      "y": -7.39,
-      "theta": 0.0
-    },
     "wall": {
       "origin": {
         "x": 143.05,
@@ -736,18 +619,14 @@
         "theta": 0.0
       },
       "angle_deg": 0.0,
-      "valid": true,
-      "source": "FIND_WALL",
-      "contradiction": null
+      "valid": true
     },
     "brick": {
       "visible": true,
-      "id": null,
       "dist": 136.35,
       "angle": -2.093,
       "offset_x": -0.62,
       "x_axis": -0.62,
-      "confidence": 100,
       "held": false,
       "brickAbove": false,
       "brickBelow": false

@@ -18,7 +18,7 @@ class _DummyRobot:
 class _DummyWorld:
     def __init__(self):
         self.process_rules = {
-            "SCOOP": {
+            "SEAT_BRICK": {
                 "nominalDemosOnly": True,
             }
         }
@@ -63,7 +63,7 @@ class TestTelemetryProcessNominalReplay(unittest.TestCase):
 
             ok, reason = telemetry_process.replay_segment(
                 segment=segment,
-                step="SCOOP",
+                step="SEAT_BRICK",
                 robot=robot,
                 vision=None,
                 world=world,

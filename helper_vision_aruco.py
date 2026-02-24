@@ -33,15 +33,15 @@ class ArucoBrickVision:
         # Stacking stability
         self.stack_history = deque(maxlen=6)
         
-        # ArUco Setup (Loosened for partial marker detection)
-        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-        self.aruco_params = cv2.aruco.DetectorParameters()
-        self.aruco_params.minMarkerPerimeterRate = 0.005  # even smaller for clipped markers
-        self.aruco_params.polygonalApproxAccuracyRate = 0.1
-        self.aruco_params.minCornerDistanceRate = 0.05
-        self.aruco_params.minSideLengthCanonicalImg = 4 # Detect tiny partials
-        
+        # ArUco Setup
+        # Use a stricter detector for reliable full-marker reads on 6x6 codes, plus a
+        # looser fallback detector for edge/clipped candidates used by stack heuristics.
+        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_50)
+        self.aruco_params = self._build_aruco_params(loose=False)
+        self.aruco_loose_params = self._build_aruco_params(loose=True)
         self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
+        self.loose_detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_loose_params)
+        self.last_detect_pass = "raw"
         
         # 3D Marker Points (Marker center is origin of its 3D space)
         # Assuming marker is flat on the brick face (Z=0)
@@ -59,6 +59,83 @@ class ArucoBrickVision:
         # Smoothing
         self.ALPHA = 0.2
         self.last_pose = None
+
+    def _build_aruco_params(self, loose: bool) -> cv2.aruco.DetectorParameters:
+        params = cv2.aruco.DetectorParameters()
+
+        # 6x6 markers are denser than 4x4 markers, so subpixel corner refinement helps
+        # the decode and pose estimate remain stable at the same print size.
+        if hasattr(cv2.aruco, "CORNER_REFINE_SUBPIX"):
+            params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        params.cornerRefinementWinSize = 5
+        params.cornerRefinementMaxIterations = 50
+        if hasattr(params, "cornerRefinementMinAccuracy"):
+            params.cornerRefinementMinAccuracy = 0.01
+
+        # Sweep more adaptive threshold window sizes to handle live-stream lighting shifts.
+        params.adaptiveThreshWinSizeMin = 3
+        params.adaptiveThreshWinSizeMax = 35
+        params.adaptiveThreshWinSizeStep = 4
+
+        # 6x6 codes benefit from a little more canonical sampling density.
+        params.perspectiveRemovePixelPerCell = 6
+        params.minCornerDistanceRate = 0.05
+        if hasattr(params, "minDistanceToBorder"):
+            params.minDistanceToBorder = 1
+
+        if loose:
+            # Loose profile keeps support for clipped/partial candidates.
+            params.minMarkerPerimeterRate = 0.005
+            params.polygonalApproxAccuracyRate = 0.08
+            params.minSideLengthCanonicalImg = 8
+        else:
+            # Primary profile favors stable full detections for the new 6x6 markers.
+            params.minMarkerPerimeterRate = 0.008
+            params.polygonalApproxAccuracyRate = 0.05
+            params.minSideLengthCanonicalImg = 16
+
+        return params
+
+    def _detect_markers_with_fallback(self, gray: np.ndarray):
+        # 1) Raw grayscale with the stricter detector.
+        corners_raw, ids_raw, rejected_raw = self.detector.detectMarkers(gray)
+        if ids_raw is not None and len(ids_raw) > 0:
+            self.last_detect_pass = "raw"
+            return corners_raw, ids_raw, rejected_raw
+
+        # 2) CLAHE preprocessed grayscale for hard exposure/contrast scenes.
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        clahe_gray = clahe.apply(gray)
+        corners_clahe, ids_clahe, rejected_clahe = self.detector.detectMarkers(clahe_gray)
+        if ids_clahe is not None and len(ids_clahe) > 0:
+            self.last_detect_pass = "clahe"
+            return corners_clahe, ids_clahe, rejected_clahe
+
+        # 3) Fall back to the looser detector (keeps partial support).
+        corners_raw_loose, ids_raw_loose, rejected_raw_loose = self.loose_detector.detectMarkers(gray)
+        if ids_raw_loose is not None and len(ids_raw_loose) > 0:
+            self.last_detect_pass = "raw_loose"
+            return corners_raw_loose, ids_raw_loose, rejected_raw_loose
+
+        corners_clahe_loose, ids_clahe_loose, rejected_clahe_loose = self.loose_detector.detectMarkers(clahe_gray)
+        if ids_clahe_loose is not None and len(ids_clahe_loose) > 0:
+            self.last_detect_pass = "clahe_loose"
+            return corners_clahe_loose, ids_clahe_loose, rejected_clahe_loose
+
+        # No confirmed markers found; return whichever pass produced the richest rejected set
+        # so the partial-stack fallback still has candidates to inspect.
+        candidates = [
+            (corners_raw, ids_raw, rejected_raw, "raw"),
+            (corners_clahe, ids_clahe, rejected_clahe, "clahe"),
+            (corners_raw_loose, ids_raw_loose, rejected_raw_loose, "raw_loose"),
+            (corners_clahe_loose, ids_clahe_loose, rejected_clahe_loose, "clahe_loose"),
+        ]
+        best = max(
+            candidates,
+            key=lambda item: len(item[2]) if item[2] is not None else 0,
+        )
+        self.last_detect_pass = best[3]
+        return best[0], best[1], best[2]
 
     def _candidate_camera_indices(self, preferred_index: Optional[int]) -> List[int]:
         candidates: List[int] = []
@@ -168,11 +245,198 @@ class ArucoBrickVision:
             self.init_camera(frame.shape[1], frame.shape[0])
             
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        corners, ids, rejected = self.detector.detectMarkers(gray)
+        corners, ids, rejected = self._detect_markers_with_fallback(gray)
         
         if self.debug:
             self.debug_frame = frame.copy()
             # Removed drawDetectedMarkers (dots)
+            def _norm_pts(quad):
+                try:
+                    pts = np.asarray(quad, dtype=np.float32)
+                except Exception:
+                    return None
+                if pts.ndim == 3 and pts.shape[0] == 1:
+                    pts = pts[0]
+                if pts.ndim != 2 or pts.shape[1] != 2 or pts.shape[0] < 4:
+                    return None
+                return pts
+
+            def _bbox_overlap_frac(box_a, box_b):
+                ax, ay, aw, ah = box_a
+                bx, by, bw, bh = box_b
+                ax2 = ax + max(0, aw)
+                ay2 = ay + max(0, ah)
+                bx2 = bx + max(0, bw)
+                by2 = by + max(0, bh)
+                ix1 = max(ax, bx)
+                iy1 = max(ay, by)
+                ix2 = min(ax2, bx2)
+                iy2 = min(ay2, by2)
+                iw = max(0, ix2 - ix1)
+                ih = max(0, iy2 - iy1)
+                inter = float(iw * ih)
+                area_a = float(max(1, aw) * max(1, ah))
+                return inter / area_a if area_a > 0 else 0.0
+
+            def _draw_poly(pts, color, thickness=2):
+                poly = np.round(pts).astype(np.int32).reshape((-1, 1, 2))
+                cv2.polylines(self.debug_frame, [poly], True, color, int(thickness), cv2.LINE_AA)
+
+            def _order_quad(pts):
+                if pts is None:
+                    return None
+                pts = np.asarray(pts, dtype=np.float32)
+                if pts.ndim != 2 or pts.shape[0] < 4 or pts.shape[1] != 2:
+                    return None
+                pts4 = pts[:4].copy()
+                s = pts4.sum(axis=1)
+                d = (pts4[:, 1] - pts4[:, 0])
+                ordered = np.zeros((4, 2), dtype=np.float32)
+                ordered[0] = pts4[np.argmin(s)]  # top-left
+                ordered[2] = pts4[np.argmax(s)]  # bottom-right
+                ordered[1] = pts4[np.argmin(d)]  # top-right
+                ordered[3] = pts4[np.argmax(d)]  # bottom-left
+                return ordered
+
+            def _marker_like_bw_partial(pts):
+                # Strengthen orange highlights using the known ArUco structure:
+                # square-ish, high contrast, black/white only, dark outer border,
+                # and multiple binary transitions through the interior pattern.
+                try:
+                    quad = _order_quad(pts)
+                    if quad is None:
+                        return False
+                    warp_n = 56
+                    dst = np.array(
+                        [[0, 0], [warp_n - 1, 0], [warp_n - 1, warp_n - 1], [0, warp_n - 1]],
+                        dtype=np.float32,
+                    )
+                    M = cv2.getPerspectiveTransform(quad, dst)
+                    patch = cv2.warpPerspective(gray, M, (warp_n, warp_n), flags=cv2.INTER_LINEAR)
+                    if patch is None or patch.size == 0:
+                        return False
+
+                    p5, p95 = np.percentile(patch, (5, 95))
+                    if float(p95 - p5) < 40.0:
+                        return False
+
+                    _thr, bw = cv2.threshold(patch, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                    bw01 = (bw > 0).astype(np.uint8)
+                    white_frac = float(np.mean(bw01))
+                    if not (0.08 <= white_frac <= 0.92):
+                        return False
+
+                    inner_m = max(4, int(warp_n // 6))
+                    if (warp_n - 2 * inner_m) <= 4:
+                        return False
+                    inner = bw01[inner_m:warp_n - inner_m, inner_m:warp_n - inner_m]
+                    inner_white = float(np.mean(inner))
+                    if not (0.05 <= inner_white <= 0.95):
+                        return False
+
+                    t = max(2, int(warp_n // 10))
+                    border_black = [
+                        1.0 - float(np.mean(bw01[:t, :])),
+                        1.0 - float(np.mean(bw01[-t:, :])),
+                        1.0 - float(np.mean(bw01[:, :t])),
+                        1.0 - float(np.mean(bw01[:, -t:])),
+                    ]
+                    dark_sides = sum(1 for v in border_black if v >= 0.55)
+                    ring_mask = np.zeros_like(bw01, dtype=np.uint8)
+                    ring_mask[:t, :] = 1
+                    ring_mask[-t:, :] = 1
+                    ring_mask[:, :t] = 1
+                    ring_mask[:, -t:] = 1
+                    ring_black_ratio = 1.0 - float(np.mean(bw01[ring_mask == 1]))
+                    if ring_black_ratio < 0.45 and dark_sides < 2:
+                        return False
+
+                    row = bw01[warp_n // 2, :]
+                    col = bw01[:, warp_n // 2]
+                    transitions = int(np.count_nonzero(row[1:] != row[:-1])) + int(np.count_nonzero(col[1:] != col[:-1]))
+                    if transitions < 4:
+                        return False
+
+                    return True
+                except Exception:
+                    return False
+
+            confirmed_contours = []
+            confirmed_bboxes = []
+            confirmed_short_sides = []
+
+            if corners is not None:
+                for quad in corners:
+                    pts = _norm_pts(quad)
+                    if pts is None:
+                        continue
+                    _draw_poly(pts, (0, 255, 0), thickness=2)  # bright green
+                    confirmed_contours.append(pts.reshape((-1, 1, 2)).astype(np.float32))
+                    confirmed_bboxes.append(cv2.boundingRect(np.round(pts).astype(np.int32)))
+                    rect = cv2.minAreaRect(pts)
+                    rw, rh = rect[1]
+                    if rw > 0 and rh > 0:
+                        confirmed_short_sides.append(float(min(rw, rh)))
+
+            if rejected is not None:
+                h, w = frame.shape[:2]
+                frame_area = float(max(1, h * w))
+                min_area_px = max(40.0, frame_area * 0.00005)
+                max_area_px = frame_area * 0.25
+                ref_short_side = float(np.median(confirmed_short_sides)) if confirmed_short_sides else None
+
+                for quad in rejected:
+                    pts = _norm_pts(quad)
+                    if pts is None:
+                        continue
+
+                    area = abs(float(cv2.contourArea(pts)))
+                    if area < min_area_px or area > max_area_px:
+                        continue
+
+                    rect = cv2.minAreaRect(pts)
+                    (cx, cy), (rw, rh), _ = rect
+                    if rw <= 0 or rh <= 0:
+                        continue
+                    short_side = float(min(rw, rh))
+                    long_side = float(max(rw, rh))
+                    if short_side < 6.0:
+                        continue
+                    if ref_short_side is not None and short_side < max(6.0, ref_short_side * 0.18):
+                        # Suppress tiny rejected quads inside a confirmed marker (cell artifacts).
+                        continue
+
+                    aspect = long_side / max(short_side, 1e-3)
+                    if aspect > 2.4:
+                        continue
+
+                    rect_area = float(rw * rh)
+                    if rect_area <= 1.0:
+                        continue
+                    fill_ratio = area / rect_area
+                    if fill_ratio < 0.45:
+                        continue
+                    if not _marker_like_bw_partial(pts):
+                        continue
+
+                    center_pt = (float(cx), float(cy))
+                    inside_confirmed = False
+                    for contour in confirmed_contours:
+                        try:
+                            if cv2.pointPolygonTest(contour, center_pt, False) >= 0:
+                                inside_confirmed = True
+                                break
+                        except Exception:
+                            continue
+                    if inside_confirmed:
+                        continue
+
+                    cand_bbox = cv2.boundingRect(np.round(pts).astype(np.int32))
+                    if any(_bbox_overlap_frac(cand_bbox, box) > 0.35 for box in confirmed_bboxes):
+                        continue
+
+                    box_pts = cv2.boxPoints(rect)
+                    _draw_poly(box_pts, (0, 165, 255), thickness=2)  # bright orange
 
         best_marker = None
         
@@ -218,21 +482,79 @@ class ArucoBrickVision:
 
             # Detect stacking
             if best_marker:
+                best_mcx = best_mcy = None
+                best_size_px = None
+                if best_marker.corners is not None:
+                    best_mcx = float(np.mean(best_marker.corners[:, 0]))
+                    best_mcy = float(np.mean(best_marker.corners[:, 1]))
+                    best_size_px = float(np.linalg.norm(best_marker.corners[0] - best_marker.corners[2]) / 1.414)
+                focal = float(self.camera_matrix[0, 0]) if self.camera_matrix is not None else 0.0
+                best_dist_mm = max(1e-3, float(best_marker.position[2]))
+                expected_shift_px = (focal * (self.BRICK_H / best_dist_mm)) if focal > 0 else 0.0
+
                 # 1. Check verified markers
+                verified_stack_hits = 0
                 for pose in poses:
-                    if pose.marker_id == best_marker.marker_id: continue
-                    dz = abs(pose.position[2] - best_marker.position[2])
-                    dy = pose.position[1] - best_marker.position[1]
-                    dx = abs(pose.position[0] - best_marker.position[0])
-                    
-                    if dx < 30 and dz < 40: # Loosened for reliability
-                        if -55 < dy < -40: best_marker.brickAbove = True
-                        if  40 < dy < 55:  best_marker.brickBelow = True
+                    # Compare against the selected center-most marker instance.
+                    # Marker IDs can repeat across bricks, so ID equality is not a safe
+                    # way to skip only the reference brick.
+                    if pose is best_marker:
+                        continue
+                    dz_signed = float(pose.position[2] - best_marker.position[2])
+                    dz = abs(dz_signed)
+                    dy = float(pose.position[1] - best_marker.position[1])
+                    dx = abs(float(pose.position[0] - best_marker.position[0]))
+                    yz_sep = float(np.hypot(dy, dz_signed))
+
+                    # In low-camera / pitched views, the 48mm brick-height offset rotates into
+                    # both camera Y and Z. Use the combined YZ separation instead of only dy.
+                    stack_like_3d = (
+                        dx < 35.0 and
+                        20.0 < yz_sep < 90.0 and
+                        dz < 85.0
+                    )
+
+                    mcx = mcy = None
+                    idx_px = idy_px = None
+                    stack_like_img = True
+                    if pose.corners is not None and best_mcx is not None and best_mcy is not None:
+                        mcx = float(np.mean(pose.corners[:, 0]))
+                        mcy = float(np.mean(pose.corners[:, 1]))
+                        idx_px = abs(mcx - best_mcx)
+                        idy_px = float(best_mcy - mcy)  # positive => other marker is above
+
+                        size_px = float(np.linalg.norm(pose.corners[0] - pose.corners[2]) / 1.414)
+                        ref_size_px = max(best_size_px or 0.0, size_px, 1.0)
+                        lateral_tol_px = max(12.0, ref_size_px * 1.25)
+                        min_vertical_shift_px = max(8.0, ref_size_px * 0.35)
+                        # Keep a wide upper bound because camera pitch compresses/expands
+                        # apparent vertical spacing in image space.
+                        max_vertical_shift_px = max(ref_size_px * 4.5, expected_shift_px * 2.0, 40.0)
+                        stack_like_img = (
+                            idx_px <= lateral_tol_px and
+                            min_vertical_shift_px <= abs(idy_px) <= max_vertical_shift_px
+                        )
+
+                    if stack_like_3d and stack_like_img:
+                        verified_stack_hits += 1
+                        if idy_px is not None:
+                            if idy_px > 0:
+                                best_marker.brickAbove = True
+                            elif idy_px < 0:
+                                best_marker.brickBelow = True
+                        else:
+                            if dy < 0:
+                                best_marker.brickAbove = True
+                            elif dy > 0:
+                                best_marker.brickBelow = True
 
                 # 2. Check rejected markers for partial bricks
-                if rejected and (not best_marker.brickAbove or not best_marker.brickBelow):
-                    focal = self.camera_matrix[0,0]
-                    dist_mm = best_marker.position[2]
+                # Be conservative: if a stack relationship is already inferred from verified
+                # (green) markers this frame, do not let rejected/partial candidates add the
+                # opposite side and create contradictory above/below flags.
+                use_rejected_stack_fallback = bool(int(verified_stack_hits) == 0)
+                if use_rejected_stack_fallback and rejected and (not best_marker.brickAbove or not best_marker.brickBelow):
+                    dist_mm = best_dist_mm
                     expected_shift_px = focal * (self.BRICK_H / dist_mm)
                     expected_size_px = focal * (self.marker_size / dist_mm)
                     
@@ -264,7 +586,8 @@ class ArucoBrickVision:
                         # expected_shift_bottom = focal * (38 / dist_mm)
                         # But simpler: use center if size is okay, or just check alignment
                         
-                        if idx < expected_shift_px * 0.5: # Loosened alignment
+                        lateral_tol_px = max(expected_shift_px * 0.7, (best_size_px or expected_size_px) * 1.25, 12.0)
+                        if idx < lateral_tol_px: # Loosened alignment for pitched views
                             # Check "Above" (Positive idy)
                             # center-center shift is 48mm. 
                             # If clipped at top, max_y (bottom edge) is the most reliable anchor.
@@ -277,14 +600,18 @@ class ArucoBrickVision:
                             dist_to_bottom = bcy - max_y
                             expected_dist_to_bottom = focal * (38.0 / dist_mm)
                             
-                            if not best_marker.brickAbove and (expected_dist_to_bottom * 0.7 < dist_to_bottom < expected_dist_to_bottom * 1.3):
+                            min_above_shift = max(expected_size_px * 0.35, 8.0)
+                            max_above_shift = max(expected_dist_to_bottom * 1.8, expected_size_px * 5.0, 40.0)
+                            if not best_marker.brickAbove and (min_above_shift < dist_to_bottom < max_above_shift):
                                 best_marker.brickAbove = True
                             
                             # Check "Below" (Negative dy)
                             dist_to_top = bcy - min_y # Negative if below
                             expected_dist_to_top = focal * (-38.0 / dist_mm)
                             
-                            if not best_marker.brickBelow and (expected_dist_to_top * 1.3 < dist_to_top < expected_dist_to_top * 0.7):
+                            min_below_shift = -max(expected_size_px * 0.35, 8.0)
+                            max_below_shift = -max(expected_dist_to_bottom * 1.8, expected_size_px * 5.0, 40.0)
+                            if not best_marker.brickBelow and (max_below_shift < dist_to_top < min_below_shift):
                                 best_marker.brickBelow = True
 
         if best_marker:

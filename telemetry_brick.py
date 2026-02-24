@@ -1,9 +1,11 @@
 import math
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import List
 
 from helper_next import METRIC_DIRECTIONS, _target_tol_ok, compute_alignment_analytics, metric_direction_for_step
+import helper_gate_utils as gate_utils
 
 START_GATE_MIN_CONFIDENCE = 25.0
 ALIGN_CONFIDENCE_MIN = 25.0
@@ -14,24 +16,33 @@ BRICK_SMOOTH_OUTLIER_DEG = 6.0
 VISIBLE_FALSE_GRACE_S_BY_STEP = {
     "EXIT_WALL": 1.0,
 }
+STACK_VIS_LITE_CONSEC_FRAMES = 3
+STACK_VIS_FULL_CONSEC_FRAMES = 3
+STACK_VIS_FULL_MAJ_WINDOW = 5
+STACK_VIS_FULL_MAJ_REQUIRED = 3
 
 STEP_ALIASES = {
     "FIND": "FIND_BRICK",
     "ALIGN": "ALIGN_BRICK",
     "CARRY": "FIND_WALL2",
+    "SCOOP": "SEAT_BRICK",
+    "LIFT": "ELEVATE_BRICK",
+    "SEAT": "SEAT_BRICK",
+    "ELEVATE": "ELEVATE_BRICK",
 }
 
 METRICS_BY_STEP = {
     "FIND_WALL": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "EXIT_WALL": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "FIND_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
-    "ALIGN_BRICK": ("xAxis_offset_abs", "dist", "visible"),
-    "SCOOP": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
+    "ALIGN_BRICK": ("xAxis_offset_abs", "yAxis_offset_abs", "dist", "brick_above", "visible"),
+    "SEAT_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
+    "ELEVATE_BRICK": ("visible",),
     "FIND_WALL2": ("visible",),
-    "POSITION_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
+    "POSITION_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "brick_above", "visible"),
 }
 
-VISIBILITY_REQUIRED_METRICS = {"angle_abs", "xAxis_offset_abs", "dist"}
+VISIBILITY_REQUIRED_METRICS = {"angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist"}
 
 
 def _average_brick_frames(frames):
@@ -46,6 +57,7 @@ def _average_brick_frames(frames):
         "dist": mean([f["dist"] for f in frames]),
         "angle": mean([f["angle"] for f in frames]),
         "offset_x": mean([f["offset_x"] for f in frames]),
+        "offset_y": mean([f.get("offset_y", f.get("cam_h", 0.0)) for f in frames]),
         "conf": mean([f["conf"] for f in frames]),
         "cam_h": mean([f["cam_h"] for f in frames]),
         "brick_above": majority([f["brick_above"] for f in frames]),
@@ -59,9 +71,11 @@ def _filtered_brick_frame_average(frames, min_frames=BRICK_SMOOTH_FRAMES):
 
     dist_vals = [f["dist"] for f in frames]
     offset_vals = [f["offset_x"] for f in frames]
+    offset_y_vals = [f.get("offset_y", f.get("cam_h", 0.0)) for f in frames]
     angle_vals = [f["angle"] for f in frames]
     med_dist = percentile(dist_vals, 0.5)
     med_offset = percentile(offset_vals, 0.5)
+    med_offset_y = percentile(offset_y_vals, 0.5)
     med_angle = percentile(angle_vals, 0.5)
 
     keep = []
@@ -71,6 +85,7 @@ def _filtered_brick_frame_average(frames, min_frames=BRICK_SMOOTH_FRAMES):
         if (
             abs(frame["dist"] - med_dist) > BRICK_SMOOTH_OUTLIER_MM
             or abs(frame["offset_x"] - med_offset) > BRICK_SMOOTH_OUTLIER_MM
+            or abs(float(frame.get("offset_y", frame.get("cam_h", 0.0)) or 0.0) - med_offset_y) > BRICK_SMOOTH_OUTLIER_MM
             or abs(frame["angle"] - med_angle) > BRICK_SMOOTH_OUTLIER_DEG
         ):
             continue
@@ -96,8 +111,12 @@ def smoothed_brick_snapshot(world):
         "confidence": float(avg.get("conf", 0.0)),
         "offset_x": float(avg.get("offset_x", 0.0)),
         "x_axis": float(avg.get("offset_x", 0.0)),
-        "brickAbove": bool(avg.get("brick_above")),
-        "brickBelow": bool(avg.get("brick_below")),
+        "offset_y": float(avg.get("offset_y", avg.get("cam_h", 0.0))),
+        "y_axis": float(avg.get("offset_y", avg.get("cam_h", 0.0))),
+        # Use the confirmed stack flags from the world state so higher-level gate checks
+        # do not assert true/false until the stack-specific lite+full checks confirm.
+        "brickAbove": (world.brick or {}).get("brickAbove"),
+        "brickBelow": (world.brick or {}).get("brickBelow"),
     }
 
 
@@ -145,13 +164,311 @@ def metric_value(brick, metric):
         return abs(brick.get("angle", 0.0))
     if metric == "xAxis_offset_abs":
         return brick.get("x_axis", brick.get("offset_x", 0.0))
+    if metric == "yAxis_offset_abs":
+        return brick.get("y_axis", brick.get("offset_y", 0.0))
+    if metric == "yAxis_offset":
+        return brick.get("y_axis", brick.get("offset_y", 0.0))
     if metric == "dist":
         return brick.get("dist", 0.0)
     if metric == "visible":
         return 1.0 if brick.get("visible") else 0.0
     if metric == "confidence":
         return brick.get("confidence", 0.0)
+    if metric in ("brick_above", "brickAbove"):
+        if "brickAbove" in brick:
+            value = brick.get("brickAbove")
+            return None if value is None else bool(value)
+        if "brick_above" in brick:
+            value = brick.get("brick_above")
+            return None if value is None else bool(value)
+        return None
+    if metric in ("brick_below", "brickBelow"):
+        if "brickBelow" in brick:
+            value = brick.get("brickBelow")
+            return None if value is None else bool(value)
+        if "brick_below" in brick:
+            value = brick.get("brick_below")
+            return None if value is None else bool(value)
+        return None
     return None
+
+
+def _stack_tracker_new():
+    return gate_utils.SuccessGateTracker(
+        consecutive_required=int(STACK_VIS_FULL_CONSEC_FRAMES),
+        majority_window=int(STACK_VIS_FULL_MAJ_WINDOW),
+        majority_required=int(STACK_VIS_FULL_MAJ_REQUIRED),
+    )
+
+
+def _stack_tracker_snapshot(tracker):
+    window_vals = list(getattr(tracker, "window", []) or [])
+    window_pass = int(sum(1 for ok in window_vals if ok))
+    window_size = int(len(window_vals))
+    streak = int(getattr(tracker, "consecutive", 0) or 0)
+    need = max(1, int(getattr(tracker, "consecutive_required", 1) or 1))
+    window_total = max(1, int(getattr(tracker, "majority_window", 1) or 1))
+    window_need = max(1, int(getattr(tracker, "majority_required", 1) or 1))
+    truth_ok = bool(streak >= need or window_pass >= window_need)
+    return {
+        "checks": int(getattr(tracker, "total_checks", 0) or 0),
+        "pass": int(getattr(tracker, "total_pass", 0) or 0),
+        "streak": streak,
+        "need": need,
+        "window_pass": window_pass,
+        "window_size": window_size,
+        "window_total": window_total,
+        "window_need": window_need,
+        "truth_ok": truth_ok,
+    }
+
+
+def _stack_gate_state(world):
+    state = getattr(world, "_stack_visibility_gate", None)
+    if isinstance(state, dict):
+        return state
+    state = {
+        "visible": False,
+        "above": {
+            "history": deque(maxlen=int(STACK_VIS_LITE_CONSEC_FRAMES)),
+            "tracker_true": _stack_tracker_new(),
+            "tracker_false": _stack_tracker_new(),
+        },
+        "below": {
+            "history": deque(maxlen=int(STACK_VIS_LITE_CONSEC_FRAMES)),
+            "tracker_true": _stack_tracker_new(),
+            "tracker_false": _stack_tracker_new(),
+        },
+    }
+    world._stack_visibility_gate = state
+    return state
+
+
+def _stack_gate_metric_reset(metric_state):
+    metric_state["history"].clear()
+    metric_state["tracker_true"] = _stack_tracker_new()
+    metric_state["tracker_false"] = _stack_tracker_new()
+    metric_state["raw"] = None
+    metric_state["lite_count"] = 0
+    metric_state["lite_need"] = int(STACK_VIS_LITE_CONSEC_FRAMES)
+    metric_state["lite_candidate"] = None
+    metric_state["lite_ok"] = False
+    metric_state["full_true"] = _stack_tracker_snapshot(metric_state["tracker_true"])
+    metric_state["full_false"] = _stack_tracker_snapshot(metric_state["tracker_false"])
+    metric_state["full_candidate"] = None
+    metric_state["full_active"] = None
+    metric_state["asserted"] = None
+    metric_state["truth"] = None
+
+
+def _stack_gate_metric_update(metric_state, raw_value, *, visible):
+    if not visible or raw_value is None:
+        _stack_gate_metric_reset(metric_state)
+        return None
+
+    raw_bool = bool(raw_value)
+    metric_state["raw"] = raw_bool
+    history = metric_state["history"]
+    history.append(raw_bool)
+    lite_need = int(STACK_VIS_LITE_CONSEC_FRAMES)
+    lite_count = 0
+    for value in reversed(list(history)):
+        if bool(value) is raw_bool:
+            lite_count += 1
+        else:
+            break
+    lite_count = min(int(lite_need), int(lite_count))
+    lite_candidate = None
+    if len(history) >= lite_need and all(bool(v) is raw_bool for v in history):
+        lite_candidate = raw_bool
+    lite_ok = lite_candidate is not None
+
+    # Only start the heavier full truth tracker after the lite consecutive gate has
+    # already passed. This keeps the full gate from churning on every noisy frame.
+    if lite_ok:
+        metric_state["tracker_true"].update(raw_bool is True)
+        metric_state["tracker_false"].update(raw_bool is False)
+    else:
+        metric_state["tracker_true"] = _stack_tracker_new()
+        metric_state["tracker_false"] = _stack_tracker_new()
+    full_true = _stack_tracker_snapshot(metric_state["tracker_true"])
+    full_false = _stack_tracker_snapshot(metric_state["tracker_false"])
+
+    asserted = None
+    full_candidate = None
+    full_active = None
+    if lite_candidate is True and bool(full_true.get("truth_ok")):
+        asserted = True
+        full_candidate = True
+        full_active = full_true
+    elif lite_candidate is False and bool(full_false.get("truth_ok")):
+        asserted = False
+        full_candidate = False
+        full_active = full_false
+    elif lite_candidate is True:
+        full_candidate = True
+        full_active = full_true
+    elif lite_candidate is False:
+        full_candidate = False
+        full_active = full_false
+
+    metric_state["lite_count"] = int(lite_count)
+    metric_state["lite_need"] = int(lite_need)
+    metric_state["lite_candidate"] = lite_candidate
+    metric_state["lite_ok"] = bool(lite_ok)
+    metric_state["full_true"] = full_true
+    metric_state["full_false"] = full_false
+    metric_state["full_candidate"] = full_candidate
+    metric_state["full_active"] = full_active
+    metric_state["asserted"] = asserted
+    metric_state["truth"] = asserted
+    return asserted
+
+
+def _stack_gate_log_signature(status):
+    if not isinstance(status, dict):
+        return None
+    sig = [bool(status.get("visible", False))]
+    for key in ("above", "below"):
+        row = status.get(key) or {}
+        full_active = row.get("full_active") if isinstance(row.get("full_active"), dict) else {}
+        sig.extend(
+            [
+                row.get("raw"),
+                row.get("lite_count"),
+                row.get("lite_candidate"),
+                row.get("asserted"),
+                full_active.get("streak") if full_active else None,
+                full_active.get("window_pass") if full_active else None,
+                full_active.get("truth_ok") if full_active else None,
+            ]
+        )
+    return tuple(sig)
+
+
+def _stack_gate_row_text(label, row):
+    if not isinstance(row, dict):
+        return f"{label}=unknown"
+    raw = row.get("raw")
+    asserted = row.get("asserted")
+    lite_count = int(row.get("lite_count", 0) or 0)
+    lite_need = max(1, int(row.get("lite_need", STACK_VIS_LITE_CONSEC_FRAMES) or STACK_VIS_LITE_CONSEC_FRAMES))
+    lite_candidate = row.get("lite_candidate")
+    full_active = row.get("full_active") if isinstance(row.get("full_active"), dict) else None
+
+    raw_txt = "-" if raw is None else ("yes" if bool(raw) else "no")
+    if asserted is True:
+        out_txt = "YES"
+    elif asserted is False:
+        out_txt = "NO"
+    else:
+        out_txt = "WAIT"
+    lite_txt = "wait"
+    if lite_candidate is True:
+        lite_txt = "yes"
+    elif lite_candidate is False:
+        lite_txt = "no"
+
+    if isinstance(full_active, dict):
+        full_txt = (
+            f"c{int(full_active.get('streak', 0) or 0)}/{int(full_active.get('need', 1) or 1)} "
+            f"m{int(full_active.get('window_pass', 0) or 0)}/{int(full_active.get('window_total', 1) or 1)}"
+        )
+    else:
+        full_txt = "c0/? m0/?"
+    return (
+        f"{label}: raw={raw_txt} lite={lite_txt}({lite_count}/{lite_need}) "
+        f"full={full_txt} => {out_txt}"
+    )
+
+
+def _stack_top_candidate_log_line(status):
+    if not isinstance(status, dict):
+        return "[STACK GATECHECK] Top-brick candidate? status unavailable."
+
+    visible = bool(status.get("visible", False))
+    above = status.get("above") if isinstance(status.get("above"), dict) else {}
+    below = status.get("below") if isinstance(status.get("below"), dict) else {}
+
+    above_raw = above.get("raw")
+    below_raw = below.get("raw")
+    above_txt = "?" if above_raw is None else ("true" if bool(above_raw) else "false")
+    below_txt = "?" if below_raw is None else ("true" if bool(below_raw) else "false")
+
+    # Candidate pattern means we're looking at the uppermost brick in a stack.
+    raw_candidate = bool(visible and above_raw is False and below_raw is True)
+
+    above_lite_count = int(above.get("lite_count", 0) or 0)
+    below_lite_count = int(below.get("lite_count", 0) or 0)
+    above_lite_need = max(1, int(above.get("lite_need", STACK_VIS_LITE_CONSEC_FRAMES) or STACK_VIS_LITE_CONSEC_FRAMES))
+    below_lite_need = max(1, int(below.get("lite_need", STACK_VIS_LITE_CONSEC_FRAMES) or STACK_VIS_LITE_CONSEC_FRAMES))
+    lite_need = max(above_lite_need, below_lite_need)
+    lite_consec_seen = min(above_lite_count, below_lite_count) if raw_candidate else 0
+
+    above_false = above.get("full_false") if isinstance(above.get("full_false"), dict) else {}
+    below_true = below.get("full_true") if isinstance(below.get("full_true"), dict) else {}
+    full_consec_seen = min(
+        int(above_false.get("streak", 0) or 0),
+        int(below_true.get("streak", 0) or 0),
+    )
+    full_consec_need = max(
+        1,
+        int(above_false.get("need", STACK_VIS_FULL_CONSEC_FRAMES) or STACK_VIS_FULL_CONSEC_FRAMES),
+        int(below_true.get("need", STACK_VIS_FULL_CONSEC_FRAMES) or STACK_VIS_FULL_CONSEC_FRAMES),
+    )
+    full_maj_seen = min(
+        int(above_false.get("window_pass", 0) or 0),
+        int(below_true.get("window_pass", 0) or 0),
+    )
+    full_maj_den = max(
+        1,
+        int(above_false.get("window_total", STACK_VIS_FULL_MAJ_WINDOW) or STACK_VIS_FULL_MAJ_WINDOW),
+        int(below_true.get("window_total", STACK_VIS_FULL_MAJ_WINDOW) or STACK_VIS_FULL_MAJ_WINDOW),
+    )
+
+    confirmed_top_candidate = bool(visible and above.get("asserted") is False and below.get("asserted") is True)
+    if not visible:
+        lead = "Top-brick candidate pending"
+    elif raw_candidate:
+        lead = "Top-brick candidate!"
+    else:
+        lead = "Not top-brick candidate yet."
+
+    verdict = "CONFIRMED" if confirmed_top_candidate else "WAIT"
+    return (
+        "[STACK GATECHECK] "
+        f"{lead} above={above_txt}, below={below_txt}. "
+        f"Lite seen {int(lite_consec_seen)}/{int(lite_need)} conseq. "
+        f"Full seen {int(full_consec_seen)}/{int(full_consec_need)} conseq. "
+        f"Seen {int(full_maj_seen)}/{int(full_maj_den)} maj. "
+        f"=> {verdict}"
+    )
+
+
+def _maybe_log_stack_gatecheck(world, visible):
+    if world is None:
+        return
+    if not bool(getattr(world, "_stack_gatecheck_log_enabled", False)):
+        return
+    status = getattr(world, "_stack_visibility_gate", None)
+    if not isinstance(status, dict):
+        return
+    above = status.get("above") if isinstance(status.get("above"), dict) else {}
+    below = status.get("below") if isinstance(status.get("below"), dict) else {}
+    raw_candidate = bool(
+        bool(status.get("visible", False))
+        and above.get("raw") is False
+        and below.get("raw") is True
+    )
+    # Only emit stack gatecheck logs once the raw top-brick candidate pattern is present.
+    if not raw_candidate:
+        world._stack_gatecheck_log_sig = None
+        return
+    sig = _stack_gate_log_signature(status)
+    if sig == getattr(world, "_stack_gatecheck_log_sig", None):
+        return
+    world._stack_gatecheck_log_sig = sig
+    print(_stack_top_candidate_log_line(status))
 
 
 def _effective_visible(world, visible, grace_s=VISIBILITY_LOST_GRACE_S):
@@ -218,7 +535,10 @@ def compute_brick_world_xy(world, dist, angle_deg):
 
 
 def get_scoop_corridor_limits(world, dist):
-    corridor = world.learned_rules.get("SCOOP", {}).get("corridor")
+    corridor = (
+        world.learned_rules.get("SEAT_BRICK", {}).get("corridor")
+        or world.learned_rules.get("SCOOP", {}).get("corridor")
+    )
     if not corridor or dist is None:
         return None
     for row in corridor:
@@ -295,9 +615,8 @@ def compute_brick_analytics(world, process_rules, learned_rules, step, duration_
         progress_values = []
         ok = True
         for metric, stats in success_gates.items():
-            direction = metric_direction_for_step(metric, obj_name)
             value = metric_value(world.brick or {}, metric)
-            if value is None or direction is None or not isinstance(stats, dict):
+            if value is None or not isinstance(stats, dict):
                 ok = False
                 continue
             if isinstance(value, bool):
@@ -311,6 +630,10 @@ def compute_brick_analytics(world, process_rules, learned_rules, step, duration_
                     ok = ok and (value is bool(max_val))
                     progress_values.append(1.0 if value is bool(max_val) else 0.0)
                     continue
+                ok = False
+                continue
+            direction = metric_direction_for_step(metric, obj_name)
+            if direction is None:
                 ok = False
                 continue
 
@@ -376,23 +699,51 @@ def update_from_motion(world, event, delta):
 
 
 def update_from_vision(world, found, dist, angle, conf, offset_x=0, cam_h=0, brick_above=False, brick_below=False):
+    # `cam_h` is the marker's vertical offset relative to the camera center (same
+    # camera-space axis used for lift calibration). Alias it into brick telemetry
+    # as `offset_y` / `y_axis` for recording and step-4 alignment.
+    offset_y = float(cam_h)
     world.brick["visible"] = bool(found)
     world.brick["dist"] = float(dist)
     world.brick["angle"] = float(angle)
     world.brick["confidence"] = float(conf)
     world.brick["offset_x"] = float(offset_x)
     world.brick["x_axis"] = float(offset_x)
-    world.brick["brickAbove"] = bool(brick_above)
-    world.brick["brickBelow"] = bool(brick_below)
+    world.brick["offset_y"] = float(offset_y)
+    world.brick["y_axis"] = float(offset_y)
+    stack_state = _stack_gate_state(world)
+    if not bool(found):
+        stack_state["visible"] = False
+        _stack_gate_metric_update(stack_state["above"], None, visible=False)
+        _stack_gate_metric_update(stack_state["below"], None, visible=False)
+        confirmed_above = None
+        confirmed_below = None
+    else:
+        stack_state["visible"] = True
+        confirmed_above = _stack_gate_metric_update(
+            stack_state["above"],
+            bool(brick_above),
+            visible=True,
+        )
+        confirmed_below = _stack_gate_metric_update(
+            stack_state["below"],
+            bool(brick_below),
+            visible=True,
+        )
+    world.brick["brickAbove"] = confirmed_above
+    world.brick["brickBelow"] = confirmed_below
+    _maybe_log_stack_gatecheck(world, bool(found))
     if found:
         world.last_visible_time = time.time()
         world.last_seen_angle = float(angle)
         world.last_seen_offset_x = float(offset_x)
         world.last_seen_x_axis = float(offset_x)
+        world.last_seen_offset_y = float(offset_y)
+        world.last_seen_y_axis = float(offset_y)
         world.last_seen_dist = float(dist)
         world.last_seen_confidence = float(conf)
 
-    if world.step_state.value == "SCOOP":
+    if _step_name(world.step_state) == "SEAT_BRICK":
         world.scoop_forward_preferred = True
         world.scoop_desired_offset_x = 0.0
         world.scoop_lateral_drift = world.brick["offset_x"] - world.scoop_desired_offset_x
@@ -414,7 +765,7 @@ def update_from_vision(world, found, dist, angle, conf, offset_x=0, cam_h=0, bri
         tol_off = align_rules.get("max_offset_x", world.align_tol_offset)
         tol_ang = align_rules.get("max_angle", world.align_tol_angle)
 
-        if world.step_state.value == "SCOOP":
+        if _step_name(world.step_state) == "SEAT_BRICK":
             corridor = get_scoop_corridor_limits(world, dist)
             if corridor:
                 tol_off = corridor.get("max_offset_x", tol_off)
@@ -422,7 +773,7 @@ def update_from_vision(world, found, dist, angle, conf, offset_x=0, cam_h=0, bri
 
         tol_off *= 1.1
         tol_ang *= 1.1
-        if world.step_state.value == "SCOOP":
+        if _step_name(world.step_state) == "SEAT_BRICK":
             tol_off *= world.scoop_success_offset_factor
 
         angle_ok = abs(angle) <= tol_ang
@@ -446,19 +797,19 @@ def evaluate_start_gates(world, step, learned_rules, process_rules=None):
     visible = bool(brick.get("visible"))
     confidence = brick.get("confidence", 0.0) or 0.0
 
-    if obj_name in ("ALIGN_BRICK", "SCOOP", "POSITION_BRICK"):
+    if obj_name in ("ALIGN_BRICK", "SEAT_BRICK", "POSITION_BRICK"):
         if not visible:
             reasons.append("brick not visible")
         elif confidence < START_GATE_MIN_CONFIDENCE:
             reasons.append(f"confidence<{START_GATE_MIN_CONFIDENCE:.0f}")
 
-    if obj_name == "SCOOP" and visible and confidence >= START_GATE_MIN_CONFIDENCE:
+    if obj_name == "SEAT_BRICK" and visible and confidence >= START_GATE_MIN_CONFIDENCE:
         dist = brick.get("dist")
         angle = abs(brick.get("angle", 0.0))
         offset = abs(brick.get("offset_x", 0.0))
 
         corridor = get_scoop_corridor_limits(world, dist) if dist else None
-        envelope = build_envelope(process_rules or {}, learned_rules or {}, "SCOOP")
+        envelope = build_envelope(process_rules or {}, learned_rules or {}, "SEAT_BRICK")
         scoop_metrics = envelope.get("success", {})
 
         max_angle = None
@@ -488,7 +839,7 @@ def evaluate_start_gates(world, step, learned_rules, process_rules=None):
     start_metrics = (process_rules or {}).get(obj_name, {}).get("start_gates") or {}
     if start_metrics:
         for metric, stats in start_metrics.items():
-            if metric in ("angle_abs", "xAxis_offset_abs", "dist", "confidence") and not visible:
+            if metric in ("angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "confidence") and not visible:
                 reasons.append("brick not visible")
                 continue
             min_val = stats.get("min")
@@ -561,7 +912,7 @@ def _success_gate_eval(world, step, learned_rules, process_rules=None, visibilit
             "visible_grace_s": visible_grace_s,
         }
 
-        if metric in ("angle_abs", "xAxis_offset_abs", "dist", "confidence") and not visible:
+        if metric in ("angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "confidence") and not visible:
             reasons.append("brick not visible")
             entry["value"] = None
             entries.append(entry)
@@ -588,6 +939,19 @@ def _success_gate_eval(world, step, learned_rules, process_rules=None, visibilit
                 reasons.append("xAxis_offset_abs gate")
             elif ok is None and offset_val > stats.get("max", 0.0):
                 reasons.append("xAxis_offset_abs gate")
+        elif metric == "yAxis_offset_abs":
+            offset_val = brick.get("y_axis", brick.get("offset_y", 0.0))
+            entry["value"] = offset_val
+            target = stats.get("target") if isinstance(stats, dict) else None
+            tol = stats.get("tol") if isinstance(stats, dict) else None
+            if target is not None and tol is not None:
+                ok = abs(offset_val - target) <= tol
+            else:
+                ok = _target_tol_ok(offset_val, stats, direction)
+            if ok is False:
+                reasons.append("yAxis_offset_abs gate")
+            elif ok is None and offset_val > stats.get("max", 0.0):
+                reasons.append("yAxis_offset_abs gate")
         elif metric == "dist":
             dist_val = brick.get("dist", 0.0)
             entry["value"] = dist_val
@@ -617,6 +981,22 @@ def _success_gate_eval(world, step, learned_rules, process_rules=None, visibilit
             else:
                 if (1.0 if effective_visible else 0.0) < stats.get("min", 0.0):
                     reasons.append("visible gate")
+        elif metric in ("brick_above", "brickAbove", "brick_below", "brickBelow"):
+            bool_val = metric_value(brick, metric)
+            entry["value"] = bool_val
+            if bool_val is None:
+                reasons.append(f"{metric} gate")
+            else:
+                min_val = stats.get("min") if isinstance(stats, dict) else None
+                max_val = stats.get("max") if isinstance(stats, dict) else None
+                if isinstance(min_val, bool):
+                    if bool(bool_val) != min_val:
+                        reasons.append(f"{metric} gate")
+                elif isinstance(max_val, bool):
+                    if bool(bool_val) != max_val:
+                        reasons.append(f"{metric} gate")
+                else:
+                    reasons.append(f"{metric} gate")
         entries.append(entry)
 
     return GateCheck(ok=not reasons, reasons=reasons), entries
@@ -660,7 +1040,7 @@ def evaluate_failure_gates(world, step, learned_rules, process_rules=None):
     
     # Check if current state matches known failure patterns
     for metric, stats in failure_metrics.items():
-        if metric in ("angle_abs", "xAxis_offset_abs", "dist") and not visible:
+        if metric in ("angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist") and not visible:
             # Can't match failure pattern if brick isn't visible
             continue
             

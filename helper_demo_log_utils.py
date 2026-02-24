@@ -6,6 +6,10 @@ STEP_ALIASES = {
     "FIND": "FIND_BRICK",
     "ALIGN": "ALIGN_BRICK",
     "CARRY": "FIND_WALL2",
+    "SCOOP": "SEAT_BRICK",
+    "LIFT": "ELEVATE_BRICK",
+    "SEAT": "SEAT_BRICK",
+    "ELEVATE": "ELEVATE_BRICK",
 }
 ATTEMPT_START_MARKERS = {
     "SUCCESS_START": "SUCCESS",
@@ -144,7 +148,6 @@ def extract_attempt_segments(log_data):
             if marker == "OBJ_START":
                 obj_span = {
                     "type": "SUCCESS",
-                    "source": "step",
                     "step": current_obj,
                     "start": ts,
                     "states": [],
@@ -154,7 +157,6 @@ def extract_attempt_segments(log_data):
                 seg_type = start_markers[marker]
                 active[seg_type] = {
                     "type": seg_type,
-                    "source": "attempt",
                     "step": current_obj,
                     "start": ts,
                     "states": [],

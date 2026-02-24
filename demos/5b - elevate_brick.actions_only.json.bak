@@ -1,0 +1,104 @@
+[
+  {
+    "type": "keyframe",
+    "timestamp": 1769826680.778,
+    "marker": "NOMINAL_START",
+    "step": "ELEVATE_BRICK"
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826680.778,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826681.375,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826681.971,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826682.567,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826683.167,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826683.767,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826684.369,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826684.976,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826685.58,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826686.183,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826686.777,
+    "command": "mast_up",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826687.966,
+    "command": "right_turn",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826689.173,
+    "command": "left_turn",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826689.77,
+    "command": "backward",
+    "speedScore": 50
+  },
+  {
+    "type": "action",
+    "timestamp": 1769826692.169,
+    "command": "backward",
+    "speedScore": 50
+  },
+  {
+    "type": "keyframe",
+    "timestamp": 1769826692.169,
+    "marker": "NOMINAL_END",
+    "step": "ELEVATE_BRICK"
+  }
+]
