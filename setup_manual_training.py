@@ -198,6 +198,22 @@ MARKERLESS_PROFILE_PRESETS = {
         "nms_threshold": 0.45,
     },
 }
+MARKERLESS_VISIBILITY_AUTO = "auto"
+MARKERLESS_VISIBILITY_GRAY = "gray"
+MARKERLESS_VISIBILITY_CYAN = "cyan"
+MARKERLESS_VISIBILITY_OPTIONS = [
+    (MARKERLESS_VISIBILITY_AUTO, "Auto (all available)"),
+    (MARKERLESS_VISIBILITY_GRAY, "Gray Brick"),
+    (MARKERLESS_VISIBILITY_CYAN, "Cyan Brick"),
+]
+_MARKERLESS_VISIBILITY_ALIASES = {
+    "auto": MARKERLESS_VISIBILITY_AUTO,
+    "all": MARKERLESS_VISIBILITY_AUTO,
+    "both": MARKERLESS_VISIBILITY_AUTO,
+    "gray": MARKERLESS_VISIBILITY_GRAY,
+    "grey": MARKERLESS_VISIBILITY_GRAY,
+    "cyan": MARKERLESS_VISIBILITY_CYAN,
+}
 _VISION_MODE_ALIASES = {
     "aruco": VISION_MODE_ARUCO,
     "yolo": VISION_MODE_MARKERLESS,
@@ -223,6 +239,13 @@ _DEFAULT_MARKERLESS_PROFILE = str(
 ).strip().lower()
 if _DEFAULT_MARKERLESS_PROFILE not in MARKERLESS_PROFILE_PRESETS:
     _DEFAULT_MARKERLESS_PROFILE = MARKERLESS_PROFILE_BALANCED
+_DEFAULT_MARKERLESS_VISIBILITY = str(
+    _MANUAL_CONFIG.get("markerless_visibility", MARKERLESS_VISIBILITY_AUTO)
+).strip().lower()
+_DEFAULT_MARKERLESS_VISIBILITY = _MARKERLESS_VISIBILITY_ALIASES.get(
+    _DEFAULT_MARKERLESS_VISIBILITY,
+    MARKERLESS_VISIBILITY_AUTO,
+)
 
 AUTO_MINI_X_AXIS_ENABLED = bool(_MANUAL_CONFIG.get("auto_mini_x_axis_enabled", True))
 AUTO_MINI_X_AXIS_STEPS = {"ALIGN_BRICK", "POSITION_BRICK"}
@@ -281,6 +304,26 @@ def markerless_profile_label(profile):
         if value == profile_key:
             return label
     return profile_key
+
+
+def normalize_markerless_visibility(value, fallback=MARKERLESS_VISIBILITY_AUTO):
+    key = str(value or "").strip().lower()
+    mode = _MARKERLESS_VISIBILITY_ALIASES.get(key)
+    if mode:
+        return mode
+    fallback_key = str(fallback or "").strip().lower()
+    fallback_mode = _MARKERLESS_VISIBILITY_ALIASES.get(fallback_key)
+    if fallback_mode:
+        return fallback_mode
+    return MARKERLESS_VISIBILITY_AUTO
+
+
+def markerless_visibility_label(mode):
+    mode_key = normalize_markerless_visibility(mode, fallback=_DEFAULT_MARKERLESS_VISIBILITY)
+    for value, label in MARKERLESS_VISIBILITY_OPTIONS:
+        if value == mode_key:
+            return label
+    return mode_key
 
 STEP_CODES = {str(idx + 1): obj for idx, obj in enumerate(DEMO_STEPS)}
 
@@ -2373,6 +2416,7 @@ class AppState:
             "show_center_line": True,
             "vision_mode": _DEFAULT_VISION_MODE,
             "markerless_profile": _DEFAULT_MARKERLESS_PROFILE,
+            "markerless_visibility": _DEFAULT_MARKERLESS_VISIBILITY,
         }
         self.stream_enabled = False
         # Allow telemetry_process helpers to push frames directly during auto-run pauses.
@@ -2679,6 +2723,88 @@ def _set_stream_state_markerless_profile(app_state, profile):
         stream_state["markerless_profile"] = profile_norm
 
 
+def _stream_state_markerless_visibility(app_state, fallback):
+    stream_state = app_state.stream_state if isinstance(app_state.stream_state, dict) else None
+    if not stream_state:
+        return normalize_markerless_visibility(fallback, fallback=fallback)
+    lock = stream_state.get("lock")
+    if lock is None:
+        value = stream_state.get("markerless_visibility", fallback)
+    else:
+        with lock:
+            value = stream_state.get("markerless_visibility", fallback)
+    return normalize_markerless_visibility(value, fallback=fallback)
+
+
+def _set_stream_state_markerless_visibility(app_state, mode):
+    stream_state = app_state.stream_state if isinstance(app_state.stream_state, dict) else None
+    if not stream_state:
+        return
+    lock = stream_state.get("lock")
+    mode_norm = normalize_markerless_visibility(mode, fallback=_DEFAULT_MARKERLESS_VISIBILITY)
+    if lock is None:
+        stream_state["markerless_visibility"] = mode_norm
+        return
+    with lock:
+        stream_state["markerless_visibility"] = mode_norm
+
+
+def _set_detector_markerless_visibility(vision, mode):
+    if vision is None:
+        return False
+    mode_norm = normalize_markerless_visibility(mode, fallback=MARKERLESS_VISIBILITY_AUTO)
+    # Prefer explicit detector APIs if present.
+    for meth_name in (
+        "set_visibility_mode",
+        "set_brick_visibility_mode",
+        "set_color_mode",
+        "set_brick_color_mode",
+    ):
+        meth = getattr(vision, meth_name, None)
+        if callable(meth):
+            try:
+                meth(mode_norm)
+                return True
+            except TypeError:
+                continue
+            except Exception:
+                return False
+    # Try runtime-tuning style APIs used by the YOLO detector.
+    set_runtime_tuning = getattr(vision, "set_runtime_tuning", None)
+    if callable(set_runtime_tuning):
+        for key in ("visibility_mode", "brick_visibility", "color_mode", "brick_color_mode"):
+            try:
+                set_runtime_tuning(**{key: mode_norm})
+                return True
+            except TypeError:
+                continue
+            except Exception:
+                return False
+    # Fall back to direct attributes for merged detectors that expose state.
+    for attr_name in (
+        "visibility_mode",
+        "brick_visibility_mode",
+        "color_mode",
+        "brick_color_mode",
+    ):
+        if hasattr(vision, attr_name):
+            try:
+                setattr(vision, attr_name, mode_norm)
+                return True
+            except Exception:
+                return False
+    return False
+
+
+def _apply_markerless_visibility(app_state, vision, mode):
+    mode_norm = normalize_markerless_visibility(mode, fallback=_DEFAULT_MARKERLESS_VISIBILITY)
+    _set_stream_state_markerless_visibility(app_state, mode_norm)
+    if not isinstance(vision, YoloBrickDetector):
+        return mode_norm, False
+    applied = _set_detector_markerless_visibility(vision, mode_norm)
+    return mode_norm, bool(applied)
+
+
 def _apply_markerless_profile(app_state, vision, profile):
     profile_key, settings = markerless_profile_settings(profile)
     _set_stream_state_markerless_profile(app_state, profile_key)
@@ -2717,8 +2843,13 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
     app_state.robot = Robot()
     active_vision_mode = normalize_vision_mode(vision_mode)
     active_markerless_profile = _stream_state_markerless_profile(app_state, _DEFAULT_MARKERLESS_PROFILE)
+    active_markerless_visibility = _stream_state_markerless_visibility(
+        app_state,
+        _DEFAULT_MARKERLESS_VISIBILITY,
+    )
     _set_stream_state_vision_mode(app_state, active_vision_mode)
     _set_stream_state_markerless_profile(app_state, active_markerless_profile)
+    _set_stream_state_markerless_visibility(app_state, active_markerless_visibility)
     # speed_optimize=False so we get the debug markers drawn on the frame
     app_state.vision = build_vision(active_vision_mode, yolo_model_path=yolo_model_path)
     profile_key, profile_settings, profile_applied = _apply_markerless_profile(
@@ -2727,6 +2858,12 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
         active_markerless_profile,
     )
     active_markerless_profile = profile_key
+    visibility_key, visibility_applied = _apply_markerless_visibility(
+        app_state,
+        app_state.vision,
+        active_markerless_visibility,
+    )
+    active_markerless_visibility = visibility_key
     log_line(
         f"[VISION] Active mode: {_vision_mode_label(active_vision_mode)} "
         f"(--vision {_vision_mode_cli_value(active_vision_mode)})"
@@ -2737,6 +2874,11 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
             f"{markerless_profile_label(active_markerless_profile)} "
             f"(min_conf={float(profile_settings.get('conf_threshold', 0.15)):.2f}, "
             f"smooth={float(profile_settings.get('smooth_alpha', 0.30)):.2f})"
+        )
+    if active_vision_mode == VISION_MODE_MARKERLESS and visibility_applied:
+        log_line(
+            "[VISION] Markerless visibility: "
+            f"{markerless_visibility_label(active_markerless_visibility)}"
         )
 
     if app_state.stream_enabled:
@@ -2772,6 +2914,24 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
                         f"(min_conf={float(profile_settings.get('conf_threshold', 0.15)):.2f}, "
                         f"smooth={float(profile_settings.get('smooth_alpha', 0.30)):.2f})"
                     )
+        requested_markerless_visibility = _stream_state_markerless_visibility(
+            app_state,
+            active_markerless_visibility,
+        )
+        if requested_markerless_visibility != active_markerless_visibility:
+            active_markerless_visibility = requested_markerless_visibility
+            if active_vision_mode == VISION_MODE_MARKERLESS and app_state.vision is not None:
+                visibility_key, visibility_applied = _apply_markerless_visibility(
+                    app_state,
+                    app_state.vision,
+                    active_markerless_visibility,
+                )
+                active_markerless_visibility = visibility_key
+                if visibility_applied:
+                    log_line(
+                        "[VISION] Markerless visibility: "
+                        f"{markerless_visibility_label(active_markerless_visibility)}"
+                    )
         requested_vision_mode = _stream_state_vision_mode(app_state, active_vision_mode)
         if requested_vision_mode != active_vision_mode:
             previous_vision = app_state.vision
@@ -2787,6 +2947,7 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
                 try:
                     restored_vision = build_vision(active_vision_mode, yolo_model_path=yolo_model_path)
                     _apply_markerless_profile(app_state, restored_vision, active_markerless_profile)
+                    _apply_markerless_visibility(app_state, restored_vision, active_markerless_visibility)
                 except Exception as restore_exc:
                     log_line(f"[VISION] Failed to restore {_vision_mode_label(active_vision_mode)}: {restore_exc}")
                 app_state.vision = restored_vision
@@ -2803,6 +2964,12 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
                     active_markerless_profile,
                 )
                 active_markerless_profile = profile_key
+                visibility_key, visibility_applied = _apply_markerless_visibility(
+                    app_state,
+                    app_state.vision,
+                    active_markerless_visibility,
+                )
+                active_markerless_visibility = visibility_key
                 with app_state.lock:
                     app_state.brick_frame_buffer = []
                 _set_stream_state_vision_mode(app_state, active_vision_mode)
@@ -2816,6 +2983,11 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
                         f"{markerless_profile_label(active_markerless_profile)} "
                         f"(min_conf={float(profile_settings.get('conf_threshold', 0.15)):.2f}, "
                         f"smooth={float(profile_settings.get('smooth_alpha', 0.30)):.2f})"
+                    )
+                if active_vision_mode == VISION_MODE_MARKERLESS and visibility_applied:
+                    log_line(
+                        "[VISION] Markerless visibility: "
+                        f"{markerless_visibility_label(active_markerless_visibility)}"
                     )
 
         refresh_world_model_from_demos(app_state)
@@ -3148,6 +3320,7 @@ if __name__ == "__main__":
     state = AppState()
     _set_stream_state_vision_mode(state, vision_mode)
     _set_stream_state_markerless_profile(state, markerless_profile)
+    _set_stream_state_markerless_visibility(state, _DEFAULT_MARKERLESS_VISIBILITY)
     refresh_world_model_from_demos(state, force=True)
     log_align_curve_lookup_table()
     print_command_help(state)
@@ -3170,6 +3343,7 @@ if __name__ == "__main__":
                 jpeg_quality=STREAM_JPEG_QUALITY,
                 vision_mode_options=STREAM_VISION_MODE_OPTIONS,
                 markerless_profile_options=MARKERLESS_PROFILE_OPTIONS,
+                markerless_visibility_options=MARKERLESS_VISIBILITY_OPTIONS,
             )
         except Exception as exc:
             state.stream_enabled = False

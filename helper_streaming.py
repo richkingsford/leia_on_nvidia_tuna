@@ -133,6 +133,8 @@ def start_stream_server(
     vision_mode_key="vision_mode",
     markerless_profile_options=None,
     markerless_profile_key="markerless_profile",
+    markerless_visibility_options=None,
+    markerless_visibility_key="markerless_visibility",
 ):
     def _port_available(host, port):
         host_raw = "" if host is None else str(host).strip()
@@ -169,6 +171,7 @@ def start_stream_server(
 
     normalized_vision_mode_options = _normalize_choice_options(vision_mode_options)
     normalized_markerless_profile_options = _normalize_choice_options(markerless_profile_options)
+    normalized_markerless_visibility_options = _normalize_choice_options(markerless_visibility_options)
 
     vision_mode_getter = None
     vision_mode_setter = None
@@ -210,6 +213,26 @@ def start_stream_server(
             allowed_profiles,
         )
 
+    markerless_visibility_getter = None
+    markerless_visibility_setter = None
+    if normalized_markerless_visibility_options:
+        allowed_visibility = [value for value, _label in normalized_markerless_visibility_options]
+        default_visibility = allowed_visibility[0]
+        current_visibility = str(state.get(markerless_visibility_key, default_visibility)).strip().lower()
+        if current_visibility not in allowed_visibility:
+            state[markerless_visibility_key] = default_visibility
+        markerless_visibility_getter = build_choice_getter(
+            state,
+            markerless_visibility_key,
+            allowed_visibility,
+            default=default_visibility,
+        )
+        markerless_visibility_setter = build_choice_setter(
+            state,
+            markerless_visibility_key,
+            allowed_visibility,
+        )
+
     try:
         start_port = int(port)
     except (TypeError, ValueError):
@@ -247,6 +270,9 @@ def start_stream_server(
             markerless_profile_getter=markerless_profile_getter,
             markerless_profile_setter=markerless_profile_setter,
             markerless_profile_options=normalized_markerless_profile_options,
+            markerless_visibility_getter=markerless_visibility_getter,
+            markerless_visibility_setter=markerless_visibility_setter,
+            markerless_visibility_options=normalized_markerless_visibility_options,
         )
         server.start()
         try:

@@ -54,6 +54,9 @@ class StreamServer:
         markerless_profile_getter: Optional[Callable[[], str]] = None,
         markerless_profile_setter: Optional[Callable[[str], None]] = None,
         markerless_profile_options: Optional[list] = None,
+        markerless_visibility_getter: Optional[Callable[[], str]] = None,
+        markerless_visibility_setter: Optional[Callable[[str], None]] = None,
+        markerless_visibility_options: Optional[list] = None,
     ):
         self.frame_provider = frame_provider
         self.text_provider = text_provider
@@ -82,6 +85,10 @@ class StreamServer:
         self.markerless_profile_setter = markerless_profile_setter
         self.markerless_profile_options = self._normalize_options(markerless_profile_options)
         self._markerless_profile_allowed = {value for value, _label in self.markerless_profile_options}
+        self.markerless_visibility_getter = markerless_visibility_getter
+        self.markerless_visibility_setter = markerless_visibility_setter
+        self.markerless_visibility_options = self._normalize_options(markerless_visibility_options)
+        self._markerless_visibility_allowed = {value for value, _label in self.markerless_visibility_options}
         self._stop = threading.Event()
         self._thread = None
         self._startup_error = None
@@ -137,6 +144,13 @@ class StreamServer:
                             self.markerless_profile_setter(profile)
                         except Exception:
                             pass
+                if self.markerless_visibility_setter is not None and "markerless_visibility" in payload:
+                    mode = self._coerce_markerless_visibility(payload.get("markerless_visibility"))
+                    if mode is not None:
+                        try:
+                            self.markerless_visibility_setter(mode)
+                        except Exception:
+                            pass
 
             show_center_line = True
             if self.show_center_line_getter is not None:
@@ -170,6 +184,18 @@ class StreamServer:
                 {"value": value, "label": label}
                 for value, label in self.markerless_profile_options
             ]
+            markerless_visibility = self.markerless_visibility_options[0][0] if self.markerless_visibility_options else None
+            if self.markerless_visibility_getter is not None:
+                try:
+                    mode = self._coerce_markerless_visibility(self.markerless_visibility_getter())
+                    if mode is not None:
+                        markerless_visibility = mode
+                except Exception:
+                    pass
+            markerless_visibility_options_payload = [
+                {"value": value, "label": label}
+                for value, label in self.markerless_visibility_options
+            ]
             return jsonify(
                 {
                     "show_center_line": bool(show_center_line),
@@ -181,6 +207,9 @@ class StreamServer:
                     "markerless_profile": markerless_profile,
                     "markerless_profile_editable": self.markerless_profile_setter is not None,
                     "markerless_profile_options": markerless_profile_options_payload,
+                    "markerless_visibility": markerless_visibility,
+                    "markerless_visibility_editable": self.markerless_visibility_setter is not None,
+                    "markerless_visibility_options": markerless_visibility_options_payload,
                 }
             )
 
@@ -263,7 +292,15 @@ class StreamServer:
         has_markerless_profile_control = bool(self.markerless_profile_options) and (
             self.markerless_profile_getter is not None or self.markerless_profile_setter is not None
         )
-        if has_center_line_control or has_vision_mode_control or has_markerless_profile_control:
+        has_markerless_visibility_control = bool(self.markerless_visibility_options) and (
+            self.markerless_visibility_getter is not None or self.markerless_visibility_setter is not None
+        )
+        if (
+            has_center_line_control
+            or has_vision_mode_control
+            or has_markerless_profile_control
+            or has_markerless_visibility_control
+        ):
             controls_parts = ["<div class='controls'>"]
             if has_center_line_control:
                 controls_parts.append(
@@ -294,6 +331,20 @@ class StreamServer:
                     + "</select>"
                     "</label>"
                 )
+            if has_markerless_visibility_control:
+                option_parts = []
+                for value, label in self.markerless_visibility_options:
+                    value_escaped = html.escape(str(value), quote=True)
+                    label_escaped = html.escape(str(label))
+                    option_parts.append(f"<option value='{value_escaped}'>{label_escaped}</option>")
+                controls_parts.append(
+                    "<label class='control-item'>"
+                    "Brick Visibility: "
+                    "<select id='markerlessVisibility' class='control-select'>"
+                    + "".join(option_parts)
+                    + "</select>"
+                    "</label>"
+                )
             controls_parts.append("</div>")
             controls_html = "".join(controls_parts)
 
@@ -302,6 +353,7 @@ class StreamServer:
                 "const centerLineToggle = document.getElementById('showCenterLine');"
                 "const visionModeInputs = Array.from(document.querySelectorAll(\"input[name='visionMode']\"));"
                 "const markerlessProfileSelect = document.getElementById('markerlessProfile');"
+                "const markerlessVisibilitySelect = document.getElementById('markerlessVisibility');"
                 "const setVisionMode = (mode, editable) => {"
                 "if (!visionModeInputs.length) return;"
                 "let matched = false;"
@@ -321,6 +373,13 @@ class StreamServer:
                 "markerlessProfileSelect.value = String(profile);"
                 "}"
                 "markerlessProfileSelect.disabled = !editable;"
+                "};"
+                "const setMarkerlessVisibility = (mode, editable) => {"
+                "if (!markerlessVisibilitySelect) return;"
+                "if (mode !== null && mode !== undefined) {"
+                "markerlessVisibilitySelect.value = String(mode);"
+                "}"
+                "markerlessVisibilitySelect.disabled = !editable;"
                 "};"
                 "const postPrefs = async (payload) => {"
                 "try {"
@@ -348,6 +407,9 @@ class StreamServer:
                 "if (markerlessProfileSelect) {"
                 "setMarkerlessProfile(data.markerless_profile, !!data.markerless_profile_editable);"
                 "}"
+                "if (markerlessVisibilitySelect) {"
+                "setMarkerlessVisibility(data.markerless_visibility, !!data.markerless_visibility_editable);"
+                "}"
                 "} catch (e) { /* ignore */ }"
                 "};"
                 "if (centerLineToggle) {"
@@ -366,6 +428,12 @@ class StreamServer:
                 "if (markerlessProfileSelect) {"
                 "markerlessProfileSelect.addEventListener('change', async () => {"
                 "await postPrefs({markerless_profile:markerlessProfileSelect.value});"
+                "syncPrefs();"
+                "});"
+                "}"
+                "if (markerlessVisibilitySelect) {"
+                "markerlessVisibilitySelect.addEventListener('change', async () => {"
+                "await postPrefs({markerless_visibility:markerlessVisibilitySelect.value});"
                 "syncPrefs();"
                 "});"
                 "}"
@@ -578,6 +646,16 @@ class StreamServer:
             return None
         candidate = str(value).strip().lower()
         if candidate in self._markerless_profile_allowed:
+            return candidate
+        return None
+
+    def _coerce_markerless_visibility(self, value):
+        if not self._markerless_visibility_allowed:
+            return None
+        if value is None:
+            return None
+        candidate = str(value).strip().lower()
+        if candidate in self._markerless_visibility_allowed:
             return candidate
         return None
 
