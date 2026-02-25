@@ -57,25 +57,20 @@
                 "brick_above": {
                     "target": false,
                     "tol": 0.0
-                },
-                "brick_below": {
-                    "target": true,
-                    "tol": 0.0
                 }
             }
         },
         "BRICK_LOCK": {
             "controller": "align",
-            "lock_start_gates": true,
             "start_gates": {
                 "visible": {
                     "min": true
                 },
                 "brick_above": {
-                    "min": true
+                    "max": false
                 },
                 "brick_below": {
-                    "max": false
+                    "min": true
                 }
             },
             "success_gates": {
@@ -83,11 +78,11 @@
                     "min": true
                 },
                 "brick_above": {
-                    "target": false,
+                    "target": true,
                     "tol": 0.0
                 },
                 "brick_below": {
-                    "target": true,
+                    "target": false,
                     "tol": 0.0
                 }
             }

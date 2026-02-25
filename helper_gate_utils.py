@@ -144,6 +144,19 @@ def metric_error(value, stats):
             return 0.0 if value is bool(min_val) else 1.0
         if max_val is not None:
             return 0.0 if value is bool(max_val) else 1.0
+        target = stats.get("target")
+        tol = stats.get("tol")
+        if target is not None and tol is not None:
+            if isinstance(target, bool):
+                try:
+                    tol_num = float(tol)
+                except (TypeError, ValueError):
+                    tol_num = 0.0
+                if tol_num <= 0.0:
+                    return 0.0 if value is bool(target) else 1.0
+                value_num = 1.0 if value else 0.0
+                target_num = 1.0 if bool(target) else 0.0
+                return max(0.0, abs(value_num - target_num) - tol_num)
         return None
     target = stats.get("target")
     tol = stats.get("tol")
@@ -162,6 +175,21 @@ def metric_progress(value, stats):
     if value is None or not isinstance(stats, dict):
         return None
     if isinstance(value, bool):
+        target = stats.get("target")
+        tol = stats.get("tol")
+        if target is not None and tol is not None and isinstance(target, bool):
+            try:
+                tol_num = float(tol)
+            except (TypeError, ValueError):
+                tol_num = 0.0
+            if tol_num <= 0.0:
+                return 1.0 if value is bool(target) else 0.0
+            value_num = 1.0 if value else 0.0
+            target_num = 1.0 if bool(target) else 0.0
+            distance = abs(value_num - target_num)
+            if distance <= tol_num:
+                return 1.0
+            return max(0.0, 1.0 - (distance - tol_num) / tol_num)
         err = metric_error(value, stats)
         return 1.0 if err == 0.0 else 0.0
     target = stats.get("target")

@@ -2255,15 +2255,21 @@ def draw_telemetry_overlay(
     put_line("--- BRICK[0] TELEMETRY ---", WHITE, 0.35, 1)
     visible_now = bool(wm.brick.get("visible"))
     x_axis = wm.brick.get("x_axis", wm.brick.get("offset_x", 0.0))
+    y_axis = wm.brick.get("y_axis", wm.brick.get("offset_y", 0.0))
     obj_rules = (wm.process_rules or {}).get("ALIGN_BRICK", {}) if wm.process_rules else {}
     success_gates = (obj_rules or {}).get("success_gates") or {}
     x_prefix = "* " if highlight_metric == "xAxis_offset_abs" else ""
+    y_prefix = "* " if highlight_metric in ("yAxis_offset_abs", "yAxis_offset") else ""
     angle_prefix = "* " if highlight_metric == "angle_abs" else ""
     dist_prefix = "* " if highlight_metric == "dist" else ""
     if visible_now:
         put_line(f"{x_prefix}X-AXIS: {x_axis:.1f} mm", WHITE, 0.38, 1)
     else:
         put_line(f"{x_prefix}X-AXIS: -", WHITE, 0.38, 1)
+    if visible_now:
+        put_line(f"{y_prefix}Y-AXIS: {y_axis:.1f} mm", WHITE, 0.38, 1)
+    else:
+        put_line(f"{y_prefix}Y-AXIS: -", WHITE, 0.38, 1)
     if visible_now:
         put_line(f"{angle_prefix}ANGLE:  {wm.brick['angle']:.1f} deg", WHITE, 0.38, 1)
     else:
@@ -2275,26 +2281,33 @@ def draw_telemetry_overlay(
     brick_conf = wm.brick.get("confidence")
     if brick_conf is None:
         brick_conf = 0.0
-    def _stack_hud_text(metric_key, brick_key):
-        if not visible_now:
-            return "-"
-        confirmed = wm.brick.get(brick_key)
-        if confirmed is True:
-            return "YES"
-        # Display defaults to NO unless stack visibility has confidently asserted YES.
-        # Internal telemetry still preserves None/unknown for auto-step safety.
-        return "NO"
+    stack_gate_state = getattr(wm, "_stack_visibility_gate", None)
+
+    def _stack_bool_compact(value):
+        if value is True:
+            return "True"
+        if value is False:
+            return "False"
+        return "Wait"
+
+    def _stack_hud_pair(row_key, brick_key):
+        row = (
+            stack_gate_state.get(row_key)
+            if isinstance(stack_gate_state, dict) and isinstance(stack_gate_state.get(row_key), dict)
+            else {}
+        )
+        raw_val = row.get("raw")
+        conf_val = wm.brick.get(brick_key)
+        return f"r{_stack_bool_compact(raw_val)} c{_stack_bool_compact(conf_val)}"
 
     if visible_now:
         put_line(f"CONF:   {brick_conf:.0f}%", WHITE, 0.38, 1)
-        above_txt = _stack_hud_text("above", "brickAbove")
-        below_txt = _stack_hud_text("below", "brickBelow")
     else:
         put_line("CONF:   -", WHITE, 0.38, 1)
-        above_txt = "-"
-        below_txt = "-"
-    put_line(f"BRICK ABOVE: {above_txt}", WHITE, 0.38, 1)
-    put_line(f"BRICK_BELOW: {below_txt}", WHITE, 0.38, 1)
+    above_txt = _stack_hud_pair("above", "brickAbove")
+    below_txt = _stack_hud_pair("below", "brickBelow")
+    put_line(f"Brick above: {above_txt}", WHITE, 0.38, 1)
+    put_line(f"Brick below: {below_txt}", WHITE, 0.38, 1)
     if brick_extra_lines:
         for line in brick_extra_lines:
             if isinstance(line, (tuple, list)) and len(line) >= 2:

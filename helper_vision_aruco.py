@@ -97,45 +97,121 @@ class ArucoBrickVision:
         return params
 
     def _detect_markers_with_fallback(self, gray: np.ndarray):
-        # 1) Raw grayscale with the stricter detector.
-        corners_raw, ids_raw, rejected_raw = self.detector.detectMarkers(gray)
-        if ids_raw is not None and len(ids_raw) > 0:
-            self.last_detect_pass = "raw"
-            return corners_raw, ids_raw, rejected_raw
+        def _quad_bbox(quad):
+            try:
+                pts = np.asarray(quad, dtype=np.float32)
+            except Exception:
+                return None
+            if pts.ndim == 3 and pts.shape[0] == 1:
+                pts = pts[0]
+            if pts.ndim != 2 or pts.shape[0] < 4 or pts.shape[1] != 2:
+                return None
+            x, y, w, h = cv2.boundingRect(np.round(pts[:4]).astype(np.int32))
+            return (float(x), float(y), float(max(1, w)), float(max(1, h)))
 
-        # 2) CLAHE preprocessed grayscale for hard exposure/contrast scenes.
+        def _bbox_overlap_frac(box_a, box_b):
+            ax, ay, aw, ah = box_a
+            bx, by, bw, bh = box_b
+            ax2 = ax + aw
+            ay2 = ay + ah
+            bx2 = bx + bw
+            by2 = by + bh
+            ix1 = max(ax, bx)
+            iy1 = max(ay, by)
+            ix2 = min(ax2, bx2)
+            iy2 = min(ay2, by2)
+            iw = max(0.0, ix2 - ix1)
+            ih = max(0.0, iy2 - iy1)
+            inter = float(iw * ih)
+            area_a = max(1.0, float(aw * ah))
+            return inter / area_a
+
+        def _boxes_same_marker(box_a, box_b):
+            if box_a is None or box_b is None:
+                return False
+            ov = max(_bbox_overlap_frac(box_a, box_b), _bbox_overlap_frac(box_b, box_a))
+            if ov >= 0.35:
+                return True
+            ax, ay, aw, ah = box_a
+            bx, by, bw, bh = box_b
+            acx = ax + (aw * 0.5)
+            acy = ay + (ah * 0.5)
+            bcx = bx + (bw * 0.5)
+            bcy = by + (bh * 0.5)
+            center_dist = float(np.hypot(acx - bcx, acy - bcy))
+            size_ref = max(8.0, min(max(aw, ah), max(bw, bh)))
+            return center_dist <= (0.35 * float(size_ref))
+
+        # For 6x6 markers near the frame edges, one pass often decodes only the center
+        # marker and leaves off-center markers as rejected candidates. Run all detector
+        # passes and merge confirmed quads by geometry (not ID), because stack markers
+        # intentionally reuse the same ID.
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         clahe_gray = clahe.apply(gray)
-        corners_clahe, ids_clahe, rejected_clahe = self.detector.detectMarkers(clahe_gray)
-        if ids_clahe is not None and len(ids_clahe) > 0:
-            self.last_detect_pass = "clahe"
-            return corners_clahe, ids_clahe, rejected_clahe
 
-        # 3) Fall back to the looser detector (keeps partial support).
-        corners_raw_loose, ids_raw_loose, rejected_raw_loose = self.loose_detector.detectMarkers(gray)
-        if ids_raw_loose is not None and len(ids_raw_loose) > 0:
-            self.last_detect_pass = "raw_loose"
-            return corners_raw_loose, ids_raw_loose, rejected_raw_loose
+        pass_results = []
+        for label, detector, img in (
+            ("raw", self.detector, gray),
+            ("clahe", self.detector, clahe_gray),
+            ("raw_loose", self.loose_detector, gray),
+            ("clahe_loose", self.loose_detector, clahe_gray),
+        ):
+            corners_i, ids_i, rejected_i = detector.detectMarkers(img)
+            pass_results.append((label, corners_i, ids_i, rejected_i))
 
-        corners_clahe_loose, ids_clahe_loose, rejected_clahe_loose = self.loose_detector.detectMarkers(clahe_gray)
-        if ids_clahe_loose is not None and len(ids_clahe_loose) > 0:
-            self.last_detect_pass = "clahe_loose"
-            return corners_clahe_loose, ids_clahe_loose, rejected_clahe_loose
+        merged_corners = []
+        merged_corner_boxes = []
+        merged_ids = []
+        primary_label = None
+        merged_from_later = False
+
+        for label, corners_i, ids_i, _rejected_i in pass_results:
+            if ids_i is None or corners_i is None or len(ids_i) <= 0:
+                continue
+            if primary_label is None:
+                primary_label = str(label)
+            for idx in range(min(len(corners_i), len(ids_i))):
+                quad = corners_i[idx]
+                bbox = _quad_bbox(quad)
+                if bbox is None:
+                    continue
+                duplicate = any(_boxes_same_marker(bbox, existing) for existing in merged_corner_boxes)
+                if duplicate:
+                    continue
+                try:
+                    marker_id = int(ids_i[idx][0])
+                except Exception:
+                    try:
+                        marker_id = int(ids_i[idx])
+                    except Exception:
+                        marker_id = 0
+                merged_corners.append(quad)
+                merged_corner_boxes.append(bbox)
+                merged_ids.append(marker_id)
+                if primary_label is not None and str(label) != str(primary_label):
+                    merged_from_later = True
+
+        if merged_ids:
+            best_rejected = None
+            best_rejected_count = -1
+            for _label, _corners, _ids, rejected_i in pass_results:
+                count_i = len(rejected_i) if rejected_i is not None else 0
+                if count_i > best_rejected_count:
+                    best_rejected = rejected_i
+                    best_rejected_count = int(count_i)
+            if primary_label is None:
+                primary_label = "raw"
+            self.last_detect_pass = f"{primary_label}+merge" if merged_from_later else str(primary_label)
+            return merged_corners, np.asarray(merged_ids, dtype=np.int32).reshape(-1, 1), best_rejected
 
         # No confirmed markers found; return whichever pass produced the richest rejected set
         # so the partial-stack fallback still has candidates to inspect.
-        candidates = [
-            (corners_raw, ids_raw, rejected_raw, "raw"),
-            (corners_clahe, ids_clahe, rejected_clahe, "clahe"),
-            (corners_raw_loose, ids_raw_loose, rejected_raw_loose, "raw_loose"),
-            (corners_clahe_loose, ids_clahe_loose, rejected_clahe_loose, "clahe_loose"),
-        ]
         best = max(
-            candidates,
-            key=lambda item: len(item[2]) if item[2] is not None else 0,
+            pass_results,
+            key=lambda item: len(item[3]) if item[3] is not None else 0,
         )
-        self.last_detect_pass = best[3]
-        return best[0], best[1], best[2]
+        self.last_detect_pass = best[0]
+        return best[1], best[2], best[3]
 
     def _candidate_camera_indices(self, preferred_index: Optional[int]) -> List[int]:
         candidates: List[int] = []
@@ -549,14 +625,17 @@ class ArucoBrickVision:
                                 best_marker.brickBelow = True
 
                 # 2. Check rejected markers for partial bricks
-                # Be conservative: if a stack relationship is already inferred from verified
-                # (green) markers this frame, do not let rejected/partial candidates add the
-                # opposite side and create contradictory above/below flags.
-                use_rejected_stack_fallback = bool(int(verified_stack_hits) == 0)
+                # Disabled for stack booleans: `brickAbove` / `brickBelow` should reflect
+                # only confirmed (green) ArUco markers so the HUD booleans match what the
+                # operator sees highlighted. If only one marker is confirmed, both remain
+                # false here and the higher-level stack gate checker will continue waiting.
+                use_rejected_stack_fallback = False
                 if use_rejected_stack_fallback and rejected and (not best_marker.brickAbove or not best_marker.brickBelow):
                     dist_mm = best_dist_mm
                     expected_shift_px = focal * (self.BRICK_H / dist_mm)
                     expected_size_px = focal * (self.marker_size / dist_mm)
+                    rejected_above_best = None
+                    rejected_below_best = None
                     
                     # Project center to image space
                     best_img_pts, _ = cv2.projectPoints(np.array([[0,0,0]], dtype=np.float32), 
@@ -602,8 +681,14 @@ class ArucoBrickVision:
                             
                             min_above_shift = max(expected_size_px * 0.35, 8.0)
                             max_above_shift = max(expected_dist_to_bottom * 1.8, expected_size_px * 5.0, 40.0)
-                            if not best_marker.brickAbove and (min_above_shift < dist_to_bottom < max_above_shift):
-                                best_marker.brickAbove = True
+                            if (min_above_shift < dist_to_bottom < max_above_shift):
+                                above_err = abs(float(dist_to_bottom) - float(expected_dist_to_bottom))
+                                above_score = (
+                                    float(above_err) / max(8.0, float(expected_size_px)),
+                                    float(idx) / max(1.0, float(lateral_tol_px)),
+                                )
+                                if rejected_above_best is None or above_score < rejected_above_best:
+                                    rejected_above_best = above_score
                             
                             # Check "Below" (Negative dy)
                             dist_to_top = bcy - min_y # Negative if below
@@ -611,8 +696,30 @@ class ArucoBrickVision:
                             
                             min_below_shift = -max(expected_size_px * 0.35, 8.0)
                             max_below_shift = -max(expected_dist_to_bottom * 1.8, expected_size_px * 5.0, 40.0)
-                            if not best_marker.brickBelow and (max_below_shift < dist_to_top < min_below_shift):
+                            if (max_below_shift < dist_to_top < min_below_shift):
+                                below_err = abs(float(dist_to_top) - float(expected_dist_to_top))
+                                below_score = (
+                                    float(below_err) / max(8.0, float(expected_size_px)),
+                                    float(idx) / max(1.0, float(lateral_tol_px)),
+                                )
+                                if rejected_below_best is None or below_score < rejected_below_best:
+                                    rejected_below_best = below_score
+
+                    # Rejected (orange) quads are only a fallback when we had zero verified
+                    # stack hits this frame. In that mode, asserting both sides from partials
+                    # is too prone to false positives; keep only the stronger side.
+                    if rejected_above_best is not None and rejected_below_best is not None:
+                        if rejected_above_best < rejected_below_best:
+                            if not best_marker.brickAbove:
+                                best_marker.brickAbove = True
+                        elif rejected_below_best < rejected_above_best:
+                            if not best_marker.brickBelow:
                                 best_marker.brickBelow = True
+                    else:
+                        if rejected_above_best is not None and not best_marker.brickAbove:
+                            best_marker.brickAbove = True
+                        if rejected_below_best is not None and not best_marker.brickBelow:
+                            best_marker.brickBelow = True
 
         if best_marker:
             if self.last_pose:

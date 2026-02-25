@@ -308,6 +308,22 @@ STEP_NAMES["approach_wall"] = StepState.APPROACH_VECTOR_WALL
 STEP_NAMES["approach_vector_wall"] = StepState.APPROACH_VECTOR_WALL
 STEP_NAMES["position"] = StepState.POSITION_BRICK
 
+STEP_CODE_EMOJIS = {
+    "find_wall": "🧱",
+    "exit_wall": "🧱",
+    "find_brick": "🧱",
+    "approach_vector_brick_supply": "📐",
+    "find_topmost_brick": "🎩",
+    "brick_lock": "➡️",
+    "align_brick": "➡️",
+    "seat_brick": "➡️",
+    "elevate_brick": "👆",
+    "find_wall2": "🧱",
+    "approach_vector_wall": "📐",
+    "position_brick": "🎩",
+    "place": "👈",
+}
+
 ATTEMPT_CODES = {
     "f": "FAIL",
     "s": "SUCCESS",
@@ -567,9 +583,11 @@ def _apply_manual_motion_telemetry_from_send(app_state, *, cmd, speed, score, se
     if app_state is None or app_state.world is None or not cmd:
         return
     result = send_result if isinstance(send_result, dict) else {}
-    cmd_for_motion = str(result.get("cmd_sent") or cmd).strip().lower()
+    # `cmd_sent` may be a wire-level remap (e.g. lift inversion). Manual demo logs
+    # and world-motion telemetry must record the semantic command the user pressed.
+    cmd_for_motion = str(cmd or "").strip().lower()
     if cmd_for_motion not in ("f", "b", "l", "r", "u", "d"):
-        cmd_for_motion = str(cmd or "").strip().lower()
+        cmd_for_motion = str(result.get("cmd_sent") or "").strip().lower()
     action_type = _cmd_to_motion_action_type(cmd_for_motion)
     if action_type == "unknown":
         return
@@ -1156,8 +1174,18 @@ def maybe_prompt_hotkey_var_update(app_state, cmd, score, *, enter_edit=False, h
 
 
 def format_step_codes_line():
-    parts = [f"{idx + 1}={obj.value.lower()}" for idx, obj in enumerate(DEMO_STEPS)]
+    parts = [format_step_code_entry(idx, obj, include_emoji=True) for idx, obj in enumerate(DEMO_STEPS)]
     return "[CMD] Step codes: " + ", ".join(parts)
+
+
+def format_step_code_entry(idx, obj_enum, *, include_emoji=False):
+    label = str(getattr(obj_enum, "value", obj_enum)).lower()
+    prefix = ""
+    if include_emoji:
+        emoji = STEP_CODE_EMOJIS.get(label)
+        if emoji:
+            prefix = str(emoji)
+    return f"{prefix}{int(idx) + 1}={label}"
 
 
 def step_code_for_obj(obj_enum):
@@ -1214,7 +1242,7 @@ def stream_footer_html():
     sections.append(
         _footer_section_html(
             "Step Codes",
-            [f"{idx + 1}={obj.value.lower()}" for idx, obj in enumerate(DEMO_STEPS)],
+            [format_step_code_entry(idx, obj, include_emoji=True) for idx, obj in enumerate(DEMO_STEPS)],
         )
     )
     sections = [section for section in sections if section]
