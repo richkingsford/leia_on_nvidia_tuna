@@ -52,10 +52,12 @@ DEFAULT_FRAME_H = 480
 FOCAL_PX_REF = 580.0
 FOCAL_REF_WIDTH = 640.0
 
-# YOLO model path (relative to this file)
+# YOLO model path (relative to this file) — prefers newest available
+MODEL_PATH_V4 = Path(__file__).resolve().parent / "brick_yolo_v4.onnx"
 MODEL_PATH_V3 = Path(__file__).resolve().parent / "brick_yolo_v3.onnx"
 MODEL_PATH_V2 = Path(__file__).resolve().parent / "brick_yolo_v2.onnx"
-MODEL_PATH = MODEL_PATH_V3 if MODEL_PATH_V3.exists() else MODEL_PATH_V2
+MODEL_PATH = (MODEL_PATH_V4 if MODEL_PATH_V4.exists() else
+              MODEL_PATH_V3 if MODEL_PATH_V3.exists() else MODEL_PATH_V2)
 
 # Detection confidence threshold
 CONF_THRESHOLD = 0.15
