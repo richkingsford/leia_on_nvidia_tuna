@@ -1,40 +1,6 @@
 {
     "lite_gate_check": {
-        "default_unique_smoothed_frames": 3,
-        "steps": {
-            "FIND_WALL": {
-                "enabled": true,
-                "unique_smoothed_frames": 3
-            },
-            "EXIT_WALL": {
-                "enabled": true,
-                "unique_smoothed_frames": 3
-            },
-            "FIND_BRICK": {
-                "enabled": true,
-                "unique_smoothed_frames": 3
-            },
-            "ALIGN_BRICK": {
-                "enabled": true,
-                "unique_smoothed_frames": 3
-            },
-            "SEAT_BRICK": {
-                "enabled": true,
-                "unique_smoothed_frames": 3
-            },
-            "ELEVATE_BRICK": {
-                "enabled": true,
-                "unique_smoothed_frames": 3
-            },
-            "FIND_WALL2": {
-                "enabled": true,
-                "unique_smoothed_frames": 3
-            },
-            "POSITION_BRICK": {
-                "enabled": true,
-                "unique_smoothed_frames": 3
-            }
-        }
+        "default_unique_smoothed_frames": 3
     },
     "steps": {
         "FIND_WALL": {
@@ -42,10 +8,7 @@
                 "visible": {
                     "min": true
                 }
-            },
-            "success_metrics": [
-                "visible"
-            ]
+            }
         },
         "EXIT_WALL": {
             "success_gates": {
@@ -61,6 +24,74 @@
                 }
             }
         },
+        "APPROACH_VECTOR_BRICK_SUPPLY": {
+            "controller": "align",
+            "lock_start_gates": true,
+            "start_gates": {
+                "visible": {
+                    "min": true
+                }
+            },
+            "success_gates": {
+                "visible": {
+                    "min": true
+                },
+                "angle_abs": {
+                    "target": 6.61,
+                    "tol": 11.59
+                }
+            }
+        },
+        "FIND_TOPMOST_BRICK": {
+            "controller": "align",
+            "start_gates": {
+                "visible": {
+                    "min": true
+                }
+            },
+            "lock_start_gates": true,
+            "success_gates": {
+                "visible": {
+                    "min": true
+                },
+                "brick_above": {
+                    "target": false,
+                    "tol": 0.0
+                },
+                "brick_below": {
+                    "target": true,
+                    "tol": 0.0
+                }
+            }
+        },
+        "BRICK_LOCK": {
+            "controller": "align",
+            "lock_start_gates": true,
+            "start_gates": {
+                "visible": {
+                    "min": true
+                },
+                "brick_above": {
+                    "min": true
+                },
+                "brick_below": {
+                    "max": false
+                }
+            },
+            "success_gates": {
+                "visible": {
+                    "min": true
+                },
+                "brick_above": {
+                    "target": false,
+                    "tol": 0.0
+                },
+                "brick_below": {
+                    "target": true,
+                    "tol": 0.0
+                }
+            }
+        },
         "ALIGN_BRICK": {
             "start_gates": {
                 "visible": {
@@ -72,36 +103,38 @@
                     "min": true
                 },
                 "xAxis_offset_abs": {
-                    "target": -4.39,
+                    "target": -4.05,
                     "tol": 1.4
                 },
+                "yAxis_offset_abs": {
+                    "target": 3.39,
+                    "tol": 1.5
+                },
                 "dist": {
-                    "target": 97.0,
+                    "target": 89.94,
                     "tol": 1.5
                 }
             }
         },
         "SEAT_BRICK": {
-            "success_metrics": [
-                "visible",
-                "dist"
-            ],
             "nominalDemosOnly": true
         },
-        "ELEVATE_BRICK": {
-            "success_metrics": [
-                "visible"
-            ]
-        },
+        "ELEVATE_BRICK": {},
         "FIND_WALL2": {
             "success_gates": {
                 "visible": {
                     "min": true
                 }
-            },
-            "success_metrics": [
-                "visible"
-            ]
+            }
+        },
+        "APPROACH_VECTOR_WALL": {
+            "controller": "align",
+            "lock_start_gates": true,
+            "start_gates": {
+                "visible": {
+                    "min": true
+                }
+            }
         },
         "POSITION_BRICK": {
             "max_speed_score": 10,
@@ -121,6 +154,10 @@
                 "dist": {
                     "target": 48.55,
                     "tol": 1.5
+                },
+                "brick_above": {
+                    "target": false,
+                    "tol": 0.0
                 }
             }
         },

@@ -262,19 +262,19 @@
     "1": 0.065
   },
   "speed_score_seconds_turn_meta": {
-    "mini_x_axis_last_run_epoch_s": 1771881478.145,
-    "mini_x_axis_last_run_iso_utc": "2026-02-23T21:17:58Z",
+    "mini_x_axis_last_run_epoch_s": 1771957115.643,
+    "mini_x_axis_last_run_iso_utc": "2026-02-24T18:18:35Z",
     "mini_x_axis_last_run_step": "ALIGN_BRICK",
     "mini_x_axis_last_run_ok": true,
     "mini_x_axis_last_run_confident": false,
-    "mini_x_axis_last_run_seconds": 7.44,
+    "mini_x_axis_last_run_seconds": 50.24,
     "mini_x_axis_min_interval_hours": 12.0,
     "mini_x_axis_tiny_profile_pct": 0.01,
-    "mini_x_axis_tiny_profile_last_updated_epoch_s": 1771881476.042,
-    "mini_x_axis_tiny_profile_last_updated_iso_utc": "2026-02-23T21:17:56Z",
+    "mini_x_axis_tiny_profile_last_updated_epoch_s": 1771957079.504,
+    "mini_x_axis_tiny_profile_last_updated_iso_utc": "2026-02-24T18:17:59Z",
     "mini_x_axis_tiny_profile_notches": {
-      "l": -7,
-      "r": -9
+      "l": -9,
+      "r": -4
     }
   },
   "hotkey_motion_discovery_meta": {
@@ -292,16 +292,16 @@
   "turn_intensity_posts_turn_left": {
     "0.01": {
       "score": 1,
-      "duration_scale": 0.3,
-      "notch": -7,
+      "duration_scale": 0.1,
+      "notch": -9,
       "source": "mini_x_axis_discovery"
     }
   },
   "turn_intensity_posts_turn_right": {
     "0.01": {
       "score": 1,
-      "duration_scale": 0.1,
-      "notch": -9,
+      "duration_scale": 0.6,
+      "notch": -4,
       "source": "mini_x_axis_discovery"
     }
   }

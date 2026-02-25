@@ -130,6 +130,8 @@ CTRL_HELP_LINE = (
     "Lift: O/K 1%, U 50%, P/L 100%. F action, ':' command, m auto, y edit hotkey vars, 1 trash log, Q quit"
 )
 ANSI_ORANGE_BRIGHT = "\033[38;5;208m"
+ANSI_GREEN_BRIGHT = "\033[92m"
+ANSI_RED_BRIGHT = "\033[91m"
 ANSI_RESET = "\033[0m"
 
 MM_METRICS = {
@@ -285,6 +287,15 @@ STEP_CODES = {str(idx + 1): obj for idx, obj in enumerate(DEMO_STEPS)}
 STEP_NAMES = {obj.value.lower(): obj for obj in DEMO_STEPS}
 STEP_NAMES["wall"] = StepState.FIND_WALL
 STEP_NAMES["find"] = StepState.FIND_BRICK
+STEP_NAMES["supply"] = StepState.FIND_BRICK
+STEP_NAMES["find_supply"] = StepState.FIND_BRICK
+STEP_NAMES["avs"] = StepState.APPROACH_VECTOR_BRICK_SUPPLY
+STEP_NAMES["approach_supply"] = StepState.APPROACH_VECTOR_BRICK_SUPPLY
+STEP_NAMES["approach_vector_brick_supply"] = StepState.APPROACH_VECTOR_BRICK_SUPPLY
+STEP_NAMES["top"] = StepState.FIND_TOPMOST_BRICK
+STEP_NAMES["topmost"] = StepState.FIND_TOPMOST_BRICK
+STEP_NAMES["lock"] = StepState.BRICK_LOCK
+STEP_NAMES["brick_lock"] = StepState.BRICK_LOCK
 STEP_NAMES["align"] = StepState.ALIGN_BRICK
 STEP_NAMES["seat"] = StepState.SEAT_BRICK
 STEP_NAMES["scoop"] = StepState.SEAT_BRICK
@@ -292,6 +303,9 @@ STEP_NAMES["elevate"] = StepState.ELEVATE_BRICK
 STEP_NAMES["lift"] = StepState.ELEVATE_BRICK
 STEP_NAMES["carry"] = StepState.FIND_WALL2
 STEP_NAMES["wall2"] = StepState.FIND_WALL2
+STEP_NAMES["avw"] = StepState.APPROACH_VECTOR_WALL
+STEP_NAMES["approach_wall"] = StepState.APPROACH_VECTOR_WALL
+STEP_NAMES["approach_vector_wall"] = StepState.APPROACH_VECTOR_WALL
 STEP_NAMES["position"] = StepState.POSITION_BRICK
 
 ATTEMPT_CODES = {
@@ -330,6 +344,173 @@ def step_label(obj_enum):
 
 def log_line(message):
     print(str(message).strip(), flush=True)
+
+
+def _fmt_bool_text(value):
+    if value is True:
+        return "True"
+    if value is False:
+        return "False"
+    return "?"
+
+
+def _colorize_match_text(text, matched):
+    if matched is True:
+        return f"{ANSI_GREEN_BRIGHT}{text}{ANSI_RESET}"
+    if matched is False:
+        return f"{ANSI_RED_BRIGHT}{text}{ANSI_RESET}"
+    return str(text)
+
+
+def _brick_start_gate_metric_value(world, metric):
+    brick = (getattr(world, "brick", None) or {}) if world is not None else {}
+    if metric == "visible":
+        return bool(brick.get("visible"))
+    if metric in ("brick_above", "brickAbove"):
+        if "brickAbove" in brick:
+            val = brick.get("brickAbove")
+            return None if val is None else bool(val)
+        val = brick.get("brick_above")
+        return None if val is None else bool(val)
+    if metric in ("brick_below", "brickBelow"):
+        if "brickBelow" in brick:
+            val = brick.get("brickBelow")
+            return None if val is None else bool(val)
+        val = brick.get("brick_below")
+        return None if val is None else bool(val)
+    if metric == "angle_abs":
+        val = brick.get("angle")
+        if val is None:
+            return None
+        try:
+            return abs(float(val))
+        except (TypeError, ValueError):
+            return None
+    if metric in ("xAxis_offset_abs", "xAxis_offset"):
+        val = brick.get("x_axis", brick.get("offset_x"))
+        if val is None:
+            return None
+        try:
+            valf = float(val)
+        except (TypeError, ValueError):
+            return None
+        return abs(valf) if metric.endswith("_abs") else valf
+    if metric in ("yAxis_offset_abs", "yAxis_offset"):
+        val = brick.get("y_axis", brick.get("offset_y"))
+        if val is None:
+            return None
+        try:
+            valf = float(val)
+        except (TypeError, ValueError):
+            return None
+        return abs(valf) if metric.endswith("_abs") else valf
+    if metric in ("dist", "distance"):
+        val = brick.get("dist")
+        if val is None:
+            return None
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _format_start_gate_requirement(stats):
+    if not isinstance(stats, dict):
+        return "?"
+    target = stats.get("target")
+    tol = stats.get("tol")
+    if target is not None and tol is not None:
+        if isinstance(target, bool):
+            return _fmt_bool_text(bool(target))
+        try:
+            return f"{float(target):+.1f}+/-{abs(float(tol)):.1f}"
+        except (TypeError, ValueError):
+            return str(target)
+    min_val = stats.get("min")
+    max_val = stats.get("max")
+    if isinstance(min_val, bool):
+        return _fmt_bool_text(bool(min_val))
+    if isinstance(max_val, bool):
+        return _fmt_bool_text(bool(max_val))
+    if min_val is not None and max_val is not None:
+        try:
+            return f"[{float(min_val):.1f},{float(max_val):.1f}]"
+        except (TypeError, ValueError):
+            return f"[{min_val},{max_val}]"
+    if min_val is not None:
+        try:
+            return f">={float(min_val):.1f}"
+        except (TypeError, ValueError):
+            return f">={min_val}"
+    if max_val is not None:
+        try:
+            return f"<={float(max_val):.1f}"
+        except (TypeError, ValueError):
+            return f"<={max_val}"
+    return "?"
+
+
+def _start_gate_metric_match(value, stats):
+    if value is None or not isinstance(stats, dict):
+        return None
+    min_val = stats.get("min")
+    max_val = stats.get("max")
+    target = stats.get("target")
+    tol = stats.get("tol")
+    if isinstance(value, bool):
+        if isinstance(min_val, bool):
+            return bool(value) == bool(min_val)
+        if isinstance(max_val, bool):
+            return bool(value) == bool(max_val)
+        if isinstance(target, bool):
+            return bool(value) == bool(target)
+        return None
+    try:
+        val = float(value)
+    except (TypeError, ValueError):
+        return None
+    if target is not None and tol is not None:
+        try:
+            return abs(val - float(target)) <= abs(float(tol))
+        except (TypeError, ValueError):
+            return None
+    try:
+        if min_val is not None and val < float(min_val):
+            return False
+        if max_val is not None and val > float(max_val):
+            return False
+    except (TypeError, ValueError):
+        return None
+    return True
+
+
+def _format_start_gate_current(metric, value):
+    if value is None:
+        return "?"
+    if isinstance(value, bool):
+        return _fmt_bool_text(bool(value))
+    try:
+        return f"{float(value):+.1f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _format_brick_start_gate_details(world, start_gates):
+    if not isinstance(start_gates, dict) or not start_gates:
+        return None
+    parts = []
+    for metric, stats in start_gates.items():
+        value = _brick_start_gate_metric_value(world, metric)
+        # Only format metrics that read from brick state here.
+        if value is None and metric not in ("visible", "brick_above", "brickAbove", "brick_below", "brickBelow"):
+            continue
+        req_txt = _format_start_gate_requirement(stats)
+        cur_txt_plain = _format_start_gate_current(metric, value)
+        matched = _start_gate_metric_match(value, stats)
+        cur_txt = _colorize_match_text(cur_txt_plain, matched)
+        parts.append(f"{metric}={req_txt} ({cur_txt})")
+    return ", ".join(parts) if parts else None
 
 
 def log_align_curve_lookup_table():
@@ -986,14 +1167,60 @@ def step_code_for_obj(obj_enum):
     return normalize_step_label(getattr(obj_enum, "value", obj_enum))
 
 
+def _split_footer_sentences(line, prefix):
+    text = str(line or "").strip()
+    if not text:
+        return []
+    if prefix and text.startswith(prefix):
+        text = text[len(prefix):].strip()
+    parts = []
+    for part in text.split(". "):
+        part = part.strip()
+        if not part:
+            continue
+        if not part.endswith("."):
+            part += "."
+        parts.append(part)
+    return parts
+
+
+def _footer_section_html(title, lines):
+    rows = []
+    for line in lines:
+        line_text = str(line or "").strip()
+        if not line_text:
+            continue
+        rows.append(f"<div class='footer-line'>{line_text}</div>")
+    if not rows:
+        return ""
+    return (
+        "<div class='footer-section'>"
+        f"<div class='footer-title'>{title}</div>"
+        + "".join(rows)
+        + "</div>"
+    )
+
+
 def stream_footer_html():
-    lines = []
+    sections = []
     keys_line = format_hotkey_speeds()
     if keys_line:
-        lines.append(keys_line)
-    lines.append(format_step_codes_line())
-    lines.append(CTRL_HELP_LINE)
-    return "<br>".join(lines)
+        sections.append(
+            _footer_section_html(
+                "Hotkey Speeds",
+                _split_footer_sentences(keys_line, "[KEYS]"),
+            )
+        )
+    sections.append(
+        _footer_section_html(
+            "Step Codes",
+            [f"{idx + 1}={obj.value.lower()}" for idx, obj in enumerate(DEMO_STEPS)],
+        )
+    )
+    sections = [section for section in sections if section]
+    if not sections:
+        return ""
+    return "<div class='footer-sections'>" + "".join(sections) + "</div>"
 
 
 def _open_stream_in_chrome(url):
@@ -1099,7 +1326,8 @@ def run_auto_step(app_state, obj_enum):
     app_state.world.rules = process_rules
 
     app_state.world.step_state = obj_enum
-    _begin_auto_demo_logging(app_state, obj_enum)
+    auto_demo_logging_started = False
+    app_state.auto_demo_logging_active = False
 
     cfg = process_rules.get(step_key, {}) if process_rules else {}
     nominal_only = bool(cfg.get("nominalDemosOnly"))
@@ -1112,26 +1340,6 @@ def run_auto_step(app_state, obj_enum):
     events = segment.get("events") or []
     actions = nominal_actions_from_events(events)
     steps = merge_motion_steps(build_motion_sequence(events))
-    if actions:
-        log_line(f"[AUTO] {step_key} demo acts:")
-        for idx, action in enumerate(actions, start=1):
-            cmd = (action.get("cmd") or "-").upper()
-            score = action.get("speed_score")
-            duration_s = float(action.get("duration_s") or 0.0)
-            score_text = f"score={int(score)}" if score is not None else "score=?"
-            log_line(f"[AUTO]   {idx}. {cmd} {score_text} dur={duration_s:.2f}s")
-    else:
-        log_line(f"[AUTO] {step_key} demo acts: none")
-    if steps:
-        log_line(f"[AUTO] {step_key} parsed steps:")
-        for idx, step in enumerate(steps, start=1):
-            cmd = (step.cmd or "-").upper() if hasattr(step, "cmd") else "-"
-            score = getattr(step, "speed_score", None)
-            duration_s = float(getattr(step, "duration_s", 0.0) or 0.0)
-            score_text = f"score={int(score)}" if score is not None else "score=?"
-            log_line(f"[AUTO]   {idx}. {cmd} {score_text} dur={duration_s:.2f}s")
-    else:
-        log_line(f"[AUTO] {step_key} parsed steps: none")
 
     try:
         import telemetry_wall as telemetry_wall_module
@@ -1140,12 +1348,24 @@ def run_auto_step(app_state, obj_enum):
 
     start_desc, success_desc = format_gate_lines(cfg)
     skip_start_gates = not step_requires_start_gates(step_key, process_rules)
-    if skip_start_gates:
-        status_msg = f"[AUTO] {step_key} start gates: SKIPPED (find/exit step)"
-        if start_desc and start_desc != "none":
-            status_msg += f" (cfg ignored: {start_desc})"
-        log_line(status_msg)
-    else:
+
+    def _gate_ok(check):
+        return bool(getattr(check, "ok", False))
+
+    def _gate_reasons(check):
+        raw = getattr(check, "reasons", None)
+        if not raw:
+            return []
+        if isinstance(raw, list):
+            return [str(r) for r in raw if r]
+        return [str(raw)]
+
+    def _auto_start_gate_status_message():
+        if skip_start_gates:
+            status_msg_local = f"[AUTO] {step_key} start gates: SKIPPED (find/exit step)"
+            if start_desc and start_desc != "none":
+                status_msg_local += f" (cfg ignored: {start_desc})"
+            return True, status_msg_local
         try:
             brick_check = telemetry_brick.evaluate_start_gates(
                 app_state.world,
@@ -1173,35 +1393,30 @@ def run_auto_step(app_state, obj_enum):
         except Exception:
             robot_check = None
 
-        def _gate_ok(check):
-            return bool(getattr(check, "ok", False))
-
-        def _gate_reasons(check):
-            raw = getattr(check, "reasons", None)
-            if not raw:
-                return []
-            if isinstance(raw, list):
-                return [str(r) for r in raw if r]
-            return [str(raw)]
-
         start_ok = _gate_ok(brick_check) and _gate_ok(wall_check) and _gate_ok(robot_check)
         reason_parts = []
+        brick_start_gates = (cfg.get("start_gates") if isinstance(cfg, dict) else None) or {}
         for label, check in (("brick", brick_check), ("wall", wall_check), ("robot", robot_check)):
             if check is None or _gate_ok(check):
                 continue
+            if label == "brick":
+                brick_detail = _format_brick_start_gate_details(app_state.world, brick_start_gates)
+                if brick_detail:
+                    reason_parts.append(f"{label}: {brick_detail}")
+                    continue
             reasons = _gate_reasons(check)
-            if reasons:
-                reason_parts.append(f"{label}: {', '.join(reasons)}")
-            else:
-                reason_parts.append(f"{label}: blocked")
+            reason_parts.append(f"{label}: {', '.join(reasons)}" if reasons else f"{label}: blocked")
 
         status = "OK" if start_ok else "BLOCKED"
-        status_msg = f"[AUTO] {step_key} start gates: {status}"
+        status_msg_local = f"[AUTO] {step_key} start gates: {status}"
         if reason_parts:
-            status_msg += " — " + "; ".join(reason_parts)
-        if start_desc and start_desc != "none":
-            status_msg += f" (cfg: {start_desc})"
-        log_line(status_msg)
+            status_msg_local += " — " + "; ".join(reason_parts)
+        elif start_desc and start_desc != "none":
+            status_msg_local += f" (cfg: {start_desc})"
+        return start_ok, status_msg_local
+
+    _pre_start_ok, _pre_start_status_msg = _auto_start_gate_status_message()
+    log_line(_pre_start_status_msg)
 
     quiet_align = False
     log_line(f"[AUTO] {step_key} demo={seg_type} success gates: {success_desc}")
@@ -1214,6 +1429,7 @@ def run_auto_step(app_state, obj_enum):
     prior_suppress_skip_start_log = bool(getattr(app_state.world, "_suppress_start_gate_skip_log", False))
     app_state.world._suppress_start_gate_skip_log = True
     try:
+        # Auto execution should not generate new demo recordings; demos are authored manually.
         ok, reason = replay_segment(
             segment,
             step_key,
@@ -1227,7 +1443,8 @@ def run_auto_step(app_state, obj_enum):
         )
     finally:
         app_state.world._suppress_start_gate_skip_log = prior_suppress_skip_start_log
-        _end_auto_demo_logging(app_state, obj_enum)
+        if auto_demo_logging_started:
+            _end_auto_demo_logging(app_state, obj_enum)
     if ok:
         reason_text = reason.replace("_", " ") if isinstance(reason, str) else "success criteria met"
         log_line(f"[AUTO] {step_key} complete — {reason_text}.")
@@ -1256,6 +1473,10 @@ def run_auto_step(app_state, obj_enum):
         log_line(f"  {acts_unknown} unclear acts")
     else:
         log_line(f"[AUTO] {step_key} failed ({reason}).")
+        if str(reason or "").strip().lower() == "start gates not met":
+            _start_ok_now, _start_status_msg_now = _auto_start_gate_status_message()
+            if not _start_ok_now:
+                log_line(_start_status_msg_now)
     return ok
 
 

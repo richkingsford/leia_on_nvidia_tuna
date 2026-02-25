@@ -48,6 +48,15 @@ ALIGN_BRICK_X_AXIS_CURVE_MAX_ERR_MM = 22.0
 ALIGN_BRICK_X_AXIS_CURVE_BINS_MM = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 22.0)
 ALIGN_BRICK_X_AXIS_ONESHOT_MIN_SCORE = 1
 ALIGN_BRICK_X_AXIS_ONESHOT_MAX_SCORE = 25
+ALIGN_BRICK_Y_AXIS_ERROR_SCORE_BANDS = (
+    (3.0, 1),       # within 3mm -> stay near 1% lift for fine vertical centering
+    (5.0, 2),
+    (8.0, 3),
+    (12.0, 4),
+    (18.0, 5),
+    (26.0, 7),
+    (1000.0, 9),    # fallback for large y gaps; keep lift conservative vs x-turns
+)
 TURN_CURVE_X_ERR_MM_POINTS = (0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 22.0, 30.0, 40.0)
 ALIGN_STEPS_SHARED_TURN_SCORE_BANDS = (
     (2.0, int(SPEED_SCORE_MIN)),
@@ -214,6 +223,33 @@ def align_brick_x_axis_decision_line() -> str:
         f"min_score={int(ALIGN_BRICK_X_AXIS_ONESHOT_MIN_SCORE)}, "
         f"max_score={int(ALIGN_BRICK_X_AXIS_ONESHOT_MAX_SCORE)}"
     )
+
+
+def align_brick_y_axis_one_shot_score(y_err_mm: float) -> int:
+    """
+    Compute ALIGN_BRICK lift score from y-axis error magnitude.
+
+    Uses conservative bands because vertical lift corrections can lose marker
+    visibility more easily than turn corrections. The first band intentionally
+    stays at 1% for |y_err| < 3mm.
+    """
+    try:
+        gap_mm = abs(float(y_err_mm))
+    except (TypeError, ValueError):
+        gap_mm = 0.0
+
+    for upper_bound, score in ALIGN_BRICK_Y_AXIS_ERROR_SCORE_BANDS:
+        try:
+            if float(gap_mm) < float(upper_bound):
+                return int(
+                    max(
+                        int(SPEED_SCORE_MIN),
+                        min(int(round(float(score))), int(SPEED_SCORE_MAX)),
+                    )
+                )
+        except (TypeError, ValueError):
+            continue
+    return int(SPEED_SCORE_MIN)
 
 
 def align_turn_speed_score_for_step(step, x_err_mm: float, *, dist_gate_error_mm=None) -> int:
@@ -1024,7 +1060,7 @@ def select_align_brick_next_act(
         candidates["y_axis"] = {
             "cmd": "d" if float(y_err_mm) > 0.0 else "u",
             "correction_type": "y_axis",
-            "score": int(align_brick_x_axis_one_shot_score(float(y_err_mm))),
+            "score": int(align_brick_y_axis_one_shot_score(float(y_err_mm))),
             "score_float": None,
             "reason": "y_axis_alignment",
             "worst_metric": "yAxis_offset_abs",

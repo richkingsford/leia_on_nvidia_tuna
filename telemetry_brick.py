@@ -35,10 +35,14 @@ METRICS_BY_STEP = {
     "FIND_WALL": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "EXIT_WALL": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "FIND_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
-    "ALIGN_BRICK": ("xAxis_offset_abs", "yAxis_offset_abs", "dist", "brick_above", "visible"),
+    "APPROACH_VECTOR_BRICK_SUPPLY": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
+    "FIND_TOPMOST_BRICK": ("yAxis_offset_abs", "dist", "brick_above", "brick_below", "visible"),
+    "BRICK_LOCK": ("brick_above", "brick_below", "visible"),
+    "ALIGN_BRICK": ("xAxis_offset_abs", "yAxis_offset_abs", "dist", "visible"),
     "SEAT_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "ELEVATE_BRICK": ("visible",),
     "FIND_WALL2": ("visible",),
+    "APPROACH_VECTOR_WALL": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "POSITION_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "brick_above", "visible"),
 }
 
@@ -446,29 +450,8 @@ def _stack_top_candidate_log_line(status):
 
 
 def _maybe_log_stack_gatecheck(world, visible):
-    if world is None:
-        return
-    if not bool(getattr(world, "_stack_gatecheck_log_enabled", False)):
-        return
-    status = getattr(world, "_stack_visibility_gate", None)
-    if not isinstance(status, dict):
-        return
-    above = status.get("above") if isinstance(status.get("above"), dict) else {}
-    below = status.get("below") if isinstance(status.get("below"), dict) else {}
-    raw_candidate = bool(
-        bool(status.get("visible", False))
-        and above.get("raw") is False
-        and below.get("raw") is True
-    )
-    # Only emit stack gatecheck logs once the raw top-brick candidate pattern is present.
-    if not raw_candidate:
-        world._stack_gatecheck_log_sig = None
-        return
-    sig = _stack_gate_log_signature(status)
-    if sig == getattr(world, "_stack_gatecheck_log_sig", None):
-        return
-    world._stack_gatecheck_log_sig = sig
-    print(_stack_top_candidate_log_line(status))
+    # Stack gatecheck logging disabled; rely on step-level success/achieved logs instead.
+    return
 
 
 def _effective_visible(world, visible, grace_s=VISIBILITY_LOST_GRACE_S):
