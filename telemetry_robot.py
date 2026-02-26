@@ -37,6 +37,10 @@ SPEED_SCORE_DEFAULT = 50
 SPEED_SCORE_MAX = 100
 SPEED_SCORE_LEVELS = tuple(range(SPEED_SCORE_MIN, SPEED_SCORE_MAX + 1))
 DEFAULT_ACT_DURATION_MS = 300
+DRIVE_ANTI_ALIAS_ENABLED = True
+DRIVE_ANTI_ALIAS_MIN_SCORE = 10
+DRIVE_ANTI_ALIAS_RAMP_MS = 300
+DRIVE_ANTI_ALIAS_RAMP_STEPS = 3
 SPEED_MAP_KEY_DRIVE = "score_power_pwm_drive"
 SPEED_MAP_KEY_TURN = "score_power_pwm_turn"
 SPEED_MAP_KEY_TURN_LEFT = "score_power_pwm_turn_left"
@@ -1009,12 +1013,21 @@ def _duration_ms_for_score(cmd, score):
 
 def speed_power_pwm_for_cmd(cmd, score):
     score = normalize_speed_score(score)
-    low_pwm, high_pwm = _speed_pwm_endpoints(cmd)
-    if low_pwm is None or high_pwm is None:
-        return 0.0, 0, score, int(ACT_DURATION_MS)
-    pwm = interp_pwm_for_score(score, low_pwm, high_pwm)
+    score_map = score_power_pwm_for_cmd(cmd)
+    exact_entry = score_map.get(score) if isinstance(score_map, dict) else None
+    pwm = None
+    if isinstance(exact_entry, dict):
+        try:
+            pwm = int(round(float(exact_entry.get("pwm"))))
+        except (TypeError, ValueError):
+            pwm = None
     if pwm is None:
-        return 0.0, 0, score, int(ACT_DURATION_MS)
+        low_pwm, high_pwm = _speed_pwm_endpoints(cmd)
+        if low_pwm is None or high_pwm is None:
+            return 0.0, 0, score, int(ACT_DURATION_MS)
+        pwm = interp_pwm_for_score(score, low_pwm, high_pwm)
+        if pwm is None:
+            return 0.0, 0, score, int(ACT_DURATION_MS)
     if cmd in ("l", "r") and pwm > 0:
         pwm = max(turn_pwm_floor(), pwm)
     if cmd in ("f", "b", "l", "r") and pwm > 0:
@@ -1047,6 +1060,151 @@ def quantize_speed(cmd, speed=None, score=None):
 def manual_speed_for_cmd(cmd, score):
     power, _, _, _ = speed_power_pwm_for_cmd(cmd, score)
     return power
+
+
+def drive_anti_alias_segments(cmd, *, speed_score=None, power=None, pwm=None, duration_ms=None):
+    """
+    Build a score-ramped PWM envelope for drive commands (`f`/`b`).
+
+    The envelope ramps up at the start and ramps down at the end while preserving
+    total command duration. If the pulse is shorter than 2*ramp, ramps are
+    shortened symmetrically (triangle profile).
+
+    Returns None when anti-aliasing should not apply, otherwise a dict with a
+    `segments` list suitable for sequential sending.
+    """
+    if not bool(DRIVE_ANTI_ALIAS_ENABLED):
+        return None
+    cmd_key = str(cmd or "").strip().lower()
+    if cmd_key not in ("f", "b"):
+        return None
+    try:
+        total_ms = max(1, int(round(float(duration_ms or 0))))
+    except (TypeError, ValueError):
+        return None
+    if total_ms <= 0:
+        return None
+
+    target_score = None
+    try:
+        if speed_score is not None:
+            target_score = int(normalize_speed_score(speed_score))
+    except (TypeError, ValueError):
+        target_score = None
+    if target_score is None:
+        speed_guess = None
+        if power is not None:
+            try:
+                speed_guess = float(power)
+            except (TypeError, ValueError):
+                speed_guess = None
+        if speed_guess is None and pwm is not None:
+            try:
+                speed_guess = float(pwm_to_power(pwm) or 0.0)
+            except (TypeError, ValueError):
+                speed_guess = None
+        if speed_guess is not None and speed_guess > 0.0:
+            try:
+                _, q_score = quantize_speed(cmd_key, speed=speed_guess)
+                if q_score is not None:
+                    target_score = int(normalize_speed_score(q_score))
+            except Exception:
+                target_score = None
+    if target_score is None:
+        return None
+    if int(target_score) <= int(DRIVE_ANTI_ALIAS_MIN_SCORE):
+        return None
+
+    try:
+        ramp_ms_cfg = max(1, int(round(float(DRIVE_ANTI_ALIAS_RAMP_MS))))
+    except (TypeError, ValueError):
+        ramp_ms_cfg = 300
+    ramp_ms_eff = min(int(ramp_ms_cfg), max(1, int(total_ms // 2)))
+    if ramp_ms_eff <= 0:
+        return None
+
+    try:
+        ramp_steps = max(1, int(round(float(DRIVE_ANTI_ALIAS_RAMP_STEPS))))
+    except (TypeError, ValueError):
+        ramp_steps = 3
+
+    def _split_even(total_local_ms, parts):
+        parts = max(1, int(parts))
+        total_local_ms = max(0, int(total_local_ms))
+        base = total_local_ms // parts
+        rem = total_local_ms % parts
+        out = []
+        for idx in range(parts):
+            out.append(int(base + (1 if idx < rem else 0)))
+        return out
+
+    up_durations = _split_even(int(ramp_ms_eff), int(ramp_steps))
+    down_durations = _split_even(int(ramp_ms_eff), int(ramp_steps))
+    plateau_ms = max(0, int(total_ms) - int(sum(up_durations)) - int(sum(down_durations)))
+
+    chunks = []
+    for idx, chunk_ms in enumerate(up_durations, start=1):
+        if chunk_ms <= 0:
+            continue
+        factor = float(idx) / float(max(1, int(ramp_steps)))
+        chunks.append((int(chunk_ms), float(factor)))
+    if plateau_ms > 0:
+        chunks.append((int(plateau_ms), 1.0))
+    for idx, chunk_ms in enumerate(down_durations, start=0):
+        if chunk_ms <= 0:
+            continue
+        factor = float(max(1, int(ramp_steps) - idx)) / float(max(1, int(ramp_steps)))
+        chunks.append((int(chunk_ms), float(factor)))
+    if len(chunks) <= 1:
+        return None
+
+    segments = []
+    for chunk_ms, factor in chunks:
+        seg_score = int(round(float(target_score) * float(factor)))
+        if seg_score <= 0:
+            seg_score = int(SPEED_SCORE_MIN)
+        seg_score = int(normalize_speed_score(seg_score))
+        seg_power, seg_pwm, _, _ = speed_power_pwm_for_cmd(cmd_key, seg_score)
+        segments.append(
+            {
+                "cmd": str(cmd_key),
+                "score_model": int(seg_score),
+                "power": float(seg_power or 0.0),
+                "pwm": int(seg_pwm or 0),
+                "duration_ms": int(chunk_ms),
+            }
+        )
+
+    if not segments:
+        return None
+
+    # Merge adjacent chunks that quantize to the same PWM/score to reduce serial chatter.
+    merged = []
+    for seg in segments:
+        if not merged:
+            merged.append(dict(seg))
+            continue
+        prev = merged[-1]
+        same_profile = (
+            str(prev.get("cmd")) == str(seg.get("cmd"))
+            and int(prev.get("pwm") or 0) == int(seg.get("pwm") or 0)
+            and int(prev.get("score_model") or 0) == int(seg.get("score_model") or 0)
+        )
+        if same_profile:
+            prev["duration_ms"] = int(prev.get("duration_ms") or 0) + int(seg.get("duration_ms") or 0)
+        else:
+            merged.append(dict(seg))
+
+    return {
+        "cmd": str(cmd_key),
+        "target_score": int(target_score),
+        "threshold_score": int(DRIVE_ANTI_ALIAS_MIN_SCORE),
+        "ramp_ms": int(ramp_ms_cfg),
+        "ramp_ms_effective": int(ramp_ms_eff),
+        "slice_ms": (int(round(float(ramp_ms_eff) / float(ramp_steps))) if ramp_steps > 0 else None),
+        "ramp_steps": int(ramp_steps),
+        "segments": merged,
+    }
 
 
 def _turn_intensity_posts_for_cmd(cmd):
@@ -1199,6 +1357,7 @@ def _build_envelope(process_rules, learned_rules, step):
 METRICS_BY_STEP = {
     "ELEVATE_BRICK": ("lift_height",),
     "LIFT": ("lift_height",),
+    "RETREAT": ("lift_height",),
     "PLACE": ("lift_height",),
 }
 
@@ -1378,8 +1537,11 @@ class StepState(Enum):
     LIFT = "ELEVATE_BRICK"
     FIND_WALL2 = "FIND_WALL2"
     APPROACH_VECTOR_WALL = "APPROACH_VECTOR_WALL"
+    FIND_TOPMOST_BRICK_WALL = "FIND_TOPMOST_BRICK_WALL"
+    BRICK_LOCK_WALL = "BRICK_LOCK_WALL"
     POSITION_BRICK = "POSITION_BRICK"
-    PLACE = "PLACE"
+    RETREAT = "RETREAT"
+    PLACE = "RETREAT"
 
 def _cmd_for_action_type(action_type):
     return {
@@ -2241,12 +2403,8 @@ def draw_telemetry_overlay(
             lines = [str(gate_checker_summary)]
         while len(lines) < 3:
             lines.append("-")
-        dupes = int(getattr(wm, "_camera_dupe_count", 0) or 0)
-        has_dupes = bool(getattr(wm, "_camera_dupe_ms", False))
-        lines.append(f"DUPES: {dupes}")
         for line in lines:
-            color = RED if (line.startswith("DUPES:") and has_dupes) else WHITE
-            put_line(line, color, 0.35, 1)
+            put_line(line, WHITE, 0.35, 1)
         put_line("", WHITE, 0.35, 1)
         y_cur += 5
 

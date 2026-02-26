@@ -3,6 +3,7 @@ import time
 import socket
 import logging
 import html
+import urllib.request
 from typing import Callable, Optional
 
 import cv2
@@ -92,6 +93,7 @@ class StreamServer:
         self._stop = threading.Event()
         self._thread = None
         self._startup_error = None
+        self._instance_id = f"{int(time.time() * 1000)}-{id(self):x}"
 
         self.app = Flask(__name__)
         logging.getLogger("werkzeug").setLevel(logging.ERROR)
@@ -118,7 +120,19 @@ class StreamServer:
                     payload = None
                 if isinstance(payload, list):
                     lines = payload
-            return jsonify({"lines": lines})
+            return jsonify({"lines": lines, "server_id": self._instance_id})
+
+        @self.app.route("/__shutdown_stream_server__", methods=["POST"])
+        def _shutdown_stream_server():
+            # Best-effort local shutdown for debugger restarts / clean script exits.
+            self._stop.set()
+            shutdown_fn = request.environ.get("werkzeug.server.shutdown")
+            if callable(shutdown_fn):
+                try:
+                    shutdown_fn()
+                except Exception:
+                    pass
+            return ("", 204)
 
         @self.app.route("/stream_prefs", methods=["GET", "POST"])
         def stream_prefs():
@@ -237,6 +251,19 @@ class StreamServer:
 
     def stop(self):
         self._stop.set()
+        # Best-effort shutdown of the local Flask dev server to release the port.
+        try:
+            shutdown_url = format_stream_url(self.host, self.port).rstrip("/") + "/__shutdown_stream_server__"
+            req = urllib.request.Request(shutdown_url, data=b"", method="POST")
+            with urllib.request.urlopen(req, timeout=0.4):
+                pass
+        except Exception:
+            pass
+        try:
+            if self._thread is not None and self._thread.is_alive():
+                self._thread.join(timeout=0.5)
+        except Exception:
+            pass
 
     def wait_until_ready(self, timeout_s=1.0):
         connect_url = format_stream_url(self.host, self.port)
@@ -523,11 +550,25 @@ class StreamServer:
             f"{controls_html}"
             "<div class='layout'>"
             "<div class='sidebar'><div id='telemetry' class='telemetry'></div></div>"
-            f"<div class='stream'><img src='/video_feed'{layout_img_width_attr or width_attr}></div>"
+            f"<div class='stream'><img id='videoFeed' src='/video_feed?sid={html.escape(self._instance_id, quote=True)}'{layout_img_width_attr or width_attr}></div>"
             f"{footer_sidebar_html}"
             "</div>"
             "<script>"
             "const telemetryEl = document.getElementById('telemetry');"
+            "const videoFeedEl = document.getElementById('videoFeed');"
+            f"const pageServerId = {self._js_string_literal(self._instance_id)};"
+            "let refreshFailures = 0;"
+            "let videoFeedErrored = false;"
+            "let reloadScheduled = false;"
+            "const scheduleReload = () => {"
+            "if (reloadScheduled) return;"
+            "reloadScheduled = true;"
+            "setTimeout(() => { try { window.location.reload(); } catch (e) {} }, 120);"
+            "};"
+            "if (videoFeedEl) {"
+            "videoFeedEl.addEventListener('error', () => { videoFeedErrored = true; });"
+            "videoFeedEl.addEventListener('load', () => { videoFeedErrored = false; });"
+            "}"
             "const esc = (s) => String(s)"
             ".replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')"
             ".replace(/\"/g,'&quot;').replace(/'/g,'&#39;');"
@@ -548,9 +589,20 @@ class StreamServer:
             "const res = await fetch('/text', {cache:'no-store'});"
             "if (!res.ok) return;"
             "const data = await res.json();"
+            "const serverId = (data && data.server_id) ? String(data.server_id) : '';"
+            "if (serverId && pageServerId && serverId !== pageServerId) {"
+            "scheduleReload();"
+            "return;"
+            "}"
+            "if (videoFeedErrored && refreshFailures > 0) {"
+            "scheduleReload();"
+            "return;"
+            "}"
             "const lines = Array.isArray(data.lines) ? data.lines : [];"
             "telemetryEl.innerHTML = lines.map(renderLine).join('');"
+            "refreshFailures = 0;"
             "} catch (e) { /* ignore */ }"
+            "refreshFailures += 1;"
             "};"
             "setInterval(refresh, 100);"
             "refresh();"
@@ -685,3 +737,13 @@ class StreamServer:
             normalized.append((value_norm, label_norm))
             seen.add(value_norm)
         return normalized
+
+    @staticmethod
+    def _js_string_literal(value):
+        s = "" if value is None else str(value)
+        return "'" + (
+            s.replace("\\", "\\\\")
+            .replace("'", "\\'")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+        ) + "'"

@@ -49,6 +49,7 @@ STEP_ALIASES = {
     "LIFT": "ELEVATE_BRICK",
     "SEAT": "SEAT_BRICK",
     "ELEVATE": "ELEVATE_BRICK",
+    "PLACE": "RETREAT",
 }
 
 METRICS_BY_STEP = {
@@ -57,13 +58,16 @@ METRICS_BY_STEP = {
     "FIND_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "APPROACH_VECTOR_BRICK_SUPPLY": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "FIND_TOPMOST_BRICK": ("yAxis_offset_abs", "dist", "brick_above", "brick_below", "visible"),
-    "BRICK_LOCK": ("brick_above", "brick_below", "visible"),
+    "FIND_TOPMOST_BRICK_WALL": ("yAxis_offset_abs", "dist", "brick_above", "brick_below", "visible"),
+    "BRICK_LOCK": ("xAxis_offset_abs", "dist", "brick_above", "brick_below", "visible"),
+    "BRICK_LOCK_WALL": ("xAxis_offset_abs", "dist", "brick_above", "brick_below", "visible"),
     "ALIGN_BRICK": ("xAxis_offset_abs", "yAxis_offset_abs", "dist", "visible"),
     "SEAT_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "ELEVATE_BRICK": ("visible",),
     "FIND_WALL2": ("visible",),
     "APPROACH_VECTOR_WALL": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
-    "POSITION_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "brick_above", "visible"),
+    "POSITION_BRICK": ("angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "brick_above", "visible"),
+    "RETREAT": ("visible",),
 }
 
 VISIBILITY_REQUIRED_METRICS = {"angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist"}
@@ -142,6 +146,48 @@ def smoothed_brick_snapshot(world):
         "brickAbove": (world.brick or {}).get("brickAbove"),
         "brickBelow": (world.brick or {}).get("brickBelow"),
     }
+
+
+def _recent_raw_visible(world, *, min_confidence=None, required_hits=1, max_samples=BRICK_SMOOTH_FRAMES):
+    """
+    Fallback visibility probe from the raw camera frame buffer.
+
+    Start gates like `visible=true` should not fail forever just because the smoothing
+    filter rejects pose values as inconsistent while the marker is plainly visible in
+    the live stream. This helper checks recent raw detector hits without trusting raw
+    pose metrics for numeric gates.
+    """
+    buffer = getattr(world, "_brick_frame_buffer", None)
+    if not buffer:
+        return False
+    try:
+        sample_limit = max(1, int(max_samples or 1))
+    except (TypeError, ValueError):
+        sample_limit = max(1, int(BRICK_SMOOTH_FRAMES))
+    try:
+        hits_needed = max(1, int(required_hits or 1))
+    except (TypeError, ValueError):
+        hits_needed = 1
+    seen = 0
+    hits = 0
+    for frame in reversed(list(buffer)):
+        if not isinstance(frame, dict):
+            continue
+        seen += 1
+        found = bool(frame.get("found"))
+        if found and min_confidence is not None:
+            try:
+                conf_val = float(frame.get("conf", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                conf_val = 0.0
+            found = conf_val >= float(min_confidence)
+        if found:
+            hits += 1
+            if hits >= hits_needed:
+                return True
+        if seen >= sample_limit:
+            break
+    return False
 
 
 @dataclass
@@ -857,6 +903,14 @@ def evaluate_start_gates(world, step, learned_rules, process_rules=None):
     reasons = []
     brick = smoothed_brick_snapshot(world)
     visible = bool(brick.get("visible"))
+    start_visible = bool(visible)
+    if not start_visible:
+        start_visible = _recent_raw_visible(
+            world,
+            min_confidence=START_GATE_MIN_CONFIDENCE,
+            required_hits=1,
+            max_samples=BRICK_SMOOTH_FRAMES,
+        )
     confidence = brick.get("confidence", 0.0) or 0.0
 
     if obj_name in ("ALIGN_BRICK", "SEAT_BRICK", "POSITION_BRICK"):
@@ -908,13 +962,13 @@ def evaluate_start_gates(world, step, learned_rules, process_rules=None):
             max_val = stats.get("max")
             if metric == "visible":
                 if isinstance(min_val, bool):
-                    if bool(visible) != min_val:
+                    if bool(start_visible) != min_val:
                         reasons.append("visible gate")
                 elif isinstance(max_val, bool):
-                    if bool(visible) != max_val:
+                    if bool(start_visible) != max_val:
                         reasons.append("visible gate")
                 else:
-                    if (1.0 if visible else 0.0) < (min_val or 0.0):
+                    if (1.0 if start_visible else 0.0) < (min_val or 0.0):
                         reasons.append("visible gate")
                 continue
             value = metric_value(brick, metric)

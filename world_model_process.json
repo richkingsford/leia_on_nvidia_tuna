@@ -65,25 +65,16 @@
             "start_gates": {
                 "visible": {
                     "min": true
-                },
-                "brick_above": {
-                    "max": false
-                },
-                "brick_below": {
-                    "min": true
                 }
             },
             "success_gates": {
-                "visible": {
-                    "min": true
+                "xAxis_offset_abs": {
+                    "target": -6.22,
+                    "tol": 1.4
                 },
-                "brick_above": {
-                    "target": true,
-                    "tol": 0.0
-                },
-                "brick_below": {
-                    "target": false,
-                    "tol": 0.0
+                "dist": {
+                    "target": 154.61,
+                    "tol": 1.5
                 }
             }
         },
@@ -102,7 +93,7 @@
                     "tol": 1.4
                 },
                 "yAxis_offset_abs": {
-                    "target": 3.39,
+                    "target": 2.0,
                     "tol": 1.5
                 },
                 "dist": {
@@ -112,10 +103,41 @@
             }
         },
         "SEAT_BRICK": {
-            "nominalDemosOnly": true
+            "start_gates": {
+                "visible": {
+                    "min": true
+                }
+            },
+            "success_gates": {
+                "visible": {
+                    "min": true
+                },
+                "dist": {
+                    "target": 41.26,
+                    "tol": 1.5
+                }
+            }
         },
-        "ELEVATE_BRICK": {},
+        "ELEVATE_BRICK": {
+            "start_gates": {
+                "visible": {
+                    "min": true
+                }
+            },
+            "success_gates": {
+                "visible": {
+                    "min": false
+                }
+            }
+        },
         "FIND_WALL2": {
+            "minActs": 5,
+            "demo_prefix_acts": 5,
+            "loop_demo_acts": false,
+            "prefer_demo_speed": false,
+            "keep_check_phase_with_demo_score": true,
+            "use_raw_steps": true,
+            "emit_auto_diag_each_act": true,
             "success_gates": {
                 "visible": {
                     "min": true
@@ -131,6 +153,42 @@
                 }
             }
         },
+        "FIND_TOPMOST_BRICK_WALL": {
+            "controller": "align",
+            "start_gates": {
+                "visible": {
+                    "min": true
+                }
+            },
+            "lock_start_gates": true,
+            "success_gates": {
+                "visible": {
+                    "min": true
+                },
+                "brick_above": {
+                    "target": false,
+                    "tol": 0.0
+                }
+            }
+        },
+        "BRICK_LOCK_WALL": {
+            "controller": "align",
+            "start_gates": {
+                "visible": {
+                    "min": true
+                }
+            },
+            "success_gates": {
+                "xAxis_offset_abs": {
+                    "target": -2.94,
+                    "tol": 1.4
+                },
+                "dist": {
+                    "target": 94.62,
+                    "tol": 4.34
+                }
+            }
+        },
         "POSITION_BRICK": {
             "max_speed_score": 10,
             "start_gates": {
@@ -143,11 +201,15 @@
                     "min": true
                 },
                 "xAxis_offset_abs": {
-                    "target": -2.31,
+                    "target": -2.69,
                     "tol": 1.4
                 },
+                "yAxis_offset_abs": {
+                    "target": 0.88,
+                    "tol": 1.5
+                },
                 "dist": {
-                    "target": 48.55,
+                    "target": 42.54,
                     "tol": 1.5
                 },
                 "brick_above": {
@@ -156,7 +218,7 @@
                 }
             }
         },
-        "PLACE": {
+        "RETREAT": {
             "nominalDemosOnly": true
         }
     }

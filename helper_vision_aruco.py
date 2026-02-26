@@ -286,9 +286,10 @@ class ArucoBrickVision:
             if self.cap is None or not self.cap.isOpened():
                 return False, 0, -1, 0, 0, 0, False, False
 
-        # Flush a few frames to avoid stale buffer data
-        for _ in range(2):
-            self.cap.grab()
+        # _open_camera() already requests a 1-frame capture buffer. Extra grab()
+        # calls here can block for additional frame periods on some webcams/V4L2
+        # backends, which multiplies act-to-act latency because the control loop
+        # reads vision several times between robot commands.
         ret, frame = self.cap.read()
         if not ret:
             return False, 0, -1, 0, 0, 0, False, False

@@ -41,7 +41,7 @@ DEFAULT_AUTOBUILD_CONFIG = {
     "success_visible_false_grace_s": 0.2,
     "failure_tighten_low_pct": 0.1,
     "failure_tighten_high_pct": 0.9,
-    "start_gate_timeout_s": 8.0,
+    "start_gate_timeout_s": 30.0,
     "success_settle_s": 1.0,
     "success_tail_window_s": 1.5,
     "success_tail_count": 3,
@@ -66,20 +66,33 @@ DEFAULT_LITE_GATE_CHECK_CONFIG = {
     "steps": {},
 }
 
+# Steps that should keep an observe->act cadence without extra post-act settle waits.
+# Full confirmation still runs through the gatecheck tracker/lite precheck rules.
+FAST_POST_ACT_GATECHECK_STEPS = {
+    "ALIGN_BRICK",
+    "POSITION_BRICK",
+    "BRICK_LOCK",
+    "BRICK_LOCK_WALL",
+}
+
 PROCESS_SUCCESS_METRICS_BY_STEP = {
     "FIND_WALL": ("visible",),
     "APPROACH_VECTOR_BRICK_SUPPLY": ("visible", "angle_abs"),
     "FIND_TOPMOST_BRICK": ("visible", "brick_above"),
-    "BRICK_LOCK": ("visible", "brick_above", "brick_below"),
+    "FIND_TOPMOST_BRICK_WALL": ("visible", "brick_above"),
+    "BRICK_LOCK": ("xAxis_offset_abs", "dist"),
+    "BRICK_LOCK_WALL": ("xAxis_offset_abs", "dist"),
     "ALIGN_BRICK": ("visible", "xAxis_offset_abs", "yAxis_offset_abs", "dist"),
     "SEAT_BRICK": ("visible", "dist"),
     "ELEVATE_BRICK": ("visible",),
     "FIND_WALL2": ("visible",),
     "APPROACH_VECTOR_WALL": ("visible", "angle_abs"),
+    "POSITION_BRICK": ("visible", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "brick_above"),
 }
 
 PROCESS_START_METRICS_BY_STEP = {
-    "BRICK_LOCK": ("visible", "brick_above", "brick_below"),
+    "BRICK_LOCK": ("visible",),
+    "BRICK_LOCK_WALL": ("visible",),
 }
 
 DEFAULT_SPEED_SCORE = telemetry_robot_module.SPEED_SCORE_DEFAULT
@@ -113,7 +126,7 @@ SUCCESS_GATE_EXCLUDE_ANGLE_STEPS = {
     "POSITION_BRICK",
 }
 RETIRED_PROCESS_STEPS = {
-    "RETREAT",
+    "PLACE",
 }
 AUTO_DIAG_OFFSET_PRIORITY = ("xAxis_offset_abs", "dist")
 AUTO_DIAG_SINGLE_OFFSET_PRECHECK_STEPS = {
@@ -122,11 +135,15 @@ AUTO_DIAG_SINGLE_OFFSET_PRECHECK_STEPS = {
 }
 AUTO_DIAG_FOCUS_PRECHECK_STEPS = {
     "FIND_TOPMOST_BRICK",
+    "FIND_TOPMOST_BRICK_WALL",
     "BRICK_LOCK",
+    "BRICK_LOCK_WALL",
 }
 AUTO_DIAG_COMPACT_BOOLEAN_DELTA_STEPS = {
     "FIND_TOPMOST_BRICK",
+    "FIND_TOPMOST_BRICK_WALL",
     "BRICK_LOCK",
+    "BRICK_LOCK_WALL",
 }
 AUTO_SPEED_SCORE_HARD_MAX = 25
 AUTO_DEMO_SPEED_STEPS = {
@@ -758,8 +775,6 @@ def format_control_action_line(cmd, speed, reason=None):
         suffix = f" ({reason_str})" if reason_str else ""
         return f"[ACT] holding position{suffix}"
 
-    display_cmd = _remap_cmd_for_display(cmd)
-
     # Action Description
     action_map = {
         "f": "move forward",
@@ -769,7 +784,7 @@ def format_control_action_line(cmd, speed, reason=None):
         "u": "lift mast",
         "d": "lower mast",
     }
-    action = action_map.get(display_cmd, "move")
+    action = action_map.get(str(cmd).strip().lower(), "move")
     
     # Power Level
     level = "Major" if speed >= 0.24 else "Minor"
@@ -807,16 +822,23 @@ def action_display_text(cmd, speed_score=None):
     score_suffix = f" {int(speed_score)}%" if speed_score is not None else ""
     return f"{str(cmd).upper()}{score_suffix}"
 
-def action_sent_display_text(cmd, speed_score=None, *, cmd_sent=None, pwm=None, power=None, duration_ms=None):
-    if not cmd:
+def action_sent_display_text(
+    cmd,
+    speed_score=None,
+    *,
+    cmd_sent=None,
+    pwm=None,
+    power=None,
+    duration_ms=None,
+    anti_alias_note=None,
+):
+    # Operator-facing displays should report semantic motion intent (`cmd`).
+    # Raw transport remaps (`cmd_sent`) belong in explicit wire/debug logs.
+    cmd_display = str(cmd).strip()
+    if not cmd_display:
         return "HOLD"
-    cmd_display = str(cmd)
     score_suffix = f" {int(speed_score)}%" if speed_score is not None else ""
     parts = [f"{cmd_display.upper()}"]
-    if cmd_sent is not None:
-        sent_cmd = str(cmd_sent).strip()
-        if sent_cmd and sent_cmd.lower() != str(cmd).strip().lower():
-            parts.append(f"sent={sent_cmd.upper()}")
     if pwm is not None:
         try:
             pwm_val = int(round(float(pwm)))
@@ -838,6 +860,8 @@ def action_sent_display_text(cmd, speed_score=None, *, cmd_sent=None, pwm=None, 
             ms_val = None
         if ms_val is not None:
             parts.append(f"{ms_val}ms")
+    if anti_alias_note:
+        parts.append(str(anti_alias_note))
     details = ""
     if len(parts) > 1:
         details = " (" + ", ".join(parts[1:]) + ")"
@@ -859,6 +883,7 @@ def auto_action_detail_text(cmd, speed_score=None, *, action_meta=None):
             pwm=action_meta.get("pwm"),
             power=action_meta.get("power"),
             duration_ms=duration_ms,
+            anti_alias_note=action_meta.get("anti_alias_note"),
         )
     return action_display_text(cmd, speed_score)
 
@@ -874,11 +899,11 @@ def record_action_display(
     pwm=None,
     duration_ms=None,
     score_model=None,
+    anti_alias_note=None,
 ):
     if world is None or not cmd:
         return
     obj_key = normalize_step_label(step)
-    display_cmd = cmd_sent if cmd_sent is not None else cmd
     world._last_action_obj = obj_key
     world._last_action_time = time.time()
     world._last_action_cmd = cmd
@@ -888,7 +913,8 @@ def record_action_display(
     world._last_action_cmd_sent = cmd_sent
     world._last_action_pwm = pwm
     world._last_action_duration_ms = duration_ms
-    world._last_action_display = action_display_text(display_cmd, speed_score)
+    world._last_action_anti_alias_note = anti_alias_note
+    world._last_action_display = action_display_text(cmd, speed_score)
     world._last_action_sent_display = action_sent_display_text(
         cmd,
         speed_score,
@@ -896,6 +922,7 @@ def record_action_display(
         pwm=pwm,
         power=speed,
         duration_ms=duration_ms,
+        anti_alias_note=anti_alias_note,
     )
 
 
@@ -990,17 +1017,6 @@ def _format_sent_snapshot_value(snapshot, obj_name):
             else:
                 sent_value = f"{sent_value} [wire: {wire_value}]"
     return sent_value
-
-
-def _remap_cmd_for_display(cmd):
-    if not cmd:
-        return cmd
-    cmd_remap = getattr(telemetry_robot_module, "COMMAND_REMAP", None)
-    if isinstance(cmd_remap, dict):
-        remapped = cmd_remap.get(cmd)
-        if remapped:
-            return remapped
-    return cmd
 
 
 def _duration_used_ms_for_cmd(robot, cmd, duration_ms, *, auto_mode=False, half_first_turn_pulse=True):
@@ -1137,6 +1153,24 @@ def send_robot_command_pwm(
         except Exception:
             requested_score = None
 
+    def _apply_precision_score_fix(score_eff, score_model_local):
+        if score_model_local is None or score_eff is None:
+            return score_eff
+        try:
+            effective = int(round(float(score_eff)))
+            intended = int(round(float(score_model_local)))
+            if effective > intended and effective - intended == 1 and intended < 10:
+                return score_model_local
+        except (TypeError, ValueError):
+            return score_eff
+        return score_eff
+
+    def _score_effective_for_cmd(cmd_eff, power_eff, score_model_local):
+        _, score_eff = telemetry_robot_module.quantize_speed(cmd_eff, speed=power_eff)
+        if score_eff is None:
+            score_eff = score_model_local
+        return _apply_precision_score_fix(score_eff, score_model_local)
+
     def _floor_pwm_for_cmd(cmd_key, score_key):
         try:
             _, floor_pwm, _, _ = telemetry_robot_module.speed_power_pwm_for_cmd(
@@ -1181,6 +1215,162 @@ def send_robot_command_pwm(
                 if floor_ms is not None and floor_ms > 0:
                     duration_used_ms = max(int(duration_used_ms), int(floor_ms))
 
+    anti_alias_profile = None
+    anti_alias_note = None
+    # Drive anti-aliasing emits multiple timed commands. That is only valid when
+    # the transport/firmware can queue or faithfully sequence timed pulses.
+    # Without queueing, back-to-back timed writes can overwrite each other and the
+    # robot executes only the tail segment, violating "do what we say and say what
+    # we do" (log shows one strong pulse, motion behaves like a tiny tail pulse).
+    supports_timed_command_queue = bool(
+        getattr(robot, "supports_timed_command_queue", False)
+        or getattr(robot, "supports_timed_segment_queue", False)
+    )
+    if bool(auto_mode) and supports_timed_command_queue:
+        try:
+            anti_alias_profile = telemetry_robot_module.drive_anti_alias_segments(
+                cmd,
+                speed_score=requested_score if requested_score is not None else speed_score,
+                power=power_val,
+                pwm=pwm_val,
+                duration_ms=duration_used_ms,
+            )
+        except Exception:
+            anti_alias_profile = None
+
+    if isinstance(anti_alias_profile, dict):
+        seg_defs = anti_alias_profile.get("segments")
+        if isinstance(seg_defs, list) and seg_defs:
+            sent_segments = []
+            wire_parts = []
+            total_model_ms = 0
+            total_used_ms = 0
+            final_cmd_sent = cmd_sent
+            peak_pwm = int(pwm_val)
+            peak_power = float(power_val)
+            for seg in seg_defs:
+                if not isinstance(seg, dict):
+                    continue
+                try:
+                    seg_pwm = int(round(float(seg.get("pwm") or 0)))
+                except (TypeError, ValueError):
+                    seg_pwm = 0
+                seg_pwm = max(0, min(pwm_cap, seg_pwm))
+                try:
+                    seg_power = float(seg.get("power"))
+                except (TypeError, ValueError):
+                    seg_power = telemetry_robot_module.pwm_to_power(seg_pwm) or 0.0
+                seg_power = max(0.0, min(1.0, float(seg_power or 0.0)))
+                try:
+                    seg_duration_model_ms = max(1, int(round(float(seg.get("duration_ms") or 0))))
+                except (TypeError, ValueError):
+                    seg_duration_model_ms = max(1, int(duration_used_ms))
+                seg_score_model = seg.get("score_model")
+                try:
+                    if seg_score_model is not None:
+                        seg_score_model = telemetry_robot_module.normalize_speed_score(seg_score_model)
+                except Exception:
+                    seg_score_model = None
+
+                seg_send_result = None
+                if hasattr(robot, "send_command_pwm"):
+                    seg_send_result = robot.send_command_pwm(cmd, seg_pwm, duration_ms=seg_duration_model_ms)
+                else:
+                    seg_send_result = robot.send_command(cmd, seg_power, duration_ms=seg_duration_model_ms)
+
+                seg_cmd_sent = cmd_sent
+                seg_pwm_actual = int(seg_pwm)
+                seg_duration_used_ms = int(seg_duration_model_ms)
+                if isinstance(seg_send_result, dict):
+                    seg_cmd_sent = seg_send_result.get("cmd_sent") or seg_cmd_sent
+                    try:
+                        seg_pwm_actual = int(round(float(seg_send_result.get("pwm"))))
+                    except (TypeError, ValueError):
+                        pass
+                    try:
+                        seg_duration_used_ms = int(round(float(seg_send_result.get("duration_ms"))))
+                    except (TypeError, ValueError):
+                        pass
+                seg_power_from_pwm = telemetry_robot_module.pwm_to_power(seg_pwm_actual)
+                if seg_power_from_pwm is not None:
+                    seg_power = max(0.0, min(1.0, float(seg_power_from_pwm)))
+                seg_score_effective = _score_effective_for_cmd(seg_cmd_sent, seg_power, seg_score_model)
+
+                total_model_ms += int(seg_duration_model_ms)
+                total_used_ms += int(seg_duration_used_ms)
+                peak_pwm = max(int(peak_pwm), int(seg_pwm_actual))
+                peak_power = max(float(peak_power), float(seg_power))
+                final_cmd_sent = seg_cmd_sent or final_cmd_sent
+                wire_parts.append(f"{seg_cmd_sent} {int(seg_pwm_actual)} {int(seg_duration_used_ms)}")
+                sent_segments.append(
+                    {
+                        "cmd_sent": seg_cmd_sent,
+                        "power": float(seg_power),
+                        "pwm": int(seg_pwm_actual),
+                        "duration_model_ms": int(seg_duration_model_ms),
+                        "duration_ms": int(seg_duration_used_ms),
+                        "score_model": seg_score_model,
+                        "score_effective": seg_score_effective,
+                    }
+                )
+
+            if sent_segments:
+                cmd_sent = final_cmd_sent
+                pwm_val = int(peak_pwm)
+                power_val = float(peak_power)
+                duration_model_ms = int(total_model_ms or duration_used_ms)
+                duration_used_ms = int(total_used_ms or duration_used_ms)
+                top_score_effective = _score_effective_for_cmd(cmd_sent, power_val, speed_score)
+                try:
+                    ramp_ms = int(round(float(anti_alias_profile.get("ramp_ms") or 0)))
+                except (TypeError, ValueError):
+                    ramp_ms = 0
+                anti_alias_note = f"AA({len(sent_segments)} seg, ramp={max(0, int(ramp_ms))}ms)"
+
+                if world is not None:
+                    wire_text = " | ".join([str(p) for p in wire_parts if p])
+                    if len(wire_text) > 180:
+                        wire_text = wire_text[:177] + "..."
+                    world._last_action_wire = str(wire_text)
+                    world._last_action_wire_step = normalize_step_label(step)
+                    world._last_action_wire_time = time.time()
+
+                record_action_display(
+                    world,
+                    step,
+                    cmd,
+                    power_val,
+                    speed_score=top_score_effective,
+                    cmd_sent=cmd_sent,
+                    pwm=pwm_val,
+                    duration_ms=duration_used_ms,
+                    score_model=speed_score,
+                    anti_alias_note=anti_alias_note,
+                )
+                return {
+                    "cmd_sent": cmd_sent,
+                    "power": power_val,
+                    "pwm": pwm_val,
+                    "duration_model_ms": int(duration_model_ms),
+                    "duration_ms": int(duration_used_ms),
+                    "score_model": speed_score,
+                    "score_effective": top_score_effective,
+                    "turn_intensity_requested": turn_intensity_requested,
+                    "turn_intensity_effective": turn_intensity_effective,
+                    "segments": sent_segments,
+                    "anti_alias_note": anti_alias_note,
+                    "anti_aliasing": {
+                        "applied": True,
+                        "kind": "drive_ramp",
+                        "ramp_ms": anti_alias_profile.get("ramp_ms"),
+                        "ramp_ms_effective": anti_alias_profile.get("ramp_ms_effective"),
+                        "ramp_steps": anti_alias_profile.get("ramp_steps"),
+                        "slice_ms": anti_alias_profile.get("slice_ms"),
+                        "target_score": anti_alias_profile.get("target_score"),
+                        "threshold_score": anti_alias_profile.get("threshold_score"),
+                    },
+                }
+
     send_result = None
     if hasattr(robot, "send_command_pwm"):
         send_result = robot.send_command_pwm(cmd, pwm_val, duration_ms=duration_used_ms)
@@ -1208,22 +1398,7 @@ def send_robot_command_pwm(
     power_from_pwm = telemetry_robot_module.pwm_to_power(pwm_val)
     if power_from_pwm is not None:
         power_val = max(0.0, min(1.0, float(power_from_pwm)))
-    _, score_effective = telemetry_robot_module.quantize_speed(cmd_sent, speed=power_val)
-    if score_effective is None:
-        score_effective = speed_score
-    
-    # For precision mode (very low speeds), quantize_speed may round up incorrectly.
-    # If the quantized score is significantly higher than the intended speed_score,
-    # use the intended score instead (prevents 2% when we intended 1%)
-    if speed_score is not None and score_effective is not None:
-        try:
-            effective = int(round(float(score_effective)))
-            intended = int(round(float(speed_score)))
-            # If quantized score is just 1 above intended (common rounding error), use intended
-            if effective > intended and effective - intended == 1 and intended < 10:
-                score_effective = speed_score
-        except (TypeError, ValueError):
-            pass
+    score_effective = _score_effective_for_cmd(cmd_sent, power_val, speed_score)
     record_action_display(
         world,
         step,
@@ -1234,6 +1409,7 @@ def send_robot_command_pwm(
         pwm=pwm_val,
         duration_ms=duration_used_ms,
         score_model=speed_score,
+        anti_alias_note=anti_alias_note,
     )
 
     try:
@@ -1250,6 +1426,7 @@ def send_robot_command_pwm(
         "score_effective": score_effective,
         "turn_intensity_requested": turn_intensity_requested,
         "turn_intensity_effective": turn_intensity_effective,
+        "anti_alias_note": anti_alias_note,
     }
 
 
@@ -1406,16 +1583,21 @@ def derive_action_speeds(steps, fallback_score=DEFAULT_SPEED_SCORE):
 
 
 def alignment_command(world, step, gate_bounds, speeds, preview=False):
-    analytics = next_module.compute_alignment_decision(
-        world=world,
-        step=step,
+    brick = getattr(world, "brick", {}) or {}
+    act_plan = next_module.select_alignment_next_act(
         process_rules=world.process_rules or {},
         learned_rules=world.learned_rules or {},
+        step=step,
+        x_axis_mm=brick.get("x_axis", brick.get("offset_x")),
+        y_axis_mm=brick.get("y_axis", brick.get("offset_y")),
+        dist_mm=brick.get("dist"),
+        visible=bool(brick.get("visible")),
+        angle_deg=brick.get("angle", 0.0),
         duration_s=CONTROL_DT,
     )
-    cmd = analytics.get("cmd")
-    speed = analytics.get("speed") or 0.0
-    reason = analytics.get("worst_metric") or "align"
+    cmd = act_plan.get("cmd")
+    speed = act_plan.get("speed") or 0.0
+    reason = act_plan.get("reason") or "align"
     return cmd, speed, reason
 
 
@@ -1565,6 +1747,10 @@ def print_gatecheck_progress_line(world, step=None, *, log=True, force=False):
             truth_ok,
         )
     else:
+        lite_required = int(status.get("lite_required", 0) or 0)
+        lite_passed = getattr(world, "_gatecheck_lite_passed", None)
+        if not force and lite_required > 0 and lite_passed is False:
+            return
         streak = int(status.get("streak", 0) or 0)
         need = max(1, int(status.get("need", 1) or 1))
         window_pass = int(status.get("window_pass", 0) or 0)
@@ -1592,6 +1778,24 @@ def print_gatecheck_progress_line(world, step=None, *, log=True, force=False):
         return
     world._last_gatecheck_progress_sig = sig
     print(format_headline(text, COLOR_WHITE))
+
+
+def print_gatecheck_entry_proof_line(world, step, *, phase=None, success_ok=None, log=True):
+    if not log or world is None:
+        return
+    step_key = normalize_step_label(step) or str(step) or "UNKNOWN"
+    phase_key = str(phase or "run").strip().lower() or "run"
+    lite_required = int(getattr(world, "_gatecheck_lite_required", 0) or 0)
+    lite_collected = int(getattr(world, "_gatecheck_lite_collected", 0) or 0)
+    lite_text = f"lite {lite_collected}/{lite_required}" if lite_required > 0 else "lite n/a"
+    sample_pass = bool(success_ok)
+    sample_text = f"{COLOR_GREEN}PASS{COLOR_RESET}" if sample_pass else f"{COLOR_RED}FAIL{COLOR_RESET}"
+    entries = _success_gate_entries(world, step)
+    gates_text = _auto_diag_entries_snapshot_colored(entries, step, include_requirement=True)
+    print(
+        f"{COLOR_WHITE}[GATECHECK-ENTER] {step_key} {phase_key}: "
+        f"{lite_text}; effective sample={sample_text}; gates: {COLOR_RESET}{gates_text}"
+    )
 
 
 def pause_after_fail(robot):
@@ -2272,6 +2476,43 @@ def min_acts_prefix_duration(events, min_acts):
     for action in actions[:cap]:
         total += max(0.0, float(action.get("duration_s") or 0.0))
     return total
+
+
+def trim_motion_steps_prefix(steps, trim_s):
+    if not steps:
+        return []
+    out = []
+    try:
+        trim_left = max(0.0, float(trim_s or 0.0))
+    except (TypeError, ValueError):
+        trim_left = 0.0
+    if trim_left <= 1e-6:
+        return list(steps)
+    for step in steps:
+        if step is None:
+            continue
+        try:
+            duration_s = max(0.0, float(getattr(step, "duration_s", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            duration_s = 0.0
+        if duration_s <= 0.0:
+            continue
+        if trim_left > 1e-9:
+            if trim_left >= (duration_s - 1e-9):
+                trim_left -= duration_s
+                continue
+            duration_s = duration_s - trim_left
+            trim_left = 0.0
+        out.append(
+            MotionStep(
+                getattr(step, "cmd", None),
+                float(getattr(step, "speed", 0.0) or 0.0),
+                duration_s,
+                getattr(step, "label", None),
+                speed_score=getattr(step, "speed_score", None),
+            )
+        )
+    return out
 
 
 def smooth_motion_steps(steps, speed_score=DEFAULT_SPEED_SCORE, step_s=SMOOTH_STEP_S):
@@ -3205,19 +3446,7 @@ def _build_auto_step_diagnostic(
     pre_snapshot = str(pre_gate_text or "none")
     if not pre_snapshot or pre_snapshot.strip().lower() == "none":
         pre_snapshot = pre_obs
-    if (
-        step_key in AUTO_DIAG_FOCUS_PRECHECK_STEPS
-        and isinstance(selected_pre, dict)
-        and gate_entry_count <= 1
-    ):
-        pre_snapshot = _auto_diag_focus_snapshot(selected_pre, include_requirement=True)
-        pre_snapshot_from_focus = True
-    if (
-        step_key in AUTO_DIAG_SINGLE_OFFSET_PRECHECK_STEPS
-        and isinstance(selected_pre, dict)
-        and selected_pre.get("metric") in AUTO_DIAG_OFFSET_PRIORITY
-        and gate_entry_count <= 1
-    ):
+    if isinstance(selected_pre, dict):
         pre_snapshot = _auto_diag_focus_snapshot(selected_pre, include_requirement=True)
         pre_snapshot_from_focus = True
     post_obs = _auto_diag_focus_observation(post_focus)
@@ -3339,7 +3568,7 @@ def _build_auto_step_diagnostic(
         trial_label = f"{trial_label}.{int(action_index_num)}"
     phase_upper = str(step_key or str(step) or "?").upper()
     action_text_colored = f"{COLOR_WHITE}{action_cmd.lower()} {int(action_score)}%{COLOR_RESET}"
-    if pre_snapshot_from_focus and isinstance(selected_pre, dict):
+    if isinstance(selected_pre, dict):
         pre_obs_text_colored = _auto_diag_focus_snapshot_colored(
             selected_pre,
             include_requirement=True,
@@ -3361,24 +3590,20 @@ def _build_auto_step_diagnostic(
             motor_suffix_raw = ""
         if motor_suffix_raw:
             motor_suffix = f" {COLOR_GRAY}{motor_suffix_raw}{COLOR_RESET}"
-    delta_class = (result_delta_obj or {}).get("delta_class", "unknown")
-    delta_text = str((result_delta_obj or {}).get("delta_text", "") or "")
-    if delta_class == "closer":
-        result_color = COLOR_GREEN
-    elif delta_class == "backward":
-        result_color = COLOR_RED
-    else:
-        result_color = COLOR_YELLOW
+    inline_obs_note_colored = ""
+    if obs_delta_text:
+        if obs_delta_class == "closer":
+            obs_note_color = COLOR_GREEN
+        elif obs_delta_class == "backward":
+            obs_note_color = COLOR_RED
+        else:
+            obs_note_color = COLOR_WHITE
+        inline_obs_note_colored = f" {obs_note_color}{str(obs_delta_text)}{COLOR_RESET}"
     colored = (
         f"{COLOR_CYAN}[{trial_label} {phase_upper}]{COLOR_RESET} "
-        f"{pre_obs_text_colored} → "
+        f"{pre_obs_text_colored}{inline_obs_note_colored} → "
         f"{action_text_colored}{motor_suffix}"
     )
-    delta_text_colored = str((result_delta_obj or {}).get("delta_text_colored", "") or "").strip()
-    if delta_text_colored:
-        colored += f" {delta_text_colored}"
-    elif delta_text:
-        colored += f" {result_color}{delta_text}{COLOR_RESET}"
     plain = _strip_known_ansi(colored)
     return {
         "plain": plain,
@@ -3412,6 +3637,7 @@ def _current_success_ok(world, step):
         world._gatecheck_mode = "traditional"
         world._gatecheck_lite_required = 0
         world._gatecheck_lite_collected = 0
+        world._gatecheck_lite_passed = True
         brick_ok = _evaluate_traditional_brick_success(
             world,
             step,
@@ -3420,9 +3646,11 @@ def _current_success_ok(world, step):
         )
     elif not lite_brick_ok:
         world._gatecheck_mode = "lite"
+        world._gatecheck_lite_passed = False
         brick_ok = False
     else:
         world._gatecheck_mode = "traditional"
+        world._gatecheck_lite_passed = True
         brick_ok = _evaluate_traditional_brick_success(
             world,
             step,
@@ -3615,8 +3843,20 @@ def flush_auto_step_diagnostic(world, step=None, *, force=False, emit=True):
     )
     _record_auto_step_action_stats(world, pending_step, diag.get("delta_class"))
     line = diag["plain"]
-    # Emit only at completion boundaries (force=True), not every check tick.
-    should_emit = bool(emit) and bool(force) and not bool(diag.get("success_hit", False))
+    step_key = normalize_step_label(pending_step)
+    step_cfg = (
+        (getattr(world, "process_rules", None) or {}).get(step_key, {})
+        if world is not None and step_key
+        else {}
+    )
+    emit_each_flush = bool(isinstance(step_cfg, dict) and step_cfg.get("emit_auto_diag_each_act"))
+    # Default behavior emits only at completion boundaries (force=True). Selected
+    # steps can opt into per-act replay diagnostics for easier demo-following review.
+    should_emit = (
+        bool(emit)
+        and (bool(force) or emit_each_flush)
+        and not bool(diag.get("success_hit", False))
+    )
     if should_emit:
         print(diag["colored"])
     _store_auto_step_diagnostic(
@@ -3812,7 +4052,6 @@ def compute_stream_gate_summary(world, step, active=True):
                 suggested = f"HOLD ({reason})"
     else:
         suggested_score = _cap_auto_speed_score(suggested_score)
-        suggested_cmd_sent = _remap_cmd_for_display(suggested_cmd)
         _, pwm, _, duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd(
             suggested_cmd,
             suggested_score,
@@ -3820,7 +4059,6 @@ def compute_stream_gate_summary(world, step, active=True):
         suggested = action_sent_display_text(
             suggested_cmd,
             suggested_score,
-            cmd_sent=suggested_cmd_sent,
             pwm=pwm,
             duration_ms=duration_ms,
         )
@@ -4142,6 +4380,7 @@ def evaluate_gate_status(world, step):
         world._gatecheck_mode = "traditional"
         world._gatecheck_lite_required = 0
         world._gatecheck_lite_collected = 0
+        world._gatecheck_lite_passed = True
         brick_ok = _evaluate_traditional_brick_success(
             world,
             step,
@@ -4151,10 +4390,12 @@ def evaluate_gate_status(world, step):
     elif not lite_brick_ok:
         # Lite is a precheck; do not claim success until it passes.
         world._gatecheck_mode = "lite"
+        world._gatecheck_lite_passed = False
         brick_ok = False
     else:
         # As soon as lite precheck passes, switch to full confirmation checks.
         world._gatecheck_mode = "traditional"
+        world._gatecheck_lite_passed = True
         brick_ok = _evaluate_traditional_brick_success(
             world,
             step,
@@ -4173,6 +4414,17 @@ def update_gatecheck_with_precheck(world, step, tracker, success_ok, *, phase, l
     if tracker is None:
         return False
     mode = str(getattr(world, "_gatecheck_mode", "traditional") or "traditional").strip().lower()
+    # Hard rule: do not start the full gate tracker (consecutive/majority) until a
+    # post-lite sample actually satisfies the current effective success gates.
+    if mode != "lite":
+        lite_required = int(getattr(world, "_gatecheck_lite_required", 0) or 0)
+        full_checks_started = int(getattr(tracker, "total_checks", 0) or 0) > 0
+        if lite_required > 0 and (not full_checks_started) and (not bool(success_ok)):
+            mode = "lite"
+            try:
+                world._gatecheck_mode = "lite"
+            except Exception:
+                pass
     if mode == "lite":
         lite_checks = int(getattr(world, "_gatecheck_lite_checks", 0) or 0) + 1
         world._gatecheck_lite_checks = lite_checks
@@ -4199,6 +4451,20 @@ def update_gatecheck_with_precheck(world, step, tracker, success_ok, *, phase, l
             "timestamp": time.time(),
         }
         return False
+
+    lite_required = int(getattr(world, "_gatecheck_lite_required", 0) or 0)
+    lite_passed = getattr(world, "_gatecheck_lite_passed", None)
+    if lite_required > 0 and lite_passed is False:
+        return False
+
+    if int(getattr(tracker, "total_checks", 0) or 0) <= 0:
+        print_gatecheck_entry_proof_line(
+            world,
+            step,
+            phase=phase,
+            success_ok=success_ok,
+            log=log,
+        )
 
     world._gatecheck_lite_checks = 0
     success_met = gate_utils.update_gatecheck(
@@ -4475,9 +4741,11 @@ def run_full_gatecheck_after_act(
     if tracker is None:
         return False
     step_key = normalize_step_label(step)
-    # Keep observe→act cadence fast for brick-alignment loops; full streak/majority
-    # confirmation still happens across loop iterations via tracker state.
-    if step_key in {"ALIGN_BRICK", "POSITION_BRICK"}:
+    # Keep observe→act cadence fast for brick-alignment loops (including brick-lock
+    # variants). Full streak/majority confirmation still happens across loop
+    # iterations via tracker state.
+    fast_post_act_gatecheck = step_key in FAST_POST_ACT_GATECHECK_STEPS
+    if fast_post_act_gatecheck:
         checks_per_act = 1
     else:
         checks_per_act = max(
@@ -4486,7 +4754,7 @@ def run_full_gatecheck_after_act(
             int(getattr(tracker, "majority_window", 1)),
         )
     lite_frames = lite_gate_unique_frames(step)
-    if lite_frames is not None:
+    if (not fast_post_act_gatecheck) and lite_frames is not None:
         checks_per_act = max(checks_per_act, int(lite_frames))
     truth_hit = False
     truth_by = None
@@ -4512,6 +4780,45 @@ def run_full_gatecheck_after_act(
         if truth_by:
             status["truth_by"] = truth_by
     return truth_hit
+
+
+def _strip_start_gate_hold_prefix(reason):
+    text = str(reason or "").strip()
+    if not text:
+        return ""
+    if text.lower().startswith("start_gate:"):
+        return text.split(":", 1)[1].strip()
+    return text
+
+
+def _format_start_gate_timeout_status(world, step, last_hold_reason):
+    parts = [f"timeout after {float(START_GATE_TIMEOUT_S):.2f}s"]
+    blocked_detail = _strip_start_gate_hold_prefix(last_hold_reason)
+    if blocked_detail:
+        parts.append(f"last blocked: {blocked_detail}")
+    step_key = normalize_step_label(step)
+    try:
+        cfg = ((getattr(world, "process_rules", None) or {}).get(step_key) or {})
+    except Exception:
+        cfg = {}
+    if isinstance(cfg, dict):
+        try:
+            start_desc, _ = format_gate_lines(cfg)
+        except Exception:
+            start_desc = None
+        if start_desc and start_desc != "none":
+            parts.append(f"cfg: {start_desc}")
+    return "; ".join(parts)
+
+
+def _start_gate_failure_reason_from_wait_status(start_status):
+    status_text = str(start_status or "").strip()
+    if not status_text:
+        return "start gates not met"
+    lowered = status_text.lower()
+    if lowered in {"start", "success"}:
+        return status_text
+    return f"start gates not met: {status_text}"
 
 
 def wait_for_start_gates(
@@ -4599,8 +4906,6 @@ def wait_for_start_gates(
             reasons.extend(wall_check.reasons or [])
             reasons.extend(robot_check.reasons or [])
             hold_reason = "start_gate: " + ", ".join(reasons) if reasons else "start_gate: awaiting confidence"
-            if log and (hold_reason != last_reason or last_cmd is not None or last_speed not in (None, 0.0)):
-                print(format_headline(format_control_action_line(None, 0.0, hold_reason), COLOR_WHITE))
             if robot:
                 robot.stop()
             if observer:
@@ -4676,12 +4981,10 @@ def wait_for_start_gates(
                         robot.stop()
                     return "success"
             elif log and (cmd != last_cmd or speed != last_speed):
-                hold_reason = "start_gate: missing cmd/speed"
-                print(format_headline(format_control_action_line(None, 0.0, hold_reason), COLOR_WHITE))
                 last_cmd = cmd
                 last_speed = speed
         time.sleep(CONTROL_DT)
-    return "timeout"
+    return _format_start_gate_timeout_status(world, step_key, last_reason)
 
 
 def run_alignment_segment(
@@ -4797,10 +5100,16 @@ def run_alignment_segment(
         metric_text = ""
         metric_name = "x_err"
         switch_message = None
+        switch_message_colored = None
         prev_type = str(prev_log_correction_type or "").strip().lower()
         switched_gap_type = bool(force_gap_switch) or (
             prev_type in {"distance", "x_axis", "y_axis"} and prev_type != correction_type
         )
+
+        def _switch_gap_message_pair(metric_name_local):
+            plain = f"Switching gap type to {metric_name_local}"
+            colored = f"{COLOR_ORANGE_BRIGHT}Switching{COLOR_RESET} gap type to {metric_name_local}"
+            return plain, colored
 
         if correction_type == "distance":
             metric_name = "dist_err"
@@ -4850,27 +5159,7 @@ def run_alignment_segment(
                     f"{float(curr_err):+.2f}mm={abs_text} {delta_text}"
                 )
                 if switched_gap_type:
-                    if prev_err_any is None:
-                        switch_delta_text = "(na)"
-                    else:
-                        delta_any = abs(float(prev_err_any)) - abs(float(curr_err))
-                        if abs(delta_any) < 0.05:
-                            switch_delta_text = (
-                                f"(~unchanged; previous {metric_name}={float(prev_err_any):+.2f}mm)"
-                            )
-                        elif delta_any > 0:
-                            switch_delta_text = (
-                                f"({delta_any:+.2f}mm better than previous {metric_name}={float(prev_err_any):+.2f}mm)"
-                            )
-                        else:
-                            switch_delta_text = (
-                                f"({delta_any:+.2f}mm worse than previous {metric_name}={float(prev_err_any):+.2f}mm)"
-                            )
-                    switch_message = (
-                        f"Switched gap type to {metric_name} "
-                        f"(the last act resulted in {metric_name}=target ({float(dist_target):.2f}mm ±{float(dist_tol):.2f}mm) "
-                        f"{float(curr_err):+.2f}mm={float(curr_abs_val):.2f}mm {switch_delta_text})"
-                    )
+                    switch_message, switch_message_colored = _switch_gap_message_pair(metric_name)
         else:
             if correction_type == "y_axis":
                 metric_name = "y_err"
@@ -4942,27 +5231,7 @@ def run_alignment_segment(
                     f"{float(curr_err):+.2f}mm={abs_text} {delta_text}"
                 )
                 if switched_gap_type:
-                    if prev_err_any is None:
-                        switch_delta_text = "(na)"
-                    else:
-                        delta_any = abs(float(prev_err_any)) - abs(float(curr_err))
-                        if abs(delta_any) < 0.05:
-                            switch_delta_text = (
-                                f"(~unchanged; previous {metric_name}={float(prev_err_any):+.2f}mm)"
-                            )
-                        elif delta_any > 0:
-                            switch_delta_text = (
-                                f"({delta_any:+.2f}mm better than previous {metric_name}={float(prev_err_any):+.2f}mm)"
-                            )
-                        else:
-                            switch_delta_text = (
-                                f"({delta_any:+.2f}mm worse than previous {metric_name}={float(prev_err_any):+.2f}mm)"
-                            )
-                    switch_message = (
-                        f"Switched gap type to {metric_name} "
-                        f"(the last act resulted in {metric_name}=target ({float(axis_target):+.2f}mm ±{float(axis_tol):.2f}mm) "
-                        f"{float(curr_err):+.2f}mm={float(curr_abs_val):+.2f}mm {switch_delta_text})"
-                    )
+                    switch_message, switch_message_colored = _switch_gap_message_pair(metric_name)
 
         try:
             score_display = int(round(float(score_effective))) if score_effective is not None else 0
@@ -4983,20 +5252,31 @@ def run_alignment_segment(
             parts.append(f"pwr={float(motor_power):.3f}")
         if motor_duration_ms is not None:
             parts.append(f"t={int(motor_duration_ms)}ms")
+        if isinstance(action_meta, dict):
+            anti_alias_note = action_meta.get("anti_alias_note")
+            if anti_alias_note:
+                parts.append(str(anti_alias_note))
         if parts:
             motor_details = f" {COLOR_GRAY}({', '.join(parts)}){COLOR_RESET}"
 
         trial_num = int(getattr(world, "loop_id", 0) or 0)
-        phase_label = "ALIGN_SETTLE" if bool(settle) else "ALIGN"
+        active_step_label = normalize_step_label(step) or str(step or "ALIGN").strip().upper()
+        if active_step_label == "ALIGN_BRICK":
+            phase_base = "ALIGN"
+        else:
+            phase_base = f"{active_step_label}_ALIGN"
+        phase_label = f"{phase_base}_SETTLE" if bool(settle) else phase_base
         if switch_message:
+            switch_render = switch_message_colored or switch_message
             print(
                 f"{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}] "
-                f"{switch_message}{COLOR_RESET}"
+                f"{switch_render}{COLOR_RESET}"
             )
+        cmd_log = str(cmd).strip().lower()
         print(
             f"{COLOR_CYAN}[T{trial_num}.{int(action_index)} {phase_label}]{COLOR_RESET} "
             f"{metric_name}={metric_text} → "
-            f"{COLOR_ORANGE_BRIGHT}{str(cmd).lower()} {int(score_display)}%{COLOR_RESET}{motor_details}"
+            f"{COLOR_ORANGE_BRIGHT}{cmd_log} {int(score_display)}%{COLOR_RESET}{motor_details}"
         )
 
     def _dominant_turn_from_steps(motion_steps):
@@ -5126,6 +5406,10 @@ def run_alignment_segment(
     demo_single_turn_cmd = next(iter(demo_turn_cmds)) if len(demo_turn_cmds) == 1 else None
     dominant_demo_turn = _dominant_turn_from_steps(raw_steps)
     suppress_auto_diag = normalize_step_label(step) in {"ALIGN_BRICK", "POSITION_BRICK"}
+    # Single-source per-act console logging for align-controller steps: keep the
+    # shorthand `*_ALIGN` line as the visible attempt log, but still build/store
+    # the generic auto-diagnostic internally for stats/UI.
+    emit_align_auto_diag_console = False
 
     scan_cmd = telemetry_robot_module.resolve_scan_direction(
         world.process_rules,
@@ -5136,7 +5420,9 @@ def run_alignment_segment(
         scan_cmd = demo_single_turn_cmd
 
     def _apply_turn_only_demo_policy(cmd, speed, speed_score, cmd_reason):
-        if normalize_step_label(step) == "ALIGN_BRICK":
+        # Gap micro-planner steps (x/y/dist success gates) should use the unified
+        # planner output directly. Do not let demo-shape heuristics override them.
+        if next_module.step_uses_gap_alignment_planner(world.process_rules or {}, step):
             return cmd, speed, speed_score, cmd_reason
         if not demo_turn_only:
             return cmd, speed, speed_score, cmd_reason
@@ -5170,9 +5456,15 @@ def run_alignment_segment(
     start_speed = action_speeds["scan"]
     step_key = normalize_step_label(step)
     is_align_brick_step = step_key == "ALIGN_BRICK"
-    is_find_topmost_step = step_key == "FIND_TOPMOST_BRICK"
+    is_find_topmost_step = step_key in {"FIND_TOPMOST_BRICK", "FIND_TOPMOST_BRICK_WALL"}
+    # Use the same gate-shape test as helper_next's unified selector so any step
+    # with x/y/dist success gates (including BRICK_LOCK_WALL) gets the same gap
+    # micro-adjustment state handling and anti-oscillation behavior.
+    use_align_gap_micro_planner = bool(
+        next_module.step_uses_gap_alignment_planner(world.process_rules or {}, step)
+    )
     align_gate_step_key = "ALIGN_BRICK"
-    skip_settle_pause = step_key == "ALIGN_BRICK"
+    skip_settle_pause = step_key in FAST_POST_ACT_GATECHECK_STEPS
     # ALIGN_BRICK demos are often state-only, so derived scan speed can fall back to 50%.
     # Use explicit score-1 turn speed so start-gate scan matches "1%" tuning from world_model_robot.
     if is_align_brick_step and start_cmd in ("l", "r"):
@@ -5184,7 +5476,7 @@ def run_alignment_segment(
     # allow motion after the per-loop gate check determines movement is needed.
     start_cmd_for_wait = start_cmd
     start_speed_for_wait = start_speed
-    if step_key in {"ALIGN_BRICK", "FIND_TOPMOST_BRICK"}:
+    if step_key in {"ALIGN_BRICK", "FIND_TOPMOST_BRICK", "FIND_TOPMOST_BRICK_WALL"}:
         start_cmd_for_wait = None
         start_speed_for_wait = None
     start_status = wait_for_start_gates(
@@ -5210,7 +5502,7 @@ def run_alignment_segment(
             return True, "success gate"
     if start_status != "start":
         pause_after_fail(robot)
-        return False, "start gates not met"
+        return False, _start_gate_failure_reason_from_wait_status(start_status)
 
     if next_module.success_gates_visible_only(world.process_rules or {}, step):
         world._visible_speed_cycle = 0
@@ -5284,7 +5576,7 @@ def run_alignment_segment(
 
     def _recover_visibility(source="unknown", reason=None, reverse_max_acts=None):
         source_key = str(source or "").strip().lower()
-        if step_key in {"ALIGN_BRICK", "FIND_TOPMOST_BRICK"}:
+        if step_key in {"ALIGN_BRICK", "FIND_TOPMOST_BRICK", "FIND_TOPMOST_BRICK_WALL"}:
             # Recovery moves the robot, so any existing target lock anchor is stale.
             _clear_align_brick_target_lock(clear_required=False)
         if not align_silent:
@@ -5389,7 +5681,7 @@ def run_alignment_segment(
         }
 
     def _reset_stack_visibility_gate_state(*, log_reason=None):
-        if not step_key in {"FIND_TOPMOST_BRICK", "ALIGN_BRICK"}:
+        if not step_key in {"FIND_TOPMOST_BRICK", "FIND_TOPMOST_BRICK_WALL", "ALIGN_BRICK"}:
             return
         try:
             world._stack_visibility_gate = None
@@ -6136,7 +6428,7 @@ def run_alignment_segment(
             time.sleep(CONTROL_DT)
             continue
 
-        if step_norm == "ALIGN_BRICK" and not visible_now:
+        if use_align_gap_micro_planner and not visible_now:
             lost_for_s = max(0.0, float(time.time()) - float(last_visible_ts))
             confident_loss = bool(
                 int(not_visible_streak) >= int(ALIGN_RECOVERY_LOST_VISIBLE_FRAMES)
@@ -6180,54 +6472,49 @@ def run_alignment_segment(
             return False, "lost_vision"
 
         duration_override_ms = None
-        if step_norm == "ALIGN_BRICK":
-            brick = getattr(world, "brick", {}) or {}
-            act_plan = next_module.select_align_brick_next_act(
-                process_rules=world.process_rules or {},
-                learned_rules=world.learned_rules or {},
-                x_axis_mm=brick.get("x_axis", brick.get("offset_x")),
-                y_axis_mm=brick.get("y_axis", brick.get("offset_y")),
-                dist_mm=brick.get("dist"),
-                visible=bool(brick.get("visible")),
-                angle_deg=brick.get("angle", 0.0),
-                duration_s=CONTROL_DT,
-                previous_correction_type=last_align_gap_correction_type,
-                avoid_correction_type=skip_align_gap_correction_type_once,
-            )
-            cmd = act_plan.get("cmd")
-            cmd_reason = act_plan.get("reason") or "align"
-            speed_score = act_plan.get("score")
-            speed = telemetry_robot_module.manual_speed_for_cmd(cmd, speed_score) if cmd and speed_score is not None else 0.0
-            planned_corr_type = str(act_plan.get("correction_type") or "").strip().lower() or None
-            if skip_align_gap_correction_type_once and planned_corr_type and planned_corr_type != str(skip_align_gap_correction_type_once):
-                skip_align_gap_correction_type_once = None
-        else:
-            analytics = next_module.compute_alignment_decision(
-                world=world,
-                step=step,
-                process_rules=world.process_rules or {},
-                learned_rules=world.learned_rules or {},
-                duration_s=CONTROL_DT,
-            )
-            cmd = analytics.get("cmd")
-            speed = analytics.get("speed") or 0.0
-            cmd_reason = analytics.get("worst_metric") or "align"
-            speed_score = analytics.get("speed_score")
-            if cmd is None:
-                demo_fallback = _next_demo_stack_lift_action()
-                if isinstance(demo_fallback, dict):
-                    cmd = demo_fallback.get("cmd")
-                    speed = demo_fallback.get("speed") or 0.0
-                    cmd_reason = demo_fallback.get("reason") or "demo stack lift"
-                    speed_score = demo_fallback.get("speed_score")
-                    duration_override_ms = demo_fallback.get("duration_override_ms")
+        brick = getattr(world, "brick", {}) or {}
+        act_plan = next_module.select_alignment_next_act(
+            process_rules=world.process_rules or {},
+            learned_rules=world.learned_rules or {},
+            step=step,
+            x_axis_mm=brick.get("x_axis", brick.get("offset_x")),
+            y_axis_mm=brick.get("y_axis", brick.get("offset_y")),
+            dist_mm=brick.get("dist"),
+            visible=bool(brick.get("visible")),
+            angle_deg=brick.get("angle", 0.0),
+            duration_s=CONTROL_DT,
+            previous_correction_type=last_align_gap_correction_type,
+            avoid_correction_type=skip_align_gap_correction_type_once,
+        )
+        use_micro_align_gap_planner = str(act_plan.get("planner") or "").strip().lower() == "gap"
+        cmd = act_plan.get("cmd")
+        speed = act_plan.get("speed") or 0.0
+        cmd_reason = act_plan.get("reason") or "align"
+        speed_score = act_plan.get("score")
+        planned_corr_type = str(act_plan.get("correction_type") or "").strip().lower() or None
+        if (
+            use_align_gap_micro_planner
+            and skip_align_gap_correction_type_once
+            and planned_corr_type
+            and planned_corr_type != str(skip_align_gap_correction_type_once)
+        ):
+            skip_align_gap_correction_type_once = None
+        if cmd is None:
+            demo_fallback = _next_demo_stack_lift_action()
+            if isinstance(demo_fallback, dict):
+                cmd = demo_fallback.get("cmd")
+                speed = demo_fallback.get("speed") or 0.0
+                cmd_reason = demo_fallback.get("reason") or "demo stack lift"
+                speed_score = demo_fallback.get("speed_score")
+                duration_override_ms = demo_fallback.get("duration_override_ms")
         cmd, speed, speed_score, cmd_reason = _apply_turn_only_demo_policy(
             cmd,
             speed,
             speed_score,
             cmd_reason,
         )
-        if step_norm != "ALIGN_BRICK":
+        if not use_micro_align_gap_planner:
+            success_ok, confidence = evaluate_gate_status(world, step)
             speed = apply_pursuit_speed(speed)
             speed = apply_confidence_speed(speed, success_ok, confidence, world)
         if cmd != last_cmd or cmd_reason != last_reason or speed != last_speed:
@@ -6277,7 +6564,7 @@ def run_alignment_segment(
                 if score_effective is None:
                     score_effective = action_meta.get("score_model", speed_score)
 
-            if step_norm == "ALIGN_BRICK":
+            if use_micro_align_gap_planner:
                 try:
                     x_sig = round(float(local_gate_before_action.get("x_err")), 2)
                 except (TypeError, ValueError):
@@ -6304,9 +6591,10 @@ def run_alignment_segment(
                 if stale_pre_obs_streak >= 8:
                     if robot:
                         robot.stop()
+                    warn_step = normalize_step_label(step) or str(step)
                     print(
                         format_headline(
-                            "[WARN] ALIGN_BRICK stale observation for 8 consecutive acts; treating as lost visibility.",
+                            f"[WARN] {warn_step} stale observation for 8 consecutive acts; treating as lost visibility.",
                             COLOR_RED,
                         )
                     )
@@ -6378,7 +6666,7 @@ def run_alignment_segment(
                 prev_log_correction_type = "y_axis"
             else:
                 prev_log_correction_type = None
-            if step_norm == "ALIGN_BRICK":
+            if use_align_gap_micro_planner:
                 last_align_gap_correction_type = str(prev_log_correction_type or "").strip().lower() or None
             sent_snapshot = _capture_sent_action_snapshot(world) if not suppress_auto_diag else None
             segments = []
@@ -6400,7 +6688,7 @@ def run_alignment_segment(
                 world.update_from_motion(evt)
             if next_module.success_gates_visible_only(world.process_rules or {}, step):
                 world._visible_speed_cycle = int(getattr(world, "_visible_speed_cycle", 0)) + 1
-            if step_norm == "ALIGN_BRICK" and cmd in ("f", "b", "l", "r"):
+            if use_micro_align_gap_planner and cmd in ("f", "b", "l", "r"):
                 try:
                     hist_score = int(round(float(score_effective))) if score_effective is not None else None
                 except (TypeError, ValueError):
@@ -6449,7 +6737,7 @@ def run_alignment_segment(
                     step,
                     action_detail,
                     pre_gate_text,
-                    emit=not align_silent,
+                    emit=(not align_silent and emit_align_auto_diag_console),
                     pre_focus=pre_focus,
                     success_override=success_hit,
                     sent_snapshot=sent_snapshot,
@@ -6470,12 +6758,13 @@ def run_alignment_segment(
             if post_frame_id <= pre_frame_id:
                 stale_frame_streak = int(stale_frame_streak) + 1
                 print(format_headline("[WARN] No new frame observed after action", COLOR_RED))
-                if step_norm == "ALIGN_BRICK" and stale_frame_streak >= 3:
+                if use_micro_align_gap_planner and stale_frame_streak >= 3:
                     if robot:
                         robot.stop()
+                    warn_step = normalize_step_label(step) or str(step)
                     print(
                         format_headline(
-                            "[WARN] ALIGN_BRICK frame stream appears stale; treating as lost visibility.",
+                            f"[WARN] {warn_step} frame stream appears stale; treating as lost visibility.",
                             COLOR_RED,
                         )
                     )
@@ -6568,54 +6857,49 @@ def run_alignment_segment(
 
         step_norm = normalize_step_label(step)
         duration_override_ms = None
-        if step_norm == "ALIGN_BRICK":
-            brick = getattr(world, "brick", {}) or {}
-            act_plan = next_module.select_align_brick_next_act(
-                process_rules=world.process_rules or {},
-                learned_rules=world.learned_rules or {},
-                x_axis_mm=brick.get("x_axis", brick.get("offset_x")),
-                y_axis_mm=brick.get("y_axis", brick.get("offset_y")),
-                dist_mm=brick.get("dist"),
-                visible=bool(brick.get("visible")),
-                angle_deg=brick.get("angle", 0.0),
-                duration_s=CONTROL_DT,
-                previous_correction_type=last_align_gap_correction_type,
-                avoid_correction_type=skip_align_gap_correction_type_once,
-            )
-            cmd = act_plan.get("cmd")
-            cmd_reason = act_plan.get("reason") or "align"
-            speed_score = act_plan.get("score")
-            speed = telemetry_robot_module.manual_speed_for_cmd(cmd, speed_score) if cmd and speed_score is not None else 0.0
-            planned_corr_type = str(act_plan.get("correction_type") or "").strip().lower() or None
-            if skip_align_gap_correction_type_once and planned_corr_type and planned_corr_type != str(skip_align_gap_correction_type_once):
-                skip_align_gap_correction_type_once = None
-        else:
-            analytics = next_module.compute_alignment_decision(
-                world=world,
-                step=step,
-                process_rules=world.process_rules or {},
-                learned_rules=world.learned_rules or {},
-                duration_s=CONTROL_DT,
-            )
-            cmd = analytics.get("cmd")
-            speed = analytics.get("speed") or 0.0
-            cmd_reason = analytics.get("worst_metric") or "align"
-            speed_score = analytics.get("speed_score")
-            if cmd is None:
-                demo_fallback = _next_demo_stack_lift_action()
-                if isinstance(demo_fallback, dict):
-                    cmd = demo_fallback.get("cmd")
-                    speed = demo_fallback.get("speed") or 0.0
-                    cmd_reason = demo_fallback.get("reason") or "demo stack lift"
-                    speed_score = demo_fallback.get("speed_score")
-                    duration_override_ms = demo_fallback.get("duration_override_ms")
+        brick = getattr(world, "brick", {}) or {}
+        act_plan = next_module.select_alignment_next_act(
+            process_rules=world.process_rules or {},
+            learned_rules=world.learned_rules or {},
+            step=step,
+            x_axis_mm=brick.get("x_axis", brick.get("offset_x")),
+            y_axis_mm=brick.get("y_axis", brick.get("offset_y")),
+            dist_mm=brick.get("dist"),
+            visible=bool(brick.get("visible")),
+            angle_deg=brick.get("angle", 0.0),
+            duration_s=CONTROL_DT,
+            previous_correction_type=last_align_gap_correction_type,
+            avoid_correction_type=skip_align_gap_correction_type_once,
+        )
+        use_micro_align_gap_planner = str(act_plan.get("planner") or "").strip().lower() == "gap"
+        cmd = act_plan.get("cmd")
+        speed = act_plan.get("speed") or 0.0
+        cmd_reason = act_plan.get("reason") or "align"
+        speed_score = act_plan.get("score")
+        planned_corr_type = str(act_plan.get("correction_type") or "").strip().lower() or None
+        if (
+            use_align_gap_micro_planner
+            and skip_align_gap_correction_type_once
+            and planned_corr_type
+            and planned_corr_type != str(skip_align_gap_correction_type_once)
+        ):
+            skip_align_gap_correction_type_once = None
+        if cmd is None:
+            demo_fallback = _next_demo_stack_lift_action()
+            if isinstance(demo_fallback, dict):
+                cmd = demo_fallback.get("cmd")
+                speed = demo_fallback.get("speed") or 0.0
+                cmd_reason = demo_fallback.get("reason") or "demo stack lift"
+                speed_score = demo_fallback.get("speed_score")
+                duration_override_ms = demo_fallback.get("duration_override_ms")
         cmd, speed, speed_score, cmd_reason = _apply_turn_only_demo_policy(
             cmd,
             speed,
             speed_score,
             cmd_reason,
         )
-        if step_norm != "ALIGN_BRICK":
+        if not use_micro_align_gap_planner:
+            success_ok, confidence = evaluate_gate_status(world, step)
             speed = apply_pursuit_speed(speed)
             speed = apply_confidence_speed(speed, success_ok, confidence, world)
         if cmd != last_cmd or cmd_reason != last_reason or speed != last_speed:
@@ -6691,7 +6975,7 @@ def run_alignment_segment(
                 prev_log_correction_type = "y_axis"
             else:
                 prev_log_correction_type = None
-            if step_norm == "ALIGN_BRICK":
+            if use_align_gap_micro_planner:
                 last_align_gap_correction_type = str(prev_log_correction_type or "").strip().lower() or None
             sent_snapshot = _capture_sent_action_snapshot(world) if not suppress_auto_diag else None
             evt = MotionEvent(
@@ -6726,7 +7010,7 @@ def run_alignment_segment(
                     step,
                     action_detail,
                     pre_gate_text,
-                    emit=not align_silent,
+                    emit=(not align_silent and emit_align_auto_diag_console),
                     pre_focus=pre_focus,
                     success_override=success_hit,
                     sent_snapshot=sent_snapshot,
@@ -6783,10 +7067,29 @@ def replay_segment(
     prefer_demo_speed = _auto_uses_demo_speed(step_key)
     if isinstance(cfg, dict) and cfg.get("prefer_demo_speed") is not None:
         prefer_demo_speed = bool(cfg.get("prefer_demo_speed"))
+    demo_prefix_acts = 0
+    if isinstance(cfg, dict) and cfg.get("demo_prefix_acts") is not None:
+        try:
+            demo_prefix_acts = int(cfg.get("demo_prefix_acts"))
+        except (TypeError, ValueError):
+            demo_prefix_acts = 0
+    demo_prefix_acts = max(0, int(demo_prefix_acts))
+    keep_check_phase_with_demo_score = bool(
+        isinstance(cfg, dict) and cfg.get("keep_check_phase_with_demo_score")
+    )
     demo_actions = nominal_actions_from_events(events)
+    demo_prefix_actions = demo_actions[: min(int(demo_prefix_acts), len(demo_actions or []))]
+    demo_prefix_duration_s = 0.0
+    for action in demo_prefix_actions:
+        try:
+            demo_prefix_duration_s += max(0.0, float((action or {}).get("duration_s") or 0.0))
+        except (TypeError, ValueError):
+            continue
+    demo_actions_replay = demo_actions[int(len(demo_prefix_actions)) :] if demo_prefix_actions else list(demo_actions)
     if prefer_demo_speed and demo_actions:
         loop_demo_acts = True
-    steps = raw_steps if loop_demo_acts else smooth_motion_steps(raw_steps)
+    use_raw_steps = bool(isinstance(cfg, dict) and cfg.get("use_raw_steps"))
+    steps = raw_steps if (loop_demo_acts or use_raw_steps) else smooth_motion_steps(raw_steps)
     if step_uses_alignment_control(step, world.process_rules):
         return run_alignment_segment(
             segment,
@@ -6893,8 +7196,6 @@ def replay_segment(
     default_step = steps[0]
     required_acts_for_success = step_min_acts(step_key, world.process_rules)
     required_action_prefix_s = min_acts_prefix_duration(events, required_acts_for_success)
-    if not step_is_nominal_only(step, world.process_rules):
-        required_action_prefix_s = 0.0
     success_checks_enabled = required_action_prefix_s <= 0.0
     replay_action_start_time = None
     target_visible = success_visible_target(world, step_key)
@@ -6931,21 +7232,123 @@ def replay_segment(
         return True, "success gate"
     if start_status != "start":
         pause_after_fail(robot)
-        return False, "start gates not met"
+        return False, _start_gate_failure_reason_from_wait_status(start_status)
+
+    demo_prefix_count = 0
+    prefix_last_cmd = None
+    prefix_last_speed_base = None
+    if demo_prefix_actions:
+        if not align_silent:
+            print(
+                format_headline(
+                    f"[DEMO_PREFIX] {step_key}: replaying first {len(demo_prefix_actions)} demo acts exactly before adaptive replay.",
+                    COLOR_ORANGE_BRIGHT,
+                )
+            )
+        for idx, action in enumerate(demo_prefix_actions, start=1):
+            cmd = action.get("cmd")
+            if not cmd:
+                if robot:
+                    robot.stop()
+                time.sleep(CONTROL_DT)
+                continue
+            score = action.get("speed_score")
+            if score is None:
+                score = move_score
+            if max_speed_score is not None:
+                score = min(int(max_speed_score), int(score))
+            score = _apply_find_brick_turn_speed_policy(step_key, cmd, score, phase="demo")
+            action_duration_s = max(0.001, float(action.get("duration_s") or CONTROL_DT))
+            duration_override_ms = int(round(float(action_duration_s) * 1000.0))
+
+            if replay_action_start_time is None:
+                replay_action_start_time = time.time()
+            update_world_from_vision(world, vision)
+            if observer:
+                observer("frame", world, vision, None, None, None)
+
+            pre_entries = _success_gate_entries(world, step_key)
+            pre_gate_text = _auto_gate_snapshot_text(world, step_key, include_requirements=True)
+            pre_focus = _capture_auto_diag_focus(world, step_key)
+
+            action_meta = send_robot_command(
+                robot,
+                world,
+                step_key,
+                cmd,
+                0.0,
+                speed_score=score,
+                auto_mode=True,
+                duration_override_ms=duration_override_ms,
+            )
+            if isinstance(action_meta, dict):
+                active_speed = float(action_meta.get("power", 0.0) or 0.0)
+                score_effective = action_meta.get("score_effective")
+                if score_effective is None:
+                    score_effective = action_meta.get("score_model", score)
+                duration_ms = int(
+                    action_meta.get("duration_model_ms")
+                    or action_meta.get("duration_ms")
+                    or duration_override_ms
+                )
+            else:
+                active_speed = 0.0
+                score_effective = score
+                duration_ms = duration_override_ms
+
+            sent_snapshot = _capture_sent_action_snapshot(world)
+            world._last_action_line = format_control_action_line(
+                cmd,
+                active_speed,
+                f"demo prefix exact {idx}/{len(demo_prefix_actions)} {int(score_effective)}%",
+            )
+            evt = MotionEvent(
+                cmd_to_motion_type(cmd),
+                int(active_speed * 255),
+                int(duration_ms),
+            )
+            world.update_from_motion(evt)
+            if observer:
+                observer("action", world, vision, cmd, active_speed, "demo prefix exact")
+            time.sleep(max(0.001, float(duration_ms) / 1000.0))
+            post_act_analysis(world, vision, step=step_key, log=True, include_pause=False)
+            emit_auto_step_diagnostic(
+                world,
+                step_key,
+                auto_action_detail_text(cmd, score_effective, action_meta=action_meta),
+                pre_gate_text,
+                emit=True,
+                pre_focus=pre_focus,
+                sent_snapshot=sent_snapshot,
+                action_index=idx,
+                pre_entries=pre_entries,
+            )
+            demo_prefix_count = int(idx)
+            prefix_last_cmd = str(cmd)
+            prefix_last_speed_base = float(active_speed)
+
+        if demo_prefix_duration_s > 1e-6 and not loop_demo_acts:
+            steps = trim_motion_steps_prefix(steps, demo_prefix_duration_s)
+            if not steps:
+                steps = [MotionStep(None, 0.0, 0.1, "wait")]
 
     allow_early_exit = True
 
     success_tracker = new_success_tracker(step, world.process_rules)
     clear_pending_auto_step_diagnostic(world)
     last_action = None
-    last_cmd = default_step.cmd
-    last_speed_base = default_step.speed
-    demo_replay_action_idx = 0
-    replay_cycle_action_idx = 0
+    last_cmd = prefix_last_cmd if prefix_last_cmd is not None else default_step.cmd
+    last_speed_base = (
+        float(prefix_last_speed_base)
+        if prefix_last_speed_base is not None
+        else float(default_step.speed or 0.0)
+    )
+    demo_replay_action_idx = int(demo_prefix_count)
+    replay_cycle_action_idx = int(demo_prefix_count)
 
-    if loop_demo_acts and demo_actions:
+    if loop_demo_acts and demo_actions_replay:
         while True:
-            for action in demo_actions:
+            for action in demo_actions_replay:
                 cmd = action.get("cmd")
                 if not cmd:
                     if robot:
@@ -7104,7 +7507,8 @@ def replay_segment(
                 desired_score = move_score if phase == "move" else check_score
                 if motion_step.speed_score is not None:
                     desired_score = motion_step.speed_score
-                    phase = "demo"
+                    if not keep_check_phase_with_demo_score:
+                        phase = "demo"
                 elif prefer_demo_speed and motion_step.cmd:
                     try:
                         base_speed = float(motion_step.speed or 0.0)

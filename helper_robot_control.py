@@ -30,6 +30,9 @@ class Robot:
         self._last_turn_cmd = None
         self._command_remap_cache = None
         self._command_remap_mtime = None
+        # Timed serial commands are fire-and-forget; this transport does not queue
+        # multiple timed pulses for guaranteed sequential execution.
+        self.supports_timed_command_queue = False
         
         # --- PHYSICAL CONSTANTS (Single source: telemetry_robot) ---
         self.MIN_PWM = MIN_PWM

@@ -891,6 +891,15 @@ def _coerce_float(value, default=None):
         return default
 
 
+# Gap-closing policy: vertical (`y_err`) corrections stay in rotation, but should
+# only preempt x/dist corrections when the normalized y gap is substantially larger.
+# This reduces oscillatory or low-value mast adjustments during x/dist convergence.
+GAP_ALIGN_Y_AXIS_PRIORITY_PENALTY = 3.0
+# `y_err` should only be worked once the other gap(s) are nearly solved.
+# Ratio is normalized "outside gate" error: 0.05 means 5% beyond the gate tolerance.
+GAP_ALIGN_Y_AXIS_OTHER_GAPS_NEAR_RATIO_MAX = 0.05
+
+
 def _success_gates_for_step(process_rules, step):
     obj_name = _step_name(step)
     step_cfg = (process_rules or {}).get(obj_name, {}) if isinstance(process_rules, dict) else {}
@@ -898,6 +907,21 @@ def _success_gates_for_step(process_rules, step):
     if not isinstance(success_gates, dict):
         success_gates = {}
     return obj_name, success_gates
+
+
+def step_uses_gap_alignment_planner(process_rules, step):
+    """
+    Return True for ALIGN-style steps that should use the brick gap micro-planner.
+
+    The micro-planner is appropriate when the step has x/y/dist gate metrics.
+    Angle-only / visible-only align steps should continue using the generic
+    analytics planner.
+    """
+    _obj_name, success_gates = _success_gates_for_step(process_rules, step)
+    if not isinstance(success_gates, dict) or not success_gates:
+        return False
+    gate_keys = {str(key) for key in success_gates.keys() if key is not None}
+    return bool(gate_keys & {"xAxis_offset_abs", "yAxis_offset_abs", "dist"})
 
 
 def compute_alignment_decision(
@@ -959,6 +983,7 @@ def select_align_brick_next_act(
     *,
     process_rules,
     learned_rules=None,
+    step="ALIGN_BRICK",
     x_axis_mm,
     y_axis_mm=None,
     dist_mm,
@@ -969,16 +994,17 @@ def select_align_brick_next_act(
     avoid_correction_type=None,
 ):
     """
-    Single source selector for ALIGN_BRICK next act (cmd + speed score).
+    Single source selector for ALIGN-style x/y/dist micro-adjust next act (cmd + speed score).
 
     This function encapsulates the exact approach used by the best calibrate trials:
     - Direction source: `compute_alignment_decision(...)`
     - Distance score source: `align_brick_dist_error_speed_score(...)`
     - Turn score source: `align_brick_x_axis_one_shot_score(...)`
     """
+    step_name = _step_name(step) or "ALIGN_BRICK"
     analytics = compute_alignment_decision(
         world=None,
-        step="ALIGN_BRICK",
+        step=step_name,
         process_rules=process_rules,
         learned_rules=learned_rules,
         duration_s=duration_s,
@@ -991,13 +1017,14 @@ def select_align_brick_next_act(
     prod_cmd = analytics.get("cmd")
     worst_metric = analytics.get("worst_metric")
 
-    _obj_name, success_gates = _success_gates_for_step(process_rules, "ALIGN_BRICK")
+    _obj_name, success_gates = _success_gates_for_step(process_rules, step_name)
     x_stats = success_gates.get("xAxis_offset_abs") if isinstance(success_gates, dict) else {}
     if not isinstance(x_stats, dict):
         x_stats = {}
     y_stats = success_gates.get("yAxis_offset_abs") if isinstance(success_gates, dict) else {}
     if not isinstance(y_stats, dict):
         y_stats = {}
+    y_required = bool(y_stats)
     d_stats = success_gates.get("dist") if isinstance(success_gates, dict) else {}
     if not isinstance(d_stats, dict):
         d_stats = {}
@@ -1035,8 +1062,45 @@ def select_align_brick_next_act(
         return float(err) / float(denom)
 
     x_ratio = _gate_ratio(abs(x_err_mm), x_tol)
-    y_ratio = _gate_ratio(abs(y_err_mm), y_tol) if y_err_mm is not None else 0.0
+    y_ratio = _gate_ratio(abs(y_err_mm), y_tol) if (y_required and y_err_mm is not None) else 0.0
     d_ratio = _gate_ratio(dist_err_mm, dist_tol) if dist_val is not None and dist_tol > 0.0 else 0.0
+
+    def _priority_ratio(correction_type, raw_ratio):
+        try:
+            ratio_val = max(0.0, float(raw_ratio or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+        if str(correction_type or "").strip().lower() == "y_axis":
+            try:
+                penalty = max(1.0, float(GAP_ALIGN_Y_AXIS_PRIORITY_PENALTY))
+            except (TypeError, ValueError):
+                penalty = 1.0
+            return float(ratio_val) / float(penalty)
+        return float(ratio_val)
+
+    def _ratio_is_near_gate(raw_ratio, *, threshold=None):
+        try:
+            ratio_val = max(0.0, float(raw_ratio or 0.0))
+        except (TypeError, ValueError):
+            return False
+        if threshold is None:
+            try:
+                threshold = max(0.0, float(GAP_ALIGN_Y_AXIS_OTHER_GAPS_NEAR_RATIO_MAX))
+            except (TypeError, ValueError):
+                threshold = 0.05
+        try:
+            return float(ratio_val) <= float(threshold)
+        except (TypeError, ValueError):
+            return False
+
+    y_other_gaps_near_ready = True
+    if bool(x_stats):
+        y_other_gaps_near_ready = y_other_gaps_near_ready and _ratio_is_near_gate(x_ratio)
+    if bool(d_stats):
+        if dist_val is None or dist_tol <= 0.0:
+            y_other_gaps_near_ready = False
+        else:
+            y_other_gaps_near_ready = y_other_gaps_near_ready and _ratio_is_near_gate(d_ratio)
 
     if prod_cmd not in ("f", "b", "l", "r"):
         prod_cmd = "l" if x_err_mm <= 0.0 else "r"
@@ -1056,7 +1120,7 @@ def select_align_brick_next_act(
             "ratio": float(x_ratio),
         }
 
-    if y_err_mm is not None and y_ratio > 0.0:
+    if y_required and y_err_mm is not None and y_ratio > 0.0:
         candidates["y_axis"] = {
             "cmd": "d" if float(y_err_mm) > 0.0 else "u",
             "correction_type": "y_axis",
@@ -1068,10 +1132,9 @@ def select_align_brick_next_act(
         }
 
     if dist_val is not None and d_ratio > 0.0:
-        if prod_cmd in ("f", "b"):
-            dist_cmd = str(prod_cmd)
-        else:
-            dist_cmd = "f" if float(dist_val) > float(dist_target) else "b"
+        # Single-source distance direction for gap micro-adjustments: derive from
+        # the signed distance error, not the generic analytics planner's cmd.
+        dist_cmd = "f" if float(dist_val) > float(dist_target) else "b"
         score_float_dist = float(align_brick_dist_error_speed_score(dist_err_mm))
         candidates["distance"] = {
             "cmd": str(dist_cmd),
@@ -1083,56 +1146,80 @@ def select_align_brick_next_act(
             "ratio": float(d_ratio),
         }
 
-    # Preserve prior behavior for the default (non-rotation) first choice.
-    # Vertical camera-center alignment for step 4 (lift axis):
+    # Vertical camera-center alignment:
     # Positive y offset means marker is below center, so move mast down (`d`) to
     # bring the marker upward in the image. Negative y offset uses mast up (`u`).
     use_y_axis_correction = bool(
         "y_axis" in candidates
-        and prod_cmd not in ("f", "b")   # Keep distance safety priority when depth is the main issue.
-        and y_ratio >= x_ratio
+        and y_other_gaps_near_ready
+        and _priority_ratio("y_axis", y_ratio) >= max(float(x_ratio), float(d_ratio))
     )
 
-    if use_y_axis_correction:
-        chosen = dict(candidates["y_axis"])
-    elif prod_cmd in ("f", "b") and "distance" in candidates:
-        chosen = dict(candidates["distance"])
-    elif "x_axis" in candidates:
-        chosen = dict(candidates["x_axis"])
-    elif "distance" in candidates:
-        chosen = dict(candidates["distance"])
-    elif "y_axis" in candidates:
-        chosen = dict(candidates["y_axis"])
-    else:
-        chosen = {
-            "cmd": str(prod_cmd),
-            "correction_type": "x_axis",
-            "score": int(align_brick_x_axis_one_shot_score(x_err_mm)),
-            "score_float": None,
-            "reason": "x_axis_alignment",
-            "worst_metric": worst_metric or "xAxis_offset_abs",
-            "ratio": 0.0,
-        }
-
-    prev_corr = str(previous_correction_type or "").strip().lower()
-    avoid_corr = str(avoid_correction_type or "").strip().lower()
+    # Single-source x-vs-dist safety focus (same intent as the best ALIGN_BRICK
+    # behavior): when far from target and x is off, fix x first; only force depth
+    # focus when extremely far and x is already reasonably aligned.
+    force_x_axis_focus = False
+    force_dist_focus = False
+    try:
+        x_axis_gap_mm = abs(float(x_err_mm))
+        dist_gap_mm_signed = (float(dist_val) - float(dist_target)) if dist_val is not None else None
+        dist_gap_mm = abs(float(dist_gap_mm_signed)) if dist_gap_mm_signed is not None else None
+    except (TypeError, ValueError):
+        x_axis_gap_mm = None
+        dist_gap_mm = None
+    if dist_gap_mm is not None and x_axis_gap_mm is not None:
+        if dist_gap_mm > 50.0 and x_axis_gap_mm > 2.0:
+            force_x_axis_focus = True
+        elif dist_gap_mm > 150.0 and x_axis_gap_mm < 5.0:
+            force_dist_focus = True
 
     def _best_alternative(excluded_types):
         viable = [
             dict(v)
             for k, v in candidates.items()
-            if str(k) not in excluded_types and float(v.get("ratio", 0.0) or 0.0) > 0.0
+            if (
+                str(k) not in excluded_types
+                and float(v.get("ratio", 0.0) or 0.0) > 0.0
+                and (
+                    str(v.get("correction_type") or "").strip().lower() != "y_axis"
+                    or bool(y_other_gaps_near_ready)
+                )
+            )
         ]
         if not viable:
             return None
         viable.sort(
             key=lambda row: (
-                float(row.get("ratio", 0.0) or 0.0),
-                1.0 if str(row.get("correction_type")) == "y_axis" else 0.0,  # slight tie-breaker toward vertical gap rotation
+                _priority_ratio(row.get("correction_type"), row.get("ratio", 0.0)),
+                1.0 if str(row.get("correction_type")) != "y_axis" else 0.0,
             ),
             reverse=True,
         )
         return viable[0]
+
+    if force_x_axis_focus and "x_axis" in candidates:
+        chosen = dict(candidates["x_axis"])
+    elif force_dist_focus and "distance" in candidates:
+        chosen = dict(candidates["distance"])
+    elif use_y_axis_correction:
+        chosen = dict(candidates["y_axis"])
+    else:
+        best_primary = _best_alternative(set())
+        if best_primary is not None:
+            chosen = dict(best_primary)
+        else:
+            chosen = {
+                "cmd": str(prod_cmd),
+                "correction_type": "x_axis",
+                "score": int(align_brick_x_axis_one_shot_score(x_err_mm)),
+                "score_float": None,
+                "reason": "x_axis_alignment",
+                "worst_metric": worst_metric or "xAxis_offset_abs",
+                "ratio": 0.0,
+            }
+
+    prev_corr = str(previous_correction_type or "").strip().lower()
+    avoid_corr = str(avoid_correction_type or "").strip().lower()
 
     rotation_override = False
     chosen_type = str(chosen.get("correction_type") or "").strip().lower()
@@ -1156,16 +1243,9 @@ def select_align_brick_next_act(
     reason = str(chosen.get("reason"))
     worst_metric = chosen.get("worst_metric")
 
-    # When learned rules are provided (auto-step path), prefer the score chosen
-    # by the single-source analytics pipeline so calibration_profile scaling and
-    # speed caps are honored for ALIGN_BRICK.
-    if learned_rules is not None and correction_type != "y_axis" and str(analytics.get("cmd")) == str(prod_cmd):
-        analytics_score = analytics.get("speed_score")
-        if analytics_score is not None:
-            try:
-                score_int = int(normalize_speed_score(analytics_score))
-            except (TypeError, ValueError):
-                pass
+    # Single-solution rule for gap micro-adjustments: keep the score selected by
+    # this gap planner (x/dist/y one-shot logic). Do not override from the generic
+    # analytics planner, which can create a second conflicting path across steps.
 
     return {
         "cmd": str(prod_cmd),
@@ -1181,6 +1261,82 @@ def select_align_brick_next_act(
         "dist_target_mm": float(dist_target),
         "x_tol_mm": float(x_tol),
         "y_tol_mm": float(y_tol),
+    }
+
+
+def select_alignment_next_act(
+    *,
+    process_rules,
+    learned_rules=None,
+    step="ALIGN_BRICK",
+    x_axis_mm,
+    y_axis_mm=None,
+    dist_mm,
+    visible=True,
+    angle_deg=0.0,
+    duration_s=0.05,
+    previous_correction_type=None,
+    avoid_correction_type=None,
+):
+    """
+    Unified ALIGN-step next-act selector.
+
+    Uses the gap micro-planner for brick-placement style steps (x/y/dist gates),
+    and falls back to the generic analytics planner for angle-only / visible-only
+    align steps.
+    """
+    if step_uses_gap_alignment_planner(process_rules, step):
+        plan = select_align_brick_next_act(
+            process_rules=process_rules,
+            learned_rules=learned_rules,
+            step=step,
+            x_axis_mm=x_axis_mm,
+            y_axis_mm=y_axis_mm,
+            dist_mm=dist_mm,
+            visible=visible,
+            angle_deg=angle_deg,
+            duration_s=duration_s,
+            previous_correction_type=previous_correction_type,
+            avoid_correction_type=avoid_correction_type,
+        )
+        cmd = plan.get("cmd")
+        score = plan.get("score")
+        speed = manual_speed_for_cmd(cmd, score) if cmd and score is not None else 0.0
+        out = dict(plan)
+        out["speed"] = float(speed or 0.0)
+        out["planner"] = "gap"
+        return out
+
+    analytics = compute_alignment_decision(
+        world=None,
+        step=step,
+        process_rules=process_rules,
+        learned_rules=learned_rules,
+        duration_s=duration_s,
+        visible=bool(visible),
+        x_axis=x_axis_mm,
+        angle=angle_deg,
+        dist=dist_mm,
+    )
+    cmd = analytics.get("cmd")
+    speed = analytics.get("speed") or 0.0
+    score = analytics.get("speed_score")
+    if cmd in ("f", "b"):
+        correction_type = "distance"
+    elif cmd in ("l", "r"):
+        correction_type = "x_axis"
+    elif cmd in ("u", "d"):
+        correction_type = "y_axis"
+    else:
+        correction_type = None
+    return {
+        "cmd": cmd,
+        "correction_type": correction_type,
+        "score": score,
+        "speed": float(speed or 0.0),
+        "reason": analytics.get("worst_metric") or "align",
+        "worst_metric": analytics.get("worst_metric"),
+        "planner": "generic",
     }
 
 
@@ -1207,16 +1363,17 @@ def align_local_gate_status(world, step="ALIGN_BRICK", process_rules=None):
     x_stats = success_gates.get("xAxis_offset_abs") if isinstance(success_gates, dict) else {}
     if not isinstance(x_stats, dict):
         x_stats = {}
+    x_required = bool(isinstance(x_stats, dict) and x_stats)
     x_target = _coerce_float(x_stats.get("target"), 0.0)
     x_tol = abs(_coerce_float(x_stats.get("tol"), 0.0) or 0.0)
     x_err = None if x_axis is None else float(x_axis - x_target)
     x_abs_err = None if x_err is None else abs(float(x_err))
-    x_within_tol = bool(x_abs_err is not None and x_abs_err <= x_tol)
+    x_within_tol = (not x_required) or bool(x_abs_err is not None and x_abs_err <= x_tol)
 
-    step_key = _step_name(step)
     y_stats = success_gates.get("yAxis_offset_abs") if isinstance(success_gates, dict) else {}
     if not isinstance(y_stats, dict):
         y_stats = {}
+    y_required = bool(y_stats)
     y_target = _coerce_float(y_stats.get("target"), 0.0)
     if y_target is None:
         y_target = 0.0
@@ -1226,16 +1383,16 @@ def align_local_gate_status(world, step="ALIGN_BRICK", process_rules=None):
     y_tol = abs(float(y_tol) or 0.0)
     y_err = None if y_axis is None else float(y_axis - y_target)
     y_abs_err = None if y_err is None else abs(float(y_err))
-    y_within_tol = bool(y_abs_err is not None and y_abs_err <= y_tol)
-    y_required = bool(step_key == "ALIGN_BRICK")
+    y_within_tol = (not y_required) or bool(y_abs_err is not None and y_abs_err <= y_tol)
 
     d_stats = success_gates.get("dist") if isinstance(success_gates, dict) else {}
     if not isinstance(d_stats, dict):
         d_stats = {}
+    d_required = bool(d_stats)
     d_target = _coerce_float(d_stats.get("target"), 0.0)
     d_tol = abs(_coerce_float(d_stats.get("tol"), 0.0) or 0.0)
     dist_err = None if dist_val is None else abs(float(dist_val - d_target))
-    dist_within_tol = bool(dist_err is not None and dist_err <= d_tol)
+    dist_within_tol = (not d_required) or bool(dist_err is not None and dist_err <= d_tol)
 
     ok = bool(
         visible
@@ -1252,6 +1409,7 @@ def align_local_gate_status(world, step="ALIGN_BRICK", process_rules=None):
         "x_err": x_err,
         "x_abs_err": x_abs_err,
         "x_within_tol": x_within_tol,
+        "x_required": x_required,
         "y_axis": y_axis,
         "y_target": y_target,
         "y_tol": y_tol,
@@ -1264,6 +1422,7 @@ def align_local_gate_status(world, step="ALIGN_BRICK", process_rules=None):
         "dist_tol": d_tol,
         "dist_err": dist_err,
         "dist_within_tol": dist_within_tol,
+        "dist_required": d_required,
     }
 
 

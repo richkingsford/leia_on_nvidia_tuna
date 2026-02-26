@@ -337,8 +337,15 @@ STEP_NAMES["approach_supply"] = StepState.APPROACH_VECTOR_BRICK_SUPPLY
 STEP_NAMES["approach_vector_brick_supply"] = StepState.APPROACH_VECTOR_BRICK_SUPPLY
 STEP_NAMES["top"] = StepState.FIND_TOPMOST_BRICK
 STEP_NAMES["topmost"] = StepState.FIND_TOPMOST_BRICK
+STEP_NAMES["topwall"] = StepState.FIND_TOPMOST_BRICK_WALL
+STEP_NAMES["topmost_wall"] = StepState.FIND_TOPMOST_BRICK_WALL
+STEP_NAMES["wall_top"] = StepState.FIND_TOPMOST_BRICK_WALL
+STEP_NAMES["find_topmost_brick_wall"] = StepState.FIND_TOPMOST_BRICK_WALL
 STEP_NAMES["lock"] = StepState.BRICK_LOCK
 STEP_NAMES["brick_lock"] = StepState.BRICK_LOCK
+STEP_NAMES["wall_lock"] = StepState.BRICK_LOCK_WALL
+STEP_NAMES["brick_lock_wall"] = StepState.BRICK_LOCK_WALL
+STEP_NAMES["lock_wall"] = StepState.BRICK_LOCK_WALL
 STEP_NAMES["align"] = StepState.ALIGN_BRICK
 STEP_NAMES["seat"] = StepState.SEAT_BRICK
 STEP_NAMES["scoop"] = StepState.SEAT_BRICK
@@ -350,6 +357,8 @@ STEP_NAMES["avw"] = StepState.APPROACH_VECTOR_WALL
 STEP_NAMES["approach_wall"] = StepState.APPROACH_VECTOR_WALL
 STEP_NAMES["approach_vector_wall"] = StepState.APPROACH_VECTOR_WALL
 STEP_NAMES["position"] = StepState.POSITION_BRICK
+STEP_NAMES["retreat"] = StepState.RETREAT
+STEP_NAMES["place"] = StepState.RETREAT
 
 STEP_CODE_EMOJIS = {
     "find_wall": "🧱",
@@ -357,13 +366,16 @@ STEP_CODE_EMOJIS = {
     "find_brick": "🧱",
     "approach_vector_brick_supply": "📐",
     "find_topmost_brick": "🎩",
+    "find_topmost_brick_wall": "🎩",
     "brick_lock": "➡️",
+    "brick_lock_wall": "➡️",
     "align_brick": "➡️",
     "seat_brick": "➡️",
     "elevate_brick": "👆",
     "find_wall2": "🧱",
     "approach_vector_wall": "📐",
     "position_brick": "🎩",
+    "retreat": "👈",
     "place": "👈",
 }
 
@@ -398,11 +410,47 @@ ATTEMPT_STATUS = {
     "NOMINAL": "NOMINAL",
 }
 
+
+class AutoStepCancelled(Exception):
+    """Raised to cooperatively abort a running auto-step (e.g. Esc pressed)."""
+    pass
+
 def step_label(obj_enum):
     return obj_enum.value
 
 def log_line(message):
     print(str(message).strip(), flush=True)
+
+
+def _command_preview_text(cmd, *, speed_score=None, pwm=None, power=None, duration_ms=None):
+    cmd_key = str(cmd or "").strip().lower()
+    if not cmd_key:
+        return ""
+    head = str(cmd_key)
+    if speed_score is not None:
+        try:
+            head = f"{head} {int(round(float(speed_score)))}%"
+        except (TypeError, ValueError):
+            pass
+    parts = [head]
+    if pwm is not None:
+        try:
+            parts.append(f"pwm={int(round(float(pwm)))}")
+        except (TypeError, ValueError):
+            pass
+    if power is not None:
+        try:
+            parts.append(f"pwr={float(power):.3f}")
+        except (TypeError, ValueError):
+            pass
+    if duration_ms is not None:
+        try:
+            parts.append(f"t={int(round(float(duration_ms)))}ms")
+        except (TypeError, ValueError):
+            pass
+    if len(parts) == 1:
+        return parts[0]
+    return f"{parts[0]} ({', '.join(parts[1:])})"
 
 
 def _fmt_bool_text(value):
@@ -1176,16 +1224,28 @@ def maybe_prompt_hotkey_var_update(app_state, cmd, score, *, enter_edit=False, h
                     duration_used_ms = int(duration_row)
 
     if not enter_edit:
+        preview_text = _command_preview_text(
+            cmd,
+            speed_score=score_used,
+            pwm=pwm,
+            power=power,
+            duration_ms=duration_used_ms,
+        ) or str(cmd).strip().lower()
         log_line(
-            f"[HOTKEY] {str(cmd).upper()} {int(score_used)}% "
-            f"(pwm={int(pwm)}, power={float(power):.3f}, {int(duration_used_ms)}ms) "
+            f"[HOTKEY] {preview_text} "
             f"- press y to edit vars"
         )
         return int(score_used)
 
+    preview_text = _command_preview_text(
+        cmd,
+        speed_score=score_used,
+        pwm=pwm,
+        power=power,
+        duration_ms=duration_used_ms,
+    ) or str(cmd).strip().lower()
     log_line(
-        f"[HOTKEY] Editing {str(cmd).upper()} {int(score_used)}% "
-        f"(current pwm={int(pwm)}, power={float(power):.3f}, {int(duration_used_ms)}ms)"
+        f"[HOTKEY] Editing {preview_text}"
     )
 
     while app_state.running:
@@ -1236,6 +1296,19 @@ def step_code_for_obj(obj_enum):
         if obj == obj_enum:
             return code
     return normalize_step_label(getattr(obj_enum, "value", obj_enum))
+
+
+def next_demo_step_obj(obj_enum):
+    if obj_enum is None:
+        return None
+    try:
+        idx = DEMO_STEPS.index(obj_enum)
+    except ValueError:
+        return None
+    next_idx = int(idx) + 1
+    if next_idx < 0 or next_idx >= len(DEMO_STEPS):
+        return None
+    return DEMO_STEPS[next_idx]
 
 
 def _split_footer_sentences(line, prefix):
@@ -1407,9 +1480,13 @@ def run_auto_step(app_state, obj_enum):
         log_line(f"[AUTO] No demo segment found for {step_key}.")
         return False
 
-    log_line(f"[AUTO] {step_key} demo={seg_type}")
     events = segment.get("events") or []
     actions = nominal_actions_from_events(events)
+    chassis_actions = [
+        action
+        for action in actions
+        if str((action or {}).get("cmd") or "").strip().lower() in ("f", "b", "l", "r")
+    ]
     steps = merge_motion_steps(build_motion_sequence(events))
 
     try:
@@ -1487,36 +1564,176 @@ def run_auto_step(app_state, obj_enum):
         return start_ok, status_msg_local
 
     _pre_start_ok, _pre_start_status_msg = _auto_start_gate_status_message()
-    log_line(_pre_start_status_msg)
+    if not _pre_start_ok:
+        log_line(_pre_start_status_msg)
 
     quiet_align = False
+    max_full_gatecheck_restarts = 3
     log_line(f"[AUTO] {step_key} demo={seg_type} success gates: {success_desc}")
 
     if app_state.robot:
         app_state.robot.stop()
-    reset_auto_step_action_stats(app_state.world, step_key)
     observer = make_auto_observer(app_state)
-    confirm_callback = None
+    try:
+        app_state.auto_cancel_event.clear()
+    except Exception:
+        pass
+
+    def confirm_callback(_world, _vision):
+        if bool(getattr(app_state, "auto_cancel_event", None)) and app_state.auto_cancel_event.is_set():
+            raise AutoStepCancelled()
+        return True
+
+    def _clear_gatecheck_runtime_state():
+        world_local = app_state.world
+        for attr in (
+            "_gatecheck_status",
+            "_last_gatecheck_progress_sig",
+            "_gatecheck_mode",
+            "_gatecheck_lite_passed",
+        ):
+            try:
+                setattr(world_local, attr, None)
+            except Exception:
+                pass
+        for attr in (
+            "_gatecheck_lite_checks",
+            "_gatecheck_lite_required",
+            "_gatecheck_lite_collected",
+        ):
+            try:
+                setattr(world_local, attr, 0)
+            except Exception:
+                pass
+
+    def _gatecheck_progress_snapshot_text():
+        status = getattr(app_state.world, "_gatecheck_status", None)
+        if not isinstance(status, dict):
+            return None
+        status_step = normalize_step_label(status.get("step")) or str(status.get("step") or "")
+        if normalize_step_label(status_step) != normalize_step_label(step_key):
+            return None
+        phase = str(status.get("phase") or "run").strip().lower() or "run"
+        mode = str(status.get("mode") or "traditional").strip().lower()
+        try:
+            checks = int(status.get("checks", 0) or 0)
+        except Exception:
+            checks = 0
+        if mode == "lite":
+            try:
+                lite_collected = max(0, int(status.get("lite_collected", 0) or 0))
+                lite_required = max(1, int(status.get("lite_required", 1) or 1))
+            except Exception:
+                lite_collected, lite_required = 0, 1
+            return f"{phase}: lite {lite_collected}/{lite_required} (checks={checks})"
+        try:
+            streak = int(status.get("streak", 0) or 0)
+            need = max(1, int(status.get("need", 1) or 1))
+            window_pass = int(status.get("window_pass", 0) or 0)
+            window_total = max(1, int(status.get("window_total", 1) or 1))
+        except Exception:
+            return f"{phase}: checks={checks}"
+        return (
+            f"{phase}: consec {streak}/{need}, majority {window_pass}/{window_total} "
+            f"(checks={checks})"
+        )
+
+    def _log_full_gatecheck_final(outcome, *, reason=None, attempt_num=None):
+        if nominal_only:
+            if int(attempt_num or 1) == 1:
+                log_line(f"[GATECHECK] {step_key} final: SKIPPED (nominal step)")
+            return
+        reason_norm_local = str(reason or "").strip().lower()
+        if "cancelled by user" in reason_norm_local:
+            return
+        progress_text = _gatecheck_progress_snapshot_text()
+        try:
+            attempt_num_int = int(attempt_num) if attempt_num is not None else None
+        except (TypeError, ValueError):
+            attempt_num_int = None
+        attempt_suffix = f" [attempt {attempt_num_int}]" if attempt_num_int and attempt_num_int > 1 else ""
+        outcome_key = str(outcome or "").strip().upper()
+        if outcome_key == "PASS":
+            if progress_text:
+                log_line(f"[GATECHECK] {step_key} final: PASS{attempt_suffix} ({progress_text})")
+            else:
+                log_line(f"[GATECHECK] {step_key} final: PASS{attempt_suffix} (full gatecheck met)")
+            return
+        if progress_text:
+            log_line(f"[GATECHECK] {step_key} final: FAIL{attempt_suffix} ({progress_text})")
+            return
+        if "start gates not met" in reason_norm_local:
+            log_line(f"[GATECHECK] {step_key} final: SKIPPED{attempt_suffix} (start gates not met)")
+            return
+        if reason:
+            log_line(f"[GATECHECK] {step_key} final: FAIL{attempt_suffix} (reason={reason})")
+        else:
+            log_line(f"[GATECHECK] {step_key} final: FAIL{attempt_suffix}")
+
+    def _is_full_gatecheck_failure_reason(reason):
+        return "success gate not reached" in str(reason or "").strip().lower()
+
     prior_suppress_skip_start_log = bool(getattr(app_state.world, "_suppress_start_gate_skip_log", False))
     app_state.world._suppress_start_gate_skip_log = True
     try:
         # Auto execution should not generate new demo recordings; demos are authored manually.
-        ok, reason = replay_segment(
-            segment,
-            step_key,
-            app_state.robot,
-            app_state.vision,
-            app_state.world,
-            observer=observer,
-            analysis_pause_s=0.0,
-            confirm_callback=confirm_callback,
-            align_silent=quiet_align,
-        )
+        ok = False
+        reason = "cancelled by user"
+        full_gatecheck_restarts_used = 0
+        attempt_num = 0
+        while True:
+            attempt_num += 1
+            reset_auto_step_action_stats(app_state.world, step_key)
+            _clear_gatecheck_runtime_state()
+            try:
+                ok, reason = replay_segment(
+                    segment,
+                    step_key,
+                    app_state.robot,
+                    app_state.vision,
+                    app_state.world,
+                    observer=observer,
+                    analysis_pause_s=0.0,
+                    confirm_callback=confirm_callback,
+                    align_silent=quiet_align,
+                )
+            except AutoStepCancelled:
+                ok = False
+                reason = "cancelled by user"
+                try:
+                    if app_state.robot:
+                        app_state.robot.stop()
+                except Exception:
+                    pass
+
+            if ok:
+                _log_full_gatecheck_final("PASS", reason=reason, attempt_num=attempt_num)
+                break
+
+            _log_full_gatecheck_final("FAIL", reason=reason, attempt_num=attempt_num)
+            if (
+                _is_full_gatecheck_failure_reason(reason)
+                and full_gatecheck_restarts_used < int(max_full_gatecheck_restarts)
+                and not (bool(getattr(app_state, "auto_cancel_event", None)) and app_state.auto_cancel_event.is_set())
+            ):
+                full_gatecheck_restarts_used += 1
+                log_line(
+                    f"[AUTO] {step_key} full gatecheck failed; restarting "
+                    f"({int(full_gatecheck_restarts_used)}/{int(max_full_gatecheck_restarts)})."
+                )
+                continue
+            break
     finally:
         app_state.world._suppress_start_gate_skip_log = prior_suppress_skip_start_log
+        try:
+            app_state.auto_cancel_event.clear()
+        except Exception:
+            pass
         if auto_demo_logging_started:
             _end_auto_demo_logging(app_state, obj_enum)
     if ok:
+        with app_state.lock:
+            app_state.last_auto_completed_step = obj_enum
         reason_text = reason.replace("_", " ") if isinstance(reason, str) else "success criteria met"
         log_line(f"[AUTO] {step_key} complete — {reason_text}.")
         act_stats = consume_auto_step_action_stats(app_state.world, step_key)
@@ -1525,8 +1742,8 @@ def run_auto_step(app_state, obj_enum):
         acts_backward = int((act_stats or {}).get("backward") or 0)
         acts_unchanged = int((act_stats or {}).get("unchanged") or 0)
         acts_unknown = int((act_stats or {}).get("unknown") or 0)
-        if acts_total <= 0 and actions:
-            acts_total = int(len(actions))
+        if acts_total <= 0 and chassis_actions:
+            acts_total = int(len(chassis_actions))
             acts_closer = 0
             acts_backward = 0
             acts_unchanged = 0
@@ -1543,7 +1760,11 @@ def run_auto_step(app_state, obj_enum):
         log_line(f"  {acts_unchanged} unchanged acts")
         log_line(f"  {acts_unknown} unclear acts")
     else:
-        log_line(f"[AUTO] {step_key} failed ({reason}).")
+        reason_norm = str(reason or "").strip().lower()
+        if reason_norm == "cancelled by user":
+            log_line(f"[AUTO] {step_key} cancelled (Esc).")
+        else:
+            log_line(f"[AUTO] {step_key} failed ({reason}).")
         if str(reason or "").strip().lower() == "start gates not met":
             _start_ok_now, _start_status_msg_now = _auto_start_gate_status_message()
             if not _start_ok_now:
@@ -2035,6 +2256,8 @@ def update_stream_frame(app_state):
 
 def make_auto_observer(app_state):
     def _observer(stage, world, vision, cmd, speed, reason):
+        if bool(getattr(app_state, "auto_cancel_event", None)) and app_state.auto_cancel_event.is_set():
+            raise AutoStepCancelled()
         # replay_segment already refreshed world from vision before observer callbacks.
         # Avoid a second camera read here; it can stall stream updates on some cameras.
         if stage == "action" and cmd:
@@ -2063,6 +2286,10 @@ def make_auto_confirm(app_state):
             return True
         log_line("[AUTO] Press Enter to execute suggested action.")
         while app_state.running:
+            if bool(getattr(app_state, "auto_cancel_event", None)) and app_state.auto_cancel_event.is_set():
+                with app_state.lock:
+                    app_state.auto_confirm_needed = False
+                raise AutoStepCancelled()
             if app_state.auto_confirm_event.is_set():
                 return True
             with app_state.lock:
@@ -2154,8 +2381,8 @@ def print_command_help(app_state=None):
     log_line("[CMD] Enter command mode with ':'")
     log_line("[CMD] Attempt codes: f=fail, s=success, r=recover, n=nominal")
     log_line("[CMD] Example: :4s (scoop success), :4n (scoop nominal)")
-    log_line("[CMD] Auto mode: press step number to auto-run.")
-    log_line("[CMD] Auto-run: press step number.")
+    log_line("[CMD] Auto-run: type the full step number, then press Enter.")
+    log_line("[CMD] Auto-run shortcut: blank Enter queues the next step after the last successful auto step.")
     log_line("[CMD] Hotkey tuning: press a movement hotkey, then press y to edit that hotkey's vars.")
     log_line("[CMD] Lift preflight: :liftcal (discover O/K micro movement + find ground level).")
     log_line("[CMD] End attempt: press ':' to finish and return to the command prompt.")
@@ -2399,10 +2626,12 @@ class AppState:
         self.auto_prompt = False
         self.auto_request = None
         self.auto_running = False
+        self.auto_cancel_event = threading.Event()
         self.auto_demo_logging_active = False
         self.auto_confirm_needed = False
         self.auto_confirm_event = threading.Event()
         self.last_enter_time = 0.0
+        self.last_auto_completed_step = None
 
         self.gate_status = []
         self.gate_progress = []
@@ -2440,6 +2669,170 @@ def getch():
 
 
 def keyboard_thread(app_state):
+    step_code_buffer = ""
+
+    def _clear_step_code_buffer():
+        nonlocal step_code_buffer
+        step_code_buffer = ""
+
+    def _step_code_buffer_message():
+        if not step_code_buffer:
+            return "[AUTO] Step code buffer cleared."
+        return f"[AUTO] Step code buffer: {step_code_buffer} (Enter=run, Backspace=edit)."
+
+    def _queue_auto_step_request(obj_enum):
+        if not obj_enum:
+            return False, ["[AUTO] Unknown step code."]
+        logs = load_demo_logs(app_state.demos_dir)
+        if not logs:
+            return False, ["[AUTO] No demo logs found. Record a demo first."]
+
+        update_process_model_from_demos(logs, PROCESS_MODEL_FILE)
+        refresh_autobuild_config(PROCESS_MODEL_FILE)
+        model = load_process_model(PROCESS_MODEL_FILE)
+        obj_key = normalize_step_label(obj_enum.value)
+        obj_cfg = (model.get("steps") or {}).get(obj_key, {})
+        success_gates = obj_cfg.get("success_gates") if isinstance(obj_cfg, dict) else None
+        nominal_only = isinstance(obj_cfg, dict) and obj_cfg.get("nominalDemosOnly")
+        if not success_gates and not nominal_only:
+            return False, [f"[AUTO] No success gates for {obj_key}. Record a success demo first."]
+
+        with app_state.lock:
+            app_state.last_key_time = time.time()
+            app_state.auto_prompt = False
+            try:
+                app_state.auto_cancel_event.clear()
+            except Exception:
+                pass
+            app_state.auto_request = obj_enum
+            app_state.active_command = None
+            app_state.active_hotkey = None
+            app_state.active_speed = 0.0
+            app_state.active_speed_score = None
+            app_state.active_duration_ms = None
+            app_state.active_pwm_override = None
+        return True, []
+
+    def _submit_step_code_buffer():
+        nonlocal step_code_buffer
+        token = str(step_code_buffer or "").strip()
+        step_code_buffer = ""
+        if not token:
+            return []
+        obj_enum = resolve_step_token(token)
+        ok, msg_list = _queue_auto_step_request(obj_enum)
+        if ok:
+            step_code = step_code_for_obj(obj_enum) if obj_enum is not None else token
+            step_name = str(getattr(obj_enum, "value", obj_enum or token)).lower()
+            return [f"[AUTO] Queued step {step_code} ({step_name})."]
+        return msg_list
+
+    def _blank_enter_next_step():
+        with app_state.lock:
+            auto_running = bool(app_state.auto_running)
+            last_completed = app_state.last_auto_completed_step
+            auto_prompt_active = bool(app_state.auto_prompt)
+        if auto_running:
+            return []
+        if last_completed is None:
+            if auto_prompt_active:
+                return ["[AUTO] Blank Enter shortcut needs a previous successful auto step."]
+            return []
+        next_obj = next_demo_step_obj(last_completed)
+        if next_obj is None:
+            last_code = step_code_for_obj(last_completed)
+            last_name = str(getattr(last_completed, "value", last_completed)).lower()
+            return [f"[AUTO] Blank Enter: no next step after {last_code} ({last_name})."]
+        ok, msg_list = _queue_auto_step_request(next_obj)
+        if not ok:
+            return msg_list
+        next_code = step_code_for_obj(next_obj)
+        next_name = str(getattr(next_obj, "value", next_obj)).lower()
+        return [f"[AUTO] Blank Enter -> queued next step {next_code} ({next_name})."]
+
+    def _prompt_auto_step_input(initial_text=""):
+        _clear_step_code_buffer()
+        seed = str(initial_text or "")
+        prompt = "[AUTO] Step > "
+
+        fd_term = sys.stdin.fileno()
+        try:
+            attr_term = termios.tcgetattr(fd_term)
+            attr_line = termios.tcgetattr(fd_term)
+            attr_line[3] |= termios.ECHO | termios.ICANON
+            termios.tcsetattr(fd_term, termios.TCSANOW, attr_line)
+        except Exception:
+            attr_term = None
+
+        line = None
+        readline_mod = None
+        prev_hook = None
+        used_prefill = False
+        if seed:
+            try:
+                import readline as readline_mod  # type: ignore
+                if hasattr(readline_mod, "get_startup_hook"):
+                    prev_hook = readline_mod.get_startup_hook()
+
+                def _prefill_hook():
+                    try:
+                        readline_mod.insert_text(seed)
+                        if hasattr(readline_mod, "redisplay"):
+                            readline_mod.redisplay()
+                    except Exception:
+                        pass
+
+                readline_mod.set_startup_hook(_prefill_hook)
+                used_prefill = True
+            except Exception:
+                readline_mod = None
+                prev_hook = None
+                used_prefill = False
+
+        try:
+            if seed and not used_prefill:
+                # Fallback when readline prefill is unavailable: keep the first digit(s)
+                # the user already typed and let them type the remainder.
+                suffix = input(f"{prompt}{seed}")
+                line = f"{seed}{suffix}"
+            else:
+                line = input(prompt)
+        except (EOFError, KeyboardInterrupt):
+            line = None
+        finally:
+            if readline_mod is not None:
+                try:
+                    readline_mod.set_startup_hook(prev_hook)
+                except Exception:
+                    try:
+                        readline_mod.set_startup_hook(None)
+                    except Exception:
+                        pass
+            if attr_term is not None:
+                try:
+                    termios.tcsetattr(fd_term, termios.TCSANOW, attr_term)
+                except Exception:
+                    pass
+            try:
+                termios.tcflush(sys.stdin, termios.TCIFLUSH)
+            except Exception:
+                pass
+
+        if line is None:
+            return ["[AUTO] Auto step prompt cancelled."]
+
+        token = str(line).strip()
+        if not token:
+            return _blank_enter_next_step()
+
+        obj_enum = resolve_step_token(token)
+        ok, msg_list = _queue_auto_step_request(obj_enum)
+        if ok:
+            step_code = step_code_for_obj(obj_enum) if obj_enum is not None else token
+            step_name = str(getattr(obj_enum, "value", obj_enum or token)).lower()
+            return [f"[AUTO] Queued step {step_code} ({step_name})."]
+        return msg_list
+
     while app_state.running:
         ch = getch()
         if not ch:
@@ -2452,10 +2845,37 @@ def keyboard_thread(app_state):
         messages = []
         pending_hotkey_action = None
         if ch == 'Q':
+            _clear_step_code_buffer()
             with app_state.lock:
                 app_state.last_key_time = time.time()
                 app_state.running = False
             messages.append("Stopping manual recording...")
+        elif ch == '\x1b':
+            _clear_step_code_buffer()
+            robot_to_stop = None
+            with app_state.lock:
+                app_state.last_key_time = time.time()
+                if bool(app_state.auto_running):
+                    app_state.auto_cancel_event.set()
+                    app_state.auto_confirm_needed = False
+                    app_state.auto_confirm_event.set()
+                    app_state.auto_request = None
+                    robot_to_stop = app_state.robot
+                    messages.append("[AUTO] Cancel requested (Esc). Stopping current auto-step...")
+                elif app_state.auto_request is not None:
+                    app_state.auto_request = None
+                    try:
+                        app_state.auto_cancel_event.clear()
+                    except Exception:
+                        pass
+                    messages.append("[AUTO] Cleared queued auto-step request.")
+                else:
+                    messages.append("[AUTO] Esc: no auto-step is currently running.")
+            if robot_to_stop is not None:
+                try:
+                    robot_to_stop.stop()
+                except Exception:
+                    pass
         elif ch in ('\n', '\r'):
             with app_state.lock:
                 app_state.last_key_time = time.time()
@@ -2465,54 +2885,37 @@ def keyboard_thread(app_state):
                     app_state.auto_confirm_event.set()
             if auto_confirm_needed:
                 messages.append("[AUTO] Action confirmed.")
-        elif ch_lower.isdigit():
-            obj_enum = resolve_step_token(ch_lower)
-            if not obj_enum:
-                messages.append("[AUTO] Unknown step code.")
+            elif step_code_buffer:
+                messages.extend(_submit_step_code_buffer())
             else:
-                logs = load_demo_logs(app_state.demos_dir)
-                if not logs:
-                    messages.append("[AUTO] No demo logs found. Record a demo first.")
-                else:
-                    update_process_model_from_demos(logs, PROCESS_MODEL_FILE)
-                    refresh_autobuild_config(PROCESS_MODEL_FILE)
-                    model = load_process_model(PROCESS_MODEL_FILE)
-                    obj_key = normalize_step_label(obj_enum.value)
-                    obj_cfg = (model.get("steps") or {}).get(obj_key, {})
-                    success_gates = obj_cfg.get("success_gates") if isinstance(obj_cfg, dict) else None
-                    nominal_only = isinstance(obj_cfg, dict) and obj_cfg.get("nominalDemosOnly")
-                    if not success_gates and not nominal_only:
-                        messages.append(f"[AUTO] No success gates for {obj_key}. Record a success demo first.")
-                    else:
-                        with app_state.lock:
-                            app_state.last_key_time = time.time()
-                            app_state.auto_request = obj_enum
-                            app_state.active_command = None
-                            app_state.active_hotkey = None
-                            app_state.active_speed = 0.0
-                            app_state.active_speed_score = None
-                            app_state.active_duration_ms = None
-                            app_state.active_pwm_override = None
+                messages.extend(_blank_enter_next_step())
+        elif ch in ('\x7f', '\b'):
+            with app_state.lock:
+                app_state.last_key_time = time.time()
+            if step_code_buffer:
+                step_code_buffer = step_code_buffer[:-1]
+                messages.append(_step_code_buffer_message())
+        elif ch_lower.isdigit():
+            with app_state.lock:
+                app_state.last_key_time = time.time()
+                app_state.auto_prompt = False
+            messages.extend(_prompt_auto_step_input(initial_text=ch_lower))
         elif auto_prompt:
             with app_state.lock:
                 app_state.last_key_time = time.time()
                 if ch_lower == 'm':
                     app_state.auto_prompt = False
+                    _clear_step_code_buffer()
                     messages.append("[AUTO] Auto mode cancelled.")
                 else:
-                    obj_enum = resolve_step_token(ch_lower)
-                    if obj_enum:
-                        app_state.auto_prompt = False
-                        app_state.auto_request = obj_enum
-                        app_state.active_command = None
-                        app_state.active_hotkey = None
-                        app_state.active_speed = 0.0
-                        app_state.active_speed_score = None
-                        app_state.active_duration_ms = None
-                        app_state.active_pwm_override = None
+                    if step_code_buffer:
+                        messages.append(_step_code_buffer_message())
                     else:
-                        messages.append("[AUTO] Unknown step code.")
+                        messages.append(
+                            "[AUTO] Type the full step number, then press Enter (blank Enter = next step)."
+                        )
         elif ch_lower == ':':
+            _clear_step_code_buffer()
             with app_state.lock:
                 app_state.last_key_time = time.time()
                 end_msg = None
@@ -2560,17 +2963,19 @@ def keyboard_thread(app_state):
                         pass
                     break
         elif ch_lower == 'm':
+            _clear_step_code_buffer()
             with app_state.lock:
                 app_state.last_key_time = time.time()
-                app_state.auto_prompt = True
+                app_state.auto_prompt = False
                 app_state.active_command = None
                 app_state.active_hotkey = None
                 app_state.active_speed = 0.0
                 app_state.active_speed_score = None
                 app_state.active_duration_ms = None
                 app_state.active_pwm_override = None
-            messages.append("[AUTO] Select a step code to run autonomously (press 'm' again to cancel).")
+            messages.extend(_prompt_auto_step_input(initial_text=""))
         elif ch_lower == 'y':
+            _clear_step_code_buffer()
             with app_state.lock:
                 app_state.last_key_time = time.time()
                 target = app_state.hotkey_edit_target if isinstance(app_state.hotkey_edit_target, dict) else None
@@ -2584,6 +2989,7 @@ def keyboard_thread(app_state):
                 else:
                     maybe_prompt_hotkey_var_update(app_state, cmd, score, enter_edit=True)
         else:
+            _clear_step_code_buffer()
             with app_state.lock:
                 app_state.last_key_time = time.time()
                 # MOVEMENT (Heartbeat triggers)
@@ -2997,6 +3403,10 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
                 auto_obj = app_state.auto_request
                 app_state.auto_request = None
                 app_state.auto_running = True
+                try:
+                    app_state.auto_cancel_event.clear()
+                except Exception:
+                    pass
                 app_state.active_command = None
                 app_state.active_hotkey = None
                 app_state.active_speed = 0.0
@@ -3256,13 +3666,16 @@ def command_loop(app_state):
                     dur_sent = None
                 cmd_sent = str(send_result.get("cmd_sent") or cmd).strip().lower()
                 wire = getattr(app_state.robot, "last_command", None)
-                wire_tail = f" | wire={wire}" if wire else ""
+                wire_text = str(wire).strip() if wire else ""
+                if not wire_text:
+                    pieces = [str(cmd_sent)]
+                    if pwm_sent is not None:
+                        pieces.append(str(int(pwm_sent)))
+                    if dur_sent is not None:
+                        pieces.append(str(int(dur_sent)))
+                    wire_text = " ".join([p for p in pieces if p])
                 log_line(
-                    "[HOTKEY SEND] "
-                    f"{str(hotkey).upper()} -> {cmd_sent.upper()} "
-                    f"pwm={pwm_sent if pwm_sent is not None else '?'} "
-                    f"dur={dur_sent if dur_sent is not None else '?'}ms"
-                    f"{wire_tail}"
+                    f"[HOTKEY SEND] {wire_text}"
                 )
             refresh_brick_telemetry(app_state, read_vision=False)
             # One-shot hotkey behavior: each keypress sends one timed pulse.
@@ -3329,6 +3742,7 @@ if __name__ == "__main__":
     kb_t = threading.Thread(target=keyboard_thread, args=(state,), daemon=True)
     kb_t.start()
     
+    stream_server = None
     # Web Stream thread (optional)
     if args.stream:
         try:
@@ -3354,7 +3768,7 @@ if __name__ == "__main__":
             if actual_port != STREAM_PORT:
                 log_line(f"[VISION] Stream port {STREAM_PORT} busy; using {actual_port}")
             log_line(f"[VISION] Stream started at {ANSI_ORANGE_BRIGHT}{url}{ANSI_RESET}")
-            _open_stream_in_chrome("http://127.0.0.1:5000/")
+            _open_stream_in_chrome(url)
     else:
         state.stream_enabled = False
         log_line("[VISION] Stream disabled")
@@ -3365,6 +3779,11 @@ if __name__ == "__main__":
         pass
     finally:
         state.running = False
+        if stream_server is not None:
+            try:
+                stream_server.stop()
+            except Exception:
+                pass
         if state.robot: state.robot.close()
         if state.vision: state.vision.close()
         close_log(state, marker=None)

@@ -2,6 +2,7 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -50,7 +51,7 @@ class TestTelemetryProcessLiteGate(unittest.TestCase):
         )
         self.assertEqual(telemetry_process.lite_gate_unique_frames("ALIGN_BRICK"), 3)
         self.assertEqual(telemetry_process.lite_gate_unique_frames("POSITION_BRICK"), 4)
-        self.assertIsNone(telemetry_process.lite_gate_unique_frames("FIND_BRICK"))
+        self.assertEqual(telemetry_process.lite_gate_unique_frames("FIND_BRICK"), 3)
 
     def test_evaluate_gate_status_uses_lite_average_for_configured_step(self):
         telemetry_process.apply_lite_gate_check_config(
@@ -132,11 +133,97 @@ class TestTelemetryProcessLiteGate(unittest.TestCase):
         }
         world.brick["visible"] = True
         world.last_visible_time = time.time()
+        world._smoothed_frame_history = [
+            {"frame_id": 1, "visible": True},
+            {"frame_id": 2, "visible": True},
+            {"frame_id": 3, "visible": True},
+        ]
         ok, _ = telemetry_process.evaluate_gate_status(world, "FIND_BRICK")
         self.assertTrue(ok)
         self.assertEqual(world._gatecheck_mode, "traditional")
-        self.assertEqual(world._gatecheck_lite_required, 0)
-        self.assertEqual(world._gatecheck_lite_collected, 0)
+        self.assertEqual(world._gatecheck_lite_required, 3)
+        self.assertEqual(world._gatecheck_lite_collected, 3)
+
+    def test_full_gate_tracker_does_not_start_before_first_post_lite_success_sample(self):
+        world = _DummyWorld()
+        world._gatecheck_mode = "traditional"
+        world._gatecheck_lite_required = 3
+        world._gatecheck_lite_collected = 3
+        world._gatecheck_lite_checks = 0
+        world._frame_id = 42
+
+        tracker = telemetry_process.gate_utils.SuccessGateTracker(12, 26, 13)
+        tracker.total_checks = 0
+
+        success_met = telemetry_process.update_gatecheck_with_precheck(
+            world,
+            "BRICK_LOCK",
+            tracker,
+            False,  # effective success gates still failing (e.g. x-axis gap remains)
+            phase="align",
+            log=False,
+        )
+
+        self.assertFalse(success_met)
+        self.assertEqual(tracker.total_checks, 0)
+        self.assertEqual(world._gatecheck_mode, "lite")
+        status = getattr(world, "_gatecheck_status", None)
+        self.assertIsInstance(status, dict)
+        self.assertEqual(status.get("mode"), "lite")
+
+    def test_full_gate_tracker_starts_on_first_post_lite_success_sample(self):
+        world = _DummyWorld()
+        world._gatecheck_mode = "traditional"
+        world._gatecheck_lite_required = 3
+        world._gatecheck_lite_collected = 3
+        world._gatecheck_lite_checks = 0
+        world._frame_id = 43
+
+        tracker = telemetry_process.gate_utils.SuccessGateTracker(12, 26, 13)
+        tracker.total_checks = 0
+
+        success_met = telemetry_process.update_gatecheck_with_precheck(
+            world,
+            "BRICK_LOCK",
+            tracker,
+            True,  # first effective-success sample after lite pass
+            phase="align",
+            log=False,
+        )
+
+        self.assertFalse(success_met)  # one sample is not enough to confirm
+        self.assertEqual(tracker.total_checks, 1)
+        status = getattr(world, "_gatecheck_status", None)
+        self.assertIsInstance(status, dict)
+        self.assertEqual(status.get("mode"), "traditional")
+
+    def test_run_full_gatecheck_after_act_keeps_align_brick_to_one_check(self):
+        telemetry_process.apply_lite_gate_check_config({"default_unique_smoothed_frames": 3})
+        world = _DummyWorld()
+        vision = object()
+        tracker = telemetry_process.gate_utils.SuccessGateTracker(12, 26, 13)
+        wait_calls = []
+
+        def _fake_wait_for_fresh_frames(*args, **kwargs):
+            wait_calls.append((args, kwargs))
+            world._frame_id += 1
+            return {"advanced": 1}
+
+        with mock.patch.object(telemetry_process.gate_utils, "wait_for_fresh_frames", side_effect=_fake_wait_for_fresh_frames), \
+             mock.patch.object(telemetry_process, "update_world_from_vision", return_value=None), \
+             mock.patch.object(telemetry_process, "gatecheck_after_move", return_value=False):
+            ok = telemetry_process.run_full_gatecheck_after_act(
+                world,
+                vision,
+                "ALIGN_BRICK",
+                tracker,
+                phase="align",
+                log=False,
+                observer=None,
+            )
+
+        self.assertFalse(ok)
+        self.assertEqual(len(wait_calls), 1)
 
 
 if __name__ == "__main__":

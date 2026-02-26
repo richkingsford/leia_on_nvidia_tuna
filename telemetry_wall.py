@@ -105,7 +105,7 @@ def init_wall_state(envelope: WallEnvelope):
 
 
 def _needs_wall_origin(obj_name):
-    if obj_name in ("PLACE", "POSITION_BRICK"):
+    if obj_name in ("PLACE", "RETREAT", "POSITION_BRICK"):
         return True
     return "ALIGN" in obj_name and "WALL" in obj_name
 

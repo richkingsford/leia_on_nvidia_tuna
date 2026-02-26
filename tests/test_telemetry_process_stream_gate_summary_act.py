@@ -55,7 +55,7 @@ def _auto_lines(summary):
 
 
 class TestTelemetryProcessStreamGateSummaryAct(unittest.TestCase):
-    def test_action_sent_display_text_does_not_show_cmd_remap_arrow(self):
+    def test_action_sent_display_text_uses_logical_command_even_with_wire_remap(self):
         text = telemetry_process.action_sent_display_text(
             "f",
             2,
@@ -65,7 +65,7 @@ class TestTelemetryProcessStreamGateSummaryAct(unittest.TestCase):
         )
         self.assertNotIn("->", text)
         self.assertTrue(text.startswith("F 2%"), text)
-        self.assertIn("sent=B", text)
+        self.assertNotIn("sent=", text)
         self.assertIn("pwm=", text)
         self.assertIn("ms", text)
 

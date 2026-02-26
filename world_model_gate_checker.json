@@ -1,7 +1,7 @@
 {
     "gate_checker": {
-        "consecutive_required": 12,
-        "majority_window": 26,
-        "majority_required": 14
+        "consecutive_required": 6,
+        "majority_window": 13,
+        "majority_required": 7
     }
 }
