@@ -711,7 +711,8 @@ class BrickDetector:
             self.last_primary_confidence = 0.0
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
-        return self._process_bricks(frame, bricks)
+        # Use a copy so debug drawing doesn't mutate the caller's frame
+        return self._process_bricks(frame.copy(), bricks)
 
     def _draw_debug(self, frame, bricks, angle, dist, offset_x, conf):
         """Draw detection visualization on frame."""
