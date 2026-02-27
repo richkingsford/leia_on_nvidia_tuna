@@ -481,6 +481,67 @@ class BrickDetector:
             angle = angle - 90
         return angle
 
+    def _refine_angle_for_primary(self, frame, primary):
+        """
+        Re-extract angle from an un-eroded HSV mask of the primary brick.
+
+        Erosion is needed to separate touching bricks, but it distorts
+        contour shape — making near-square contours that cause minAreaRect
+        to flip between 0 and 90 degrees.  By re-running HSV with only
+        morphological OPEN (no erosion) on the primary brick's bbox, we
+        get the full color contour whose aspect ratio matches the real
+        brick face, giving a stable angle.
+        """
+        bx, by, bw, bh = primary["bbox"]
+
+        # Pad the bbox slightly to capture edge pixels
+        pad = max(5, int(max(bw, bh) * 0.15))
+        rx1 = max(0, bx - pad)
+        ry1 = max(0, by - pad)
+        rx2 = min(frame.shape[1], bx + bw + pad)
+        ry2 = min(frame.shape[0], by + bh + pad)
+
+        crop = frame[ry1:ry2, rx1:rx2]
+        if crop.size == 0:
+            return self._estimate_angle_from_rect(primary["rect"])
+
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, self._hsv_lower, self._hsv_upper)
+
+        # Light cleanup: open to remove noise, then gentle erosion (3x3, 1 iter)
+        # to separate touching bricks without distorting shape.
+        kern = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kern)
+        mask = cv2.erode(mask, kern, iterations=1)
+
+        contours, _ = cv2.findContours(
+            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        if not contours:
+            return self._estimate_angle_from_rect(primary["rect"])
+
+        # Pick the contour closest to the primary brick's center (in crop coords)
+        pcx = primary["center_x"] - rx1
+        pcy = primary["center_y"] - ry1
+        best_cnt = None
+        best_dist = float("inf")
+        for cnt in contours:
+            M = cv2.moments(cnt)
+            if M["m00"] == 0:
+                continue
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+            d = (cx - pcx) ** 2 + (cy - pcy) ** 2
+            if d < best_dist:
+                best_dist = d
+                best_cnt = cnt
+
+        if best_cnt is None or len(best_cnt) < 5:
+            return self._estimate_angle_from_rect(primary["rect"])
+
+        rect = cv2.minAreaRect(best_cnt)
+        return self._estimate_angle_from_rect(rect)
+
     def _select_center_brick(self, individual_bricks, frame_w, frame_h):
         """
         Pick the brick closest to frame center. Partial bricks get 2x
@@ -577,8 +638,8 @@ class BrickDetector:
             self.last_primary_confidence = float(yolo_conf)
             conf_pct = float(yolo_conf) * 100.0
 
-            # Angle from minAreaRect contour (much cleaner than Canny)
-            raw_angle = self._estimate_angle_from_rect(primary["rect"])
+            # Angle from un-eroded contour (erosion distorts near-square shapes)
+            raw_angle = self._refine_angle_for_primary(frame, primary)
             angle = self._smooth(raw_angle, self._prev_angle)
             self._prev_angle = angle
 
