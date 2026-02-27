@@ -68,6 +68,18 @@ NMS_THRESHOLD = 0.45
 # YOLO input size (model was exported at 640x640)
 YOLO_INPUT_SIZE = 640
 
+# ---------------------------------------------------------------------------
+# HSV segmentation for individual cyan brick detection within YOLO boxes
+# ---------------------------------------------------------------------------
+CYAN_HSV_LOWER = np.array([75, 60, 50])
+CYAN_HSV_UPPER = np.array([115, 255, 255])
+HSV_ERODE_KERNEL = 5
+HSV_ERODE_ITERATIONS = 2
+HSV_MIN_AREA_RATIO = 0.05       # Min 5% of YOLO bbox area = real brick
+HSV_CYAN_COVERAGE_MIN = 0.08    # Need 8% cyan coverage to engage HSV path
+STACK_X_OVERLAP_RATIO = 0.6     # Same-column tolerance for above/below
+STACK_Y_GAP_RATIO = 0.35        # Vertical gap threshold for above/below
+
 
 class BrickDetector:
     """
@@ -154,6 +166,12 @@ class BrickDetector:
                       "set_runtime_tuning(focal_px=N) to adjust.",
                       self.focal_px, self.frame_w, self.frame_h)
 
+        # HSV segmentation for individual cyan brick splitting
+        self._hsv_lower = CYAN_HSV_LOWER.copy()
+        self._hsv_upper = CYAN_HSV_UPPER.copy()
+        self._hsv_enabled = True
+        self._hsv_erode_iterations = HSV_ERODE_ITERATIONS
+
         # Temporal smoothing
         self._prev_angle = None
         self._prev_dist = None
@@ -161,7 +179,9 @@ class BrickDetector:
         self._smooth_alpha = 0.3  # EMA weight for new values (lower = smoother)
 
     def set_runtime_tuning(self, confidence=None, smoothing_alpha=None,
-                           nms_threshold=None, focal_px=None):
+                           nms_threshold=None, focal_px=None,
+                           hsv_lower=None, hsv_upper=None,
+                           hsv_enabled=None, hsv_erode_iterations=None):
         if confidence is not None:
             try:
                 conf_val = float(confidence)
@@ -185,11 +205,32 @@ class BrickDetector:
                 self.focal_px = max(1.0, float(focal_px))
             except (TypeError, ValueError):
                 pass
+        if hsv_lower is not None:
+            try:
+                self._hsv_lower = np.array(hsv_lower, dtype=np.uint8)
+            except (TypeError, ValueError):
+                pass
+        if hsv_upper is not None:
+            try:
+                self._hsv_upper = np.array(hsv_upper, dtype=np.uint8)
+            except (TypeError, ValueError):
+                pass
+        if hsv_enabled is not None:
+            self._hsv_enabled = bool(hsv_enabled)
+        if hsv_erode_iterations is not None:
+            try:
+                self._hsv_erode_iterations = max(0, int(hsv_erode_iterations))
+            except (TypeError, ValueError):
+                pass
         return {
             "conf_threshold": float(self.conf_threshold),
             "smooth_alpha": float(self._smooth_alpha),
             "nms_threshold": float(self.nms_threshold),
             "focal_px": float(self.focal_px),
+            "hsv_lower": self._hsv_lower.tolist(),
+            "hsv_upper": self._hsv_upper.tolist(),
+            "hsv_enabled": self._hsv_enabled,
+            "hsv_erode_iterations": self._hsv_erode_iterations,
         }
 
     # ------------------------------------------------------------------
@@ -343,6 +384,274 @@ class BrickDetector:
         return self._smooth_alpha * new_val + (1 - self._smooth_alpha) * prev_val
 
     # ------------------------------------------------------------------
+    # HSV segmentation for individual cyan brick detection
+    # ------------------------------------------------------------------
+
+    def _segment_bricks_hsv(self, frame, x1, y1, x2, y2):
+        """
+        Segment individual cyan bricks within a single YOLO bbox using HSV
+        color filtering.
+
+        Returns a list of brick dicts, or empty list if no cyan found
+        (triggers fallback to current YOLO-only pipeline).
+        """
+        crop = frame[y1:y2, x1:x2]
+        if crop.size == 0:
+            return []
+
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, self._hsv_lower, self._hsv_upper)
+
+        # Check cyan coverage — if too little, not a cyan brick
+        bbox_area = crop.shape[0] * crop.shape[1]
+        cyan_pixels = cv2.countNonZero(mask)
+        if cyan_pixels < bbox_area * HSV_CYAN_COVERAGE_MIN:
+            return []
+
+        # Morphological cleanup: open to remove noise, erode to separate
+        # touching bricks, dilate to restore edges
+        kern_open = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kern_open)
+
+        kern_erode = cv2.getStructuringElement(
+            cv2.MORPH_RECT, (HSV_ERODE_KERNEL, HSV_ERODE_KERNEL)
+        )
+        mask = cv2.erode(mask, kern_erode, iterations=self._hsv_erode_iterations)
+
+        kern_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        mask = cv2.dilate(mask, kern_dilate, iterations=1)
+
+        contours, _ = cv2.findContours(
+            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        if not contours:
+            return []
+
+        min_area = bbox_area * HSV_MIN_AREA_RATIO
+        bricks = []
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < min_area:
+                continue
+
+            M = cv2.moments(cnt)
+            if M["m00"] == 0:
+                continue
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+
+            rect = cv2.minAreaRect(cnt)
+            bx, by, bw, bh = cv2.boundingRect(cnt)
+
+            # Check if contour touches crop edge (partial brick)
+            partial = (bx <= 1 or by <= 1 or
+                       bx + bw >= crop.shape[1] - 1 or
+                       by + bh >= crop.shape[0] - 1)
+
+            # Offset from crop-space to frame-space
+            cnt_frame = cnt.copy()
+            cnt_frame[:, :, 0] += x1
+            cnt_frame[:, :, 1] += y1
+            rect_frame = (
+                (rect[0][0] + x1, rect[0][1] + y1),
+                rect[1],
+                rect[2],
+            )
+
+            bricks.append({
+                "contour": cnt_frame,
+                "center_x": cx + x1,
+                "center_y": cy + y1,
+                "rect": rect_frame,
+                "bbox": (bx + x1, by + y1, bw, bh),
+                "area": area,
+                "partial": partial,
+            })
+
+        return bricks
+
+    def _estimate_angle_from_rect(self, rect):
+        """
+        Extract angle from cv2.minAreaRect result.
+        Same normalization as _estimate_angle (w < h -> angle - 90).
+        """
+        angle = rect[2]
+        w, h = rect[1]
+        if w < h:
+            angle = angle - 90
+        return angle
+
+    def _select_center_brick(self, individual_bricks, frame_w, frame_h):
+        """
+        Pick the brick closest to frame center. Partial bricks get 2x
+        distance penalty so we prefer fully-visible bricks.
+        """
+        if not individual_bricks:
+            return None
+
+        center_x = frame_w / 2.0 + self.camera_center_offset_px
+        center_y = frame_h / 2.0
+
+        best = None
+        best_score = float("inf")
+        for b in individual_bricks:
+            dx = b["center_x"] - center_x
+            dy = b["center_y"] - center_y
+            score = math.sqrt(dx * dx + dy * dy)
+            if b["partial"]:
+                score *= 2.0
+            if score < best_score:
+                best_score = score
+                best = b
+        return best
+
+    def _stack_flags_from_individuals(self, primary, all_bricks):
+        """
+        Determine above/below flags using individual brick positions.
+        Reuses the proven pattern from OLD/vision_brick_color.py:252-271.
+        """
+        if not primary or len(all_bricks) < 2:
+            return False, False
+
+        sel_x = primary["center_x"]
+        sel_y = primary["center_y"]
+        _, _, bw, bh = primary["bbox"]
+
+        x_tol = max(10.0, bw * STACK_X_OVERLAP_RATIO)
+        y_tol = max(10.0, bh * STACK_Y_GAP_RATIO)
+
+        above = False
+        below = False
+        for b in all_bricks:
+            if b is primary:
+                continue
+            if abs(b["center_x"] - sel_x) > x_tol:
+                continue
+            if b["center_y"] < sel_y - y_tol:
+                above = True
+            elif b["center_y"] > sel_y + y_tol:
+                below = True
+        return above, below
+
+    # ------------------------------------------------------------------
+    # Shared processing pipeline
+    # ------------------------------------------------------------------
+
+    def _process_bricks(self, frame, bricks):
+        """
+        Shared pipeline for read() and read_frame().
+        Runs HSV segmentation on YOLO boxes, falls back to current
+        behavior for non-cyan bricks.
+
+        Returns the standard 8-tuple.
+        """
+        w_frame = self.frame_w
+        h_frame = self.frame_h
+
+        # Sort by confidence (highest first)
+        bricks.sort(key=lambda b: b[4], reverse=True)
+
+        # Try HSV segmentation on each YOLO box to find individual cyan bricks
+        all_hsv_bricks = []
+        hsv_used = False
+        if self._hsv_enabled:
+            for x1, y1, x2, y2, conf in bricks:
+                individuals = self._segment_bricks_hsv(frame, x1, y1, x2, y2)
+                all_hsv_bricks.extend(individuals)
+            if all_hsv_bricks:
+                hsv_used = True
+
+        if hsv_used:
+            # HSV path: center-most brick, contour-based angle, individual distance
+            primary = self._select_center_brick(all_hsv_bricks, w_frame, h_frame)
+            self.last_status = "target locked (HSV)"
+
+            # Use YOLO confidence from the box that contained this brick
+            # (find which YOLO box contains the primary brick center)
+            yolo_conf = bricks[0][4]
+            for x1, y1, x2, y2, conf in bricks:
+                if (x1 <= primary["center_x"] <= x2 and
+                        y1 <= primary["center_y"] <= y2):
+                    yolo_conf = conf
+                    break
+            self.last_primary_confidence = float(yolo_conf)
+            conf_pct = float(yolo_conf) * 100.0
+
+            # Angle from minAreaRect contour (much cleaner than Canny)
+            raw_angle = self._estimate_angle_from_rect(primary["rect"])
+            angle = self._smooth(raw_angle, self._prev_angle)
+            self._prev_angle = angle
+
+            # Distance from individual brick bbox height
+            _, _, _, ind_bh = primary["bbox"]
+            raw_dist = self._estimate_distance(ind_bh)
+            dist = self._smooth(raw_dist, self._prev_dist)
+            self._prev_dist = dist
+
+            # Horizontal offset
+            frame_center_x = w_frame / 2.0 + self.camera_center_offset_px
+            offset_px = primary["center_x"] - frame_center_x
+            raw_offset_x = (offset_px / self.focal_px) * dist
+            offset_x = self._smooth(raw_offset_x, self._prev_offset)
+            self._prev_offset = offset_x
+
+            # Stack flags from individual positions
+            brick_above, brick_below = self._stack_flags_from_individuals(
+                primary, all_hsv_bricks
+            )
+
+            cam_height = 0.0
+
+            if self.debug:
+                self._draw_debug_hsv(
+                    frame, bricks, all_hsv_bricks, primary,
+                    angle, dist, offset_x, yolo_conf
+                )
+
+            return (True, angle, dist, offset_x, conf_pct, cam_height,
+                    brick_above, brick_below)
+
+        # Fallback path: current YOLO-only pipeline (gray bricks, HSV disabled, etc.)
+        x1, y1, x2, y2, conf = bricks[0]
+        self.last_status = "target locked"
+        self.last_primary_confidence = float(conf)
+        conf_pct = float(conf) * 100.0
+
+        raw_angle = self._estimate_angle(frame, x1, y1, x2, y2)
+        angle = self._smooth(raw_angle, self._prev_angle)
+        self._prev_angle = angle
+
+        bbox_h = y2 - y1
+        raw_dist = self._estimate_distance(bbox_h)
+        dist = self._smooth(raw_dist, self._prev_dist)
+        self._prev_dist = dist
+
+        brick_center_x = (x1 + x2) / 2.0
+        frame_center_x = w_frame / 2.0 + self.camera_center_offset_px
+        offset_px = brick_center_x - frame_center_x
+        raw_offset_x = (offset_px / self.focal_px) * dist
+        offset_x = self._smooth(raw_offset_x, self._prev_offset)
+        self._prev_offset = offset_x
+
+        primary_cy = (y1 + y2) / 2.0
+        brick_above = False
+        brick_below = False
+        for bx1, by1, bx2, by2, bconf in bricks[1:]:
+            other_cy = (by1 + by2) / 2.0
+            if other_cy < primary_cy - bbox_h * 0.5:
+                brick_above = True
+            elif other_cy > primary_cy + bbox_h * 0.5:
+                brick_below = True
+
+        cam_height = 0.0
+
+        if self.debug:
+            self._draw_debug(frame, bricks, angle, dist, offset_x, conf)
+
+        return (True, angle, dist, offset_x, conf_pct, cam_height,
+                brick_above, brick_below)
+
+    # ------------------------------------------------------------------
     # Main interface
     # ------------------------------------------------------------------
 
@@ -353,15 +662,6 @@ class BrickDetector:
         Returns:
             tuple: (found, angle, dist, offset_x, confidence,
                     cam_height, brick_above, brick_below)
-
-            found (bool): True if a brick was detected
-            angle (float): Brick rotation angle in degrees
-            dist (float): Estimated distance to brick in mm
-            offset_x (float): Horizontal offset from camera center in mm
-            confidence (float): Detection confidence (0-100)
-            cam_height (float): Estimated camera height (0 if unknown)
-            brick_above (bool): Whether a brick is detected above current
-            brick_below (bool): Whether a brick is detected below current
         """
         ret, frame = self.cap.read()
         if not ret or frame is None:
@@ -377,7 +677,6 @@ class BrickDetector:
         self.frame_w = w_frame
         self.frame_h = h_frame
 
-        # Run YOLO ONNX inference
         bricks = self._detect(frame)
 
         if not bricks:
@@ -388,52 +687,7 @@ class BrickDetector:
             self.last_primary_confidence = 0.0
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
-        # Pick the highest-confidence brick as primary target
-        bricks.sort(key=lambda b: b[4], reverse=True)
-        x1, y1, x2, y2, conf = bricks[0]
-        self.last_status = "target locked"
-        self.last_primary_confidence = float(conf)
-        conf_pct = float(conf) * 100.0
-
-        # Angle estimation
-        raw_angle = self._estimate_angle(frame, x1, y1, x2, y2)
-        angle = self._smooth(raw_angle, self._prev_angle)
-        self._prev_angle = angle
-
-        # Distance estimation
-        bbox_h = y2 - y1
-        raw_dist = self._estimate_distance(bbox_h)
-        dist = self._smooth(raw_dist, self._prev_dist)
-        self._prev_dist = dist
-
-        # Horizontal offset from camera center (in mm)
-        brick_center_x = (x1 + x2) / 2.0
-        frame_center_x = w_frame / 2.0 + self.camera_center_offset_px
-        offset_px = brick_center_x - frame_center_x
-        raw_offset_x = (offset_px / self.focal_px) * dist
-        offset_x = self._smooth(raw_offset_x, self._prev_offset)
-        self._prev_offset = offset_x
-
-        # Check for bricks above/below the primary target
-        primary_cy = (y1 + y2) / 2.0
-        brick_above = False
-        brick_below = False
-        for bx1, by1, bx2, by2, bconf in bricks[1:]:
-            other_cy = (by1 + by2) / 2.0
-            if other_cy < primary_cy - bbox_h * 0.5:
-                brick_above = True
-            elif other_cy > primary_cy + bbox_h * 0.5:
-                brick_below = True
-
-        # Camera height estimate (0 = unknown)
-        cam_height = 0.0
-
-        # Debug visualization
-        if self.debug:
-            self._draw_debug(frame, bricks, angle, dist, offset_x, conf)
-
-        return (True, angle, dist, offset_x, conf_pct, cam_height,
-                brick_above, brick_below)
+        return self._process_bricks(frame, bricks)
 
     def read_frame(self, frame):
         """
@@ -457,46 +711,8 @@ class BrickDetector:
             self.last_primary_confidence = 0.0
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
-        bricks.sort(key=lambda b: b[4], reverse=True)
-        x1, y1, x2, y2, conf = bricks[0]
-        self.last_status = "target locked"
-        self.last_primary_confidence = float(conf)
-        conf_pct = float(conf) * 100.0
-
-        raw_angle = self._estimate_angle(frame, x1, y1, x2, y2)
-        angle = self._smooth(raw_angle, self._prev_angle)
-        self._prev_angle = angle
-
-        bbox_h = y2 - y1
-        raw_dist = self._estimate_distance(bbox_h)
-        dist = self._smooth(raw_dist, self._prev_dist)
-        self._prev_dist = dist
-
-        brick_center_x = (x1 + x2) / 2.0
-        frame_center_x = w_frame / 2.0 + self.camera_center_offset_px
-        offset_px = brick_center_x - frame_center_x
-        raw_offset_x = (offset_px / self.focal_px) * dist
-        offset_x = self._smooth(raw_offset_x, self._prev_offset)
-        self._prev_offset = offset_x
-
-        primary_cy = (y1 + y2) / 2.0
-        brick_above = False
-        brick_below = False
-        for bx1, by1, bx2, by2, bconf in bricks[1:]:
-            other_cy = (by1 + by2) / 2.0
-            if other_cy < primary_cy - bbox_h * 0.5:
-                brick_above = True
-            elif other_cy > primary_cy + bbox_h * 0.5:
-                brick_below = True
-
-        cam_height = 0.0
-
-        if self.debug:
-            debug_frame = frame.copy()
-            self._draw_debug(debug_frame, bricks, angle, dist, offset_x, conf)
-
-        return (True, angle, dist, offset_x, conf_pct, cam_height,
-                brick_above, brick_below)
+        # Use a copy so debug drawing doesn't mutate the caller's frame
+        return self._process_bricks(frame.copy(), bricks)
 
     def _draw_debug(self, frame, bricks, angle, dist, offset_x, conf):
         """Draw detection visualization on frame."""
@@ -521,6 +737,38 @@ class BrickDetector:
             ex = int(cx + length * math.cos(rad))
             ey = int(cy - length * math.sin(rad))
             cv2.line(frame, (cx, cy), (ex, ey), (0, 0, 255), 2)
+
+        self.current_frame = frame
+
+    def _draw_debug_hsv(self, frame, yolo_bricks, hsv_bricks, primary,
+                        angle, dist, offset_x, conf):
+        """Draw enhanced debug visualization for HSV-segmented bricks."""
+        # Gray thin-line YOLO boxes (reference)
+        for x1, y1, x2, y2, c in yolo_bricks:
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (128, 128, 128), 1)
+
+        # Yellow contours for all HSV-segmented bricks
+        for b in hsv_bricks:
+            cv2.drawContours(frame, [b["contour"]], -1, (0, 255, 255), 1)
+            # Magenta rotated rectangle (minAreaRect)
+            box_pts = cv2.boxPoints(b["rect"])
+            box_pts = np.intp(box_pts)
+            cv2.drawContours(frame, [box_pts], 0, (255, 0, 255), 1)
+
+        # Green thick contour + crosshair on selected primary brick
+        if primary:
+            cv2.drawContours(frame, [primary["contour"]], -1, (0, 255, 0), 2)
+            pcx, pcy = primary["center_x"], primary["center_y"]
+            cv2.drawMarker(frame, (pcx, pcy), (0, 255, 0),
+                           cv2.MARKER_CROSS, 15, 2)
+
+            # Red angle line from primary brick center
+            _, _, bw, bh = primary["bbox"]
+            length = min(bw, bh) // 2
+            rad = math.radians(angle - 90.0)
+            ex = int(pcx + length * math.cos(rad))
+            ey = int(pcy - length * math.sin(rad))
+            cv2.line(frame, (pcx, pcy), (ex, ey), (0, 0, 255), 2)
 
         self.current_frame = frame
 
