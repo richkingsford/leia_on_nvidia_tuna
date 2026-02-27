@@ -266,6 +266,40 @@ class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
         self.assertEqual(int(plan.get("score") or 0), expected_score, plan)
         self.assertNotEqual(int(plan.get("score") or 0), 1, plan)
 
+    def test_gap_planner_dist_only_step_does_not_invent_x_gap(self):
+        process_rules = {
+            "SEAT_BRICK2": {
+                "success_gates": {
+                    "visible": {"min": True},
+                    "dist": {"target": 41.26, "tol": 1.5},
+                }
+            }
+        }
+        orig = helper_next.compute_alignment_decision
+        try:
+            helper_next.compute_alignment_decision = lambda **kwargs: {
+                "cmd": "l",  # generic analytics may suggest turn; gap planner should ignore for dist-only step
+                "worst_metric": "xAxis_offset_abs",
+                "speed_score": 5,
+            }
+            plan = helper_next.select_alignment_next_act(
+                process_rules=process_rules,
+                learned_rules={},
+                step="SEAT_BRICK2",
+                x_axis_mm=25.0,   # large x offset should not matter without an x gate
+                y_axis_mm=0.0,
+                dist_mm=70.0,     # distance clearly outside gate
+                visible=True,
+                angle_deg=0.0,
+                duration_s=0.05,
+            )
+        finally:
+            helper_next.compute_alignment_decision = orig
+
+        self.assertEqual(plan.get("planner"), "gap", plan)
+        self.assertEqual(plan.get("correction_type"), "distance", plan)
+        self.assertIn(plan.get("cmd"), ("f", "b"), plan)
+
 
 if __name__ == "__main__":
     unittest.main()

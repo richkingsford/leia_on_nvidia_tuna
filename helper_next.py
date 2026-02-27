@@ -93,11 +93,66 @@ def _step_name(step):
     return normalize_step_label(step)
 
 
-def metric_direction_for_step(metric, step):
-    direction = METRIC_DIRECTIONS.get(metric)
+ALIGN_POLICY_DEFAULTS = {
+    "disabled_metrics": [],
+    "metric_direction_overrides": {},
+    "hold_when_not_visible": False,
+    "x_axis_tol_far_scale": 1.0,
+    "focus_prioritization_enabled": True,
+    "focus_x_first_dist_gap_gt_mm": 1000000000.0,
+    "focus_x_first_x_gap_gt_mm": 1000000000.0,
+    "focus_dist_first_dist_gap_gt_mm": 150.0,
+    "focus_dist_first_x_gap_lt_mm": 1000000000.0,
+    "focus_dist_sticky_enabled": True,
+    "focus_dist_sticky_release_mm": 100.0,
+    "dist_score_mode": "dist_value_bands",
+    "turn_score_mode": "shared_turn_bands",
+    "turn_fallback_score": ALIGN_STEPS_SHARED_TURN_FALLBACK_SCORE,
+    "slow_fast_mm_scale": 0.25,
+    "auto_speed_hard_cap_exempt": False,
+    "calibration_profile_fallback_step": None,
+}
+
+
+def _step_cfg(process_rules, step):
     obj_name = _step_name(step)
-    if obj_name == "FIND_BRICK" and metric == "dist":
-        return None
+    cfg = {}
+    if isinstance(process_rules, dict):
+        raw = process_rules.get(obj_name)
+        if isinstance(raw, dict):
+            cfg = raw
+    return obj_name, cfg
+
+
+def _align_policy_for_step(process_rules, step):
+    _obj_name, cfg = _step_cfg(process_rules, step)
+    out = dict(ALIGN_POLICY_DEFAULTS)
+    raw = cfg.get("align_policy") if isinstance(cfg, dict) else {}
+    if isinstance(raw, dict):
+        out.update(raw)
+    if not isinstance(out.get("disabled_metrics"), (list, tuple, set)):
+        out["disabled_metrics"] = []
+    if not isinstance(out.get("metric_direction_overrides"), dict):
+        out["metric_direction_overrides"] = {}
+    return out
+
+
+def metric_direction_for_step(metric, step, process_rules=None):
+    direction = METRIC_DIRECTIONS.get(metric)
+    if isinstance(process_rules, dict):
+        policy = _align_policy_for_step(process_rules, step)
+        metric_key = str(metric)
+        disabled = {str(item).strip() for item in policy.get("disabled_metrics") or []}
+        if metric_key in disabled:
+            return None
+        override = (policy.get("metric_direction_overrides") or {}).get(metric_key)
+        if override is None:
+            return direction
+        override_key = str(override).strip().lower()
+        if override_key in {"low", "high", "band"}:
+            return override_key
+        if override_key in {"none", "off", "disabled"}:
+            return None
     return direction
 
 
@@ -252,23 +307,20 @@ def align_brick_y_axis_one_shot_score(y_err_mm: float) -> int:
     return int(SPEED_SCORE_MIN)
 
 
-def align_turn_speed_score_for_step(step, x_err_mm: float, *, dist_gate_error_mm=None) -> int:
-    """Return shared l/r speed score for a step using the active paradigm."""
-    step_key = _step_name(step)
-    if step_key == "ALIGN_BRICK":
+def align_turn_speed_score_for_step(step, x_err_mm: float, *, dist_gate_error_mm=None, process_rules=None) -> int:
+    """Return l/r speed score using world-model policy, not hard-coded step names."""
+    policy = _align_policy_for_step(process_rules, step)
+    mode = str(policy.get("turn_score_mode") or "shared_turn_bands").strip().lower()
+    try:
+        fallback_score = int(round(float(policy.get("turn_fallback_score", ALIGN_STEPS_SHARED_TURN_FALLBACK_SCORE))))
+    except (TypeError, ValueError):
+        fallback_score = int(ALIGN_STEPS_SHARED_TURN_FALLBACK_SCORE)
+    if mode in {"x_axis_one_shot_curve", "x_axis_curve", "one_shot"}:
         return int(align_brick_x_axis_one_shot_score(x_err_mm))
-    if step_key == "POSITION_BRICK":
-        return int(
-            align_steps_turn_speed_score(
-                x_err_mm,
-                ALIGN_STEPS_SHARED_TURN_FALLBACK_SCORE,
-                dist_gate_error_mm=dist_gate_error_mm,
-            )
-        )
     return int(
         align_steps_turn_speed_score(
             x_err_mm,
-            ALIGN_STEPS_SHARED_TURN_FALLBACK_SCORE,
+            int(fallback_score),
             dist_gate_error_mm=dist_gate_error_mm,
         )
     )
@@ -380,7 +432,13 @@ def align_brick_micro_forward_profile(process_rules, step: str):
     }
 
 
-def align_brick_x_axis_tol_scale(dist_mm: float, process_rules, step: str) -> float:
+def align_brick_x_axis_tol_scale(
+    dist_mm: float,
+    process_rules,
+    step: str,
+    *,
+    max_scale: float = ALIGN_BRICK_X_AXIS_TOL_FAR_SCALE,
+) -> float:
     """
     Calculate x-axis tolerance scaling based on distance from brick.
     
@@ -395,7 +453,10 @@ def align_brick_x_axis_tol_scale(dist_mm: float, process_rules, step: str) -> fl
     profile = align_brick_micro_forward_profile(process_rules, step)
     close = float(profile["close_mm"])  # ~150mm - where strict alignment starts
     far = float(profile["far_mm"])      # ~200mm - where max leniency applies
-    max_scale = float(ALIGN_BRICK_X_AXIS_TOL_FAR_SCALE)  # 6.0x
+    try:
+        max_scale = max(1.0, float(max_scale))
+    except (TypeError, ValueError):
+        max_scale = float(ALIGN_BRICK_X_AXIS_TOL_FAR_SCALE)
 
     try:
         dist_val = float(dist_mm)
@@ -417,6 +478,7 @@ def align_brick_x_axis_tol_scale(dist_mm: float, process_rules, step: str) -> fl
 
 def compute_alignment_analytics(world, process_rules, learned_rules, step, duration_s=0.05):
     obj_name = _step_name(step)
+    align_policy = _align_policy_for_step(process_rules, obj_name)
     success_metrics = (process_rules or {}).get(obj_name, {}).get("success_gates") or {}
     step_cfg = (process_rules or {}).get(obj_name, {}) or {}
     brick = world.brick or {}
@@ -431,9 +493,8 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
     angle = float(brick.get("angle", 0.0) or 0.0)
     dist = float(brick.get("dist", 0.0) or 0.0)
 
-    # Auto-step ALIGN_BRICK micro-adjustments should never act blindly. If the
-    # brick isn't visible, HOLD and let vision settle/reacquire.
-    if obj_name == "ALIGN_BRICK" and not visible:
+    hold_when_not_visible = bool(align_policy.get("hold_when_not_visible"))
+    if hold_when_not_visible and not visible:
         return {
             "progress": None,
             "worst_metric": None,
@@ -479,8 +540,17 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
     mm_errors = {}
     x_axis_turn_error_mm = None
     x_axis_tol_scale = 1.0
-    if obj_name == "ALIGN_BRICK":
-        x_axis_tol_scale = align_brick_x_axis_tol_scale(dist, process_rules, obj_name)
+    try:
+        x_axis_tol_far_scale = max(1.0, float(align_policy.get("x_axis_tol_far_scale", 1.0)))
+    except (TypeError, ValueError):
+        x_axis_tol_far_scale = 1.0
+    if x_axis_tol_far_scale > 1.0:
+        x_axis_tol_scale = align_brick_x_axis_tol_scale(
+            dist,
+            process_rules,
+            obj_name,
+            max_scale=float(x_axis_tol_far_scale),
+        )
         if x_axis_tol_scale < 1.0:
             x_axis_tol_scale = 1.0
 
@@ -535,7 +605,7 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
         value = metrics.get(metric)
         stats = success_metrics.get(metric) or fallback_stats(metric)
         stats = _effective_stats(metric, stats)
-        direction = metric_direction_for_step(metric, obj_name)
+        direction = metric_direction_for_step(metric, obj_name, process_rules=process_rules)
         if direction is None:
             continue
         target = stats.get("target")
@@ -604,30 +674,51 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
         x_axis_ok = True
     dist_gap_mm = None
     force_dist_focus = False
-    force_x_axis_focus = False  # New: prioritize x-axis when far from brick
-    if obj_name == "ALIGN_BRICK":
+    force_x_axis_focus = False
+    focus_prioritization_enabled = bool(align_policy.get("focus_prioritization_enabled"))
+    if focus_prioritization_enabled:
+        try:
+            focus_x_first_dist_gap_gt_mm = float(align_policy.get("focus_x_first_dist_gap_gt_mm", 50.0))
+        except (TypeError, ValueError):
+            focus_x_first_dist_gap_gt_mm = 50.0
+        try:
+            focus_x_first_x_gap_gt_mm = float(align_policy.get("focus_x_first_x_gap_gt_mm", 2.0))
+        except (TypeError, ValueError):
+            focus_x_first_x_gap_gt_mm = 2.0
+        try:
+            focus_dist_first_dist_gap_gt_mm = float(align_policy.get("focus_dist_first_dist_gap_gt_mm", 150.0))
+        except (TypeError, ValueError):
+            focus_dist_first_dist_gap_gt_mm = 150.0
+        try:
+            focus_dist_first_x_gap_lt_mm = float(align_policy.get("focus_dist_first_x_gap_lt_mm", 5.0))
+        except (TypeError, ValueError):
+            focus_dist_first_x_gap_lt_mm = 5.0
+        focus_dist_sticky_enabled = bool(align_policy.get("focus_dist_sticky_enabled", True))
+        try:
+            focus_dist_sticky_release_mm = float(align_policy.get("focus_dist_sticky_release_mm", 100.0))
+        except (TypeError, ValueError):
+            focus_dist_sticky_release_mm = 100.0
         try:
             dist_gap_mm = abs(float(offsets.get("dist", 0.0) or 0.0))
         except (TypeError, ValueError):
             dist_gap_mm = None
-        
-        # CRITICAL SAFETY: When far from brick, prioritize x-axis alignment first
-        # This prevents hitting the brick while misaligned on x-axis
-        # Only focus on distance when x-axis is good OR distance is extreme (>150mm)
         if dist_gap_mm is not None:
-            # If we're far (>50mm from target) and x-axis needs work, prioritize x-axis
             x_axis_gap_mm = mm_errors.get("xAxis_offset_abs", 0.0)
-            if dist_gap_mm > 50.0 and x_axis_gap_mm > 2.0:
-                force_x_axis_focus = True
-            # Only force distance focus if extremely far AND x-axis is acceptable
-            elif dist_gap_mm > 150.0 and x_axis_gap_mm < 5.0:
+            sticky_focus_dist = bool(getattr(world, "_align_focus_dist", False))
+            if (
+                focus_dist_sticky_enabled
+                and sticky_focus_dist
+                and dist_gap_mm >= max(0.0, float(focus_dist_sticky_release_mm))
+            ):
                 force_dist_focus = True
-            # Medium distance (50-150mm): use natural worst_metric selection
+                force_x_axis_focus = False
+            elif dist_gap_mm > focus_x_first_dist_gap_gt_mm and x_axis_gap_mm > focus_x_first_x_gap_gt_mm:
+                force_x_axis_focus = True
+            elif dist_gap_mm > focus_dist_first_dist_gap_gt_mm and x_axis_gap_mm < focus_dist_first_x_gap_lt_mm:
+                force_dist_focus = True
             else:
                 force_dist_focus = False
                 force_x_axis_focus = False
-        
-        # Update sticky focus state (legacy compatibility)
         focus_dist = force_dist_focus
         try:
             world._align_focus_dist = focus_dist
@@ -643,7 +734,7 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
                 continue
             if not isinstance(stats, dict):
                 continue
-            direction = metric_direction_for_step(metric, obj_name)
+            direction = metric_direction_for_step(metric, obj_name, process_rules=process_rules)
             if metric == "angle_abs":
                 value = abs(angle)
             elif metric == "xAxis_offset_abs":
@@ -718,10 +809,13 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
         step_profile = learned_rules.get(obj_name)
         if isinstance(step_profile, dict) and isinstance(step_profile.get("calibration_profile"), dict):
             profile = dict(step_profile.get("calibration_profile") or {})
-        elif obj_name == "POSITION_BRICK":
-            align_profile = learned_rules.get("ALIGN_BRICK")
-            if isinstance(align_profile, dict) and isinstance(align_profile.get("calibration_profile"), dict):
-                profile = dict(align_profile.get("calibration_profile") or {})
+        else:
+            fallback_step = align_policy.get("calibration_profile_fallback_step")
+            fallback_key = _step_name(fallback_step) if fallback_step else None
+            if fallback_key:
+                fallback_profile = learned_rules.get(fallback_key)
+                if isinstance(fallback_profile, dict) and isinstance(fallback_profile.get("calibration_profile"), dict):
+                    profile = dict(fallback_profile.get("calibration_profile") or {})
 
     try:
         turn_speed_scale = float(profile.get("turn_speed_scale", 1.0))
@@ -811,14 +905,15 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
             mm_off = mm_errors.get("dist")
         if (mm_off is None or mm_off <= 0.0) and worst_metric == "angle_abs":
             mm_off = None
-        slow_mm = ALIGN_SPEED_SLOW_MM
-        fast_mm = ALIGN_SPEED_FAST_MM
-        if obj_name != "ALIGN_BRICK":
-            slow_mm = ALIGN_SPEED_SLOW_MM / 4.0
-            fast_mm = ALIGN_SPEED_FAST_MM / 4.0
-        if obj_name == "ALIGN_BRICK" and cmd in ("f", "b"):
-            # Keep ALIGN_BRICK distance micro-adjustments identical to calibrate_align:
-            # speed comes from distance error to target, not raw distance profile.
+        try:
+            slow_fast_mm_scale = float(align_policy.get("slow_fast_mm_scale", 0.25))
+        except (TypeError, ValueError):
+            slow_fast_mm_scale = 0.25
+        slow_fast_mm_scale = max(0.01, float(slow_fast_mm_scale))
+        slow_mm = float(ALIGN_SPEED_SLOW_MM) * float(slow_fast_mm_scale)
+        fast_mm = float(ALIGN_SPEED_FAST_MM) * float(slow_fast_mm_scale)
+        dist_score_mode = str(align_policy.get("dist_score_mode") or "simple_mm_band").strip().lower()
+        if cmd in ("f", "b") and dist_score_mode in {"dist_error_bands", "dist_error"}:
             dist_error_mm = None
             if isinstance(offsets, dict):
                 dist_signed_err = _coerce_float(offsets.get("dist"), None)
@@ -828,15 +923,16 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
                 dist_error_mm = _coerce_float(mm_errors.get("dist"), 0.0) or 0.0
             dist_score_float = align_brick_dist_error_speed_score(float(dist_error_mm))
             speed_score = int(round(float(dist_score_float)))
-        elif obj_name == "POSITION_BRICK" and cmd in ("f", "b"):
+        elif cmd in ("f", "b") and dist_score_mode in {"dist_value_bands", "dist_profile"}:
             base_score = _score_from_mm(mm_off, slow_mm, fast_mm)
             speed_score = align_steps_dist_speed_score(dist, base_score)
-        elif obj_name in ("ALIGN_BRICK", "POSITION_BRICK") and cmd in ("l", "r") and x_axis_turn_error_mm is not None:
+        elif cmd in ("l", "r") and x_axis_turn_error_mm is not None:
             dist_gate_error_mm = mm_errors.get("dist")
             speed_score = align_turn_speed_score_for_step(
                 obj_name,
                 x_axis_turn_error_mm,
                 dist_gate_error_mm=dist_gate_error_mm,
+                process_rules=process_rules,
             )
         else:
             speed_score = _score_from_mm(mm_off, slow_mm, fast_mm)
@@ -860,9 +956,7 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
         speed_score = min(int(speed_score), int(max_speed_score))
     if profile_max_speed_score is not None:
         speed_score = min(int(speed_score), int(profile_max_speed_score))
-    # Keep ALIGN_BRICK score dynamics aligned with calibrate_align; do not apply
-    # the auto hard cap to this step.
-    if obj_name != "ALIGN_BRICK":
+    if not bool(align_policy.get("auto_speed_hard_cap_exempt")):
         speed_score = min(int(speed_score), int(AUTO_SPEED_SCORE_HARD_MAX))
 
     if cmd:
@@ -894,10 +988,10 @@ def _coerce_float(value, default=None):
 # Gap-closing policy: vertical (`y_err`) corrections stay in rotation, but should
 # only preempt x/dist corrections when the normalized y gap is substantially larger.
 # This reduces oscillatory or low-value mast adjustments during x/dist convergence.
-GAP_ALIGN_Y_AXIS_PRIORITY_PENALTY = 3.0
+GAP_ALIGN_Y_AXIS_PRIORITY_PENALTY = 2.0
 # `y_err` should only be worked once the other gap(s) are nearly solved.
-# Ratio is normalized "outside gate" error: 0.05 means 5% beyond the gate tolerance.
-GAP_ALIGN_Y_AXIS_OTHER_GAPS_NEAR_RATIO_MAX = 0.05
+# Ratio is normalized "outside gate" error: 0.10 means 10% beyond the gate tolerance.
+GAP_ALIGN_Y_AXIS_OTHER_GAPS_NEAR_RATIO_MAX = 0.10
 
 
 def _success_gates_for_step(process_rules, step):
@@ -1021,6 +1115,7 @@ def select_align_brick_next_act(
     x_stats = success_gates.get("xAxis_offset_abs") if isinstance(success_gates, dict) else {}
     if not isinstance(x_stats, dict):
         x_stats = {}
+    x_required = bool(x_stats)
     y_stats = success_gates.get("yAxis_offset_abs") if isinstance(success_gates, dict) else {}
     if not isinstance(y_stats, dict):
         y_stats = {}
@@ -1028,6 +1123,7 @@ def select_align_brick_next_act(
     d_stats = success_gates.get("dist") if isinstance(success_gates, dict) else {}
     if not isinstance(d_stats, dict):
         d_stats = {}
+    d_required = bool(d_stats)
 
     x_target = _coerce_float(x_stats.get("target"), 0.0) or 0.0
     # `offset_y` is relative to the camera vertical center, so target remains 0 by default.
@@ -1061,9 +1157,9 @@ def select_align_brick_next_act(
         denom = max(float(tol_mm), 1.0)
         return float(err) / float(denom)
 
-    x_ratio = _gate_ratio(abs(x_err_mm), x_tol)
+    x_ratio = _gate_ratio(abs(x_err_mm), x_tol) if x_required else 0.0
     y_ratio = _gate_ratio(abs(y_err_mm), y_tol) if (y_required and y_err_mm is not None) else 0.0
-    d_ratio = _gate_ratio(dist_err_mm, dist_tol) if dist_val is not None and dist_tol > 0.0 else 0.0
+    d_ratio = _gate_ratio(dist_err_mm, dist_tol) if (d_required and dist_val is not None and dist_tol > 0.0) else 0.0
 
     def _priority_ratio(correction_type, raw_ratio):
         try:
@@ -1109,7 +1205,7 @@ def select_align_brick_next_act(
 
     candidates = {}
 
-    if x_ratio > 0.0:
+    if x_required and x_ratio > 0.0:
         candidates["x_axis"] = {
             "cmd": "l" if x_err_mm <= 0.0 else "r",
             "correction_type": "x_axis",
@@ -1131,7 +1227,7 @@ def select_align_brick_next_act(
             "ratio": float(y_ratio),
         }
 
-    if dist_val is not None and d_ratio > 0.0:
+    if d_required and dist_val is not None and d_ratio > 0.0:
         # Single-source distance direction for gap micro-adjustments: derive from
         # the signed distance error, not the generic analytics planner's cmd.
         dist_cmd = "f" if float(dist_val) > float(dist_target) else "b"
@@ -1167,7 +1263,7 @@ def select_align_brick_next_act(
     except (TypeError, ValueError):
         x_axis_gap_mm = None
         dist_gap_mm = None
-    if dist_gap_mm is not None and x_axis_gap_mm is not None:
+    if x_required and d_required and dist_gap_mm is not None and x_axis_gap_mm is not None:
         if dist_gap_mm > 50.0 and x_axis_gap_mm > 2.0:
             force_x_axis_focus = True
         elif dist_gap_mm > 150.0 and x_axis_gap_mm < 5.0:
@@ -1208,13 +1304,41 @@ def select_align_brick_next_act(
         if best_primary is not None:
             chosen = dict(best_primary)
         else:
+            fallback_corr = "distance" if d_required else ("x_axis" if x_required else ("y_axis" if y_required else "x_axis"))
+            if fallback_corr == "distance":
+                if dist_val is not None and d_required:
+                    dist_cmd_fallback = "f" if float(dist_val) > float(dist_target) else "b"
+                    dist_err_abs = abs(float(dist_val) - float(dist_target))
+                else:
+                    dist_cmd_fallback = "f" if str(prod_cmd) not in ("b",) else "b"
+                    dist_err_abs = 0.0
+                dist_score_fallback = float(align_brick_dist_error_speed_score(dist_err_abs))
+                fallback_cmd = dist_cmd_fallback
+                fallback_score = int(round(dist_score_fallback))
+                fallback_reason = "distance_alignment"
+                fallback_worst_metric = "dist"
+                fallback_score_float = dist_score_fallback
+            elif fallback_corr == "y_axis":
+                y_err_fallback = float(y_err_mm or 0.0)
+                fallback_cmd = "d" if y_err_fallback > 0.0 else "u"
+                fallback_score = int(align_brick_y_axis_one_shot_score(y_err_fallback))
+                fallback_reason = "y_axis_alignment"
+                fallback_worst_metric = worst_metric or "yAxis_offset_abs"
+                fallback_score_float = None
+            else:
+                x_err_fallback = float(x_err_mm or 0.0)
+                fallback_cmd = "l" if x_err_fallback <= 0.0 else "r"
+                fallback_score = int(align_brick_x_axis_one_shot_score(x_err_fallback))
+                fallback_reason = "x_axis_alignment"
+                fallback_worst_metric = worst_metric or "xAxis_offset_abs"
+                fallback_score_float = None
             chosen = {
-                "cmd": str(prod_cmd),
-                "correction_type": "x_axis",
-                "score": int(align_brick_x_axis_one_shot_score(x_err_mm)),
-                "score_float": None,
-                "reason": "x_axis_alignment",
-                "worst_metric": worst_metric or "xAxis_offset_abs",
+                "cmd": str(fallback_cmd),
+                "correction_type": str(fallback_corr),
+                "score": int(fallback_score),
+                "score_float": fallback_score_float,
+                "reason": str(fallback_reason),
+                "worst_metric": fallback_worst_metric,
                 "ratio": 0.0,
             }
 

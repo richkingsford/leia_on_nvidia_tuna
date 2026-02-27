@@ -55,6 +55,25 @@ def _auto_lines(summary):
 
 
 class TestTelemetryProcessStreamGateSummaryAct(unittest.TestCase):
+    def test_stream_success_gate_line_shows_dist_gap_and_keeps_mismatch_color(self):
+        line = telemetry_process._stream_success_gate_line(
+            "BRICK_LOCK_WALL",
+            {
+                "metric": "dist",
+                "stats": {"target": 94.6, "tol": 4.3},
+                "value": 112.9,
+            },
+        )
+        self.assertIsInstance(line, dict)
+        segments = line.get("segments") or []
+        text = _line_text(line)
+        self.assertIn("dist=94.6+/-4.3", text)
+        self.assertIn("(+18.3)", text)
+        self.assertNotIn("(112.9)", text)
+        self.assertGreaterEqual(len(segments), 2)
+        color = tuple(segments[1][1]) if isinstance(segments[1], (tuple, list)) and len(segments[1]) > 1 else None
+        self.assertEqual(color, tuple(telemetry_process.STREAM_RED))
+
     def test_action_sent_display_text_uses_logical_command_even_with_wire_remap(self):
         text = telemetry_process.action_sent_display_text(
             "f",

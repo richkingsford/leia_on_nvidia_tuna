@@ -29,6 +29,11 @@ else:
 
 **Key principle:** No speed adaptation, no scaling, no features. Just minimal reliable movement.
 
+## Architecture Principle (Enforced)
+- Helper modules must contain generalized, reusable logic only.
+- Step-specific behavior must be represented in world model files (`world_model_*.json`), not hardcoded by step name inside helper modules.
+- Any step-specific helper exception requires explicit human leadership approval and documentation.
+
 ### 3. Simplified Console Output
 **Before:**
 ```

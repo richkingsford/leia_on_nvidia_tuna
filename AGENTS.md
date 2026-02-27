@@ -9,6 +9,9 @@
 - `telemetry*` files contain robot/interaction logic.
 - `debug*` files are never imported or used by other scripts.
 - `helper*` files are helpers and should be used whenever possible.
+- Generalized/reusable logic belongs in `helper*` files and must remain step-agnostic by default.
+- Step-specific behavior in helpers is prohibited unless explicitly approved by human leadership and documented as an exception with rationale.
+- Step-custom details (for example: start gates, success gates, metric directions, speed policies, focus thresholds) must live in world model JSON files, not hardcoded helper branches.
 - `setup_manual_training.py` is a key file but must not contain robot behavior logic (use helpers).
 - `autobuild.py` is a key file but must not contain robot behavior logic (use helpers).
 - Minimize duplicate code.

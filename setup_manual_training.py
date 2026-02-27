@@ -349,6 +349,8 @@ STEP_NAMES["lock_wall"] = StepState.BRICK_LOCK_WALL
 STEP_NAMES["align"] = StepState.ALIGN_BRICK
 STEP_NAMES["seat"] = StepState.SEAT_BRICK
 STEP_NAMES["scoop"] = StepState.SEAT_BRICK
+STEP_NAMES["seat2"] = StepState.SEAT_BRICK2
+STEP_NAMES["seat_brick2"] = StepState.SEAT_BRICK2
 STEP_NAMES["elevate"] = StepState.ELEVATE_BRICK
 STEP_NAMES["lift"] = StepState.ELEVATE_BRICK
 STEP_NAMES["carry"] = StepState.FIND_WALL2
@@ -361,22 +363,23 @@ STEP_NAMES["retreat"] = StepState.RETREAT
 STEP_NAMES["place"] = StepState.RETREAT
 
 STEP_CODE_EMOJIS = {
-    "find_wall": "🧱",
-    "exit_wall": "🧱",
-    "find_brick": "🧱",
+    "find_wall": "🟠",
+    "exit_wall": "🔴",
+    "find_brick": "🟠",
     "approach_vector_brick_supply": "📐",
     "find_topmost_brick": "🎩",
     "find_topmost_brick_wall": "🎩",
-    "brick_lock": "➡️",
-    "brick_lock_wall": "➡️",
-    "align_brick": "➡️",
-    "seat_brick": "➡️",
-    "elevate_brick": "👆",
-    "find_wall2": "🧱",
+    "brick_lock": "🟢",
+    "brick_lock_wall": "🟢",
+    "align_brick": "🟢",
+    "seat_brick": "🟢",
+    "seat_brick2": "🟢",
+    "elevate_brick": "🟠",
+    "find_wall2": "🟠",
     "approach_vector_wall": "📐",
-    "position_brick": "🎩",
-    "retreat": "👈",
-    "place": "👈",
+    "position_brick": "🟢",
+    "retreat": "🟢",
+    "place": "🟢",
 }
 
 ATTEMPT_CODES = {

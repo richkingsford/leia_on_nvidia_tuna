@@ -50,6 +50,7 @@ DEFAULT_STEP_ORDER = [
     "ELEVATE_BRICK",
     "FIND_WALL2",
     "POSITION_BRICK",
+    "SEAT_BRICK2",
     "PLACE",
 ]
 

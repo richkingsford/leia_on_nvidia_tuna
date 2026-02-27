@@ -63,12 +63,15 @@ METRICS_BY_STEP = {
     "BRICK_LOCK_WALL": ("xAxis_offset_abs", "dist", "brick_above", "brick_below", "visible"),
     "ALIGN_BRICK": ("xAxis_offset_abs", "yAxis_offset_abs", "dist", "visible"),
     "SEAT_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
+    "SEAT_BRICK2": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "ELEVATE_BRICK": ("visible",),
     "FIND_WALL2": ("visible",),
     "APPROACH_VECTOR_WALL": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "POSITION_BRICK": ("angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "brick_above", "visible"),
     "RETREAT": ("visible",),
 }
+
+SCOOP_LIKE_STEPS = {"SEAT_BRICK", "SEAT_BRICK2"}
 
 VISIBILITY_REQUIRED_METRICS = {"angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist"}
 
@@ -851,7 +854,7 @@ def update_from_vision(world, found, dist, angle, conf, offset_x=0, cam_h=0, bri
         world.last_seen_dist = float(dist)
         world.last_seen_confidence = float(conf)
 
-    if _step_name(world.step_state) == "SEAT_BRICK":
+    if _step_name(world.step_state) in SCOOP_LIKE_STEPS:
         world.scoop_forward_preferred = True
         world.scoop_desired_offset_x = 0.0
         world.scoop_lateral_drift = world.brick["offset_x"] - world.scoop_desired_offset_x
@@ -873,7 +876,7 @@ def update_from_vision(world, found, dist, angle, conf, offset_x=0, cam_h=0, bri
         tol_off = align_rules.get("max_offset_x", world.align_tol_offset)
         tol_ang = align_rules.get("max_angle", world.align_tol_angle)
 
-        if _step_name(world.step_state) == "SEAT_BRICK":
+        if _step_name(world.step_state) in SCOOP_LIKE_STEPS:
             corridor = get_scoop_corridor_limits(world, dist)
             if corridor:
                 tol_off = corridor.get("max_offset_x", tol_off)
@@ -881,7 +884,7 @@ def update_from_vision(world, found, dist, angle, conf, offset_x=0, cam_h=0, bri
 
         tol_off *= 1.1
         tol_ang *= 1.1
-        if _step_name(world.step_state) == "SEAT_BRICK":
+        if _step_name(world.step_state) in SCOOP_LIKE_STEPS:
             tol_off *= world.scoop_success_offset_factor
 
         angle_ok = abs(angle) <= tol_ang
@@ -913,19 +916,19 @@ def evaluate_start_gates(world, step, learned_rules, process_rules=None):
         )
     confidence = brick.get("confidence", 0.0) or 0.0
 
-    if obj_name in ("ALIGN_BRICK", "SEAT_BRICK", "POSITION_BRICK"):
+    if obj_name in ("ALIGN_BRICK", "SEAT_BRICK", "SEAT_BRICK2", "POSITION_BRICK"):
         if not visible:
             reasons.append("brick not visible")
         elif confidence < START_GATE_MIN_CONFIDENCE:
             reasons.append(f"confidence<{START_GATE_MIN_CONFIDENCE:.0f}")
 
-    if obj_name == "SEAT_BRICK" and visible and confidence >= START_GATE_MIN_CONFIDENCE:
+    if obj_name in SCOOP_LIKE_STEPS and visible and confidence >= START_GATE_MIN_CONFIDENCE:
         dist = brick.get("dist")
         angle = abs(brick.get("angle", 0.0))
         offset = abs(brick.get("offset_x", 0.0))
 
         corridor = get_scoop_corridor_limits(world, dist) if dist else None
-        envelope = build_envelope(process_rules or {}, learned_rules or {}, "SEAT_BRICK")
+        envelope = build_envelope(process_rules or {}, learned_rules or {}, obj_name)
         scoop_metrics = envelope.get("success", {})
 
         max_angle = None

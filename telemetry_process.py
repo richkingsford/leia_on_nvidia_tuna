@@ -84,6 +84,7 @@ PROCESS_SUCCESS_METRICS_BY_STEP = {
     "BRICK_LOCK_WALL": ("xAxis_offset_abs", "dist"),
     "ALIGN_BRICK": ("visible", "xAxis_offset_abs", "yAxis_offset_abs", "dist"),
     "SEAT_BRICK": ("visible", "dist"),
+    "SEAT_BRICK2": ("visible", "dist"),
     "ELEVATE_BRICK": ("visible",),
     "FIND_WALL2": ("visible",),
     "APPROACH_VECTOR_WALL": ("visible", "angle_abs"),
@@ -107,6 +108,7 @@ ALIGN_RECOVERY_SCAN_OBSERVE_S = 0.6
 ALIGN_RECOVERY_LOST_VISIBLE_FRAMES = 3
 ALIGN_RECOVERY_LOST_VISIBLE_MIN_S = 0.20
 ALIGN_RECOVERY_PREMOVE_RECHECK_ROUNDS = 3
+ALIGN_RECOVERY_PREMOVE_RECHECK_HOLD_MULTIPLIER = 3.0
 ALIGN_BRICK_TOPMOST_LIFT_SCORE = 1
 ALIGN_BRICK_TOPMOST_MAX_ACTS = 70
 ALIGN_BRICK_TOPMOST_TIMEOUT_S = 30.0
@@ -3990,6 +3992,14 @@ def _stream_success_gate_line(step, entry):
             current = f"{current} raw={_fmt_gate_value(bool(raw))}"
     else:
         current = _fmt_gate_value(value) if value is not None else "n/a"
+        if metric == "dist" and isinstance(stats, dict):
+            target = stats.get("target")
+            tol = stats.get("tol")
+            try:
+                if value is not None and target is not None and tol is not None:
+                    current = f"{(float(value) - float(target)):+.1f}"
+            except (TypeError, ValueError):
+                pass
     direction = metric_direction(metric, step)
     matched = _gate_entry_matches(metric, value, stats, direction)
     return {
@@ -5101,6 +5111,10 @@ def run_alignment_segment(
         metric_name = "x_err"
         switch_message = None
         switch_message_colored = None
+        result_observation_message = None
+        result_observation_message_colored = None
+        comparison_message = None
+        comparison_message_colored = None
         prev_type = str(prev_log_correction_type or "").strip().lower()
         switched_gap_type = bool(force_gap_switch) or (
             prev_type in {"distance", "x_axis", "y_axis"} and prev_type != correction_type
@@ -5110,6 +5124,60 @@ def run_alignment_segment(
             plain = f"Switching gap type to {metric_name_local}"
             colored = f"{COLOR_ORANGE_BRIGHT}Switching{COLOR_RESET} gap type to {metric_name_local}"
             return plain, colored
+
+        def _switch_result_observation_pair(metric_name_local, curr_err_local, prev_err_local, *, overshot_local=False):
+            try:
+                curr_err_f = float(curr_err_local)
+                prev_err_f = float(prev_err_local)
+            except (TypeError, ValueError):
+                return None, None
+            if overshot_local:
+                plain = f"Result observation: overshot target; previous {metric_name_local}={prev_err_f:+.2f}mm"
+                colored = (
+                    f"Result observation: "
+                    f"{COLOR_RED}overshot target; previous {metric_name_local}={prev_err_f:+.2f}mm{COLOR_RESET}"
+                )
+                return plain, colored
+            delta_local = abs(float(prev_err_f)) - abs(float(curr_err_f))
+            if abs(delta_local) < 0.05:
+                plain = f"Result observation: ~unchanged; previous {metric_name_local}={prev_err_f:+.2f}mm"
+                color = COLOR_YELLOW
+                body = f"~unchanged; previous {metric_name_local}={prev_err_f:+.2f}mm"
+            elif delta_local > 0.0:
+                plain = (
+                    f"Result observation: {delta_local:+.2f}mm better than previous "
+                    f"{metric_name_local}={prev_err_f:+.2f}mm"
+                )
+                color = COLOR_GREEN
+                body = f"{delta_local:+.2f}mm better than previous {metric_name_local}={prev_err_f:+.2f}mm"
+            else:
+                plain = (
+                    f"Result observation: {delta_local:+.2f}mm worse than previous "
+                    f"{metric_name_local}={prev_err_f:+.2f}mm"
+                )
+                color = COLOR_RED
+                body = f"{delta_local:+.2f}mm worse than previous {metric_name_local}={prev_err_f:+.2f}mm"
+            colored = f"Result observation: {color}{body}{COLOR_RESET}"
+            return plain, colored
+
+        def _comparison_line_pair(metric_name_local, curr_err_local, prev_err_local):
+            try:
+                curr_err_f = float(curr_err_local)
+                prev_err_f = float(prev_err_local)
+            except (TypeError, ValueError):
+                return None, None, None
+            delta_local = abs(float(prev_err_f)) - abs(float(curr_err_f))
+            if abs(delta_local) < 0.05:
+                plain = f"~unchanged; previous {metric_name_local}={prev_err_f:+.2f}"
+                colored = f"{COLOR_YELLOW}~unchanged{COLOR_RESET}; previous {metric_name_local}={prev_err_f:+.2f}"
+                return plain, colored, COLOR_YELLOW
+            if delta_local > 0.0:
+                plain = f"{delta_local:+.2f} better than previous {metric_name_local}={prev_err_f:+.2f}"
+                colored = f"{COLOR_GREEN}{delta_local:+.2f}{COLOR_RESET} better than previous {metric_name_local}={prev_err_f:+.2f}"
+                return plain, colored, COLOR_GREEN
+            plain = f"{delta_local:+.2f} worse than previous {metric_name_local}={prev_err_f:+.2f}"
+            colored = f"{COLOR_RED}{delta_local:+.2f}{COLOR_RESET} worse than previous {metric_name_local}={prev_err_f:+.2f}"
+            return plain, colored, COLOR_RED
 
         if correction_type == "distance":
             metric_name = "dist_err"
@@ -5140,25 +5208,38 @@ def run_alignment_segment(
                 metric_color = COLOR_WHITE
             else:
                 if prev_metric is None or prev_err is None:
-                    metric_color = COLOR_YELLOW
-                    delta_text = "(na)"
-                else:
-                    delta = float(prev_metric) - float(curr_metric)
-                    if abs(delta) < 0.05:
-                        metric_color = COLOR_YELLOW
-                        delta_text = f"(~unchanged; previous {metric_name}={float(prev_err):+.2f}mm)"
-                    elif delta > 0:
-                        metric_color = COLOR_GREEN
-                        delta_text = f"({delta:+.2f}mm better than previous {metric_name}={float(prev_err):+.2f}mm)"
+                    if prev_err_any is not None and curr_err is not None:
+                        comparison_message, comparison_message_colored, cmp_color = _comparison_line_pair(
+                            metric_name,
+                            curr_err,
+                            prev_err_any,
+                        )
+                        if cmp_color is not None:
+                            metric_color = cmp_color
+                        else:
+                            metric_color = COLOR_YELLOW
                     else:
-                        metric_color = COLOR_RED
-                        delta_text = f"({delta:+.2f}mm worse than previous {metric_name}={float(prev_err):+.2f}mm)"
-                abs_text = f"{metric_color}{float(curr_abs_val):.2f}mm{COLOR_RESET}"
+                        metric_color = COLOR_YELLOW
+                else:
+                    comparison_message, comparison_message_colored, cmp_color = _comparison_line_pair(
+                        metric_name,
+                        curr_err,
+                        prev_err,
+                    )
+                    if cmp_color is not None:
+                        metric_color = cmp_color
+                err_text = f"{metric_color}{float(curr_err):+.2f}{COLOR_RESET}"
+                abs_text = f"{float(curr_abs_val):.2f}"
                 metric_text = (
-                    f"target ({float(dist_target):.2f}mm ±{float(dist_tol):.2f}mm) "
-                    f"{float(curr_err):+.2f}mm={abs_text} {delta_text}"
+                    f"target ({float(dist_target):.2f} ±{float(dist_tol):.2f}) "
+                    f"{err_text} off={abs_text}"
                 )
                 if switched_gap_type:
+                    if prev_err_any is not None and curr_err is not None:
+                        (
+                            result_observation_message,
+                            result_observation_message_colored,
+                        ) = _switch_result_observation_pair(metric_name, curr_err, prev_err_any)
                     switch_message, switch_message_colored = _switch_gap_message_pair(metric_name)
         else:
             if correction_type == "y_axis":
@@ -5209,28 +5290,58 @@ def run_alignment_segment(
                         and abs(float(curr_err)) > 0.30
                     )
                 if prev_metric is None or prev_err is None:
-                    metric_color = COLOR_YELLOW
-                    delta_text = "(na)"
+                    if prev_err_any is not None and curr_err is not None:
+                        comparison_message, comparison_message_colored, cmp_color = _comparison_line_pair(
+                            metric_name,
+                            curr_err,
+                            prev_err_any,
+                        )
+                        if cmp_color is not None:
+                            metric_color = cmp_color
+                        else:
+                            metric_color = COLOR_YELLOW
+                    else:
+                        metric_color = COLOR_YELLOW
                 elif overshot:
                     metric_color = COLOR_RED
-                    delta_text = f"(overshot target; previous {metric_name}={float(prev_err):+.2f}mm)"
+                    comparison_message = f"overshot target; previous {metric_name}={float(prev_err):+.2f}"
+                    comparison_message_colored = (
+                        f"{COLOR_RED}overshot target{COLOR_RESET}; previous {metric_name}={float(prev_err):+.2f}"
+                    )
                 else:
-                    delta = abs(float(prev_err)) - abs(float(curr_err))
-                    if abs(delta) < 0.05:
-                        metric_color = COLOR_YELLOW
-                        delta_text = f"(~unchanged; previous {metric_name}={float(prev_err):+.2f}mm)"
-                    elif delta > 0:
-                        metric_color = COLOR_GREEN
-                        delta_text = f"({delta:+.2f}mm better than previous {metric_name}={float(prev_err):+.2f}mm)"
-                    else:
-                        metric_color = COLOR_RED
-                        delta_text = f"({delta:+.2f}mm worse than previous {metric_name}={float(prev_err):+.2f}mm)"
-                abs_text = f"{metric_color}{float(curr_abs_val):+.2f}mm{COLOR_RESET}"
+                    comparison_message, comparison_message_colored, cmp_color = _comparison_line_pair(
+                        metric_name,
+                        curr_err,
+                        prev_err,
+                    )
+                    if cmp_color is not None:
+                        metric_color = cmp_color
+                err_text = f"{metric_color}{float(curr_err):+.2f}{COLOR_RESET}"
+                abs_text = f"{float(curr_abs_val):+.2f}"
                 metric_text = (
-                    f"target ({float(axis_target):+.2f}mm ±{float(axis_tol):.2f}mm) "
-                    f"{float(curr_err):+.2f}mm={abs_text} {delta_text}"
+                    f"target ({float(axis_target):+.2f} ±{float(axis_tol):.2f}) "
+                    f"{err_text} off={abs_text}"
                 )
                 if switched_gap_type:
+                    overshot_any = False
+                    if prev_err_any is not None and curr_err is not None:
+                        try:
+                            overshot_any = (
+                                (float(prev_err_any) * float(curr_err)) < 0.0
+                                and abs(float(prev_err_any)) > 0.30
+                                and abs(float(curr_err)) > 0.30
+                            )
+                        except (TypeError, ValueError):
+                            overshot_any = False
+                        (
+                            result_observation_message,
+                            result_observation_message_colored,
+                        ) = _switch_result_observation_pair(
+                            metric_name,
+                            curr_err,
+                            prev_err_any,
+                            overshot_local=bool(overshot_any),
+                        )
                     switch_message, switch_message_colored = _switch_gap_message_pair(metric_name)
 
         try:
@@ -5267,6 +5378,12 @@ def run_alignment_segment(
             phase_base = f"{active_step_label}_ALIGN"
         phase_label = f"{phase_base}_SETTLE" if bool(settle) else phase_base
         if switch_message:
+            if result_observation_message:
+                result_render = result_observation_message_colored or result_observation_message
+                print(
+                    f"{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}] "
+                    f"{result_render}{COLOR_RESET}"
+                )
             switch_render = switch_message_colored or switch_message
             print(
                 f"{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}] "
@@ -5278,6 +5395,12 @@ def run_alignment_segment(
             f"{metric_name}={metric_text} → "
             f"{COLOR_ORANGE_BRIGHT}{cmd_log} {int(score_display)}%{COLOR_RESET}{motor_details}"
         )
+        if comparison_message:
+            comparison_render = comparison_message_colored or comparison_message
+            print(
+                f"{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}] "
+                f"{comparison_render}{COLOR_RESET}"
+            )
 
     def _dominant_turn_from_steps(motion_steps):
         if not motion_steps:
@@ -5640,7 +5763,10 @@ def run_alignment_segment(
             rounds_local = max(1, int(rounds))
         except (TypeError, ValueError):
             rounds_local = int(ALIGN_RECOVERY_PREMOVE_RECHECK_ROUNDS)
-        hold_window_s = max(float(CONTROL_DT), float(VISIBILITY_LOST_HOLD_S))
+        hold_window_s = (
+            max(float(CONTROL_DT), float(VISIBILITY_LOST_HOLD_S))
+            * max(1.0, float(ALIGN_RECOVERY_PREMOVE_RECHECK_HOLD_MULTIPLIER))
+        )
         if robot:
             robot.stop()
         record_hold_display(world, step, f"visibility recheck x{int(rounds_local)}")
