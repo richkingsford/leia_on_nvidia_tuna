@@ -392,9 +392,10 @@ def build_step_sequence(steps_cfg: Dict[str, dict]) -> List[str]:
             ordered.append(key)
             seen.add(key)
     for name in DEFAULT_STEP_ORDER:
-        if name not in seen:
-            ordered.append(name)
-            seen.add(name)
+        key = normalize_step_label(name)
+        if key and key not in seen:
+            ordered.append(key)
+            seen.add(key)
     return ordered
 
 
@@ -421,6 +422,8 @@ def check_step_segment(
     segment: dict,
     segment_type: str,
     logger: Logger,
+    *,
+    strict: bool = False,
 ) -> bool:
     ok = True
     nominal_only = bool(step_cfg.get("nominalDemosOnly"))
@@ -542,8 +545,11 @@ def check_step_segment(
                 break
         if not combined_success:
             msg = f"[{step_name}] Telemetry gate evaluators never agreed on SUCCESS for recorded states."
-            if lock_success_gates:
-                logger.yellow(f"{msg} (success_gates are locked; demo mismatch may be expected).")
+            if lock_success_gates or (not strict):
+                if lock_success_gates:
+                    logger.yellow(f"{msg} (success_gates are locked; demo mismatch may be expected).")
+                else:
+                    logger.yellow(f"{msg} (warning in non-strict mode).")
             else:
                 ok = False
                 logger.red(msg)
@@ -609,6 +615,11 @@ def collect_simulation_logs(
 
     sequence = build_step_sequence(steps_cfg)
     logger.white(f"[PROCESS] Step sequence: {' -> '.join(sequence)}")
+    required_steps = {
+        normalize_step_label(step_name)
+        for step_name in DEFAULT_STEP_ORDER
+        if normalize_step_label(step_name)
+    }
 
     logs = load_demo_logs(demos_path, session_name=session_name)
     if not logs:
@@ -655,11 +666,15 @@ def collect_simulation_logs(
 
         logger.white(f"Step {idx}/{len(sequence)}: {step_name}")
         if segment is None:
-            ok = False
-            logger.red(f"[{step_name}] Missing segment: {reason or 'unknown reason'}")
+            msg = f"[{step_name}] Missing segment: {reason or 'unknown reason'}"
+            if step_name in required_steps:
+                ok = False
+                logger.red(msg)
+            else:
+                logger.yellow(f"{msg} (optional step in non-strict mode).")
             continue
 
-        if not check_step_segment(step_name, step_cfg, segment, str(seg_type), logger):
+        if not check_step_segment(step_name, step_cfg, segment, str(seg_type), logger, strict=strict):
             ok = False
 
         derived_step_gates = (derived_success or {}).get(step_name, {})

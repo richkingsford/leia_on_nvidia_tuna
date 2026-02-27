@@ -300,6 +300,80 @@ class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
         self.assertEqual(plan.get("correction_type"), "distance", plan)
         self.assertIn(plan.get("cmd"), ("f", "b"), plan)
 
+    def test_gap_planner_holds_when_all_gaps_are_within_gates(self):
+        process_rules = {
+            "ALIGN_BRICK": {
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 1.0},
+                    "yAxis_offset_abs": {"target": 0.0, "tol": 1.0},
+                    "dist": {"target": 100.0, "tol": 2.0},
+                }
+            }
+        }
+        orig = helper_next.compute_alignment_decision
+        try:
+            # Even if analytics proposes a command, the gap planner should hold
+            # because no gated metric is outside tolerance.
+            helper_next.compute_alignment_decision = lambda **kwargs: {
+                "cmd": "f",
+                "worst_metric": "dist",
+                "speed_score": 10,
+            }
+            plan = helper_next.select_alignment_next_act(
+                process_rules=process_rules,
+                learned_rules={},
+                step="ALIGN_BRICK",
+                x_axis_mm=0.5,   # within ±1.0 gate
+                y_axis_mm=-0.4,  # within ±1.0 gate
+                dist_mm=101.2,   # within 100±2 gate
+                visible=True,
+                angle_deg=0.0,
+                duration_s=0.05,
+            )
+        finally:
+            helper_next.compute_alignment_decision = orig
+
+        self.assertEqual(plan.get("planner"), "gap", plan)
+        self.assertIsNone(plan.get("cmd"), plan)
+        self.assertIsNone(plan.get("correction_type"), plan)
+        self.assertEqual(plan.get("reason"), "all_gaps_within_gate", plan)
+
+    def test_gap_planner_never_selects_in_gate_metric_over_outside_gap(self):
+        process_rules = {
+            "ALIGN_BRICK": {
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 2.0},
+                    "yAxis_offset_abs": {"target": 0.0, "tol": 1.0},
+                    "dist": {"target": 100.0, "tol": 2.0},
+                }
+            }
+        }
+        orig = helper_next.compute_alignment_decision
+        try:
+            # Analytics may report x as "worst", but x is in-gate here.
+            helper_next.compute_alignment_decision = lambda **kwargs: {
+                "cmd": "r",
+                "worst_metric": "xAxis_offset_abs",
+                "speed_score": 6,
+            }
+            plan = helper_next.select_alignment_next_act(
+                process_rules=process_rules,
+                learned_rules={},
+                step="ALIGN_BRICK",
+                x_axis_mm=1.0,   # within ±2.0 gate (good)
+                y_axis_mm=0.1,   # within ±1.0 gate (good)
+                dist_mm=104.8,   # outside 100±2 gate (bad)
+                visible=True,
+                angle_deg=0.0,
+                duration_s=0.05,
+            )
+        finally:
+            helper_next.compute_alignment_decision = orig
+
+        self.assertEqual(plan.get("planner"), "gap", plan)
+        self.assertEqual(plan.get("correction_type"), "distance", plan)
+        self.assertIn(plan.get("cmd"), ("f", "b"), plan)
+
 
 if __name__ == "__main__":
     unittest.main()

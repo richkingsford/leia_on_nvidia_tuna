@@ -432,17 +432,15 @@ def format_gatecheck_stream_lines(world, step=None):
     if mode == "lite":
         lite_required = max(1, int(status.get("lite_required", 1)))
         lite_collected = max(0, int(status.get("lite_collected", 0)))
-        top_line = f"LITE-GATE: {state} ({lite_collected}/{lite_required} frames)"
-        # During lite mode the full tracker isn't advancing yet; show the lite frame
-        # collection progress on both rows so the panel still moves in near-realtime.
-        consec_line = f"Consecuitive: {lite_collected}/{lite_required} ({need_pass})"
-        majority_line = f"Majority: {lite_collected}/{lite_required} ({window_need_pass})"
-        return [top_line, consec_line, majority_line]
+        top_line = f"LITE: {lite_collected}/{lite_required} avg-smoothed frames"
+        seen_line = f"SEEN: {checks} total"
+        lite_line = f"LITE-GATE: {state} ({lite_collected}/{lite_required} frames)"
+        return [top_line, seen_line, lite_line]
     streak = int(status.get("streak", 0) or 0)
-    top_line = f"GATE: {state} ({checks} checks, win {window_size}/{window_total})"
-    consec_line = f"Consecuitive: {streak}/{need} ({need_pass})"
-    majority_line = f"Majority: {window_pass}/{window_total} ({window_need_pass})"
-    return [top_line, consec_line, majority_line]
+    top_line = f"CONSEC: {streak}/{need} ok (need:{need_pass})"
+    seen_line = f"SEEN: {checks} total, win {window_size}/{window_total}"
+    majority_line = f"MAJ: {window_pass}/{window_total} pass, need:{window_need_pass}"
+    return [top_line, seen_line, majority_line]
 
 
 def wait_for_fresh_frames(world, refresh_once, required_new_frames=1, max_cycles=80, sleep_s=0.0):

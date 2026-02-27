@@ -69,6 +69,8 @@ MAX_ACTS_PER_TRIAL = 180
 RESET_MIN_AWAY_MM = 15.0
 RESET_MAX_AWAY_MM = 35.0
 RESET_SCORE = 8
+RESTORE_TO_START_TOL_MM = 1.5
+RESTORE_TO_START_MAX_ACTS = 100
 
 # Overshoot / reward shaping
 CROSS_DEADZONE_MM = 0.3
@@ -1860,6 +1862,134 @@ class XAxisCalibrator:
         )
         return self._get_pose(samples=1, timeout_s=2.0)
 
+    def restore_to_offset(self, target_offset_x: float):
+        """
+        After calibration, return to the measured pre-run offset so callers keep a
+        stable physical starting pose.
+        """
+        try:
+            target = float(target_offset_x)
+        except (TypeError, ValueError):
+            return {"ok": False, "skipped": True, "reason": "invalid_target_offset"}
+
+        tol_mm = float(max(0.1, RESTORE_TO_START_TOL_MM))
+        max_acts = int(max(1, RESTORE_TO_START_MAX_ACTS))
+        prev_phase = str(self.current_phase)
+        self.current_phase = "restore_start_offset"
+
+        pose = self._get_pose(samples=1, timeout_s=2.0)
+        if not pose:
+            pose = self._recover_from_lost_vision(source_phase="restore_start_offset_init")
+        if not pose:
+            self.current_phase = prev_phase
+            return {"ok": False, "reason": "pose_unavailable_before_restore"}
+
+        current = float(pose["offset_x"])
+        delta = float(target - current)
+        abs_delta = abs(delta)
+        cmd = "r" if delta >= 0.0 else "l"
+        acts = 0
+        reason = "max_acts"
+        success = bool(abs_delta <= tol_mm)
+
+        self.log.append(
+            {
+                "type": "restore_start_offset_begin",
+                "run_id": self.run_id,
+                "trial": self.current_trial,
+                "timestamp": time.time(),
+                "target_offset_x": float(target),
+                "start_offset_x": float(current),
+                "start_abs_delta_mm": float(abs_delta),
+                "tol_mm": float(tol_mm),
+                "max_acts": int(max_acts),
+            }
+        )
+
+        while self.running and acts < max_acts and not success:
+            if abs_delta > float(STEP_NEAR_TARGET_MM):
+                score = int(RESET_SCORE)
+                duration_scale = 1.0
+            else:
+                notch = int(self.turn_notch_by_cmd.get(cmd, 0))
+                score, duration_scale, _ = self._score_duration_for_notch(notch)
+
+            sent = self._send_turn(
+                cmd,
+                int(score),
+                duration_scale=float(duration_scale),
+                phase=self.current_phase,
+                record_history=False,
+            )
+            acts += 1
+            time.sleep(CONTROL_SLEEP_S)
+
+            pose = self._get_pose(samples=1, timeout_s=1.5)
+            if not pose:
+                pose = self._recover_from_lost_vision(source_phase="restore_start_offset")
+                if not pose:
+                    reason = "pose_lost_during_restore"
+                    break
+
+            next_current = float(pose["offset_x"])
+            next_delta = float(target - next_current)
+            next_abs_delta = abs(next_delta)
+            improved = bool(next_abs_delta < abs_delta)
+
+            self.log.append(
+                {
+                    "type": "restore_start_offset_act",
+                    "run_id": self.run_id,
+                    "trial": self.current_trial,
+                    "timestamp": time.time(),
+                    "act": int(acts),
+                    "cmd": str(cmd),
+                    "score": int(score),
+                    "duration_scale": float(duration_scale),
+                    "offset_x": float(next_current),
+                    "abs_delta_mm": float(next_abs_delta),
+                    "improved": bool(improved),
+                    "sent": sent if isinstance(sent, dict) else None,
+                }
+            )
+
+            current = float(next_current)
+            delta = float(next_delta)
+            abs_delta = float(next_abs_delta)
+            if abs_delta <= tol_mm:
+                success = True
+                reason = "within_tolerance"
+                break
+
+            desired_cmd = "r" if delta >= 0.0 else "l"
+            if not improved:
+                cmd = self._inverse_turn_cmd(cmd) or desired_cmd
+            else:
+                cmd = desired_cmd
+
+        if success and reason != "within_tolerance":
+            reason = "within_tolerance"
+        result = {
+            "ok": bool(success),
+            "reason": str(reason),
+            "acts": int(acts),
+            "target_offset_x": float(target),
+            "final_offset_x": float(current),
+            "remaining_mm": float(abs_delta),
+            "tol_mm": float(tol_mm),
+        }
+        self.log.append(
+            {
+                "type": "restore_start_offset_end",
+                "run_id": self.run_id,
+                "trial": self.current_trial,
+                "timestamp": time.time(),
+                **result,
+            }
+        )
+        self.current_phase = prev_phase
+        return result
+
     def run(self):
         self._append_meta()
         self._discover_tiny_turn_profiles_once()
@@ -2500,97 +2630,159 @@ def run_mini_x_axis_calibration(
         vision=vision,
         enable_stream=False,
     )
+    start_pose = calibrator._get_pose(samples=1, timeout_s=2.0)
+    if not start_pose:
+        start_pose = calibrator._recover_from_lost_vision(source_phase="preflight_start_pose")
+    try:
+        start_offset_x = float(start_pose["offset_x"]) if start_pose else None
+    except (TypeError, ValueError, KeyError):
+        start_offset_x = None
     started = time.time()
     try:
-        calibrator.run()
-    except Exception as exc:
-        ended = float(time.time())
+        try:
+            calibrator.run()
+        except Exception as exc:
+            if start_offset_x is not None:
+                try:
+                    restore_result = calibrator.restore_to_offset(start_offset_x)
+                except Exception as restore_exc:
+                    restore_result = {
+                        "ok": False,
+                        "reason": "restore_exception",
+                        "error": str(restore_exc),
+                    }
+            else:
+                restore_result = {
+                    "ok": False,
+                    "skipped": True,
+                    "reason": "start_pose_unavailable",
+                }
+            ended = float(time.time())
+            meta_result = _persist_auto_mini_run_meta(
+                step_name=step_name,
+                started_s=float(started),
+                ended_s=float(ended),
+                min_interval_hours=float(cooldown_hours),
+                ok=False,
+                confident=None,
+            )
+            summary = {
+                "ok": False,
+                "error": str(exc),
+                "seconds": float(ended - started),
+                "run_meta_persist_result": meta_result,
+                "restore_start_pose_result": restore_result,
+            }
+            logger(f"[AUTO] {step_name} mini x-axis calibration failed: {exc}")
+            if bool(restore_result.get("ok")):
+                logger(
+                    f"[AUTO] {step_name} mini x-axis reset to start pose "
+                    f"(remaining={float(restore_result.get('remaining_mm', 0.0)):.2f}mm, "
+                    f"acts={int(restore_result.get('acts', 0))})."
+                )
+            elif not bool(restore_result.get("skipped")):
+                logger(
+                    f"[AUTO] {step_name} mini x-axis could not fully reset to start pose "
+                    f"({restore_result.get('reason')})."
+                )
+            if not bool(meta_result.get("ok")):
+                logger(f"[AUTO] {step_name} mini x-axis run meta update failed: {meta_result.get('error')}")
+            return summary
+
+        events = calibrator.log.events if hasattr(calibrator, "log") else []
+        confidence = _latest_event(events, "confidence_summary") or {}
+        conclusion = _latest_event(events, "conclusion") or {}
+        persist = conclusion.get("persist_result") if isinstance(conclusion, dict) else {}
+        data = conclusion.get("data") if isinstance(conclusion, dict) else {}
+
+        summary = {
+            "ok": True,
+            "seconds": float(time.time() - started),
+            "confidence": confidence,
+            "conclusion": data if isinstance(data, dict) else {},
+            "persist_result": persist if isinstance(persist, dict) else {},
+            "tiny_discovery_by_cmd": (
+                dict(calibrator.tiny_discovery_by_cmd)
+                if isinstance(getattr(calibrator, "tiny_discovery_by_cmd", None), dict)
+                else {}
+            ),
+            "tiny_discovery_persist_result": (
+                dict(calibrator.tiny_discovery_persist_result)
+                if isinstance(getattr(calibrator, "tiny_discovery_persist_result", None), dict)
+                else {}
+            ),
+            "tiny_discovery_ran_this_instance": bool(getattr(calibrator, "tiny_discovery_ran_this_instance", False)),
+        }
+        if start_offset_x is not None:
+            try:
+                restore_result = calibrator.restore_to_offset(start_offset_x)
+            except Exception as restore_exc:
+                restore_result = {
+                    "ok": False,
+                    "reason": "restore_exception",
+                    "error": str(restore_exc),
+                }
+        else:
+            restore_result = {
+                "ok": False,
+                "skipped": True,
+                "reason": "start_pose_unavailable",
+            }
+        summary["restore_start_pose_result"] = restore_result
+        confidence_dict = summary["confidence"] if isinstance(summary["confidence"], dict) else {}
+        confident = bool(confidence_dict.get("confident")) if confidence_dict else None
         meta_result = _persist_auto_mini_run_meta(
             step_name=step_name,
             started_s=float(started),
-            ended_s=float(ended),
+            ended_s=float(time.time()),
             min_interval_hours=float(cooldown_hours),
-            ok=False,
-            confident=None,
+            ok=True,
+            confident=confident,
         )
-        summary = {
-            "ok": False,
-            "error": str(exc),
-            "seconds": float(ended - started),
-            "run_meta_persist_result": meta_result,
-        }
-        logger(f"[AUTO] {step_name} mini x-axis calibration failed: {exc}")
+        summary["run_meta_persist_result"] = meta_result
+        if bool(summary["persist_result"].get("ok")):
+            logger(
+                f"[AUTO] {step_name} mini x-axis calibration applied "
+                f"(L/R 1% secs: {summary['persist_result'].get('applied_seconds_1pct', {})})."
+            )
+        elif bool(summary["persist_result"].get("skipped")):
+            logger(
+                f"[AUTO] {step_name} mini x-axis calibration did not apply "
+                f"(confidence gate not reached)."
+            )
+        else:
+            logger(
+                f"[AUTO] {step_name} mini x-axis calibration completed but world model update failed: "
+                f"{summary['persist_result'].get('error')}"
+            )
+        tiny_persist = summary.get("tiny_discovery_persist_result")
+        if isinstance(tiny_persist, dict):
+            if bool(tiny_persist.get("ok")):
+                logger(
+                    f"[AUTO] {step_name} 0.01% turn profile updated "
+                    f"({tiny_persist.get('applied')})."
+                )
+            elif tiny_persist:
+                logger(
+                    f"[AUTO] {step_name} 0.01% turn profile update failed: "
+                    f"{tiny_persist.get('error')}"
+                )
+        if bool(restore_result.get("ok")):
+            logger(
+                f"[AUTO] {step_name} mini x-axis reset to start pose "
+                f"(remaining={float(restore_result.get('remaining_mm', 0.0)):.2f}mm, "
+                f"acts={int(restore_result.get('acts', 0))})."
+            )
+        elif not bool(restore_result.get("skipped")):
+            logger(
+                f"[AUTO] {step_name} mini x-axis could not fully reset to start pose "
+                f"({restore_result.get('reason')})."
+            )
         if not bool(meta_result.get("ok")):
             logger(f"[AUTO] {step_name} mini x-axis run meta update failed: {meta_result.get('error')}")
         return summary
     finally:
         calibrator.close()
-
-    events = calibrator.log.events if hasattr(calibrator, "log") else []
-    confidence = _latest_event(events, "confidence_summary") or {}
-    conclusion = _latest_event(events, "conclusion") or {}
-    persist = conclusion.get("persist_result") if isinstance(conclusion, dict) else {}
-    data = conclusion.get("data") if isinstance(conclusion, dict) else {}
-
-    summary = {
-        "ok": True,
-        "seconds": float(time.time() - started),
-        "confidence": confidence,
-        "conclusion": data if isinstance(data, dict) else {},
-        "persist_result": persist if isinstance(persist, dict) else {},
-        "tiny_discovery_by_cmd": (
-            dict(calibrator.tiny_discovery_by_cmd)
-            if isinstance(getattr(calibrator, "tiny_discovery_by_cmd", None), dict)
-            else {}
-        ),
-        "tiny_discovery_persist_result": (
-            dict(calibrator.tiny_discovery_persist_result)
-            if isinstance(getattr(calibrator, "tiny_discovery_persist_result", None), dict)
-            else {}
-        ),
-        "tiny_discovery_ran_this_instance": bool(getattr(calibrator, "tiny_discovery_ran_this_instance", False)),
-    }
-    confidence_dict = summary["confidence"] if isinstance(summary["confidence"], dict) else {}
-    confident = bool(confidence_dict.get("confident")) if confidence_dict else None
-    meta_result = _persist_auto_mini_run_meta(
-        step_name=step_name,
-        started_s=float(started),
-        ended_s=float(time.time()),
-        min_interval_hours=float(cooldown_hours),
-        ok=True,
-        confident=confident,
-    )
-    summary["run_meta_persist_result"] = meta_result
-    if bool(summary["persist_result"].get("ok")):
-        logger(
-            f"[AUTO] {step_name} mini x-axis calibration applied "
-            f"(L/R 1% secs: {summary['persist_result'].get('applied_seconds_1pct', {})})."
-        )
-    elif bool(summary["persist_result"].get("skipped")):
-        logger(
-            f"[AUTO] {step_name} mini x-axis calibration did not apply "
-            f"(confidence gate not reached)."
-        )
-    else:
-        logger(
-            f"[AUTO] {step_name} mini x-axis calibration completed but world model update failed: "
-            f"{summary['persist_result'].get('error')}"
-        )
-    tiny_persist = summary.get("tiny_discovery_persist_result")
-    if isinstance(tiny_persist, dict):
-        if bool(tiny_persist.get("ok")):
-            logger(
-                f"[AUTO] {step_name} 0.01% turn profile updated "
-                f"({tiny_persist.get('applied')})."
-            )
-        elif tiny_persist:
-            logger(
-                f"[AUTO] {step_name} 0.01% turn profile update failed: "
-                f"{tiny_persist.get('error')}"
-            )
-    if not bool(meta_result.get("ok")):
-        logger(f"[AUTO] {step_name} mini x-axis run meta update failed: {meta_result.get('error')}")
-    return summary
 
 
 def main():

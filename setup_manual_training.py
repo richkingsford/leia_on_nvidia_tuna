@@ -260,6 +260,13 @@ except (TypeError, ValueError):
     AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS = 12.0
 AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS = max(0.0, float(AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS))
 AUTO_MINI_X_AXIS_LOG = Path(_MANUAL_CONFIG.get("auto_mini_x_axis_log", str(MINI_X_AXIS_LOG_DEFAULT)))
+try:
+    AUTO_MINI_X_AXIS_DISCOVERY_CHANCE = float(
+        _MANUAL_CONFIG.get("auto_mini_x_axis_discovery_chance", 0.05)
+    )
+except (TypeError, ValueError):
+    AUTO_MINI_X_AXIS_DISCOVERY_CHANCE = 0.05
+AUTO_MINI_X_AXIS_DISCOVERY_CHANCE = max(0.0, min(1.0, float(AUTO_MINI_X_AXIS_DISCOVERY_CHANCE)))
 AUTO_PREFLIGHT_HOTKEY_MOTION_ENABLED = bool(_MANUAL_CONFIG.get("auto_preflight_hotkey_motion_enabled", True))
 AUTO_PREFLIGHT_HOTKEY_MOTION_LOG = Path(
     _MANUAL_CONFIG.get("auto_preflight_hotkey_motion_log", str(MINI_HOTKEY_MOTION_LOG_DEFAULT))
@@ -1439,22 +1446,30 @@ def run_auto_step(app_state, obj_enum):
         elif app_state.robot is None or app_state.vision is None:
             log_line(f"[AUTO] {step_key} mini x-axis calibration skipped (robot/vision unavailable).")
         else:
-            mini_result = run_mini_x_axis_calibration(
-                robot=app_state.robot,
-                vision=app_state.vision,
-                step_key=step_key,
-                trials=AUTO_MINI_X_AXIS_TRIALS,
-                log_path=AUTO_MINI_X_AXIS_LOG,
-                min_interval_hours=AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS,
-                log_fn=log_line,
-            )
-            if not bool(mini_result.get("ok")):
+            run_chance = float(AUTO_MINI_X_AXIS_DISCOVERY_CHANCE)
+            roll = float(random.random())
+            if roll >= run_chance:
                 log_line(
-                    f"[AUTO] {step_key} mini x-axis calibration failed; continuing with demo replay "
-                    f"({mini_result.get('error')})."
+                    f"[AUTO] {step_key} mini x-axis calibration skipped "
+                    f"(random gate roll={roll:.3f}, chance={run_chance * 100.0:.1f}%)."
                 )
-            with app_state.lock:
-                app_state.brick_frame_buffer = []
+            else:
+                mini_result = run_mini_x_axis_calibration(
+                    robot=app_state.robot,
+                    vision=app_state.vision,
+                    step_key=step_key,
+                    trials=AUTO_MINI_X_AXIS_TRIALS,
+                    log_path=AUTO_MINI_X_AXIS_LOG,
+                    min_interval_hours=AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS,
+                    log_fn=log_line,
+                )
+                if not bool(mini_result.get("ok")):
+                    log_line(
+                        f"[AUTO] {step_key} mini x-axis calibration failed; continuing with demo replay "
+                        f"({mini_result.get('error')})."
+                    )
+                with app_state.lock:
+                    app_state.brick_frame_buffer = []
 
     logs = load_demo_logs(app_state.demos_dir)
     update_process_model_from_demos(logs, PROCESS_MODEL_FILE)
@@ -1952,7 +1967,9 @@ def refresh_world_model_from_demos(app_state, force=False, min_interval_s=0.5):
         return
 
     logs = load_demo_logs(app_state.demos_dir)
-    update_process_model_from_demos(logs, PROCESS_MODEL_FILE)
+    # Preserve existing process gates when no parseable demo logs are present.
+    if logs:
+        update_process_model_from_demos(logs, PROCESS_MODEL_FILE)
     refresh_autobuild_config(PROCESS_MODEL_FILE)
     model = load_process_model(PROCESS_MODEL_FILE)
     process_rules = model.get("steps") if isinstance(model, dict) else {}
@@ -1977,7 +1994,11 @@ def refresh_world_model_from_demos(app_state, force=False, min_interval_s=0.5):
                 f"(run_id={run_id}, turn_scale={turn_scale}, dist_scale={dist_scale}, max_speed={cap})."
             )
             app_state._last_align_profile_signature = signature
-    app_state.config_mtime = latest_mtime
+    try:
+        process_mtime = float(PROCESS_MODEL_FILE.stat().st_mtime)
+    except OSError:
+        process_mtime = 0.0
+    app_state.config_mtime = max(demo_mtime, process_mtime)
 
 def refresh_brick_telemetry(app_state, read_vision=True):
     if read_vision:

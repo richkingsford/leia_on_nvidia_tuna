@@ -989,6 +989,9 @@ def _coerce_float(value, default=None):
 # only preempt x/dist corrections when the normalized y gap is substantially larger.
 # This reduces oscillatory or low-value mast adjustments during x/dist convergence.
 GAP_ALIGN_Y_AXIS_PRIORITY_PENALTY = 2.0
+# Treat tiny positive ratios as in-gate noise so an effectively "good" metric
+# can never become the selected "worst" correction.
+GAP_ALIGN_OUTSIDE_GATE_RATIO_EPS = 1e-6
 # `y_err` should only be worked once the other gap(s) are nearly solved.
 # Ratio is normalized "outside gate" error: 0.10 means 10% beyond the gate tolerance.
 GAP_ALIGN_Y_AXIS_OTHER_GAPS_NEAR_RATIO_MAX = 0.10
@@ -1160,6 +1163,10 @@ def select_align_brick_next_act(
     x_ratio = _gate_ratio(abs(x_err_mm), x_tol) if x_required else 0.0
     y_ratio = _gate_ratio(abs(y_err_mm), y_tol) if (y_required and y_err_mm is not None) else 0.0
     d_ratio = _gate_ratio(dist_err_mm, dist_tol) if (d_required and dist_val is not None and dist_tol > 0.0) else 0.0
+    try:
+        ratio_eps = max(0.0, float(GAP_ALIGN_OUTSIDE_GATE_RATIO_EPS))
+    except (TypeError, ValueError):
+        ratio_eps = 0.0
 
     def _priority_ratio(correction_type, raw_ratio):
         try:
@@ -1205,7 +1212,7 @@ def select_align_brick_next_act(
 
     candidates = {}
 
-    if x_required and x_ratio > 0.0:
+    if x_required and x_ratio > ratio_eps:
         candidates["x_axis"] = {
             "cmd": "l" if x_err_mm <= 0.0 else "r",
             "correction_type": "x_axis",
@@ -1216,7 +1223,7 @@ def select_align_brick_next_act(
             "ratio": float(x_ratio),
         }
 
-    if y_required and y_err_mm is not None and y_ratio > 0.0:
+    if y_required and y_err_mm is not None and y_ratio > ratio_eps:
         candidates["y_axis"] = {
             "cmd": "d" if float(y_err_mm) > 0.0 else "u",
             "correction_type": "y_axis",
@@ -1227,7 +1234,7 @@ def select_align_brick_next_act(
             "ratio": float(y_ratio),
         }
 
-    if d_required and dist_val is not None and d_ratio > 0.0:
+    if d_required and dist_val is not None and d_ratio > ratio_eps:
         # Single-source distance direction for gap micro-adjustments: derive from
         # the signed distance error, not the generic analytics planner's cmd.
         dist_cmd = "f" if float(dist_val) > float(dist_target) else "b"
@@ -1275,7 +1282,7 @@ def select_align_brick_next_act(
             for k, v in candidates.items()
             if (
                 str(k) not in excluded_types
-                and float(v.get("ratio", 0.0) or 0.0) > 0.0
+                and float(v.get("ratio", 0.0) or 0.0) > ratio_eps
                 and (
                     str(v.get("correction_type") or "").strip().lower() != "y_axis"
                     or bool(y_other_gaps_near_ready)
@@ -1304,41 +1311,15 @@ def select_align_brick_next_act(
         if best_primary is not None:
             chosen = dict(best_primary)
         else:
-            fallback_corr = "distance" if d_required else ("x_axis" if x_required else ("y_axis" if y_required else "x_axis"))
-            if fallback_corr == "distance":
-                if dist_val is not None and d_required:
-                    dist_cmd_fallback = "f" if float(dist_val) > float(dist_target) else "b"
-                    dist_err_abs = abs(float(dist_val) - float(dist_target))
-                else:
-                    dist_cmd_fallback = "f" if str(prod_cmd) not in ("b",) else "b"
-                    dist_err_abs = 0.0
-                dist_score_fallback = float(align_brick_dist_error_speed_score(dist_err_abs))
-                fallback_cmd = dist_cmd_fallback
-                fallback_score = int(round(dist_score_fallback))
-                fallback_reason = "distance_alignment"
-                fallback_worst_metric = "dist"
-                fallback_score_float = dist_score_fallback
-            elif fallback_corr == "y_axis":
-                y_err_fallback = float(y_err_mm or 0.0)
-                fallback_cmd = "d" if y_err_fallback > 0.0 else "u"
-                fallback_score = int(align_brick_y_axis_one_shot_score(y_err_fallback))
-                fallback_reason = "y_axis_alignment"
-                fallback_worst_metric = worst_metric or "yAxis_offset_abs"
-                fallback_score_float = None
-            else:
-                x_err_fallback = float(x_err_mm or 0.0)
-                fallback_cmd = "l" if x_err_fallback <= 0.0 else "r"
-                fallback_score = int(align_brick_x_axis_one_shot_score(x_err_fallback))
-                fallback_reason = "x_axis_alignment"
-                fallback_worst_metric = worst_metric or "xAxis_offset_abs"
-                fallback_score_float = None
+            # Hard rule: if every gated metric is currently within its success gate,
+            # do not invent a correction. Hold still and wait for gate confirmation.
             chosen = {
-                "cmd": str(fallback_cmd),
-                "correction_type": str(fallback_corr),
-                "score": int(fallback_score),
-                "score_float": fallback_score_float,
-                "reason": str(fallback_reason),
-                "worst_metric": fallback_worst_metric,
+                "cmd": None,
+                "correction_type": None,
+                "score": 0,
+                "score_float": None,
+                "reason": "all_gaps_within_gate",
+                "worst_metric": None,
                 "ratio": 0.0,
             }
 
@@ -1360,10 +1341,17 @@ def select_align_brick_next_act(
             chosen_type = str(chosen.get("correction_type") or "").strip().lower()
             rotation_override = True
 
-    correction_type = str(chosen.get("correction_type"))
+    correction_type = chosen.get("correction_type")
     score_float = chosen.get("score_float")
-    score_int = int(chosen.get("score"))
-    prod_cmd = str(chosen.get("cmd"))
+    try:
+        score_int = int(chosen.get("score"))
+    except (TypeError, ValueError):
+        score_int = 0
+    prod_cmd = chosen.get("cmd")
+    if prod_cmd is not None:
+        prod_cmd = str(prod_cmd).strip().lower()
+    if prod_cmd not in {"f", "b", "l", "r", "u", "d"}:
+        prod_cmd = None
     reason = str(chosen.get("reason"))
     worst_metric = chosen.get("worst_metric")
 
@@ -1372,8 +1360,8 @@ def select_align_brick_next_act(
     # analytics planner, which can create a second conflicting path across steps.
 
     return {
-        "cmd": str(prod_cmd),
-        "correction_type": str(correction_type),
+        "cmd": prod_cmd,
+        "correction_type": (None if correction_type is None else str(correction_type)),
         "score": int(score_int),
         "score_float": score_float,
         "reason": str(reason),

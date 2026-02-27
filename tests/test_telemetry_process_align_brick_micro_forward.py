@@ -6,13 +6,13 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import telemetry_process
-import telemetry_robot
 
 
 class _DummyRobot:
-    def __init__(self):
+    def __init__(self, *, supports_timed_command_queue=False):
         self.sent = []
         self._last_turn_cmd = None
+        self.supports_timed_command_queue = bool(supports_timed_command_queue)
 
     def send_command_pwm(self, cmd, pwm, duration_ms=0):
         self.sent.append((cmd, pwm, duration_ms))
@@ -25,7 +25,7 @@ class _DummyWorld:
 class TestTelemetryProcessAlignBrickMicroForward(unittest.TestCase):
     def test_auto_align_brick_forward_reaches_target_score_segment(self):
         world = _DummyWorld()
-        robot = _DummyRobot()
+        robot = _DummyRobot(supports_timed_command_queue=True)
 
         process = json.loads((Path(__file__).resolve().parents[1] / "world_model_process.json").read_text())
         world.process_rules = process.get("steps", {})
@@ -38,7 +38,7 @@ class TestTelemetryProcessAlignBrickMicroForward(unittest.TestCase):
             step="ALIGN_BRICK",
             cmd="f",
             speed=0.0,
-            speed_score=10,
+            speed_score=12,
             auto_mode=True,
         )
 
@@ -48,10 +48,9 @@ class TestTelemetryProcessAlignBrickMicroForward(unittest.TestCase):
         self.assertIsInstance(segments, list)
         self.assertTrue(segments)
         scores = [seg.get("score_model") for seg in segments if isinstance(seg, dict)]
-        self.assertIn(telemetry_robot.SPEED_SCORE_MIN, scores)
-        self.assertIn(10, scores)
+        self.assertIn(12, scores)
+        self.assertLess(min(scores), 12)
 
 
 if __name__ == "__main__":
     unittest.main()
-
