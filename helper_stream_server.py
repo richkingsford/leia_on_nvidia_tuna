@@ -52,12 +52,21 @@ class StreamServer:
         vision_mode_getter: Optional[Callable[[], str]] = None,
         vision_mode_setter: Optional[Callable[[str], None]] = None,
         vision_mode_options: Optional[list] = None,
+        cyan_profile_getter: Optional[Callable[[], str]] = None,
+        cyan_profile_setter: Optional[Callable[[str], None]] = None,
+        cyan_profile_options: Optional[list] = None,
+        cyan_visibility_getter: Optional[Callable[[], str]] = None,
+        cyan_visibility_setter: Optional[Callable[[str], None]] = None,
+        cyan_visibility_options: Optional[list] = None,
         markerless_profile_getter: Optional[Callable[[], str]] = None,
         markerless_profile_setter: Optional[Callable[[str], None]] = None,
         markerless_profile_options: Optional[list] = None,
         markerless_visibility_getter: Optional[Callable[[], str]] = None,
         markerless_visibility_setter: Optional[Callable[[str], None]] = None,
         markerless_visibility_options: Optional[list] = None,
+        success_gate_step_getter: Optional[Callable[[], str]] = None,
+        success_gate_step_setter: Optional[Callable[[str], None]] = None,
+        success_gate_step_options: Optional[list] = None,
     ):
         self.frame_provider = frame_provider
         self.text_provider = text_provider
@@ -80,16 +89,32 @@ class StreamServer:
         self.vision_mode_setter = vision_mode_setter
         self.vision_mode_options = self._normalize_options(vision_mode_options)
         if (self.vision_mode_getter is not None or self.vision_mode_setter is not None) and not self.vision_mode_options:
-            self.vision_mode_options = [("aruco", "AruCo Markers"), ("yolo", "Markerless")]
+            self.vision_mode_options = [("aruco", "AruCo Markers"), ("cyan", "Cyan Bricks")]
         self._vision_mode_allowed = {value for value, _label in self.vision_mode_options}
-        self.markerless_profile_getter = markerless_profile_getter
-        self.markerless_profile_setter = markerless_profile_setter
-        self.markerless_profile_options = self._normalize_options(markerless_profile_options)
-        self._markerless_profile_allowed = {value for value, _label in self.markerless_profile_options}
-        self.markerless_visibility_getter = markerless_visibility_getter
-        self.markerless_visibility_setter = markerless_visibility_setter
-        self.markerless_visibility_options = self._normalize_options(markerless_visibility_options)
-        self._markerless_visibility_allowed = {value for value, _label in self.markerless_visibility_options}
+        if cyan_profile_getter is None:
+            cyan_profile_getter = markerless_profile_getter
+        if cyan_profile_setter is None:
+            cyan_profile_setter = markerless_profile_setter
+        if cyan_profile_options is None:
+            cyan_profile_options = markerless_profile_options
+        if cyan_visibility_getter is None:
+            cyan_visibility_getter = markerless_visibility_getter
+        if cyan_visibility_setter is None:
+            cyan_visibility_setter = markerless_visibility_setter
+        if cyan_visibility_options is None:
+            cyan_visibility_options = markerless_visibility_options
+        self.cyan_profile_getter = cyan_profile_getter
+        self.cyan_profile_setter = cyan_profile_setter
+        self.cyan_profile_options = self._normalize_options(cyan_profile_options)
+        self._cyan_profile_allowed = {value for value, _label in self.cyan_profile_options}
+        self.cyan_visibility_getter = cyan_visibility_getter
+        self.cyan_visibility_setter = cyan_visibility_setter
+        self.cyan_visibility_options = self._normalize_options(cyan_visibility_options)
+        self._cyan_visibility_allowed = {value for value, _label in self.cyan_visibility_options}
+        self.success_gate_step_getter = success_gate_step_getter
+        self.success_gate_step_setter = success_gate_step_setter
+        self.success_gate_step_options = self._normalize_options(success_gate_step_options)
+        self._success_gate_step_allowed = {value for value, _label in self.success_gate_step_options}
         self._stop = threading.Event()
         self._thread = None
         self._startup_error = None
@@ -151,18 +176,35 @@ class StreamServer:
                             self.vision_mode_setter(mode)
                         except Exception:
                             pass
-                if self.markerless_profile_setter is not None and "markerless_profile" in payload:
-                    profile = self._coerce_markerless_profile(payload.get("markerless_profile"))
+                profile_payload = None
+                if "cyan_profile" in payload:
+                    profile_payload = payload.get("cyan_profile")
+                elif "markerless_profile" in payload:
+                    profile_payload = payload.get("markerless_profile")
+                if self.cyan_profile_setter is not None and profile_payload is not None:
+                    profile = self._coerce_cyan_profile(profile_payload)
                     if profile is not None:
                         try:
-                            self.markerless_profile_setter(profile)
+                            self.cyan_profile_setter(profile)
                         except Exception:
                             pass
-                if self.markerless_visibility_setter is not None and "markerless_visibility" in payload:
-                    mode = self._coerce_markerless_visibility(payload.get("markerless_visibility"))
+                visibility_payload = None
+                if "cyan_visibility" in payload:
+                    visibility_payload = payload.get("cyan_visibility")
+                elif "markerless_visibility" in payload:
+                    visibility_payload = payload.get("markerless_visibility")
+                if self.cyan_visibility_setter is not None and visibility_payload is not None:
+                    mode = self._coerce_cyan_visibility(visibility_payload)
                     if mode is not None:
                         try:
-                            self.markerless_visibility_setter(mode)
+                            self.cyan_visibility_setter(mode)
+                        except Exception:
+                            pass
+                if self.success_gate_step_setter is not None and "success_gate_step" in payload:
+                    step = self._coerce_success_gate_step(payload.get("success_gate_step"))
+                    if step is not None:
+                        try:
+                            self.success_gate_step_setter(step)
                         except Exception:
                             pass
 
@@ -186,29 +228,41 @@ class StreamServer:
                 {"value": value, "label": label}
                 for value, label in self.vision_mode_options
             ]
-            markerless_profile = self.markerless_profile_options[0][0] if self.markerless_profile_options else None
-            if self.markerless_profile_getter is not None:
+            cyan_profile = self.cyan_profile_options[0][0] if self.cyan_profile_options else None
+            if self.cyan_profile_getter is not None:
                 try:
-                    profile = self._coerce_markerless_profile(self.markerless_profile_getter())
+                    profile = self._coerce_cyan_profile(self.cyan_profile_getter())
                     if profile is not None:
-                        markerless_profile = profile
+                        cyan_profile = profile
                 except Exception:
                     pass
-            markerless_profile_options_payload = [
+            cyan_profile_options_payload = [
                 {"value": value, "label": label}
-                for value, label in self.markerless_profile_options
+                for value, label in self.cyan_profile_options
             ]
-            markerless_visibility = self.markerless_visibility_options[0][0] if self.markerless_visibility_options else None
-            if self.markerless_visibility_getter is not None:
+            cyan_visibility = self.cyan_visibility_options[0][0] if self.cyan_visibility_options else None
+            if self.cyan_visibility_getter is not None:
                 try:
-                    mode = self._coerce_markerless_visibility(self.markerless_visibility_getter())
+                    mode = self._coerce_cyan_visibility(self.cyan_visibility_getter())
                     if mode is not None:
-                        markerless_visibility = mode
+                        cyan_visibility = mode
                 except Exception:
                     pass
-            markerless_visibility_options_payload = [
+            cyan_visibility_options_payload = [
                 {"value": value, "label": label}
-                for value, label in self.markerless_visibility_options
+                for value, label in self.cyan_visibility_options
+            ]
+            success_gate_step = self.success_gate_step_options[0][0] if self.success_gate_step_options else None
+            if self.success_gate_step_getter is not None:
+                try:
+                    step = self._coerce_success_gate_step(self.success_gate_step_getter())
+                    if step is not None:
+                        success_gate_step = step
+                except Exception:
+                    pass
+            success_gate_step_options_payload = [
+                {"value": value, "label": label}
+                for value, label in self.success_gate_step_options
             ]
             return jsonify(
                 {
@@ -218,12 +272,22 @@ class StreamServer:
                     "vision_mode": vision_mode,
                     "vision_mode_editable": self.vision_mode_setter is not None,
                     "vision_mode_options": vision_mode_options_payload,
-                    "markerless_profile": markerless_profile,
-                    "markerless_profile_editable": self.markerless_profile_setter is not None,
-                    "markerless_profile_options": markerless_profile_options_payload,
-                    "markerless_visibility": markerless_visibility,
-                    "markerless_visibility_editable": self.markerless_visibility_setter is not None,
-                    "markerless_visibility_options": markerless_visibility_options_payload,
+                    "cyan_profile": cyan_profile,
+                    "cyan_profile_editable": self.cyan_profile_setter is not None,
+                    "cyan_profile_options": cyan_profile_options_payload,
+                    "cyan_visibility": cyan_visibility,
+                    "cyan_visibility_editable": self.cyan_visibility_setter is not None,
+                    "cyan_visibility_options": cyan_visibility_options_payload,
+                    "success_gate_step": success_gate_step,
+                    "success_gate_step_editable": self.success_gate_step_setter is not None,
+                    "success_gate_step_options": success_gate_step_options_payload,
+                    # Backward-compatible payload keys for old UI clients.
+                    "markerless_profile": cyan_profile,
+                    "markerless_profile_editable": self.cyan_profile_setter is not None,
+                    "markerless_profile_options": cyan_profile_options_payload,
+                    "markerless_visibility": cyan_visibility,
+                    "markerless_visibility_editable": self.cyan_visibility_setter is not None,
+                    "markerless_visibility_options": cyan_visibility_options_payload,
                 }
             )
 
@@ -316,19 +380,25 @@ class StreamServer:
         has_vision_mode_control = bool(self.vision_mode_options) and (
             self.vision_mode_getter is not None or self.vision_mode_setter is not None
         )
-        has_markerless_profile_control = bool(self.markerless_profile_options) and (
-            self.markerless_profile_getter is not None or self.markerless_profile_setter is not None
+        has_cyan_profile_control = bool(self.cyan_profile_options) and (
+            self.cyan_profile_getter is not None or self.cyan_profile_setter is not None
         )
-        has_markerless_visibility_control = bool(self.markerless_visibility_options) and (
-            self.markerless_visibility_getter is not None or self.markerless_visibility_setter is not None
+        has_cyan_visibility_control = bool(self.cyan_visibility_options) and (
+            self.cyan_visibility_getter is not None or self.cyan_visibility_setter is not None
         )
-        if (
+        has_success_gate_step_control = bool(self.success_gate_step_options) and (
+            self.success_gate_step_getter is not None or self.success_gate_step_setter is not None
+        )
+        has_top_controls = (
             has_center_line_control
             or has_vision_mode_control
-            or has_markerless_profile_control
-            or has_markerless_visibility_control
-        ):
-            controls_parts = ["<div class='controls'>"]
+            or has_cyan_profile_control
+            or has_cyan_visibility_control
+        )
+        if has_top_controls or has_success_gate_step_control:
+            controls_parts = []
+            if has_top_controls:
+                controls_parts.append("<div class='controls'>")
             if has_center_line_control:
                 controls_parts.append(
                     "<label class='control-item'><input type='checkbox' id='showCenterLine' checked> Show center lines</label>"
@@ -344,43 +414,48 @@ class StreamServer:
                         "</label>"
                     )
                 controls_parts.append("<div class='vision-mode'>" + "".join(radio_parts) + "</div>")
-            if has_markerless_profile_control:
+            if has_cyan_profile_control:
                 option_parts = []
-                for value, label in self.markerless_profile_options:
+                for value, label in self.cyan_profile_options:
                     value_escaped = html.escape(str(value), quote=True)
                     label_escaped = html.escape(str(label))
                     option_parts.append(f"<option value='{value_escaped}'>{label_escaped}</option>")
                 controls_parts.append(
                     "<label class='control-item'>"
-                    "Markerless Config: "
-                    "<select id='markerlessProfile' class='control-select'>"
+                    "Cyan Config: "
+                    "<select id='cyanProfile' class='control-select'>"
                     + "".join(option_parts)
                     + "</select>"
                     "</label>"
                 )
-            if has_markerless_visibility_control:
+            if has_cyan_visibility_control:
                 option_parts = []
-                for value, label in self.markerless_visibility_options:
+                for value, label in self.cyan_visibility_options:
                     value_escaped = html.escape(str(value), quote=True)
                     label_escaped = html.escape(str(label))
                     option_parts.append(f"<option value='{value_escaped}'>{label_escaped}</option>")
                 controls_parts.append(
                     "<label class='control-item'>"
                     "Brick Visibility: "
-                    "<select id='markerlessVisibility' class='control-select'>"
+                    "<select id='cyanVisibility' class='control-select'>"
                     + "".join(option_parts)
                     + "</select>"
                     "</label>"
                 )
-            controls_parts.append("</div>")
-            controls_html = "".join(controls_parts)
+            if has_top_controls:
+                controls_parts.append("</div>")
+                controls_html = "".join(controls_parts)
 
             controls_script = (
                 "<script>"
                 "const centerLineToggle = document.getElementById('showCenterLine');"
                 "const visionModeInputs = Array.from(document.querySelectorAll(\"input[name='visionMode']\"));"
-                "const markerlessProfileSelect = document.getElementById('markerlessProfile');"
-                "const markerlessVisibilitySelect = document.getElementById('markerlessVisibility');"
+                "const cyanProfileSelect = document.getElementById('cyanProfile');"
+                "const cyanVisibilitySelect = document.getElementById('cyanVisibility');"
+                "const telemetryHostEl = document.getElementById('telemetry');"
+                "let successGateStep = null;"
+                "let successGateStepEditable = false;"
+                "let successGateStepOptions = [];"
                 "const setVisionMode = (mode, editable) => {"
                 "if (!visionModeInputs.length) return;"
                 "let matched = false;"
@@ -394,19 +469,38 @@ class StreamServer:
                 "visionModeInputs[0].checked = true;"
                 "}"
                 "};"
-                "const setMarkerlessProfile = (profile, editable) => {"
-                "if (!markerlessProfileSelect) return;"
+                "const setCyanProfile = (profile, editable) => {"
+                "if (!cyanProfileSelect) return;"
                 "if (profile !== null && profile !== undefined) {"
-                "markerlessProfileSelect.value = String(profile);"
+                "cyanProfileSelect.value = String(profile);"
                 "}"
-                "markerlessProfileSelect.disabled = !editable;"
+                "cyanProfileSelect.disabled = !editable;"
                 "};"
-                "const setMarkerlessVisibility = (mode, editable) => {"
-                "if (!markerlessVisibilitySelect) return;"
+                "const setCyanVisibility = (mode, editable) => {"
+                "if (!cyanVisibilitySelect) return;"
                 "if (mode !== null && mode !== undefined) {"
-                "markerlessVisibilitySelect.value = String(mode);"
+                "cyanVisibilitySelect.value = String(mode);"
                 "}"
-                "markerlessVisibilitySelect.disabled = !editable;"
+                "cyanVisibilitySelect.disabled = !editable;"
+                "};"
+                "const setSuccessGateStepState = (step, editable, options) => {"
+                "if (Array.isArray(options)) {"
+                "successGateStepOptions = options.map((opt) => {"
+                "if (!opt) return null;"
+                "const value = (opt.value !== undefined && opt.value !== null) ? String(opt.value) : '';"
+                "if (!value) return null;"
+                "const label = (opt.label !== undefined && opt.label !== null) ? String(opt.label) : value;"
+                "return {value, label};"
+                "}).filter((opt) => !!opt);"
+                "}"
+                "if (step !== null && step !== undefined) {"
+                "successGateStep = String(step);"
+                "} else if (successGateStepOptions.length) {"
+                "successGateStep = String(successGateStepOptions[0].value);"
+                "} else {"
+                "successGateStep = null;"
+                "}"
+                "successGateStepEditable = !!editable;"
                 "};"
                 "const postPrefs = async (payload) => {"
                 "try {"
@@ -416,6 +510,47 @@ class StreamServer:
                 "body:JSON.stringify(payload)"
                 "});"
                 "} catch (e) { /* ignore */ }"
+                "};"
+                "const lineText = (line) => {"
+                "if (line && Array.isArray(line.segments)) {"
+                "return line.segments.map((seg) => String((seg && seg.text) || '')).join('');"
+                "}"
+                "if (line && line.text !== undefined && line.text !== null) {"
+                "return String(line.text);"
+                "}"
+                "return '';"
+                "};"
+                "const renderSuccessGateStepControl = () => {"
+                "if (!successGateStepOptions.length) return '';"
+                "const optionsHtml = successGateStepOptions.map((opt) => {"
+                "const value = String(opt.value);"
+                "const label = String(opt.label || opt.value);"
+                "const selected = successGateStep !== null && value === String(successGateStep) ? ' selected' : '';"
+                "return '<option value=\"' + esc(value) + '\"' + selected + '>' + esc(label) + '</option>';"
+                "}).join('');"
+                "const disabledAttr = successGateStepEditable ? '' : ' disabled';"
+                "return '<div class=\"gate-step-inline\"><label class=\"gate-step-label\">Step: <select id=\"successGateStepSelect\" class=\"control-select gate-step-select\"' + disabledAttr + '>' + optionsHtml + '</select></label></div>';"
+                "};"
+                "window.injectSuccessGateStepControl = (lines, renderedLines) => {"
+                "if (!telemetryHostEl || !Array.isArray(renderedLines)) {"
+                "return Array.isArray(renderedLines) ? renderedLines.join('') : '';"
+                "}"
+                "if (!successGateStepOptions.length || !Array.isArray(lines)) {"
+                "return renderedLines.join('');"
+                "}"
+                "let successTitleIdx = -1;"
+                "for (let i = 0; i < lines.length; i += 1) {"
+                "if (lineText(lines[i]).trim() === '--- SUCCESS GATES ---') {"
+                "successTitleIdx = i;"
+                "break;"
+                "}"
+                "}"
+                "if (successTitleIdx < 0) {"
+                "return renderedLines.join('');"
+                "}"
+                "const merged = renderedLines.slice();"
+                "merged.splice(successTitleIdx + 1, 0, renderSuccessGateStepControl());"
+                "return merged.join('');"
                 "};"
                 "const syncPrefs = async () => {"
                 "try {"
@@ -431,12 +566,17 @@ class StreamServer:
                 "if (visionModeInputs.length) {"
                 "setVisionMode(data.vision_mode, !!data.vision_mode_editable);"
                 "}"
-                "if (markerlessProfileSelect) {"
-                "setMarkerlessProfile(data.markerless_profile, !!data.markerless_profile_editable);"
+                "if (cyanProfileSelect) {"
+                "setCyanProfile(data.cyan_profile, !!data.cyan_profile_editable);"
                 "}"
-                "if (markerlessVisibilitySelect) {"
-                "setMarkerlessVisibility(data.markerless_visibility, !!data.markerless_visibility_editable);"
+                "if (cyanVisibilitySelect) {"
+                "setCyanVisibility(data.cyan_visibility, !!data.cyan_visibility_editable);"
                 "}"
+                "setSuccessGateStepState("
+                "data.success_gate_step,"
+                "!!data.success_gate_step_editable,"
+                "Array.isArray(data.success_gate_step_options) ? data.success_gate_step_options : null"
+                ");"
                 "} catch (e) { /* ignore */ }"
                 "};"
                 "if (centerLineToggle) {"
@@ -452,16 +592,32 @@ class StreamServer:
                 "syncPrefs();"
                 "});"
                 "});"
-                "if (markerlessProfileSelect) {"
-                "markerlessProfileSelect.addEventListener('change', async () => {"
-                "await postPrefs({markerless_profile:markerlessProfileSelect.value});"
+                "if (cyanProfileSelect) {"
+                "cyanProfileSelect.addEventListener('change', async () => {"
+                "await postPrefs({cyan_profile:cyanProfileSelect.value});"
                 "syncPrefs();"
                 "});"
                 "}"
-                "if (markerlessVisibilitySelect) {"
-                "markerlessVisibilitySelect.addEventListener('change', async () => {"
-                "await postPrefs({markerless_visibility:markerlessVisibilitySelect.value});"
+                "if (cyanVisibilitySelect) {"
+                "cyanVisibilitySelect.addEventListener('change', async () => {"
+                "await postPrefs({cyan_visibility:cyanVisibilitySelect.value});"
                 "syncPrefs();"
+                "});"
+                "}"
+                "const handleSuccessGateStepSelection = async (target) => {"
+                "if (!target || target.id !== 'successGateStepSelect') return;"
+                "await postPrefs({success_gate_step:target.value});"
+                "try { target.blur(); } catch (e) { /* ignore */ }"
+                "syncPrefs();"
+                "};"
+                "if (telemetryHostEl) {"
+                "telemetryHostEl.addEventListener('input', async (event) => {"
+                "const target = event && event.target;"
+                "await handleSuccessGateStepSelection(target);"
+                "});"
+                "telemetryHostEl.addEventListener('change', async (event) => {"
+                "const target = event && event.target;"
+                "await handleSuccessGateStepSelection(target);"
                 "});"
                 "}"
                 "syncPrefs();"
@@ -484,6 +640,9 @@ class StreamServer:
                 ".control-item{white-space:nowrap;}"
                 ".vision-mode{display:inline-flex;gap:12px;align-items:center;}"
                 ".control-select{margin-left:6px;}"
+                ".gate-step-inline{padding:4px 0 6px 0;border-bottom:1px solid #242424;}"
+                ".gate-step-label{display:flex;align-items:center;gap:6px;color:#ddd;}"
+                ".gate-step-select{margin-left:0;flex:1;min-width:0;}"
                 ".footer-wrap{margin:18px auto 0 auto;display:flex;justify-content:center;}"
                 ".footer-wrap-standalone{max-width:min(1100px, calc(100vw - 40px));}"
                 ".footer-panel{background:#111;border:1px solid #333;border-radius:8px;"
@@ -533,6 +692,9 @@ class StreamServer:
             ".control-item{white-space:nowrap;}"
             ".vision-mode{display:inline-flex;gap:12px;align-items:center;}"
             ".control-select{margin-left:6px;}"
+            ".gate-step-inline{padding:4px 0 6px 0;border-bottom:1px solid #242424;}"
+            ".gate-step-label{display:flex;align-items:center;gap:6px;color:#ddd;}"
+            ".gate-step-select{margin-left:0;flex:1;min-width:0;}"
             ".footer-panel{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;"
             "font-size:12px;line-height:1.28;}"
             ".footer-section + .footer-section{margin-top:12px;padding-top:10px;border-top:3px double #444;}"
@@ -597,9 +759,20 @@ class StreamServer:
             "if (videoFeedErrored && refreshFailures > 0) {"
             "scheduleReload();"
             "return;"
-            "}"
-            "const lines = Array.isArray(data.lines) ? data.lines : [];"
-            "telemetryEl.innerHTML = lines.map(renderLine).join('');"
+                "}"
+                "const lines = Array.isArray(data.lines) ? data.lines : [];"
+                "const renderedLines = lines.map(renderLine);"
+                "const activeEl = document.activeElement;"
+                "const successGateSelectFocused = !!(activeEl && activeEl.id === 'successGateStepSelect');"
+                "if (successGateSelectFocused) {"
+                "refreshFailures = 0;"
+                "return;"
+                "}"
+                "if (typeof window.injectSuccessGateStepControl === 'function') {"
+                "telemetryEl.innerHTML = window.injectSuccessGateStepControl(lines, renderedLines);"
+                "} else {"
+                "telemetryEl.innerHTML = renderedLines.join('');"
+                "}"
             "refreshFailures = 0;"
             "} catch (e) { /* ignore */ }"
             "refreshFailures += 1;"
@@ -687,27 +860,43 @@ class StreamServer:
         if value is None:
             return None
         candidate = str(value).strip().lower()
-        if candidate in self._vision_mode_allowed:
-            return candidate
+        candidates = [candidate]
+        if candidate in ("markerless", "yolo"):
+            candidates.extend(("cyan", "yolo", "markerless"))
+        elif candidate == "cyan":
+            candidates.extend(("yolo", "markerless"))
+        for mode in candidates:
+            if mode in self._vision_mode_allowed:
+                return mode
         return None
 
-    def _coerce_markerless_profile(self, value):
-        if not self._markerless_profile_allowed:
+    def _coerce_cyan_profile(self, value):
+        if not self._cyan_profile_allowed:
             return None
         if value is None:
             return None
         candidate = str(value).strip().lower()
-        if candidate in self._markerless_profile_allowed:
+        if candidate in self._cyan_profile_allowed:
             return candidate
         return None
 
-    def _coerce_markerless_visibility(self, value):
-        if not self._markerless_visibility_allowed:
+    def _coerce_cyan_visibility(self, value):
+        if not self._cyan_visibility_allowed:
             return None
         if value is None:
             return None
         candidate = str(value).strip().lower()
-        if candidate in self._markerless_visibility_allowed:
+        if candidate in self._cyan_visibility_allowed:
+            return candidate
+        return None
+
+    def _coerce_success_gate_step(self, value):
+        if not self._success_gate_step_allowed:
+            return None
+        if value is None:
+            return None
+        candidate = str(value).strip().lower()
+        if candidate in self._success_gate_step_allowed:
             return candidate
         return None
 

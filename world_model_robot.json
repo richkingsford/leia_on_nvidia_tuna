@@ -10,7 +10,10 @@
     },
     "r": {
       "cmd": "f",
-      "score": 1
+      "score": 1,
+      "pwm": 90,
+      "power": 0.24,
+      "duration_ms": 250
     },
     "f": {
       "cmd": "b",
@@ -80,8 +83,8 @@
   "min_turn_power": 0.064,
   "score_power_pwm_drive": {
     "1": {
-      "power": 0.26,
-      "pwm": 93
+      "power": 0.24,
+      "pwm": 90
     },
     "20": {
       "power": 0.556,

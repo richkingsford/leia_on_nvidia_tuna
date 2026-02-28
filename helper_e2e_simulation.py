@@ -19,6 +19,7 @@ import helper_gate_utils
 import telemetry_robot
 from helper_demo_log_utils import extract_attempt_segments, load_demo_logs, normalize_step_label
 from helper_manual_config import load_manual_training_config
+from helper_vision_config import demos_dir_for_mode
 
 COLOR_GREEN = "\033[32m"
 COLOR_RED = "\033[31m"
@@ -598,7 +599,7 @@ def collect_simulation_logs(
     ok = True
 
     root = Path(__file__).resolve().parent
-    demos_path = Path(demos_dir) if demos_dir is not None else (root / "demos")
+    demos_path = Path(demos_dir) if demos_dir is not None else demos_dir_for_mode()
 
     logger.green("Starting E2E preflight simulation for Leia.")
     logger.white("Using helper_manual_config, helper_demo_log_utils, and helper_gate_utils.")
@@ -733,7 +734,7 @@ def main() -> int:
     parser.add_argument(
         "--demos",
         default=None,
-        help="Optional demos directory. Defaults to ./demos next to this script.",
+        help="Optional demos directory. Defaults to the active mode demos directory from world_model_vision.json.",
     )
     parser.add_argument(
         "--strict",

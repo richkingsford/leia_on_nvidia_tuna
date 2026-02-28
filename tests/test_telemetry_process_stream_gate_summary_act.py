@@ -102,10 +102,7 @@ class TestTelemetryProcessStreamGateSummaryAct(unittest.TestCase):
         summary, _ = telemetry_process.compute_stream_gate_summary(world, "ALIGN_BRICK", active=True)
         self.assertFalse(any(str(line).startswith("SENT:") for line in summary))
         self.assertFalse(any(str(line).startswith("NEXT:") for line in summary))
-        auto_lines = _auto_lines(summary)
-        self.assertEqual(len(auto_lines), 1)
-        self.assertIn("so I", auto_lines[0])
-        self.assertNotIn("HOLD", auto_lines[0])
+        self.assertEqual(_auto_lines(summary), [])
 
     def test_stream_summary_act_holds_when_brick_not_visible_in_align_brick(self):
         world = _DummyWorld()
@@ -121,10 +118,7 @@ class TestTelemetryProcessStreamGateSummaryAct(unittest.TestCase):
         summary, _ = telemetry_process.compute_stream_gate_summary(world, "ALIGN_BRICK", active=True)
         self.assertFalse(any(str(line).startswith("SENT:") for line in summary))
         self.assertFalse(any(str(line).startswith("NEXT:") for line in summary))
-        auto_lines = _auto_lines(summary)
-        self.assertEqual(len(auto_lines), 1)
-        self.assertIn("HOLD", auto_lines[0])
-        self.assertIn("brick not visible", auto_lines[0].lower())
+        self.assertEqual(_auto_lines(summary), [])
 
     def test_stream_summary_visible_only_step_uses_resulting_wording(self):
         world = _DummyWorld()
@@ -138,10 +132,7 @@ class TestTelemetryProcessStreamGateSummaryAct(unittest.TestCase):
         world.process_rules["ALIGN_BRICK"]["scan_direction"] = "b"
         world.brick["visible"] = False
         summary, _ = telemetry_process.compute_stream_gate_summary(world, "ALIGN_BRICK", active=True)
-        auto_lines = _auto_lines(summary)
-        self.assertEqual(len(auto_lines), 1)
-        self.assertIn("FAILED success gates (visible=false), so I", auto_lines[0])
-        self.assertIn("resulting in NOT meeting the success gates", auto_lines[0])
+        self.assertEqual(_auto_lines(summary), [])
 
     def test_stream_summary_numeric_gates_keep_getting_us_wording(self):
         world = _DummyWorld()
@@ -156,9 +147,7 @@ class TestTelemetryProcessStreamGateSummaryAct(unittest.TestCase):
         world.brick["dist"] = 120.0
         world.brick["x_axis"] = 10.0
         summary, _ = telemetry_process.compute_stream_gate_summary(world, "ALIGN_BRICK", active=True)
-        auto_lines = _auto_lines(summary)
-        self.assertEqual(len(auto_lines), 1)
-        self.assertIn("getting us", auto_lines[0])
+        self.assertEqual(_auto_lines(summary), [])
 
     def test_stream_summary_uses_fresh_auto_snapshot_for_auto_line(self):
         world = _DummyWorld()
@@ -190,9 +179,7 @@ class TestTelemetryProcessStreamGateSummaryAct(unittest.TestCase):
         summary, _ = telemetry_process.compute_stream_gate_summary(world, "ALIGN_BRICK", active=True)
         self.assertFalse(any(str(line).startswith("SENT:") for line in summary))
         self.assertFalse(any(str(line).startswith("NEXT:") for line in summary))
-        auto_lines = _auto_lines(summary)
-        self.assertEqual(len(auto_lines), 1)
-        self.assertIn("so I R 20%", auto_lines[0])
+        self.assertEqual(_auto_lines(summary), [])
 
     def test_stream_summary_nominal_step_keeps_act_only_wording(self):
         world = _DummyWorld()
@@ -207,9 +194,7 @@ class TestTelemetryProcessStreamGateSummaryAct(unittest.TestCase):
         summary, _ = telemetry_process.compute_stream_gate_summary(world, "PLACE", active=True)
         self.assertFalse(any(str(line).startswith("SENT:") for line in summary))
         self.assertFalse(any(str(line).startswith("NEXT:") for line in summary))
-        auto_lines = _auto_lines(summary)
-        self.assertEqual(len(auto_lines), 1)
-        self.assertIn("ACT ONLY (nominal): B 20%", auto_lines[0])
+        self.assertEqual(_auto_lines(summary), [])
 
     def test_stream_summary_auto_line_contains_colored_segments(self):
         world = _DummyWorld()
@@ -231,12 +216,36 @@ class TestTelemetryProcessStreamGateSummaryAct(unittest.TestCase):
             and isinstance(line.get("segments"), list)
             and _line_text(line).startswith("AUTO:")
         ]
-        self.assertEqual(len(auto_segment_lines), 1)
-        segment_colors = []
-        for seg in auto_segment_lines[0].get("segments") or []:
-            if isinstance(seg, (tuple, list)) and len(seg) > 1:
-                segment_colors.append(tuple(seg[1]))
-        self.assertIn(tuple(telemetry_process.STREAM_ORANGE), segment_colors)
+        self.assertEqual(auto_segment_lines, [])
+
+    def test_stream_summary_includes_auto_lite_gatecheck_continuation_line(self):
+        world = _DummyWorld()
+        world.process_rules = {
+            "BRICK_LOCK": {
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": -6.22, "tol": 4.0},
+                    "dist": {"target": 154.61, "tol": 4.0},
+                }
+            }
+        }
+        world.brick["visible"] = True
+        world.brick["x_axis"] = -6.0
+        world.brick["dist"] = 170.0
+        world._gatecheck_status = {
+            "mode": "lite",
+            "checks": 2,
+            "truth_ok": False,
+            "lite_collected": 2,
+            "lite_required": 3,
+        }
+        world._gatecheck_lite_required = 3
+        world._gatecheck_lite_collected = 2
+        world._gatecheck_lite_passed = False
+
+        summary, _ = telemetry_process.compute_stream_gate_summary(world, "BRICK_LOCK", active=True)
+        all_text = [_line_text(line) for line in summary]
+        self.assertFalse(any(text.startswith("AUTO: ") for text in all_text))
+        self.assertFalse(any("lite gatecheck:" in text for text in all_text))
 
 
 if __name__ == "__main__":

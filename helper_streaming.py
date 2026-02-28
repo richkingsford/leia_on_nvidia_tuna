@@ -131,10 +131,16 @@ def start_stream_server(
     ready_timeout_s=3.0,
     vision_mode_options=None,
     vision_mode_key="vision_mode",
+    cyan_profile_options=None,
+    cyan_profile_key="cyan_profile",
+    cyan_visibility_options=None,
+    cyan_visibility_key="cyan_visibility",
     markerless_profile_options=None,
     markerless_profile_key="markerless_profile",
     markerless_visibility_options=None,
     markerless_visibility_key="markerless_visibility",
+    success_gate_step_options=None,
+    success_gate_step_key="success_gate_step",
 ):
     def _port_available(host, port):
         host_raw = "" if host is None else str(host).strip()
@@ -169,9 +175,24 @@ def start_stream_server(
     if "show_center_line" not in state:
         state["show_center_line"] = True
 
+    if cyan_profile_options is None:
+        cyan_profile_options = markerless_profile_options
+    if cyan_visibility_options is None:
+        cyan_visibility_options = markerless_visibility_options
+    if cyan_profile_key == "cyan_profile" and markerless_profile_key != "markerless_profile":
+        cyan_profile_key = markerless_profile_key
+    if cyan_visibility_key == "cyan_visibility" and markerless_visibility_key != "markerless_visibility":
+        cyan_visibility_key = markerless_visibility_key
+    # Backward compatibility: migrate existing state keys on first access.
+    if cyan_profile_key not in state and markerless_profile_key in state:
+        state[cyan_profile_key] = state.get(markerless_profile_key)
+    if cyan_visibility_key not in state and markerless_visibility_key in state:
+        state[cyan_visibility_key] = state.get(markerless_visibility_key)
+
     normalized_vision_mode_options = _normalize_choice_options(vision_mode_options)
-    normalized_markerless_profile_options = _normalize_choice_options(markerless_profile_options)
-    normalized_markerless_visibility_options = _normalize_choice_options(markerless_visibility_options)
+    normalized_cyan_profile_options = _normalize_choice_options(cyan_profile_options)
+    normalized_cyan_visibility_options = _normalize_choice_options(cyan_visibility_options)
+    normalized_success_gate_step_options = _normalize_choice_options(success_gate_step_options)
 
     vision_mode_getter = None
     vision_mode_setter = None
@@ -193,44 +214,64 @@ def start_stream_server(
             allowed_modes,
         )
 
-    markerless_profile_getter = None
-    markerless_profile_setter = None
-    if normalized_markerless_profile_options:
-        allowed_profiles = [value for value, _label in normalized_markerless_profile_options]
+    cyan_profile_getter = None
+    cyan_profile_setter = None
+    if normalized_cyan_profile_options:
+        allowed_profiles = [value for value, _label in normalized_cyan_profile_options]
         default_profile = allowed_profiles[0]
-        current_profile = str(state.get(markerless_profile_key, default_profile)).strip().lower()
+        current_profile = str(state.get(cyan_profile_key, default_profile)).strip().lower()
         if current_profile not in allowed_profiles:
-            state[markerless_profile_key] = default_profile
-        markerless_profile_getter = build_choice_getter(
+            state[cyan_profile_key] = default_profile
+        cyan_profile_getter = build_choice_getter(
             state,
-            markerless_profile_key,
+            cyan_profile_key,
             allowed_profiles,
             default=default_profile,
         )
-        markerless_profile_setter = build_choice_setter(
+        cyan_profile_setter = build_choice_setter(
             state,
-            markerless_profile_key,
+            cyan_profile_key,
             allowed_profiles,
         )
 
-    markerless_visibility_getter = None
-    markerless_visibility_setter = None
-    if normalized_markerless_visibility_options:
-        allowed_visibility = [value for value, _label in normalized_markerless_visibility_options]
+    cyan_visibility_getter = None
+    cyan_visibility_setter = None
+    if normalized_cyan_visibility_options:
+        allowed_visibility = [value for value, _label in normalized_cyan_visibility_options]
         default_visibility = allowed_visibility[0]
-        current_visibility = str(state.get(markerless_visibility_key, default_visibility)).strip().lower()
+        current_visibility = str(state.get(cyan_visibility_key, default_visibility)).strip().lower()
         if current_visibility not in allowed_visibility:
-            state[markerless_visibility_key] = default_visibility
-        markerless_visibility_getter = build_choice_getter(
+            state[cyan_visibility_key] = default_visibility
+        cyan_visibility_getter = build_choice_getter(
             state,
-            markerless_visibility_key,
+            cyan_visibility_key,
             allowed_visibility,
             default=default_visibility,
         )
-        markerless_visibility_setter = build_choice_setter(
+        cyan_visibility_setter = build_choice_setter(
             state,
-            markerless_visibility_key,
+            cyan_visibility_key,
             allowed_visibility,
+        )
+
+    success_gate_step_getter = None
+    success_gate_step_setter = None
+    if normalized_success_gate_step_options:
+        allowed_steps = [value for value, _label in normalized_success_gate_step_options]
+        default_step = allowed_steps[0]
+        current_step = str(state.get(success_gate_step_key, default_step)).strip().lower()
+        if current_step not in allowed_steps:
+            state[success_gate_step_key] = default_step
+        success_gate_step_getter = build_choice_getter(
+            state,
+            success_gate_step_key,
+            allowed_steps,
+            default=default_step,
+        )
+        success_gate_step_setter = build_choice_setter(
+            state,
+            success_gate_step_key,
+            allowed_steps,
         )
 
     try:
@@ -267,12 +308,15 @@ def start_stream_server(
             vision_mode_getter=vision_mode_getter,
             vision_mode_setter=vision_mode_setter,
             vision_mode_options=normalized_vision_mode_options,
-            markerless_profile_getter=markerless_profile_getter,
-            markerless_profile_setter=markerless_profile_setter,
-            markerless_profile_options=normalized_markerless_profile_options,
-            markerless_visibility_getter=markerless_visibility_getter,
-            markerless_visibility_setter=markerless_visibility_setter,
-            markerless_visibility_options=normalized_markerless_visibility_options,
+            cyan_profile_getter=cyan_profile_getter,
+            cyan_profile_setter=cyan_profile_setter,
+            cyan_profile_options=normalized_cyan_profile_options,
+            cyan_visibility_getter=cyan_visibility_getter,
+            cyan_visibility_setter=cyan_visibility_setter,
+            cyan_visibility_options=normalized_cyan_visibility_options,
+            success_gate_step_getter=success_gate_step_getter,
+            success_gate_step_setter=success_gate_step_setter,
+            success_gate_step_options=normalized_success_gate_step_options,
         )
         server.start()
         try:

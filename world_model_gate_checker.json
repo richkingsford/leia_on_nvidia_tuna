@@ -2,6 +2,6 @@
     "gate_checker": {
         "consecutive_required": 6,
         "majority_window": 13,
-        "majority_required": 7
+        "majority_required": 5
     }
 }

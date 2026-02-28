@@ -37,10 +37,19 @@ SPEED_SCORE_DEFAULT = 50
 SPEED_SCORE_MAX = 100
 SPEED_SCORE_LEVELS = tuple(range(SPEED_SCORE_MIN, SPEED_SCORE_MAX + 1))
 DEFAULT_ACT_DURATION_MS = 300
-DRIVE_ANTI_ALIAS_ENABLED = True
-DRIVE_ANTI_ALIAS_MIN_SCORE = 10
-DRIVE_ANTI_ALIAS_RAMP_MS = 300
-DRIVE_ANTI_ALIAS_RAMP_STEPS = 3
+MOTION_EASE_IN_OUT_ENABLED = True
+MOTION_EASE_IN_OUT_MIN_SCORE_DRIVE = 10
+MOTION_EASE_IN_OUT_MIN_SCORE_TURN = 20
+# Backward-compatible aggregate threshold alias.
+MOTION_EASE_IN_OUT_MIN_SCORE = MOTION_EASE_IN_OUT_MIN_SCORE_DRIVE
+MOTION_EASE_IN_OUT_MIN_RAMP_MS = 300
+MOTION_EASE_IN_OUT_MAX_RAMP_MS = 800
+MOTION_EASE_IN_OUT_RAMP_STEPS = 3
+# Backward-compatible aliases for older call sites/tests.
+DRIVE_ANTI_ALIAS_ENABLED = MOTION_EASE_IN_OUT_ENABLED
+DRIVE_ANTI_ALIAS_MIN_SCORE = MOTION_EASE_IN_OUT_MIN_SCORE
+DRIVE_ANTI_ALIAS_RAMP_MS = MOTION_EASE_IN_OUT_MIN_RAMP_MS
+DRIVE_ANTI_ALIAS_RAMP_STEPS = MOTION_EASE_IN_OUT_RAMP_STEPS
 SPEED_MAP_KEY_DRIVE = "score_power_pwm_drive"
 SPEED_MAP_KEY_TURN = "score_power_pwm_turn"
 SPEED_MAP_KEY_TURN_LEFT = "score_power_pwm_turn_left"
@@ -1062,21 +1071,55 @@ def manual_speed_for_cmd(cmd, score):
     return power
 
 
-def drive_anti_alias_segments(cmd, *, speed_score=None, power=None, pwm=None, duration_ms=None):
+def ease_in_out_min_score_for_cmd(cmd):
+    cmd_key = str(cmd or "").strip().lower()
+    if cmd_key in ("l", "r"):
+        return normalize_speed_score(MOTION_EASE_IN_OUT_MIN_SCORE_TURN)
+    if cmd_key in ("f", "b"):
+        return normalize_speed_score(MOTION_EASE_IN_OUT_MIN_SCORE_DRIVE)
+    return normalize_speed_score(MOTION_EASE_IN_OUT_MIN_SCORE_DRIVE)
+
+
+def ease_in_out_ramp_ms_for_score(score, *, cmd=None, min_score=None):
+    try:
+        score_val = normalize_speed_score(score)
+    except Exception:
+        score_val = normalize_speed_score(SPEED_SCORE_DEFAULT)
+    if min_score is None:
+        if cmd is not None:
+            min_score = ease_in_out_min_score_for_cmd(cmd)
+        else:
+            min_score = MOTION_EASE_IN_OUT_MIN_SCORE_DRIVE
+    min_score = normalize_speed_score(min_score)
+    max_score = normalize_speed_score(SPEED_SCORE_MAX)
+    try:
+        min_ramp_ms = max(1, int(round(float(MOTION_EASE_IN_OUT_MIN_RAMP_MS))))
+    except (TypeError, ValueError):
+        min_ramp_ms = 300
+    try:
+        max_ramp_ms = max(min_ramp_ms, int(round(float(MOTION_EASE_IN_OUT_MAX_RAMP_MS))))
+    except (TypeError, ValueError):
+        max_ramp_ms = max(int(min_ramp_ms), 800)
+    span = max(1, int(max_score) - int(min_score))
+    frac = max(0.0, min(1.0, (float(score_val) - float(min_score)) / float(span)))
+    return int(round(float(min_ramp_ms) + (float(max_ramp_ms) - float(min_ramp_ms)) * float(frac)))
+
+
+def drive_ease_in_out_segments(cmd, *, speed_score=None, power=None, pwm=None, duration_ms=None):
     """
-    Build a score-ramped PWM envelope for drive commands (`f`/`b`).
+    Build a score-ramped PWM envelope for chassis commands (`f`/`b`/`l`/`r`).
 
     The envelope ramps up at the start and ramps down at the end while preserving
     total command duration. If the pulse is shorter than 2*ramp, ramps are
     shortened symmetrically (triangle profile).
 
-    Returns None when anti-aliasing should not apply, otherwise a dict with a
+    Returns None when easing should not apply, otherwise a dict with a
     `segments` list suitable for sequential sending.
     """
-    if not bool(DRIVE_ANTI_ALIAS_ENABLED):
+    if not bool(MOTION_EASE_IN_OUT_ENABLED):
         return None
     cmd_key = str(cmd or "").strip().lower()
-    if cmd_key not in ("f", "b"):
+    if cmd_key not in ("f", "b", "l", "r"):
         return None
     try:
         total_ms = max(1, int(round(float(duration_ms or 0))))
@@ -1112,19 +1155,17 @@ def drive_anti_alias_segments(cmd, *, speed_score=None, power=None, pwm=None, du
                 target_score = None
     if target_score is None:
         return None
-    if int(target_score) <= int(DRIVE_ANTI_ALIAS_MIN_SCORE):
+    threshold_score = int(ease_in_out_min_score_for_cmd(cmd_key))
+    if int(target_score) < int(threshold_score):
         return None
 
-    try:
-        ramp_ms_cfg = max(1, int(round(float(DRIVE_ANTI_ALIAS_RAMP_MS))))
-    except (TypeError, ValueError):
-        ramp_ms_cfg = 300
+    ramp_ms_cfg = ease_in_out_ramp_ms_for_score(target_score, min_score=threshold_score)
     ramp_ms_eff = min(int(ramp_ms_cfg), max(1, int(total_ms // 2)))
     if ramp_ms_eff <= 0:
         return None
 
     try:
-        ramp_steps = max(1, int(round(float(DRIVE_ANTI_ALIAS_RAMP_STEPS))))
+        ramp_steps = max(1, int(round(float(MOTION_EASE_IN_OUT_RAMP_STEPS))))
     except (TypeError, ValueError):
         ramp_steps = 3
 
@@ -1198,13 +1239,24 @@ def drive_anti_alias_segments(cmd, *, speed_score=None, power=None, pwm=None, du
     return {
         "cmd": str(cmd_key),
         "target_score": int(target_score),
-        "threshold_score": int(DRIVE_ANTI_ALIAS_MIN_SCORE),
+        "threshold_score": int(threshold_score),
         "ramp_ms": int(ramp_ms_cfg),
         "ramp_ms_effective": int(ramp_ms_eff),
         "slice_ms": (int(round(float(ramp_ms_eff) / float(ramp_steps))) if ramp_steps > 0 else None),
         "ramp_steps": int(ramp_steps),
         "segments": merged,
     }
+
+
+def drive_anti_alias_segments(cmd, *, speed_score=None, power=None, pwm=None, duration_ms=None):
+    """Backward-compatible wrapper for older anti-alias naming."""
+    return drive_ease_in_out_segments(
+        cmd,
+        speed_score=speed_score,
+        power=power,
+        pwm=pwm,
+        duration_ms=duration_ms,
+    )
 
 
 def _turn_intensity_posts_for_cmd(cmd):
@@ -2014,20 +2066,6 @@ class WorldModel:
             brick_fmt['x_axis'] = None
             brick_fmt['y_axis'] = None
 
-        # Format Wall Origin
-        wall_fmt = None
-        if self.wall.get("origin"):
-            wall_fmt = {
-                'x': round(self.wall["origin"]['x'], 2),
-                'y': round(self.wall["origin"]['y'], 2),
-                'theta': round(self.wall["origin"]['theta'], 3)
-            }
-        wall_state = {
-            "origin": wall_fmt,
-            "angle_deg": round(self.wall.get("angle_deg", 0.0), 3),
-            "valid": bool(self.wall.get("valid", False)),
-        }
-
         return {
             "type": "state",
             "timestamp": round(time.time(), 3),
@@ -2039,7 +2077,6 @@ class WorldModel:
                 "theta": round(self.theta, 3),
                 "height_mm": None if self.height_mm is None else round(self.height_mm, 2)
             },
-            "wall": wall_state,
             "brick": brick_fmt,
             "lift_height": round(self.lift_height, 2)
         }
@@ -2189,6 +2226,38 @@ class TelemetryLogger:
 import cv2
 import numpy as np
 
+
+def _stream_overlay_metric_keys_for_step(process_rules, telemetry_step):
+    if not isinstance(process_rules, dict):
+        return []
+    step_key = None
+    if telemetry_step is not None:
+        if hasattr(telemetry_step, "value"):
+            telemetry_step = telemetry_step.value
+        raw = str(telemetry_step).strip()
+        if raw:
+            step_key = raw.upper()
+    if not step_key:
+        return []
+    step_cfg = process_rules.get(step_key)
+    if not isinstance(step_cfg, dict):
+        return []
+    gates = step_cfg.get("success_gates")
+    if not isinstance(gates, dict) or not gates:
+        gates = step_cfg.get("start_gates")
+    if not isinstance(gates, dict) or not gates:
+        return []
+    keys = []
+    seen = set()
+    for metric in gates.keys():
+        metric_key = str(metric or "").strip()
+        if not metric_key or metric_key in seen:
+            continue
+        keys.append(metric_key)
+        seen.add(metric_key)
+    return keys
+
+
 def draw_telemetry_overlay(
     frame,
     wm: WorldModel,
@@ -2210,6 +2279,7 @@ def draw_telemetry_overlay(
     line_sink=None,
     show_center_line=True,
     brick_extra_lines=None,
+    telemetry_step=None,
 ):
     """
     Simplified HUD renderer.
@@ -2421,22 +2491,6 @@ def draw_telemetry_overlay(
     y_prefix = "* " if highlight_metric in ("yAxis_offset_abs", "yAxis_offset") else ""
     angle_prefix = "* " if highlight_metric == "angle_abs" else ""
     dist_prefix = "* " if highlight_metric == "dist" else ""
-    if visible_now:
-        put_line(f"{x_prefix}X-AXIS: {x_axis:.1f} mm", WHITE, 0.38, 1)
-    else:
-        put_line(f"{x_prefix}X-AXIS: -", WHITE, 0.38, 1)
-    if visible_now:
-        put_line(f"{y_prefix}Y-AXIS: {y_axis:.1f} mm", WHITE, 0.38, 1)
-    else:
-        put_line(f"{y_prefix}Y-AXIS: -", WHITE, 0.38, 1)
-    if visible_now:
-        put_line(f"{angle_prefix}ANGLE:  {wm.brick['angle']:.1f} deg", WHITE, 0.38, 1)
-    else:
-        put_line(f"{angle_prefix}ANGLE:  -", WHITE, 0.38, 1)
-    if visible_now:
-        put_line(f"{dist_prefix}DIST:   {wm.brick['dist']:.0f} mm", WHITE, 0.38, 1)
-    else:
-        put_line(f"{dist_prefix}DIST:   -", WHITE, 0.38, 1)
     brick_conf = wm.brick.get("confidence")
     if brick_conf is None:
         brick_conf = 0.0
@@ -2459,14 +2513,123 @@ def draw_telemetry_overlay(
         conf_val = wm.brick.get(brick_key)
         return f"r{_stack_bool_compact(raw_val)} c{_stack_bool_compact(conf_val)}"
 
-    if visible_now:
-        put_line(f"CONF:   {brick_conf:.0f}%", WHITE, 0.38, 1)
-    else:
-        put_line("CONF:   -", WHITE, 0.38, 1)
-    above_txt = _stack_hud_pair("above", "brickAbove")
-    below_txt = _stack_hud_pair("below", "brickBelow")
-    put_line(f"Brick above: {above_txt}", WHITE, 0.38, 1)
-    put_line(f"Brick below: {below_txt}", WHITE, 0.38, 1)
+    selected_metrics = _stream_overlay_metric_keys_for_step(
+        wm.process_rules or {},
+        telemetry_step,
+    )
+
+    def _canon_metric(metric_name):
+        key = str(metric_name or "").strip().lower()
+        if key in ("xaxis_offset_abs", "x_axis", "offset_x"):
+            return "xAxis_offset_abs"
+        if key in ("yaxis_offset_abs", "y_axis", "offset_y"):
+            return "yAxis_offset_abs"
+        if key in ("angle_abs", "angle"):
+            return "angle_abs"
+        if key in ("dist", "distance"):
+            return "dist"
+        if key in ("visible",):
+            return "visible"
+        if key in ("confidence", "conf"):
+            return "confidence"
+        if key in ("brick_above", "brickabove"):
+            return "brick_above"
+        if key in ("brick_below", "brickbelow"):
+            return "brick_below"
+        if key in ("lift_height",):
+            return "lift_height"
+        return str(metric_name or "").strip()
+
+    def _metric_prefix(metric_name):
+        canonical = _canon_metric(metric_name)
+        if canonical and canonical == _canon_metric(highlight_metric):
+            return "* "
+        return ""
+
+    def _render_selected_metric(metric_name):
+        metric_key = _canon_metric(metric_name)
+        prefix = _metric_prefix(metric_name)
+        if metric_key == "visible":
+            put_line(f"{prefix}VISIBLE: {'true' if visible_now else 'false'}", WHITE, 0.38, 1)
+            return True
+        if metric_key == "xAxis_offset_abs":
+            if visible_now:
+                put_line(f"{prefix}X-AXIS: {x_axis:.1f} mm", WHITE, 0.38, 1)
+            else:
+                put_line(f"{prefix}X-AXIS: -", WHITE, 0.38, 1)
+            return True
+        if metric_key == "yAxis_offset_abs":
+            if visible_now:
+                put_line(f"{prefix}Y-AXIS: {y_axis:.1f} mm", WHITE, 0.38, 1)
+            else:
+                put_line(f"{prefix}Y-AXIS: -", WHITE, 0.38, 1)
+            return True
+        if metric_key == "angle_abs":
+            angle_val = wm.brick.get("angle")
+            if visible_now and isinstance(angle_val, (int, float)):
+                put_line(f"{prefix}ANGLE:  {float(angle_val):.1f} deg", WHITE, 0.38, 1)
+            else:
+                put_line(f"{prefix}ANGLE:  -", WHITE, 0.38, 1)
+            return True
+        if metric_key == "dist":
+            dist_val = wm.brick.get("dist")
+            if visible_now and isinstance(dist_val, (int, float)):
+                put_line(f"{prefix}DIST:   {float(dist_val):.0f} mm", WHITE, 0.38, 1)
+            else:
+                put_line(f"{prefix}DIST:   -", WHITE, 0.38, 1)
+            return True
+        if metric_key == "confidence":
+            if visible_now and isinstance(brick_conf, (int, float)):
+                put_line(f"{prefix}CONF:   {float(brick_conf):.0f}%", WHITE, 0.38, 1)
+            else:
+                put_line(f"{prefix}CONF:   -", WHITE, 0.38, 1)
+            return True
+        if metric_key == "brick_above":
+            above_txt_local = _stack_hud_pair("above", "brickAbove")
+            put_line(f"{prefix}Brick above: {above_txt_local}", WHITE, 0.38, 1)
+            return True
+        if metric_key == "brick_below":
+            below_txt_local = _stack_hud_pair("below", "brickBelow")
+            put_line(f"{prefix}Brick below: {below_txt_local}", WHITE, 0.38, 1)
+            return True
+        if metric_key == "lift_height":
+            lift_val = getattr(wm, "lift_height", None)
+            if isinstance(lift_val, (int, float)):
+                put_line(f"{prefix}LIFT:   {float(lift_val):.0f} mm", WHITE, 0.38, 1)
+            else:
+                put_line(f"{prefix}LIFT:   -", WHITE, 0.38, 1)
+            return True
+        return False
+
+    rendered_any_selected = False
+    for metric_name in selected_metrics:
+        rendered_any_selected = _render_selected_metric(metric_name) or rendered_any_selected
+
+    if not rendered_any_selected:
+        if visible_now:
+            put_line(f"{x_prefix}X-AXIS: {x_axis:.1f} mm", WHITE, 0.38, 1)
+        else:
+            put_line(f"{x_prefix}X-AXIS: -", WHITE, 0.38, 1)
+        if visible_now:
+            put_line(f"{y_prefix}Y-AXIS: {y_axis:.1f} mm", WHITE, 0.38, 1)
+        else:
+            put_line(f"{y_prefix}Y-AXIS: -", WHITE, 0.38, 1)
+        if visible_now:
+            put_line(f"{angle_prefix}ANGLE:  {wm.brick['angle']:.1f} deg", WHITE, 0.38, 1)
+        else:
+            put_line(f"{angle_prefix}ANGLE:  -", WHITE, 0.38, 1)
+        if visible_now:
+            put_line(f"{dist_prefix}DIST:   {wm.brick['dist']:.0f} mm", WHITE, 0.38, 1)
+        else:
+            put_line(f"{dist_prefix}DIST:   -", WHITE, 0.38, 1)
+        if visible_now:
+            put_line(f"CONF:   {brick_conf:.0f}%", WHITE, 0.38, 1)
+        else:
+            put_line("CONF:   -", WHITE, 0.38, 1)
+        above_txt = _stack_hud_pair("above", "brickAbove")
+        below_txt = _stack_hud_pair("below", "brickBelow")
+        put_line(f"Brick above: {above_txt}", WHITE, 0.38, 1)
+        put_line(f"Brick below: {below_txt}", WHITE, 0.38, 1)
     if brick_extra_lines:
         for line in brick_extra_lines:
             if isinstance(line, (tuple, list)) and len(line) >= 2:

@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from helper_demo_log_utils import read_demo_log, normalize_step_label
+from helper_vision_config import demos_dir_for_mode
 # ANSI Colors
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
@@ -26,7 +27,7 @@ class LogEntry:
         self.obj = normalize_step_label(d.get('step')) if d.get('step') else "UNKNOWN"
         self.img = d.get('image_file')
 
-DEMOS_DIR = Path(__file__).resolve().parent / "demos"
+DEMOS_DIR = demos_dir_for_mode()
 
 def find_sessions():
     demos_dir = DEMOS_DIR

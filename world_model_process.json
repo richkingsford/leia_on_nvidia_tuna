@@ -31,15 +31,6 @@
                 "visible": {
                     "min": true
                 }
-            },
-            "success_gates": {
-                "visible": {
-                    "min": true
-                },
-                "angle_abs": {
-                    "target": 6.61,
-                    "tol": 11.59
-                }
             }
         },
         "FIND_TOPMOST_BRICK": {
@@ -63,19 +54,41 @@
         "BRICK_LOCK": {
             "controller": "align",
             "lock_success_gates": true,
-            "start_gates": {
-                "visible": {
-                    "min": true
+            "locked_success_gates_by_mode": {
+                "aruco": {
+                    "xAxis_offset_abs": {
+                        "target": -6.22,
+                        "tol": 4.0
+                    },
+                    "dist": {
+                        "target": 154.61,
+                        "tol": 4.0
+                    }
+                },
+                "cyan": {
+                    "xAxis_offset_abs": {
+                        "target": -3.2,
+                        "tol": 4.0
+                    },
+                    "dist": {
+                        "target": 97.15,
+                        "tol": 4.0
+                    }
                 }
             },
             "success_gates": {
                 "xAxis_offset_abs": {
-                    "target": -6.22,
-                    "tol": 4.2
+                    "target": -3.2,
+                    "tol": 4.0
                 },
                 "dist": {
-                    "target": 154.61,
-                    "tol": 4.5
+                    "target": 97.15,
+                    "tol": 4.0
+                }
+            },
+            "start_gates": {
+                "visible": {
+                    "min": true
                 }
             }
         },
@@ -103,44 +116,24 @@
                     "min": true
                 },
                 "xAxis_offset_abs": {
-                    "target": -4.05,
+                    "target": -0.09,
                     "tol": 1.4
                 },
                 "yAxis_offset_abs": {
-                    "target": 2.0,
+                    "target": -0.57,
                     "tol": 1.5
                 },
                 "dist": {
-                    "target": 89.94,
+                    "target": 91.97,
                     "tol": 1.5
                 }
             }
         },
-        "SEAT_BRICK": {
-            "start_gates": {
-                "visible": {
-                    "min": true
-                }
-            },
-            "success_gates": {
-                "visible": {
-                    "min": true
-                },
-                "dist": {
-                    "target": 41.26,
-                    "tol": 1.5
-                }
-            }
-        },
+        "SEAT_BRICK": {},
         "ELEVATE_BRICK": {
-            "start_gates": {
-                "visible": {
-                    "min": true
-                }
-            },
             "success_gates": {
                 "visible": {
-                    "min": false
+                    "min": true
                 }
             }
         },
@@ -174,25 +167,11 @@
                     "min": true
                 }
             },
-            "lock_start_gates": true,
-            "success_gates": {
-                "visible": {
-                    "min": true
-                },
-                "brick_above": {
-                    "target": false,
-                    "tol": 0.0
-                }
-            }
+            "lock_start_gates": true
         },
         "BRICK_LOCK_WALL": {
             "controller": "align",
             "lock_success_gates": true,
-            "start_gates": {
-                "visible": {
-                    "min": true
-                }
-            },
             "success_gates": {
                 "xAxis_offset_abs": {
                     "target": -2.94,
@@ -214,11 +193,6 @@
                 "slow_fast_mm_scale": 0.25,
                 "auto_speed_hard_cap_exempt": false,
                 "calibration_profile_fallback_step": "ALIGN_BRICK"
-            },
-            "start_gates": {
-                "visible": {
-                    "min": true
-                }
             },
             "success_gates": {
                 "visible": {
@@ -256,8 +230,6 @@
                 }
             }
         },
-        "RETREAT": {
-            "nominalDemosOnly": true
-        }
+        "RETREAT": {}
     }
 }

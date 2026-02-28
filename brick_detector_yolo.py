@@ -80,6 +80,13 @@ HSV_CYAN_COVERAGE_MIN = 0.08    # Need 8% cyan coverage to engage HSV path
 STACK_X_OVERLAP_RATIO = 0.6     # Same-column tolerance for above/below
 STACK_Y_GAP_RATIO = 0.35        # Vertical gap threshold for above/below
 
+# Cyan-target experiment: stabilize selection around centerpoint.
+CENTER_LOCK_RADIUS_RATIO = 0.18
+CENTER_SWITCH_MARGIN_PX = 18.0
+CENTER_PARTIAL_PENALTY = 2.0
+CENTER_AXIS_WEIGHT_X = 1.0
+CENTER_AXIS_WEIGHT_Y = 1.0
+
 
 class BrickDetector:
     """
@@ -172,16 +179,32 @@ class BrickDetector:
         self._hsv_enabled = True
         self._hsv_erode_iterations = HSV_ERODE_ITERATIONS
 
+        # Center-target lock for cyan mode: prefer center-most candidate while
+        # avoiding frame-to-frame jitter between nearly equivalent bricks.
+        self._center_lock_enabled = True
+        self._center_lock_radius_px = None
+        self._center_switch_margin_px = float(CENTER_SWITCH_MARGIN_PX)
+        self._center_partial_penalty = float(CENTER_PARTIAL_PENALTY)
+        self._center_axis_weight_x = float(CENTER_AXIS_WEIGHT_X)
+        self._center_axis_weight_y = float(CENTER_AXIS_WEIGHT_Y)
+        self._center_lock_prev_center = None
+
         # Temporal smoothing
         self._prev_angle = None
         self._prev_dist = None
         self._prev_offset = None
+        self._prev_offset_y = None
         self._smooth_alpha = 0.3  # EMA weight for new values (lower = smoother)
 
     def set_runtime_tuning(self, confidence=None, smoothing_alpha=None,
                            nms_threshold=None, focal_px=None,
                            hsv_lower=None, hsv_upper=None,
-                           hsv_enabled=None, hsv_erode_iterations=None):
+                           hsv_enabled=None, hsv_erode_iterations=None,
+                           center_lock_enabled=None,
+                           center_lock_radius_px=None,
+                           center_switch_margin_px=None,
+                           center_axis_weight_x=None,
+                           center_axis_weight_y=None):
         if confidence is not None:
             try:
                 conf_val = float(confidence)
@@ -222,6 +245,32 @@ class BrickDetector:
                 self._hsv_erode_iterations = max(0, int(hsv_erode_iterations))
             except (TypeError, ValueError):
                 pass
+        if center_lock_enabled is not None:
+            self._center_lock_enabled = bool(center_lock_enabled)
+        if center_lock_radius_px is not None:
+            try:
+                radius_val = float(center_lock_radius_px)
+                self._center_lock_radius_px = max(0.0, radius_val)
+            except (TypeError, ValueError):
+                pass
+        if center_switch_margin_px is not None:
+            try:
+                margin_val = float(center_switch_margin_px)
+                self._center_switch_margin_px = max(0.0, margin_val)
+            except (TypeError, ValueError):
+                pass
+        if center_axis_weight_x is not None:
+            try:
+                weight_x = float(center_axis_weight_x)
+                self._center_axis_weight_x = max(0.01, weight_x)
+            except (TypeError, ValueError):
+                pass
+        if center_axis_weight_y is not None:
+            try:
+                weight_y = float(center_axis_weight_y)
+                self._center_axis_weight_y = max(0.01, weight_y)
+            except (TypeError, ValueError):
+                pass
         return {
             "conf_threshold": float(self.conf_threshold),
             "smooth_alpha": float(self._smooth_alpha),
@@ -231,6 +280,15 @@ class BrickDetector:
             "hsv_upper": self._hsv_upper.tolist(),
             "hsv_enabled": self._hsv_enabled,
             "hsv_erode_iterations": self._hsv_erode_iterations,
+            "center_lock_enabled": bool(self._center_lock_enabled),
+            "center_lock_radius_px": (
+                None
+                if self._center_lock_radius_px is None
+                else float(self._center_lock_radius_px)
+            ),
+            "center_switch_margin_px": float(self._center_switch_margin_px),
+            "center_axis_weight_x": float(self._center_axis_weight_x),
+            "center_axis_weight_y": float(self._center_axis_weight_y),
         }
 
     # ------------------------------------------------------------------
@@ -382,6 +440,19 @@ class BrickDetector:
         if prev_val is None:
             return new_val
         return self._smooth_alpha * new_val + (1 - self._smooth_alpha) * prev_val
+
+    def _estimate_cam_height(self, center_y_px, dist_mm):
+        """
+        Estimate camera-space vertical offset (mm) from image-space Y center.
+
+        This mirrors ArUco's `tvec[1]` convention:
+        - 0 mm at image vertical center
+        - positive when brick center is below image center
+        - negative when brick center is above image center
+        """
+        frame_center_y = float(self.frame_h) / 2.0
+        offset_y_px = float(center_y_px) - frame_center_y
+        return (offset_y_px / float(self.focal_px)) * float(dist_mm)
 
     # ------------------------------------------------------------------
     # HSV segmentation for individual cyan brick detection
@@ -548,23 +619,108 @@ class BrickDetector:
         distance penalty so we prefer fully-visible bricks.
         """
         if not individual_bricks:
+            self._center_lock_prev_center = None
             return None
 
-        center_x = frame_w / 2.0 + self.camera_center_offset_px
-        center_y = frame_h / 2.0
+        candidates = []
+        for idx, brick in enumerate(individual_bricks):
+            candidates.append(
+                {
+                    "index": idx,
+                    "center_x": float(brick["center_x"]),
+                    "center_y": float(brick["center_y"]),
+                    "partial": bool(brick.get("partial", False)),
+                }
+            )
+        selected_idx = self._select_center_candidate_index(candidates, frame_w, frame_h)
+        if selected_idx is None:
+            self._center_lock_prev_center = None
+            return None
+        return individual_bricks[int(selected_idx)]
 
-        best = None
-        best_score = float("inf")
-        for b in individual_bricks:
-            dx = b["center_x"] - center_x
-            dy = b["center_y"] - center_y
-            score = math.sqrt(dx * dx + dy * dy)
-            if b["partial"]:
-                score *= 2.0
-            if score < best_score:
-                best_score = score
-                best = b
-        return best
+    def _center_lock_radius(self, frame_w, frame_h):
+        radius_px = getattr(self, "_center_lock_radius_px", None)
+        if radius_px is not None:
+            try:
+                return max(0.0, float(radius_px))
+            except (TypeError, ValueError):
+                pass
+        return max(8.0, float(min(frame_w, frame_h)) * float(CENTER_LOCK_RADIUS_RATIO))
+
+    def _candidate_center_score(self, candidate, frame_w, frame_h):
+        frame_center_x = float(frame_w) / 2.0 + float(getattr(self, "camera_center_offset_px", 0.0) or 0.0)
+        frame_center_y = float(frame_h) / 2.0
+        dx = float(candidate.get("center_x", 0.0)) - frame_center_x
+        dy = float(candidate.get("center_y", 0.0)) - frame_center_y
+        weight_x = max(0.01, float(getattr(self, "_center_axis_weight_x", CENTER_AXIS_WEIGHT_X) or CENTER_AXIS_WEIGHT_X))
+        weight_y = max(0.01, float(getattr(self, "_center_axis_weight_y", CENTER_AXIS_WEIGHT_Y) or CENTER_AXIS_WEIGHT_Y))
+        score = math.hypot(dx * weight_x, dy * weight_y)
+        if bool(candidate.get("partial", False)):
+            partial_penalty = max(1.0, float(getattr(self, "_center_partial_penalty", CENTER_PARTIAL_PENALTY) or CENTER_PARTIAL_PENALTY))
+            score *= partial_penalty
+        return float(score)
+
+    def _select_center_candidate_index(self, candidates, frame_w, frame_h):
+        if not candidates:
+            self._center_lock_prev_center = None
+            return None
+
+        scores = [self._candidate_center_score(cand, frame_w, frame_h) for cand in candidates]
+        best_idx = min(range(len(candidates)), key=lambda i: scores[i])
+        chosen_idx = int(best_idx)
+
+        lock_enabled = bool(getattr(self, "_center_lock_enabled", True))
+        prev_center = getattr(self, "_center_lock_prev_center", None)
+        if lock_enabled and isinstance(prev_center, tuple) and len(prev_center) == 2:
+            prev_x = float(prev_center[0])
+            prev_y = float(prev_center[1])
+            radius = self._center_lock_radius(frame_w, frame_h)
+            near_idx = None
+            near_dist = float("inf")
+            for idx, cand in enumerate(candidates):
+                dist = math.hypot(float(cand.get("center_x", 0.0)) - prev_x, float(cand.get("center_y", 0.0)) - prev_y)
+                if dist < near_dist:
+                    near_dist = dist
+                    near_idx = idx
+            if near_idx is not None and near_dist <= radius:
+                switch_margin = max(
+                    0.0,
+                    float(
+                        getattr(
+                            self,
+                            "_center_switch_margin_px",
+                            CENTER_SWITCH_MARGIN_PX,
+                        ) or CENTER_SWITCH_MARGIN_PX
+                    ),
+                )
+                if (scores[near_idx] - scores[best_idx]) <= switch_margin:
+                    chosen_idx = int(near_idx)
+
+        chosen = candidates[chosen_idx]
+        self._center_lock_prev_center = (
+            float(chosen.get("center_x", 0.0)),
+            float(chosen.get("center_y", 0.0)),
+        )
+        return int(chosen_idx)
+
+    def _select_center_box(self, bricks, frame_w, frame_h):
+        if not bricks:
+            self._center_lock_prev_center = None
+            return None
+        candidates = []
+        for idx, (x1, y1, x2, y2, _conf) in enumerate(bricks):
+            candidates.append(
+                {
+                    "index": idx,
+                    "center_x": float((x1 + x2) / 2.0),
+                    "center_y": float((y1 + y2) / 2.0),
+                    "partial": False,
+                }
+            )
+        selected_idx = self._select_center_candidate_index(candidates, frame_w, frame_h)
+        if selected_idx is None:
+            return None
+        return bricks[int(selected_idx)]
 
     def _stack_flags_from_individuals(self, primary, all_bricks):
         """
@@ -656,12 +812,14 @@ class BrickDetector:
             offset_x = self._smooth(raw_offset_x, self._prev_offset)
             self._prev_offset = offset_x
 
+            raw_cam_height = self._estimate_cam_height(primary["center_y"], dist)
+            cam_height = self._smooth(raw_cam_height, self._prev_offset_y)
+            self._prev_offset_y = cam_height
+
             # Stack flags from individual positions
             brick_above, brick_below = self._stack_flags_from_individuals(
                 primary, all_hsv_bricks
             )
-
-            cam_height = 0.0
 
             if self.debug:
                 self._draw_debug_hsv(
@@ -673,7 +831,15 @@ class BrickDetector:
                     brick_above, brick_below)
 
         # Fallback path: current YOLO-only pipeline (gray bricks, HSV disabled, etc.)
-        x1, y1, x2, y2, conf = bricks[0]
+        primary_box = self._select_center_box(bricks, w_frame, h_frame)
+        if primary_box is None:
+            primary_box = bricks[0]
+        x1, y1, x2, y2, conf = primary_box
+        primary_idx = 0
+        for idx, box in enumerate(bricks):
+            if box == primary_box:
+                primary_idx = idx
+                break
         self.last_status = "target locked"
         self.last_primary_confidence = float(conf)
         conf_pct = float(conf) * 100.0
@@ -694,20 +860,26 @@ class BrickDetector:
         offset_x = self._smooth(raw_offset_x, self._prev_offset)
         self._prev_offset = offset_x
 
+        brick_center_y = (y1 + y2) / 2.0
+        raw_cam_height = self._estimate_cam_height(brick_center_y, dist)
+        cam_height = self._smooth(raw_cam_height, self._prev_offset_y)
+        self._prev_offset_y = cam_height
+
         primary_cy = (y1 + y2) / 2.0
         brick_above = False
         brick_below = False
-        for bx1, by1, bx2, by2, bconf in bricks[1:]:
+        for idx, (bx1, by1, bx2, by2, bconf) in enumerate(bricks):
+            if idx == primary_idx:
+                continue
             other_cy = (by1 + by2) / 2.0
             if other_cy < primary_cy - bbox_h * 0.5:
                 brick_above = True
             elif other_cy > primary_cy + bbox_h * 0.5:
                 brick_below = True
 
-        cam_height = 0.0
-
         if self.debug:
-            self._draw_debug(frame, bricks, angle, dist, offset_x, conf)
+            ordered = [primary_box] + [box for idx, box in enumerate(bricks) if idx != primary_idx]
+            self._draw_debug(frame, ordered, angle, dist, offset_x, conf)
 
         return (True, angle, dist, offset_x, conf_pct, cam_height,
                 brick_above, brick_below)
@@ -744,6 +916,8 @@ class BrickDetector:
             self._prev_angle = None
             self._prev_dist = None
             self._prev_offset = None
+            self._prev_offset_y = None
+            self._center_lock_prev_center = None
             self.last_status = "searching"
             self.last_primary_confidence = 0.0
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
@@ -768,6 +942,8 @@ class BrickDetector:
             self._prev_angle = None
             self._prev_dist = None
             self._prev_offset = None
+            self._prev_offset_y = None
+            self._center_lock_prev_center = None
             self.last_status = "searching"
             self.last_primary_confidence = 0.0
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)

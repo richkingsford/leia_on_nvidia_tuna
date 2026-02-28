@@ -18,6 +18,14 @@ from helper_streaming import start_stream_server
 from helper_vision_aruco import ArucoBrickVision
 from brick_detector_yolo import BrickDetector as YoloBrickDetector
 from helper_manual_config import load_manual_training_config
+from helper_vision_config import (
+    active_vision_mode as _world_model_active_vision_mode,
+    demos_dir_for_mode,
+    demos_dirs_by_mode,
+    normalize_vision_mode as _normalize_vision_mode_global,
+    VISION_MODE_ARUCO as _VISION_MODE_ARUCO_GLOBAL,
+    VISION_MODE_CYAN as _VISION_MODE_CYAN_GLOBAL,
+)
 from helper_micro_speed_adjust import micro_adjust_speed_score
 from helper_align_profile import load_align_profile, inject_align_profile_into_learned_rules
 from helper_next import (
@@ -122,13 +130,43 @@ STREAM_HOST = _MANUAL_CONFIG.get("stream_host", "127.0.0.1")
 STREAM_PORT = int(_MANUAL_CONFIG.get("stream_port", 5000))
 STREAM_FPS = int(_MANUAL_CONFIG.get("stream_fps", 10))
 STREAM_JPEG_QUALITY = int(_MANUAL_CONFIG.get("stream_jpeg_quality", 85))
-DEMOS_DIR = Path(__file__).resolve().parent / "demos"
+DEMOS_DIRS_BY_MODE = demos_dirs_by_mode()
+DEMOS_DIR = demos_dir_for_mode()
 PROCESS_MODEL_FILE = Path(__file__).resolve().parent / "world_model_process.json"
 DEMO_STEPS = step_sequence()
+
+
+def _build_stream_success_gate_step_options():
+    options = []
+    seen = set()
+    source_steps = []
+    process_steps = load_process_steps()
+    if isinstance(process_steps, dict):
+        source_steps.extend(process_steps.keys())
+    source_steps.extend(getattr(obj, "value", obj) for obj in DEMO_STEPS)
+    for step in source_steps:
+        step_key = normalize_step_label(step)
+        if not step_key or step_key in seen:
+            continue
+        options.append((step_key, f"{len(options) + 1}. {step_key}"))
+        seen.add(step_key)
+    return options
+
+
+STREAM_SUCCESS_GATE_STEP_OPTIONS = _build_stream_success_gate_step_options()
+_DEFAULT_STREAM_SUCCESS_GATE_STEP = (
+    normalize_step_label(STREAM_SUCCESS_GATE_STEP_OPTIONS[0][0])
+    if STREAM_SUCCESS_GATE_STEP_OPTIONS
+    else normalize_step_label(StepState.ALIGN_BRICK.value)
+)
+if not _DEFAULT_STREAM_SUCCESS_GATE_STEP:
+    _DEFAULT_STREAM_SUCCESS_GATE_STEP = "ALIGN_BRICK"
+
 CTRL_HELP_LINE = (
     "[CTRL] Drive: W/S 50%, R/F 1%, T/G 100%. Turn: A/D 50%, Q/E 1%, Z/C 100%. "
     "Lift: O/K 1%, U 50%, P/L 100%. F action, ':' command, m auto, y edit hotkey vars, 1 trash log, Q quit"
 )
+EASE_IN_OUT_HOTKEYS = frozenset({"t", "g", "z", "c"})
 ANSI_ORANGE_BRIGHT = "\033[38;5;208m"
 ANSI_GREEN_BRIGHT = "\033[92m"
 ANSI_RED_BRIGHT = "\033[91m"
@@ -151,101 +189,181 @@ BRICK_STUDY_STD_LOW_DEG = 2.0
 BRICK_STUDY_STD_HIGH_MM = 8.0
 BRICK_STUDY_STD_HIGH_DEG = 4.0
 
-VISION_MODE_ARUCO = "aruco"
-VISION_MODE_MARKERLESS = "yolo"
+VISION_MODE_ARUCO = _VISION_MODE_ARUCO_GLOBAL
+VISION_MODE_CYAN = _VISION_MODE_CYAN_GLOBAL
+# Backward-compatible alias.
+VISION_MODE_MARKERLESS = VISION_MODE_CYAN
 STREAM_VISION_MODE_OPTIONS = [
     (VISION_MODE_ARUCO, "AruCo Markers"),
-    (VISION_MODE_MARKERLESS, "Markerless"),
+    (VISION_MODE_CYAN, "Cyan Bricks"),
 ]
-MARKERLESS_PROFILE_BALANCED = "balanced"
-MARKERLESS_PROFILE_OPTIONS = [
-    ("balanced", "Balanced (0.15 conf / 0.30 smooth)"),
-    ("sensitive", "Sensitive (0.10 conf / 0.20 smooth)"),
-    ("aggressive", "Aggressive (0.05 conf / 0.15 smooth)"),
-    ("rescue", "Rescue (0.001 conf / 0.10 smooth)"),
-    ("stable", "Stable (0.20 conf / 0.40 smooth)"),
-    ("legacy", "Legacy (0.25 conf / 0.60 smooth)"),
+CYAN_PROFILE_DEFAULT = "config1_defaults"
+CYAN_PROFILE_OPTIONS = [
+    ("config1_defaults", "Config 1 - Defaults (baseline)"),
+    ("config2_no_erosion", "Config 2 - No erosion (best angle, bricks may merge)"),
+    ("config3_light_erosion", "Config 3 - Light erosion (angle vs separation balance)"),
+    ("config4_heavy_erosion", "Config 4 - Heavy erosion (maximum brick separation)"),
+    ("config5_tight_cyan_range", "Config 5 - Tight cyan range (cleaner contours)"),
+    ("config6_wide_cyan_range", "Config 6 - Wide cyan range (catches paint variation)"),
+    ("config7_smooth", "Config 7 - Smooth (very stable, slow to respond)"),
+    ("config8_responsive", "Config 8 - Responsive (tracks motion, noisier)"),
+    ("config9_tight_light_smooth", "Config 9 - Tight + light erosion + smooth (recommended)"),
+    ("config10_hsv_disabled", "Config 10 - HSV disabled (YOLO-only baseline)"),
 ]
-MARKERLESS_PROFILE_PRESETS = {
-    "balanced": {
-        "conf_threshold": 0.15,
-        "smooth_alpha": 0.30,
-        "nms_threshold": 0.45,
+CYAN_PROFILE_PRESETS = {
+    # NOTE: values are intentionally expressed in the detector runtime-tuning
+    # API names to keep presets as direct set_runtime_tuning() scenario calls.
+    "config1_defaults": {
+        "confidence": 0.15,
+        "smoothing_alpha": 0.30,
+        "hsv_enabled": True,
+        "hsv_erode_iterations": 2,
+        "hsv_lower": [75, 60, 50],
+        "hsv_upper": [115, 255, 255],
     },
-    "sensitive": {
-        "conf_threshold": 0.10,
-        "smooth_alpha": 0.20,
-        "nms_threshold": 0.45,
+    "config2_no_erosion": {
+        "hsv_erode_iterations": 0,
     },
-    "aggressive": {
-        "conf_threshold": 0.05,
-        "smooth_alpha": 0.15,
-        "nms_threshold": 0.45,
+    "config3_light_erosion": {
+        "hsv_erode_iterations": 1,
     },
-    "rescue": {
-        "conf_threshold": 0.001,
-        "smooth_alpha": 0.10,
-        "nms_threshold": 0.45,
+    "config4_heavy_erosion": {
+        "hsv_erode_iterations": 3,
     },
-    "stable": {
-        "conf_threshold": 0.20,
-        "smooth_alpha": 0.40,
-        "nms_threshold": 0.45,
+    "config5_tight_cyan_range": {
+        "hsv_lower": [80, 80, 60],
+        "hsv_upper": [110, 255, 255],
     },
-    "legacy": {
-        "conf_threshold": 0.25,
-        "smooth_alpha": 0.60,
-        "nms_threshold": 0.45,
+    "config6_wide_cyan_range": {
+        "hsv_lower": [70, 40, 40],
+        "hsv_upper": [120, 255, 255],
+    },
+    "config7_smooth": {
+        "smoothing_alpha": 0.15,
+    },
+    "config8_responsive": {
+        "smoothing_alpha": 0.50,
+    },
+    "config9_tight_light_smooth": {
+        "hsv_lower": [80, 80, 60],
+        "hsv_upper": [110, 255, 255],
+        "hsv_erode_iterations": 1,
+        "smoothing_alpha": 0.20,
+    },
+    "config10_hsv_disabled": {
+        "hsv_enabled": False,
     },
 }
-MARKERLESS_VISIBILITY_AUTO = "auto"
-MARKERLESS_VISIBILITY_GRAY = "gray"
-MARKERLESS_VISIBILITY_CYAN = "cyan"
-MARKERLESS_VISIBILITY_OPTIONS = [
-    (MARKERLESS_VISIBILITY_AUTO, "Auto (all available)"),
-    (MARKERLESS_VISIBILITY_GRAY, "Gray Brick"),
-    (MARKERLESS_VISIBILITY_CYAN, "Cyan Brick"),
+_CYAN_PROFILE_ALIASES = {
+    "config1": "config1_defaults",
+    "config2": "config2_no_erosion",
+    "config3": "config3_light_erosion",
+    "config4": "config4_heavy_erosion",
+    "config5": "config5_tight_cyan_range",
+    "config6": "config6_wide_cyan_range",
+    "config7": "config7_smooth",
+    "config8": "config8_responsive",
+    "config9": "config9_tight_light_smooth",
+    "config10": "config10_hsv_disabled",
+    "1": "config1_defaults",
+    "2": "config2_no_erosion",
+    "3": "config3_light_erosion",
+    "4": "config4_heavy_erosion",
+    "5": "config5_tight_cyan_range",
+    "6": "config6_wide_cyan_range",
+    "7": "config7_smooth",
+    "8": "config8_responsive",
+    "9": "config9_tight_light_smooth",
+    "10": "config10_hsv_disabled",
+    "default": "config1_defaults",
+    "baseline": "config1_defaults",
+    # Backward-compatibility for old profile ids in existing local config.
+    "balanced": "config1_defaults",
+    "sensitive": "config1_defaults",
+    "aggressive": "config1_defaults",
+    "rescue": "config1_defaults",
+    "stable": "config1_defaults",
+    "legacy": "config1_defaults",
+}
+CYAN_VISIBILITY_AUTO = "auto"
+CYAN_VISIBILITY_GRAY = "gray"
+CYAN_VISIBILITY_CYAN = "cyan"
+CYAN_VISIBILITY_OPTIONS = [
+    (CYAN_VISIBILITY_AUTO, "Auto (all available)"),
+    (CYAN_VISIBILITY_GRAY, "Gray Brick"),
+    (CYAN_VISIBILITY_CYAN, "Cyan Brick"),
 ]
-_MARKERLESS_VISIBILITY_ALIASES = {
-    "auto": MARKERLESS_VISIBILITY_AUTO,
-    "all": MARKERLESS_VISIBILITY_AUTO,
-    "both": MARKERLESS_VISIBILITY_AUTO,
-    "gray": MARKERLESS_VISIBILITY_GRAY,
-    "grey": MARKERLESS_VISIBILITY_GRAY,
-    "cyan": MARKERLESS_VISIBILITY_CYAN,
+_CYAN_VISIBILITY_ALIASES = {
+    "auto": CYAN_VISIBILITY_AUTO,
+    "all": CYAN_VISIBILITY_AUTO,
+    "both": CYAN_VISIBILITY_AUTO,
+    "gray": CYAN_VISIBILITY_GRAY,
+    "grey": CYAN_VISIBILITY_GRAY,
+    "cyan": CYAN_VISIBILITY_CYAN,
 }
 _VISION_MODE_ALIASES = {
     "aruco": VISION_MODE_ARUCO,
-    "yolo": VISION_MODE_MARKERLESS,
-    "markerless": VISION_MODE_MARKERLESS,
+    "cyan": VISION_MODE_CYAN,
+    "yolo": VISION_MODE_CYAN,
+    "markerless": VISION_MODE_CYAN,
 }
 
 
 def normalize_vision_mode(value, fallback=VISION_MODE_ARUCO):
-    key = str(value or "").strip().lower()
-    mode = _VISION_MODE_ALIASES.get(key)
-    if mode:
-        return mode
-    fallback_key = str(fallback or "").strip().lower()
-    fallback_mode = _VISION_MODE_ALIASES.get(fallback_key)
-    if fallback_mode:
-        return fallback_mode
-    return VISION_MODE_ARUCO
+    return _normalize_vision_mode_global(value, fallback=fallback)
 
 
-_DEFAULT_VISION_MODE = normalize_vision_mode(_MANUAL_CONFIG.get("brick_vision", VISION_MODE_ARUCO))
-_DEFAULT_MARKERLESS_PROFILE = str(
-    _MANUAL_CONFIG.get("markerless_profile", MARKERLESS_PROFILE_BALANCED)
-).strip().lower()
-if _DEFAULT_MARKERLESS_PROFILE not in MARKERLESS_PROFILE_PRESETS:
-    _DEFAULT_MARKERLESS_PROFILE = MARKERLESS_PROFILE_BALANCED
-_DEFAULT_MARKERLESS_VISIBILITY = str(
-    _MANUAL_CONFIG.get("markerless_visibility", MARKERLESS_VISIBILITY_AUTO)
-).strip().lower()
-_DEFAULT_MARKERLESS_VISIBILITY = _MARKERLESS_VISIBILITY_ALIASES.get(
-    _DEFAULT_MARKERLESS_VISIBILITY,
-    MARKERLESS_VISIBILITY_AUTO,
+def hotkey_uses_ease_in_out(hotkey):
+    key = str(hotkey or "").strip().lower()
+    return key in EASE_IN_OUT_HOTKEYS
+
+
+_DEFAULT_VISION_MODE = normalize_vision_mode(
+    _world_model_active_vision_mode()
+    or _MANUAL_CONFIG.get("brick_vision", VISION_MODE_ARUCO),
+    fallback=VISION_MODE_ARUCO,
 )
+_DEFAULT_CYAN_PROFILE = str(
+    _MANUAL_CONFIG.get(
+        "cyan_profile",
+        _MANUAL_CONFIG.get("markerless_profile", CYAN_PROFILE_DEFAULT),
+    )
+).strip().lower()
+if _DEFAULT_CYAN_PROFILE not in CYAN_PROFILE_PRESETS:
+    _DEFAULT_CYAN_PROFILE = CYAN_PROFILE_DEFAULT
+_DEFAULT_CYAN_VISIBILITY = str(
+    _MANUAL_CONFIG.get(
+        "cyan_visibility",
+        _MANUAL_CONFIG.get("markerless_visibility", CYAN_VISIBILITY_AUTO),
+    )
+).strip().lower()
+_DEFAULT_CYAN_VISIBILITY = _CYAN_VISIBILITY_ALIASES.get(
+    _DEFAULT_CYAN_VISIBILITY,
+    CYAN_VISIBILITY_AUTO,
+)
+try:
+    CYAN_EXPERIMENT_SMOOTHING_ALPHA_MAX = float(
+        _MANUAL_CONFIG.get("cyan_experiment_smoothing_alpha_max", 0.15)
+    )
+except (TypeError, ValueError):
+    CYAN_EXPERIMENT_SMOOTHING_ALPHA_MAX = 0.15
+CYAN_EXPERIMENT_SMOOTHING_ALPHA_MAX = max(
+    0.0,
+    min(1.0, float(CYAN_EXPERIMENT_SMOOTHING_ALPHA_MAX)),
+)
+
+# Backward-compatible aliases while callers migrate to cyan naming.
+MARKERLESS_PROFILE_BALANCED = CYAN_PROFILE_DEFAULT
+MARKERLESS_PROFILE_OPTIONS = CYAN_PROFILE_OPTIONS
+MARKERLESS_PROFILE_PRESETS = CYAN_PROFILE_PRESETS
+_MARKERLESS_PROFILE_ALIASES = _CYAN_PROFILE_ALIASES
+MARKERLESS_VISIBILITY_AUTO = CYAN_VISIBILITY_AUTO
+MARKERLESS_VISIBILITY_GRAY = CYAN_VISIBILITY_GRAY
+MARKERLESS_VISIBILITY_CYAN = CYAN_VISIBILITY_CYAN
+MARKERLESS_VISIBILITY_OPTIONS = CYAN_VISIBILITY_OPTIONS
+_MARKERLESS_VISIBILITY_ALIASES = _CYAN_VISIBILITY_ALIASES
+_DEFAULT_MARKERLESS_PROFILE = _DEFAULT_CYAN_PROFILE
+_DEFAULT_MARKERLESS_VISIBILITY = _DEFAULT_CYAN_VISIBILITY
 
 AUTO_MINI_X_AXIS_ENABLED = bool(_MANUAL_CONFIG.get("auto_mini_x_axis_enabled", True))
 AUTO_MINI_X_AXIS_STEPS = {"ALIGN_BRICK", "POSITION_BRICK"}
@@ -284,53 +402,111 @@ LIFT_GROUND_PREFLIGHT_MIN_CONF = float(_MANUAL_CONFIG.get("lift_ground_preflight
 
 def _vision_mode_cli_value(mode):
     mode_norm = normalize_vision_mode(mode)
-    if mode_norm == VISION_MODE_MARKERLESS:
-        return VISION_MODE_MARKERLESS
+    if mode_norm == VISION_MODE_CYAN:
+        return VISION_MODE_CYAN
     return VISION_MODE_ARUCO
 
 
-def normalize_markerless_profile(value, fallback=MARKERLESS_PROFILE_BALANCED):
+def _demos_dir_for_vision_mode(mode):
+    mode_norm = normalize_vision_mode(mode, fallback=_DEFAULT_VISION_MODE)
+    path = DEMOS_DIRS_BY_MODE.get(mode_norm)
+    if path is None:
+        path = demos_dir_for_mode(mode_norm)
+    return Path(path)
+
+
+def normalize_cyan_profile(value, fallback=CYAN_PROFILE_DEFAULT):
     key = str(value or "").strip().lower()
-    if key in MARKERLESS_PROFILE_PRESETS:
+    key = _CYAN_PROFILE_ALIASES.get(key, key)
+    if key in CYAN_PROFILE_PRESETS:
         return key
     fallback_key = str(fallback or "").strip().lower()
-    if fallback_key in MARKERLESS_PROFILE_PRESETS:
+    fallback_key = _CYAN_PROFILE_ALIASES.get(fallback_key, fallback_key)
+    if fallback_key in CYAN_PROFILE_PRESETS:
         return fallback_key
-    return MARKERLESS_PROFILE_BALANCED
+    return CYAN_PROFILE_DEFAULT
 
 
-def markerless_profile_settings(profile):
-    profile_key = normalize_markerless_profile(profile, fallback=_DEFAULT_MARKERLESS_PROFILE)
-    settings = MARKERLESS_PROFILE_PRESETS.get(profile_key) or MARKERLESS_PROFILE_PRESETS[MARKERLESS_PROFILE_BALANCED]
-    return profile_key, settings
+def cyan_profile_settings(profile):
+    profile_key = normalize_cyan_profile(profile, fallback=_DEFAULT_CYAN_PROFILE)
+    settings = CYAN_PROFILE_PRESETS.get(profile_key) or CYAN_PROFILE_PRESETS[CYAN_PROFILE_DEFAULT]
+    return profile_key, dict(settings)
 
 
-def markerless_profile_label(profile):
-    profile_key = normalize_markerless_profile(profile, fallback=_DEFAULT_MARKERLESS_PROFILE)
-    for value, label in MARKERLESS_PROFILE_OPTIONS:
+def cyan_profile_runtime_summary(runtime):
+    if not isinstance(runtime, dict):
+        return "runtime=unknown"
+    parts = []
+    conf = runtime.get("conf_threshold")
+    if isinstance(conf, (int, float)):
+        parts.append(f"min_conf={float(conf):.2f}")
+    smooth = runtime.get("smooth_alpha")
+    if isinstance(smooth, (int, float)):
+        parts.append(f"smooth={float(smooth):.2f}")
+    hsv_enabled = runtime.get("hsv_enabled")
+    if hsv_enabled is not None:
+        parts.append("hsv=on" if bool(hsv_enabled) else "hsv=off")
+    erode = runtime.get("hsv_erode_iterations")
+    if isinstance(erode, (int, float)):
+        parts.append(f"erode={int(erode)}")
+    hsv_lower = runtime.get("hsv_lower")
+    hsv_upper = runtime.get("hsv_upper")
+    if isinstance(hsv_lower, (list, tuple)) and isinstance(hsv_upper, (list, tuple)):
+        parts.append(f"hsv_range={list(hsv_lower)}..{list(hsv_upper)}")
+    return ", ".join(parts) if parts else "runtime=unchanged"
+
+
+def cyan_profile_label(profile):
+    profile_key = normalize_cyan_profile(profile, fallback=_DEFAULT_CYAN_PROFILE)
+    for value, label in CYAN_PROFILE_OPTIONS:
         if value == profile_key:
             return label
     return profile_key
 
 
-def normalize_markerless_visibility(value, fallback=MARKERLESS_VISIBILITY_AUTO):
+def normalize_cyan_visibility(value, fallback=CYAN_VISIBILITY_AUTO):
     key = str(value or "").strip().lower()
-    mode = _MARKERLESS_VISIBILITY_ALIASES.get(key)
+    mode = _CYAN_VISIBILITY_ALIASES.get(key)
     if mode:
         return mode
     fallback_key = str(fallback or "").strip().lower()
-    fallback_mode = _MARKERLESS_VISIBILITY_ALIASES.get(fallback_key)
+    fallback_mode = _CYAN_VISIBILITY_ALIASES.get(fallback_key)
     if fallback_mode:
         return fallback_mode
-    return MARKERLESS_VISIBILITY_AUTO
+    return CYAN_VISIBILITY_AUTO
 
 
-def markerless_visibility_label(mode):
-    mode_key = normalize_markerless_visibility(mode, fallback=_DEFAULT_MARKERLESS_VISIBILITY)
-    for value, label in MARKERLESS_VISIBILITY_OPTIONS:
+def cyan_visibility_label(mode):
+    mode_key = normalize_cyan_visibility(mode, fallback=_DEFAULT_CYAN_VISIBILITY)
+    for value, label in CYAN_VISIBILITY_OPTIONS:
         if value == mode_key:
             return label
     return mode_key
+
+
+# Backward-compatible API names.
+def normalize_markerless_profile(value, fallback=MARKERLESS_PROFILE_BALANCED):
+    return normalize_cyan_profile(value, fallback=fallback)
+
+
+def markerless_profile_settings(profile):
+    return cyan_profile_settings(profile)
+
+
+def markerless_profile_runtime_summary(runtime):
+    return cyan_profile_runtime_summary(runtime)
+
+
+def markerless_profile_label(profile):
+    return cyan_profile_label(profile)
+
+
+def normalize_markerless_visibility(value, fallback=MARKERLESS_VISIBILITY_AUTO):
+    return normalize_cyan_visibility(value, fallback=fallback)
+
+
+def markerless_visibility_label(mode):
+    return cyan_visibility_label(mode)
 
 STEP_CODES = {str(idx + 1): obj for idx, obj in enumerate(DEMO_STEPS)}
 
@@ -935,7 +1111,12 @@ def _end_auto_demo_logging(app_state, obj_enum):
     app_state.world.recording_active = False
     app_state.world.attempt_status = "NORMAL"
     if app_state.log_path:
-        prune_log_file(app_state.log_path, delete_if_empty=True)
+        valid_blocks = prune_log_file(app_state.log_path, delete_if_empty=False)
+        if int(valid_blocks) <= 0:
+            log_line(
+                "[SESSION] No completed attempts found in the current auto log; "
+                f"kept file at {app_state.log_path}."
+            )
 
 
 def prompt_line(prompt):
@@ -1415,7 +1596,35 @@ def close_log(app_state, marker=None):
     app_state.logger.close()
     app_state.logger_closed = True
     if app_state.log_path:
-        prune_log_file(app_state.log_path, delete_if_empty=True)
+        valid_blocks = prune_log_file(app_state.log_path, delete_if_empty=False)
+        if int(valid_blocks) <= 0:
+            log_line(
+                "[SESSION] No completed attempts found in the current log; "
+                f"kept file at {app_state.log_path}."
+            )
+
+
+def _set_active_demos_dir_for_mode(app_state, mode):
+    mode_norm = normalize_vision_mode(mode, fallback=_DEFAULT_VISION_MODE)
+    next_dir = _demos_dir_for_vision_mode(mode_norm)
+    next_dir.mkdir(parents=True, exist_ok=True)
+    current_dir = Path(getattr(app_state, "demos_dir", next_dir))
+    try:
+        unchanged = current_dir.resolve() == next_dir.resolve()
+    except Exception:
+        unchanged = str(current_dir) == str(next_dir)
+    if unchanged:
+        return False
+    close_log(app_state, marker=None)
+    app_state.demos_dir = next_dir
+    app_state.config_mtime = 0
+    app_state.last_config_check = 0
+    open_new_log(app_state)
+    log_line(
+        f"[DEMOS] Active folder for {_vision_mode_label(mode_norm)}: {next_dir}"
+    )
+    return True
+
 
 def trash_current_session(app_state):
     log_path = app_state.log_path
@@ -1438,6 +1647,7 @@ def trash_current_session(app_state):
 
 def run_auto_step(app_state, obj_enum):
     step_key = normalize_step_label(obj_enum.value)
+    _set_stream_state_success_gate_step(app_state, step_key)
     log_line(f"[AUTO] Attempting {step_key}...")
 
     if step_key in AUTO_MINI_X_AXIS_STEPS:
@@ -2052,7 +2262,7 @@ def _average_frames(frames):
     }
 
 
-def _markerless_average_frames(frames):
+def _cyan_average_frames(frames):
     found_frames = [frame for frame in frames if frame.get("found")]
     if not found_frames:
         return None
@@ -2080,27 +2290,73 @@ def _markerless_average_frames(frames):
     }
 
 
-def evaluate_markerless_frames(frames):
+def evaluate_cyan_frames(frames):
     if len(frames) < BRICK_STUDY_FRAMES:
         return None
     found_count = sum(1 for frame in frames if frame.get("found"))
     if found_count <= 0:
         return {
             "confidence": 0,
-            "message": "0% confidence (no markerless detections in the latest 4 frames)",
+            "message": "0% confidence (no cyan detections in the latest 4 frames)",
             "average": None,
             "reset": True,
         }
-    average = _markerless_average_frames(frames)
+    average = _cyan_average_frames(frames)
     confidence = int(round(100 * found_count / BRICK_STUDY_FRAMES))
     return {
         "confidence": confidence,
         "message": (
             f"{confidence}% confidence ({found_count}/{BRICK_STUDY_FRAMES} "
-            "markerless frames found a brick)"
+            "cyan frames found a brick)"
         ),
         "average": average,
         "reset": True,
+    }
+
+
+def _markerless_average_frames(frames):
+    return _cyan_average_frames(frames)
+
+
+def evaluate_markerless_frames(frames):
+    return evaluate_cyan_frames(frames)
+
+
+def _study_snapshot_or_raw(
+    study,
+    *,
+    found,
+    angle,
+    dist,
+    offset_x,
+    conf,
+    cam_h,
+    brick_above,
+    brick_below,
+):
+    """Build a world.update_vision snapshot without stale visibility carry-over."""
+    avg = (study or {}).get("average") if isinstance(study, dict) else None
+    if isinstance(avg, dict):
+        return {
+            # Visibility must reflect the current frame, not historical average.
+            "found": bool(found),
+            "dist": float(avg.get("dist", dist)),
+            "angle": float(avg.get("angle", angle)),
+            "offset_x": float(avg.get("offset_x", offset_x)),
+            "conf": float(avg.get("conf", conf)),
+            "cam_h": float(avg.get("cam_h", cam_h)),
+            "brick_above": bool(avg.get("brick_above", brick_above)),
+            "brick_below": bool(avg.get("brick_below", brick_below)),
+        }
+    return {
+        "found": bool(found),
+        "dist": float(dist),
+        "angle": float(angle),
+        "offset_x": float(offset_x),
+        "conf": float(conf),
+        "cam_h": float(cam_h),
+        "brick_above": bool(brick_above),
+        "brick_below": bool(brick_below),
     }
 
 
@@ -2182,13 +2438,13 @@ def evaluate_brick_frames(frames):
     }
 
 
-def markerless_stream_debug_lines(app_state, vision):
+def cyan_stream_debug_lines(app_state, vision):
     active_mode = _stream_state_vision_mode(app_state, _DEFAULT_VISION_MODE)
-    if normalize_vision_mode(active_mode) != VISION_MODE_MARKERLESS:
+    if normalize_vision_mode(active_mode) != VISION_MODE_CYAN:
         return None
 
-    profile = _stream_state_markerless_profile(app_state, _DEFAULT_MARKERLESS_PROFILE)
-    profile_text = markerless_profile_label(profile)
+    profile = _stream_state_cyan_profile(app_state, _DEFAULT_CYAN_PROFILE)
+    profile_text = cyan_profile_label(profile)
     model_name = "-"
     model_path = getattr(vision, "model_path", None)
     if model_path:
@@ -2232,28 +2488,37 @@ def markerless_stream_debug_lines(app_state, vision):
     ]
 
 
+def markerless_stream_debug_lines(app_state, vision):
+    return cyan_stream_debug_lines(app_state, vision)
+
+
 def update_stream_frame(app_state):
     vision = app_state.vision
     if vision is None or vision.current_frame is None:
         return
     frame = vision.current_frame.copy()
     with app_state.lock:
+        stream_step = _stream_state_success_gate_step(
+            app_state,
+            getattr(app_state.world.step_state, "value", app_state.world.step_state),
+        )
         step_suggestions = []
         if app_state.step_suggestions:
             step_suggestions.extend(app_state.step_suggestions)
         active = True
         gate_summary, analytics = compute_stream_gate_summary(
             app_state.world,
-            app_state.world.step_state.value,
+            stream_step,
             active=active,
+            include_step_line=False,
         )
         gate_checker_summary = format_gatecheck_stream_lines(
             app_state.world,
-            app_state.world.step_state.value,
+            stream_step,
         )
         if analytics:
             app_state.brick_highlight_metric = analytics.get("highlight_metric")
-        markerless_lines = markerless_stream_debug_lines(app_state, vision)
+        cyan_lines = cyan_stream_debug_lines(app_state, vision)
         stream_lines = []
         frame = draw_telemetry_overlay(
             frame,
@@ -2269,7 +2534,8 @@ def update_stream_frame(app_state):
             draw_text=False,
             line_sink=stream_lines,
             show_center_line=bool(app_state.stream_state.get("show_center_line", True)),
-            brick_extra_lines=markerless_lines,
+            brick_extra_lines=cyan_lines,
+            telemetry_step=stream_step,
         )
         app_state.current_frame = frame
     if app_state.stream_state:
@@ -2597,7 +2863,7 @@ def handle_attempt_command(app_state, obj_enum, attempt_type):
     return ok, msg, ended_info, ended_close
 
 class AppState:
-    def __init__(self):
+    def __init__(self, vision_mode=_DEFAULT_VISION_MODE):
         self.running = True
         self.active_command = None
         self.active_hotkey = None
@@ -2633,7 +2899,8 @@ class AppState:
         self.active_attempt = None
         
         # Session Setup
-        self.demos_dir = DEMOS_DIR
+        vision_mode_norm = normalize_vision_mode(vision_mode, fallback=_DEFAULT_VISION_MODE)
+        self.demos_dir = _demos_dir_for_vision_mode(vision_mode_norm)
         self.demos_dir.mkdir(parents=True, exist_ok=True)
         self.world = WorldModel()
         self.logger = None
@@ -2667,9 +2934,10 @@ class AppState:
             "lock": threading.Lock(),
             "skip_telemetry_process": True,
             "show_center_line": True,
-            "vision_mode": _DEFAULT_VISION_MODE,
-            "markerless_profile": _DEFAULT_MARKERLESS_PROFILE,
-            "markerless_visibility": _DEFAULT_MARKERLESS_VISIBILITY,
+            "vision_mode": vision_mode_norm,
+            "cyan_profile": _DEFAULT_CYAN_PROFILE,
+            "cyan_visibility": _DEFAULT_CYAN_VISIBILITY,
+            "success_gate_step": _DEFAULT_STREAM_SUCCESS_GATE_STEP,
         }
         self.stream_enabled = False
         # Allow telemetry_process helpers to push frames directly during auto-run pauses.
@@ -2735,6 +3003,7 @@ def keyboard_thread(app_state):
             app_state.active_speed_score = None
             app_state.active_duration_ms = None
             app_state.active_pwm_override = None
+            _set_stream_state_success_gate_step(app_state, obj_enum.value)
         return True, []
 
     def _submit_step_code_buffer():
@@ -3096,7 +3365,7 @@ def stream_refresh_loop(app_state):
 
 def build_vision(vision_mode, yolo_model_path=None):
     mode = normalize_vision_mode(vision_mode)
-    if mode == VISION_MODE_MARKERLESS:
+    if mode == VISION_MODE_CYAN:
         return YoloBrickDetector(debug=True, model_path=yolo_model_path)
     return ArucoBrickVision(debug=True)
 
@@ -3127,62 +3396,130 @@ def _set_stream_state_vision_mode(app_state, mode):
         stream_state["vision_mode"] = mode_norm
 
 
-def _stream_state_markerless_profile(app_state, fallback):
+def _stream_state_cyan_profile(app_state, fallback):
     stream_state = app_state.stream_state if isinstance(app_state.stream_state, dict) else None
     if not stream_state:
-        return normalize_markerless_profile(fallback, fallback=fallback)
+        return normalize_cyan_profile(fallback, fallback=fallback)
     lock = stream_state.get("lock")
     if lock is None:
-        value = stream_state.get("markerless_profile", fallback)
+        value = stream_state.get("cyan_profile")
+        if (value is None or not str(value).strip()) and "markerless_profile" in stream_state:
+            value = stream_state.get("markerless_profile")
     else:
         with lock:
-            value = stream_state.get("markerless_profile", fallback)
-    return normalize_markerless_profile(value, fallback=fallback)
+            value = stream_state.get("cyan_profile")
+            if (value is None or not str(value).strip()) and "markerless_profile" in stream_state:
+                value = stream_state.get("markerless_profile")
+    if value is None or not str(value).strip():
+        value = fallback
+    return normalize_cyan_profile(value, fallback=fallback)
 
 
-def _set_stream_state_markerless_profile(app_state, profile):
+def _set_stream_state_cyan_profile(app_state, profile):
     stream_state = app_state.stream_state if isinstance(app_state.stream_state, dict) else None
     if not stream_state:
         return
     lock = stream_state.get("lock")
-    profile_norm = normalize_markerless_profile(profile, fallback=_DEFAULT_MARKERLESS_PROFILE)
+    profile_norm = normalize_cyan_profile(profile, fallback=_DEFAULT_CYAN_PROFILE)
     if lock is None:
+        stream_state["cyan_profile"] = profile_norm
         stream_state["markerless_profile"] = profile_norm
         return
     with lock:
+        stream_state["cyan_profile"] = profile_norm
         stream_state["markerless_profile"] = profile_norm
 
 
-def _stream_state_markerless_visibility(app_state, fallback):
+def _stream_state_cyan_visibility(app_state, fallback):
     stream_state = app_state.stream_state if isinstance(app_state.stream_state, dict) else None
     if not stream_state:
-        return normalize_markerless_visibility(fallback, fallback=fallback)
+        return normalize_cyan_visibility(fallback, fallback=fallback)
     lock = stream_state.get("lock")
     if lock is None:
-        value = stream_state.get("markerless_visibility", fallback)
+        value = stream_state.get("cyan_visibility")
+        if (value is None or not str(value).strip()) and "markerless_visibility" in stream_state:
+            value = stream_state.get("markerless_visibility")
     else:
         with lock:
-            value = stream_state.get("markerless_visibility", fallback)
-    return normalize_markerless_visibility(value, fallback=fallback)
+            value = stream_state.get("cyan_visibility")
+            if (value is None or not str(value).strip()) and "markerless_visibility" in stream_state:
+                value = stream_state.get("markerless_visibility")
+    if value is None or not str(value).strip():
+        value = fallback
+    return normalize_cyan_visibility(value, fallback=fallback)
 
 
-def _set_stream_state_markerless_visibility(app_state, mode):
+def _set_stream_state_cyan_visibility(app_state, mode):
     stream_state = app_state.stream_state if isinstance(app_state.stream_state, dict) else None
     if not stream_state:
         return
     lock = stream_state.get("lock")
-    mode_norm = normalize_markerless_visibility(mode, fallback=_DEFAULT_MARKERLESS_VISIBILITY)
+    mode_norm = normalize_cyan_visibility(mode, fallback=_DEFAULT_CYAN_VISIBILITY)
     if lock is None:
+        stream_state["cyan_visibility"] = mode_norm
         stream_state["markerless_visibility"] = mode_norm
         return
     with lock:
+        stream_state["cyan_visibility"] = mode_norm
         stream_state["markerless_visibility"] = mode_norm
 
 
-def _set_detector_markerless_visibility(vision, mode):
+def _normalize_stream_success_gate_step(step, fallback=None):
+    allowed_steps = {
+        normalize_step_label(value)
+        for value, _label in STREAM_SUCCESS_GATE_STEP_OPTIONS
+        if normalize_step_label(value)
+    }
+    candidate = normalize_step_label(step)
+    if candidate and (not allowed_steps or candidate in allowed_steps):
+        return candidate
+    fallback_key = normalize_step_label(fallback)
+    if fallback_key and (not allowed_steps or fallback_key in allowed_steps):
+        return fallback_key
+    if STREAM_SUCCESS_GATE_STEP_OPTIONS:
+        first = normalize_step_label(STREAM_SUCCESS_GATE_STEP_OPTIONS[0][0])
+        if first:
+            return first
+    if fallback_key:
+        return fallback_key
+    return _DEFAULT_STREAM_SUCCESS_GATE_STEP
+
+
+def _stream_state_success_gate_step(app_state, fallback):
+    stream_state_raw = getattr(app_state, "stream_state", None)
+    stream_state = stream_state_raw if isinstance(stream_state_raw, dict) else None
+    if not stream_state:
+        return _normalize_stream_success_gate_step(fallback, fallback=fallback)
+    lock = stream_state.get("lock")
+    if lock is None:
+        value = stream_state.get("success_gate_step", fallback)
+    else:
+        with lock:
+            value = stream_state.get("success_gate_step", fallback)
+    return _normalize_stream_success_gate_step(value, fallback=fallback)
+
+
+def _set_stream_state_success_gate_step(app_state, step):
+    stream_state_raw = getattr(app_state, "stream_state", None)
+    stream_state = stream_state_raw if isinstance(stream_state_raw, dict) else None
+    if not stream_state:
+        return
+    world = getattr(app_state, "world", None)
+    step_state = getattr(world, "step_state", None)
+    fallback = getattr(step_state, "value", step_state)
+    step_key = _normalize_stream_success_gate_step(step, fallback=fallback)
+    lock = stream_state.get("lock")
+    if lock is None:
+        stream_state["success_gate_step"] = step_key
+        return
+    with lock:
+        stream_state["success_gate_step"] = step_key
+
+
+def _set_detector_cyan_visibility(vision, mode):
     if vision is None:
         return False
-    mode_norm = normalize_markerless_visibility(mode, fallback=MARKERLESS_VISIBILITY_AUTO)
+    mode_norm = normalize_cyan_visibility(mode, fallback=CYAN_VISIBILITY_AUTO)
     # Prefer explicit detector APIs if present.
     for meth_name in (
         "set_visibility_mode",
@@ -3226,89 +3563,179 @@ def _set_detector_markerless_visibility(vision, mode):
     return False
 
 
-def _apply_markerless_visibility(app_state, vision, mode):
-    mode_norm = normalize_markerless_visibility(mode, fallback=_DEFAULT_MARKERLESS_VISIBILITY)
-    _set_stream_state_markerless_visibility(app_state, mode_norm)
+def _apply_cyan_visibility(app_state, vision, mode):
+    mode_norm = normalize_cyan_visibility(mode, fallback=_DEFAULT_CYAN_VISIBILITY)
+    _set_stream_state_cyan_visibility(app_state, mode_norm)
     if not isinstance(vision, YoloBrickDetector):
         return mode_norm, False
-    applied = _set_detector_markerless_visibility(vision, mode_norm)
+    applied = _set_detector_cyan_visibility(vision, mode_norm)
     return mode_norm, bool(applied)
 
 
-def _apply_markerless_profile(app_state, vision, profile):
-    profile_key, settings = markerless_profile_settings(profile)
-    _set_stream_state_markerless_profile(app_state, profile_key)
+def _apply_cyan_profile(app_state, vision, profile):
+    profile_key, settings = cyan_profile_settings(profile)
+    _set_stream_state_cyan_profile(app_state, profile_key)
     if not isinstance(vision, YoloBrickDetector):
         return profile_key, settings, False
 
-    confidence = settings.get("conf_threshold")
-    smooth_alpha = settings.get("smooth_alpha")
-    nms_threshold = settings.get("nms_threshold")
-    if hasattr(vision, "set_runtime_tuning"):
-        vision.set_runtime_tuning(
-            confidence=confidence,
-            smoothing_alpha=smooth_alpha,
-            nms_threshold=nms_threshold,
-        )
-    else:
+    applied_runtime = None
+    set_runtime_tuning = getattr(vision, "set_runtime_tuning", None)
+    if callable(set_runtime_tuning):
+        applied_runtime = set_runtime_tuning(**dict(settings))
+    if not isinstance(applied_runtime, dict):
+        # Fallback for older detector implementations that don't expose
+        # set_runtime_tuning() with full runtime snapshots.
+        confidence = settings.get("confidence")
+        smooth_alpha = settings.get("smoothing_alpha")
+        nms_threshold = settings.get("nms_threshold")
+        hsv_lower = settings.get("hsv_lower")
+        hsv_upper = settings.get("hsv_upper")
+        hsv_enabled = settings.get("hsv_enabled")
+        hsv_erode_iterations = settings.get("hsv_erode_iterations")
         if confidence is not None:
             vision.conf_threshold = float(confidence)
         if smooth_alpha is not None:
             vision._smooth_alpha = float(smooth_alpha)
         if nms_threshold is not None:
             vision.nms_threshold = float(nms_threshold)
-    for attr in ("_prev_angle", "_prev_dist", "_prev_offset"):
+        if hsv_lower is not None:
+            vision._hsv_lower = list(hsv_lower)
+        if hsv_upper is not None:
+            vision._hsv_upper = list(hsv_upper)
+        if hsv_enabled is not None:
+            vision._hsv_enabled = bool(hsv_enabled)
+        if hsv_erode_iterations is not None:
+            vision._hsv_erode_iterations = max(0, int(hsv_erode_iterations))
+        applied_runtime = {
+            "conf_threshold": getattr(vision, "conf_threshold", None),
+            "smooth_alpha": getattr(vision, "_smooth_alpha", None),
+            "nms_threshold": getattr(vision, "nms_threshold", None),
+            "hsv_lower": getattr(vision, "_hsv_lower", None),
+            "hsv_upper": getattr(vision, "_hsv_upper", None),
+            "hsv_enabled": getattr(vision, "_hsv_enabled", None),
+            "hsv_erode_iterations": getattr(vision, "_hsv_erode_iterations", None),
+        }
+    for attr in ("_prev_angle", "_prev_dist", "_prev_offset", "_prev_offset_y", "_center_lock_prev_center"):
         if hasattr(vision, attr):
             setattr(vision, attr, None)
-    return profile_key, settings, True
+    return profile_key, applied_runtime, True
+
+
+def _apply_cyan_smoothing_experiment(vision, runtime_snapshot=None):
+    if not isinstance(vision, YoloBrickDetector):
+        return runtime_snapshot, False
+    target_alpha = float(CYAN_EXPERIMENT_SMOOTHING_ALPHA_MAX)
+    if target_alpha <= 0.0:
+        return runtime_snapshot, False
+
+    current_alpha = None
+    if isinstance(runtime_snapshot, dict):
+        current_alpha = runtime_snapshot.get("smooth_alpha")
+    if current_alpha is None:
+        current_alpha = getattr(vision, "_smooth_alpha", None)
+    try:
+        current_alpha = float(current_alpha)
+    except (TypeError, ValueError):
+        current_alpha = None
+    if current_alpha is not None and current_alpha <= target_alpha:
+        return runtime_snapshot, False
+
+    applied_runtime = None
+    set_runtime_tuning = getattr(vision, "set_runtime_tuning", None)
+    if callable(set_runtime_tuning):
+        applied_runtime = set_runtime_tuning(smoothing_alpha=target_alpha)
+    if not isinstance(applied_runtime, dict):
+        vision._smooth_alpha = float(target_alpha)
+        applied_runtime = dict(runtime_snapshot) if isinstance(runtime_snapshot, dict) else {}
+        applied_runtime["smooth_alpha"] = float(target_alpha)
+    return applied_runtime, True
+
+
+def _stream_state_markerless_profile(app_state, fallback):
+    return _stream_state_cyan_profile(app_state, fallback)
+
+
+def _set_stream_state_markerless_profile(app_state, profile):
+    _set_stream_state_cyan_profile(app_state, profile)
+
+
+def _stream_state_markerless_visibility(app_state, fallback):
+    return _stream_state_cyan_visibility(app_state, fallback)
+
+
+def _set_stream_state_markerless_visibility(app_state, mode):
+    _set_stream_state_cyan_visibility(app_state, mode)
+
+
+def _set_detector_markerless_visibility(vision, mode):
+    return _set_detector_cyan_visibility(vision, mode)
+
+
+def _apply_markerless_visibility(app_state, vision, mode):
+    return _apply_cyan_visibility(app_state, vision, mode)
+
+
+def _apply_markerless_profile(app_state, vision, profile):
+    return _apply_cyan_profile(app_state, vision, profile)
 
 
 def _vision_mode_label(mode):
-    if normalize_vision_mode(mode) == VISION_MODE_MARKERLESS:
-        return "Markerless"
+    if normalize_vision_mode(mode) == VISION_MODE_CYAN:
+        return "Cyan Bricks"
     return "AruCo Markers"
 
 
 def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
     app_state.robot = Robot()
     active_vision_mode = normalize_vision_mode(vision_mode)
-    active_markerless_profile = _stream_state_markerless_profile(app_state, _DEFAULT_MARKERLESS_PROFILE)
-    active_markerless_visibility = _stream_state_markerless_visibility(
+    active_cyan_profile = _stream_state_cyan_profile(app_state, _DEFAULT_CYAN_PROFILE)
+    active_cyan_visibility = _stream_state_cyan_visibility(
         app_state,
-        _DEFAULT_MARKERLESS_VISIBILITY,
+        _DEFAULT_CYAN_VISIBILITY,
     )
     _set_stream_state_vision_mode(app_state, active_vision_mode)
-    _set_stream_state_markerless_profile(app_state, active_markerless_profile)
-    _set_stream_state_markerless_visibility(app_state, active_markerless_visibility)
+    _set_stream_state_cyan_profile(app_state, active_cyan_profile)
+    _set_stream_state_cyan_visibility(app_state, active_cyan_visibility)
+    if _set_active_demos_dir_for_mode(app_state, active_vision_mode):
+        refresh_world_model_from_demos(app_state, force=True, min_interval_s=0.0)
     # speed_optimize=False so we get the debug markers drawn on the frame
     app_state.vision = build_vision(active_vision_mode, yolo_model_path=yolo_model_path)
-    profile_key, profile_settings, profile_applied = _apply_markerless_profile(
+    profile_key, profile_settings, profile_applied = _apply_cyan_profile(
         app_state,
         app_state.vision,
-        active_markerless_profile,
+        active_cyan_profile,
     )
-    active_markerless_profile = profile_key
-    visibility_key, visibility_applied = _apply_markerless_visibility(
+    active_cyan_profile = profile_key
+    profile_smoothing_experiment_applied = False
+    if active_vision_mode == VISION_MODE_CYAN and profile_applied:
+        profile_settings, profile_smoothing_experiment_applied = _apply_cyan_smoothing_experiment(
+            app_state.vision,
+            profile_settings,
+        )
+    visibility_key, visibility_applied = _apply_cyan_visibility(
         app_state,
         app_state.vision,
-        active_markerless_visibility,
+        active_cyan_visibility,
     )
-    active_markerless_visibility = visibility_key
+    active_cyan_visibility = visibility_key
     log_line(
         f"[VISION] Active mode: {_vision_mode_label(active_vision_mode)} "
         f"(--vision {_vision_mode_cli_value(active_vision_mode)})"
     )
-    if active_vision_mode == VISION_MODE_MARKERLESS and profile_applied:
+    if active_vision_mode == VISION_MODE_CYAN and profile_applied:
         log_line(
-            "[VISION] Markerless config: "
-            f"{markerless_profile_label(active_markerless_profile)} "
-            f"(min_conf={float(profile_settings.get('conf_threshold', 0.15)):.2f}, "
-            f"smooth={float(profile_settings.get('smooth_alpha', 0.30)):.2f})"
+            "[VISION] Cyan config: "
+            f"{cyan_profile_label(active_cyan_profile)} "
+            f"({cyan_profile_runtime_summary(profile_settings)})"
         )
-    if active_vision_mode == VISION_MODE_MARKERLESS and visibility_applied:
+    if active_vision_mode == VISION_MODE_CYAN and profile_smoothing_experiment_applied:
+        smooth_alpha = profile_settings.get("smooth_alpha") if isinstance(profile_settings, dict) else None
+        if isinstance(smooth_alpha, (int, float)):
+            log_line(f"[VISION] Cyan smoothing experiment: smooth={float(smooth_alpha):.2f}")
+    if active_vision_mode == VISION_MODE_CYAN and visibility_applied:
         log_line(
-            "[VISION] Markerless visibility: "
-            f"{markerless_visibility_label(active_markerless_visibility)}"
+            "[VISION] Cyan visibility: "
+            f"{cyan_visibility_label(active_cyan_visibility)}"
         )
 
     if app_state.stream_enabled:
@@ -3322,45 +3749,51 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
     
     while app_state.running:
         loop_start = time.time()
-        requested_markerless_profile = _stream_state_markerless_profile(
+        requested_cyan_profile = _stream_state_cyan_profile(
             app_state,
-            active_markerless_profile,
+            active_cyan_profile,
         )
-        if requested_markerless_profile != active_markerless_profile:
-            active_markerless_profile = requested_markerless_profile
-            if active_vision_mode == VISION_MODE_MARKERLESS and app_state.vision is not None:
-                profile_key, profile_settings, profile_applied = _apply_markerless_profile(
+        if requested_cyan_profile != active_cyan_profile:
+            active_cyan_profile = requested_cyan_profile
+            if active_vision_mode == VISION_MODE_CYAN and app_state.vision is not None:
+                profile_key, profile_settings, profile_applied = _apply_cyan_profile(
                     app_state,
                     app_state.vision,
-                    active_markerless_profile,
+                    active_cyan_profile,
                 )
-                active_markerless_profile = profile_key
+                active_cyan_profile = profile_key
                 if profile_applied:
+                    profile_settings, smoothing_experiment_applied = _apply_cyan_smoothing_experiment(
+                        app_state.vision,
+                        profile_settings,
+                    )
                     with app_state.lock:
                         app_state.brick_frame_buffer = []
                     log_line(
-                        "[VISION] Markerless config: "
-                        f"{markerless_profile_label(active_markerless_profile)} "
-                        f"(min_conf={float(profile_settings.get('conf_threshold', 0.15)):.2f}, "
-                        f"smooth={float(profile_settings.get('smooth_alpha', 0.30)):.2f})"
+                        "[VISION] Cyan config: "
+                        f"{cyan_profile_label(active_cyan_profile)} "
+                        f"({cyan_profile_runtime_summary(profile_settings)})"
                     )
-        requested_markerless_visibility = _stream_state_markerless_visibility(
+                    smooth_alpha = profile_settings.get("smooth_alpha") if isinstance(profile_settings, dict) else None
+                    if smoothing_experiment_applied and isinstance(smooth_alpha, (int, float)):
+                        log_line(f"[VISION] Cyan smoothing experiment: smooth={float(smooth_alpha):.2f}")
+        requested_cyan_visibility = _stream_state_cyan_visibility(
             app_state,
-            active_markerless_visibility,
+            active_cyan_visibility,
         )
-        if requested_markerless_visibility != active_markerless_visibility:
-            active_markerless_visibility = requested_markerless_visibility
-            if active_vision_mode == VISION_MODE_MARKERLESS and app_state.vision is not None:
-                visibility_key, visibility_applied = _apply_markerless_visibility(
+        if requested_cyan_visibility != active_cyan_visibility:
+            active_cyan_visibility = requested_cyan_visibility
+            if active_vision_mode == VISION_MODE_CYAN and app_state.vision is not None:
+                visibility_key, visibility_applied = _apply_cyan_visibility(
                     app_state,
                     app_state.vision,
-                    active_markerless_visibility,
+                    active_cyan_visibility,
                 )
-                active_markerless_visibility = visibility_key
+                active_cyan_visibility = visibility_key
                 if visibility_applied:
                     log_line(
-                        "[VISION] Markerless visibility: "
-                        f"{markerless_visibility_label(active_markerless_visibility)}"
+                        "[VISION] Cyan visibility: "
+                        f"{cyan_visibility_label(active_cyan_visibility)}"
                     )
         requested_vision_mode = _stream_state_vision_mode(app_state, active_vision_mode)
         if requested_vision_mode != active_vision_mode:
@@ -3376,8 +3809,14 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
                 restored_vision = None
                 try:
                     restored_vision = build_vision(active_vision_mode, yolo_model_path=yolo_model_path)
-                    _apply_markerless_profile(app_state, restored_vision, active_markerless_profile)
-                    _apply_markerless_visibility(app_state, restored_vision, active_markerless_visibility)
+                    _, restored_profile_runtime, restored_profile_applied = _apply_cyan_profile(
+                        app_state,
+                        restored_vision,
+                        active_cyan_profile,
+                    )
+                    if active_vision_mode == VISION_MODE_CYAN and restored_profile_applied:
+                        _apply_cyan_smoothing_experiment(restored_vision, restored_profile_runtime)
+                    _apply_cyan_visibility(app_state, restored_vision, active_cyan_visibility)
                 except Exception as restore_exc:
                     log_line(f"[VISION] Failed to restore {_vision_mode_label(active_vision_mode)}: {restore_exc}")
                 app_state.vision = restored_vision
@@ -3388,36 +3827,48 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
             else:
                 app_state.vision = new_vision
                 active_vision_mode = requested_vision_mode
-                profile_key, profile_settings, profile_applied = _apply_markerless_profile(
+                profile_key, profile_settings, profile_applied = _apply_cyan_profile(
                     app_state,
                     app_state.vision,
-                    active_markerless_profile,
+                    active_cyan_profile,
                 )
-                active_markerless_profile = profile_key
-                visibility_key, visibility_applied = _apply_markerless_visibility(
+                active_cyan_profile = profile_key
+                profile_smoothing_experiment_applied = False
+                if active_vision_mode == VISION_MODE_CYAN and profile_applied:
+                    profile_settings, profile_smoothing_experiment_applied = _apply_cyan_smoothing_experiment(
+                        app_state.vision,
+                        profile_settings,
+                    )
+                visibility_key, visibility_applied = _apply_cyan_visibility(
                     app_state,
                     app_state.vision,
-                    active_markerless_visibility,
+                    active_cyan_visibility,
                 )
-                active_markerless_visibility = visibility_key
+                active_cyan_visibility = visibility_key
                 with app_state.lock:
                     app_state.brick_frame_buffer = []
                 _set_stream_state_vision_mode(app_state, active_vision_mode)
+                demos_switched = _set_active_demos_dir_for_mode(app_state, active_vision_mode)
+                if demos_switched:
+                    refresh_world_model_from_demos(app_state, force=True, min_interval_s=0.0)
                 log_line(
                     f"[VISION] Switched to {_vision_mode_label(active_vision_mode)} "
                     f"(--vision {_vision_mode_cli_value(active_vision_mode)})."
                 )
-                if active_vision_mode == VISION_MODE_MARKERLESS and profile_applied:
+                if active_vision_mode == VISION_MODE_CYAN and profile_applied:
                     log_line(
-                        "[VISION] Markerless config: "
-                        f"{markerless_profile_label(active_markerless_profile)} "
-                        f"(min_conf={float(profile_settings.get('conf_threshold', 0.15)):.2f}, "
-                        f"smooth={float(profile_settings.get('smooth_alpha', 0.30)):.2f})"
+                        "[VISION] Cyan config: "
+                        f"{cyan_profile_label(active_cyan_profile)} "
+                        f"({cyan_profile_runtime_summary(profile_settings)})"
                     )
-                if active_vision_mode == VISION_MODE_MARKERLESS and visibility_applied:
+                if active_vision_mode == VISION_MODE_CYAN and profile_smoothing_experiment_applied:
+                    smooth_alpha = profile_settings.get("smooth_alpha") if isinstance(profile_settings, dict) else None
+                    if isinstance(smooth_alpha, (int, float)):
+                        log_line(f"[VISION] Cyan smoothing experiment: smooth={float(smooth_alpha):.2f}")
+                if active_vision_mode == VISION_MODE_CYAN and visibility_applied:
                     log_line(
-                        "[VISION] Markerless visibility: "
-                        f"{markerless_visibility_label(active_markerless_visibility)}"
+                        "[VISION] Cyan visibility: "
+                        f"{cyan_visibility_label(active_cyan_visibility)}"
                     )
 
         refresh_world_model_from_demos(app_state)
@@ -3479,23 +3930,32 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
                 app_state.brick_frame_buffer.pop(0)
 
             if isinstance(vision, YoloBrickDetector):
-                study = evaluate_markerless_frames(app_state.brick_frame_buffer)
+                study = evaluate_cyan_frames(app_state.brick_frame_buffer)
             else:
                 study = evaluate_brick_frames(app_state.brick_frame_buffer)
             if study and study.get("reset"):
                 app_state.brick_frame_buffer = []
-        if study and study.get("average"):
-            avg = study["average"]
-            app_state.world.update_vision(
-                avg["found"],
-                avg["dist"],
-                avg["angle"],
-                avg["conf"],
-                avg["offset_x"],
-                avg["cam_h"],
-                avg["brick_above"],
-                avg["brick_below"],
-            )
+        snapshot = _study_snapshot_or_raw(
+            study,
+            found=found,
+            angle=angle,
+            dist=dist,
+            offset_x=offset_x,
+            conf=conf,
+            cam_h=cam_h,
+            brick_above=brick_above,
+            brick_below=brick_below,
+        )
+        app_state.world.update_vision(
+            snapshot["found"],
+            snapshot["dist"],
+            snapshot["angle"],
+            snapshot["conf"],
+            snapshot["offset_x"],
+            snapshot["cam_h"],
+            snapshot["brick_above"],
+            snapshot["brick_below"],
+        )
         refresh_brick_telemetry(app_state, read_vision=False)
         
         # Track Motion
@@ -3612,6 +4072,7 @@ def command_loop(app_state):
         if cmd and score_used is not None and (
             speed > 0 or score_used == telemetry_robot_module.SPEED_SCORE_MIN
         ):
+            ease_for_hotkey = hotkey_uses_ease_in_out(hotkey)
             send_result = None
             if pwm_override is not None:
                 try:
@@ -3647,6 +4108,7 @@ def command_loop(app_state):
                         int(duration_used_ms),
                         speed_score=score_used,
                         auto_mode=False,
+                        ease_in_out_enabled=ease_for_hotkey,
                     )
                 else:
                     send_result = send_robot_command(
@@ -3657,6 +4119,7 @@ def command_loop(app_state):
                         speed,
                         speed_score=score_used,
                         duration_override_ms=duration_override_ms,
+                        ease_in_out_enabled=ease_for_hotkey,
                     )
             else:
                 send_result = send_robot_command(
@@ -3667,6 +4130,7 @@ def command_loop(app_state):
                     speed,
                     speed_score=score_used,
                     duration_override_ms=duration_override_ms,
+                    ease_in_out_enabled=ease_for_hotkey,
                 )
             _apply_manual_motion_telemetry_from_send(
                 app_state,
@@ -3723,20 +4187,26 @@ if __name__ == "__main__":
         "--brick-vision",
         "--vision",
         dest="brick_vision",
-        choices=["aruco", "yolo", "markerless"],
         default=_DEFAULT_VISION_MODE,
-        help="Brick vision model to use (aruco/yolo; markerless is an alias for yolo)",
+        help="Brick vision model to use (aruco/cyan)",
     )
     parser.add_argument(
         "--yolo-model",
         default=None,
-        help="Path to YOLO ONNX model (used with --brick-vision yolo or --vision yolo)",
+        help="Path to YOLO ONNX model (used with --brick-vision cyan)",
+    )
+    parser.add_argument(
+        "--cyan-profile",
+        dest="cyan_profile",
+        choices=[value for value, _label in CYAN_PROFILE_OPTIONS],
+        default=_DEFAULT_CYAN_PROFILE,
+        help="Cyan tuning profile (applies when vision mode is cyan)",
     )
     parser.add_argument(
         "--markerless-profile",
-        choices=[value for value, _label in MARKERLESS_PROFILE_OPTIONS],
-        default=_DEFAULT_MARKERLESS_PROFILE,
-        help="Markerless tuning profile (applies when vision mode is yolo/markerless)",
+        dest="cyan_profile",
+        choices=[value for value, _label in CYAN_PROFILE_OPTIONS],
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--stream", dest="stream", action="store_true",
                         help="Enable livestreaming")
@@ -3744,20 +4214,27 @@ if __name__ == "__main__":
                         help="Disable livestreaming")
     parser.set_defaults(stream=True)
     args = parser.parse_args()
-    vision_mode = normalize_vision_mode(args.brick_vision, fallback=_DEFAULT_VISION_MODE)
-    markerless_profile = normalize_markerless_profile(
-        args.markerless_profile,
-        fallback=_DEFAULT_MARKERLESS_PROFILE,
+    brick_vision_raw = str(args.brick_vision or "").strip().lower()
+    if brick_vision_raw and brick_vision_raw not in _VISION_MODE_ALIASES:
+        parser.error("--brick-vision must be one of: aruco, cyan")
+    vision_mode = normalize_vision_mode(brick_vision_raw, fallback=_DEFAULT_VISION_MODE)
+    cyan_profile = normalize_cyan_profile(
+        args.cyan_profile,
+        fallback=_DEFAULT_CYAN_PROFILE,
     )
 
-    logs = load_demo_logs(DEMOS_DIR)
+    startup_demos_dir = _demos_dir_for_vision_mode(vision_mode)
+    startup_demos_dir.mkdir(parents=True, exist_ok=True)
+    logs = load_demo_logs(startup_demos_dir)
     if logs:
         update_process_model_from_demos(logs, PROCESS_MODEL_FILE)
 
-    state = AppState()
+    state = AppState(vision_mode=vision_mode)
     _set_stream_state_vision_mode(state, vision_mode)
-    _set_stream_state_markerless_profile(state, markerless_profile)
-    _set_stream_state_markerless_visibility(state, _DEFAULT_MARKERLESS_VISIBILITY)
+    _set_stream_state_cyan_profile(state, cyan_profile)
+    _set_stream_state_cyan_visibility(state, _DEFAULT_CYAN_VISIBILITY)
+    _set_stream_state_success_gate_step(state, state.world.step_state.value)
+    _set_active_demos_dir_for_mode(state, vision_mode)
     refresh_world_model_from_demos(state, force=True)
     log_align_curve_lookup_table()
     print_command_help(state)
@@ -3780,8 +4257,9 @@ if __name__ == "__main__":
                 fps=STREAM_FPS,
                 jpeg_quality=STREAM_JPEG_QUALITY,
                 vision_mode_options=STREAM_VISION_MODE_OPTIONS,
-                markerless_profile_options=MARKERLESS_PROFILE_OPTIONS,
-                markerless_visibility_options=MARKERLESS_VISIBILITY_OPTIONS,
+                cyan_profile_options=CYAN_PROFILE_OPTIONS,
+                cyan_visibility_options=CYAN_VISIBILITY_OPTIONS,
+                success_gate_step_options=STREAM_SUCCESS_GATE_STEP_OPTIONS,
             )
         except Exception as exc:
             state.stream_enabled = False

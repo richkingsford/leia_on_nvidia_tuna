@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -92,7 +93,7 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
         self.assertLessEqual(int(meta.get("score_model") or 0), 25)
         self.assertLessEqual(int(meta.get("score_effective") or 0), 25)
 
-    def test_auto_drive_commands_do_not_use_anti_alias_ramp_segments_without_queue_support(self):
+    def test_auto_drive_commands_do_not_use_ease_segments_without_queue_support(self):
         world = _DummyWorld()
         robot = _DummyRobot()
         meta = telemetry_process.send_robot_command(
@@ -107,11 +108,11 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
         self.assertIsInstance(meta, dict)
         self.assertFalse(isinstance(meta.get("segments"), list))
         self.assertEqual(len(robot.sent), 1)
-        self.assertNotIn("AA(", str(getattr(world, "_last_action_sent_display", "")))
+        self.assertNotIn("EASE(", str(getattr(world, "_last_action_sent_display", "")))
         detail = telemetry_process.auto_action_detail_text("f", 50, action_meta=meta)
-        self.assertNotIn("AA(", detail)
+        self.assertNotIn("EASE(", detail)
 
-    def test_auto_drive_commands_use_anti_alias_ramp_segments_with_queue_support(self):
+    def test_auto_drive_commands_use_ease_segments_with_queue_support(self):
         world = _DummyWorld()
         robot = _DummyRobot(supports_timed_command_queue=True)
         meta = telemetry_process.send_robot_command(
@@ -127,26 +128,104 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
         self.assertIsInstance(meta.get("segments"), list)
         self.assertGreater(len(meta.get("segments") or []), 1)
         self.assertGreater(len(robot.sent), 1)
-        self.assertIn("AA(", str(getattr(world, "_last_action_sent_display", "")))
+        self.assertIn("EASE(", str(getattr(world, "_last_action_sent_display", "")))
         detail = telemetry_process.auto_action_detail_text("f", 50, action_meta=meta)
-        self.assertIn("AA(", detail)
+        self.assertIn("EASE(", detail)
 
-    def test_manual_drive_commands_do_not_use_anti_alias_ramp_segments(self):
+    def test_manual_drive_commands_use_ease_segments_without_queue_support(self):
         world = _DummyWorld()
         robot = _DummyRobot()
-        meta = telemetry_process.send_robot_command(
-            robot,
-            world,
-            step="MANUAL",
-            cmd="f",
-            speed=0.0,
-            speed_score=50,
-            auto_mode=False,
-        )
+        with patch("telemetry_process.time.sleep", return_value=None) as sleep_mock:
+            meta = telemetry_process.send_robot_command(
+                robot,
+                world,
+                step="MANUAL",
+                cmd="f",
+                speed=0.0,
+                speed_score=50,
+                auto_mode=False,
+            )
+        self.assertIsInstance(meta, dict)
+        self.assertIsInstance(meta.get("segments"), list)
+        self.assertGreater(len(meta.get("segments") or []), 1)
+        self.assertGreater(len(robot.sent), 1)
+        self.assertGreaterEqual(sleep_mock.call_count, 1)
+        self.assertIn("EASE(", str(getattr(world, "_last_action_sent_display", "")))
+
+    def test_manual_turn_commands_use_ease_segments_without_queue_support(self):
+        world = _DummyWorld()
+        robot = _DummyRobot()
+        with patch("telemetry_process.time.sleep", return_value=None) as sleep_mock:
+            meta = telemetry_process.send_robot_command(
+                robot,
+                world,
+                step="MANUAL",
+                cmd="l",
+                speed=0.0,
+                speed_score=50,
+                auto_mode=False,
+            )
+        self.assertIsInstance(meta, dict)
+        self.assertIsInstance(meta.get("segments"), list)
+        self.assertGreater(len(meta.get("segments") or []), 1)
+        self.assertGreater(len(robot.sent), 1)
+        self.assertGreaterEqual(sleep_mock.call_count, 1)
+        self.assertIn("EASE(", str(getattr(world, "_last_action_sent_display", "")))
+
+    def test_manual_commands_below_ease_threshold_do_not_use_segments(self):
+        world = _DummyWorld()
+        robot = _DummyRobot()
+        with patch("telemetry_process.time.sleep", return_value=None):
+            meta = telemetry_process.send_robot_command(
+                robot,
+                world,
+                step="MANUAL",
+                cmd="f",
+                speed=0.0,
+                speed_score=9,
+                auto_mode=False,
+            )
         self.assertIsInstance(meta, dict)
         self.assertFalse(isinstance(meta.get("segments"), list))
         self.assertEqual(len(robot.sent), 1)
-        self.assertNotIn("AA(", str(getattr(world, "_last_action_sent_display", "")))
+        self.assertNotIn("EASE(", str(getattr(world, "_last_action_sent_display", "")))
+
+    def test_manual_turn_commands_below_turn_ease_threshold_do_not_use_segments(self):
+        world = _DummyWorld()
+        robot = _DummyRobot()
+        with patch("telemetry_process.time.sleep", return_value=None):
+            meta = telemetry_process.send_robot_command(
+                robot,
+                world,
+                step="MANUAL",
+                cmd="r",
+                speed=0.0,
+                speed_score=19,
+                auto_mode=False,
+            )
+        self.assertIsInstance(meta, dict)
+        self.assertFalse(isinstance(meta.get("segments"), list))
+        self.assertEqual(len(robot.sent), 1)
+        self.assertNotIn("EASE(", str(getattr(world, "_last_action_sent_display", "")))
+
+    def test_manual_commands_can_explicitly_disable_ease_segments(self):
+        world = _DummyWorld()
+        robot = _DummyRobot()
+        with patch("telemetry_process.time.sleep", return_value=None):
+            meta = telemetry_process.send_robot_command(
+                robot,
+                world,
+                step="MANUAL",
+                cmd="f",
+                speed=0.0,
+                speed_score=50,
+                auto_mode=False,
+                ease_in_out_enabled=False,
+            )
+        self.assertIsInstance(meta, dict)
+        self.assertFalse(isinstance(meta.get("segments"), list))
+        self.assertEqual(len(robot.sent), 1)
+        self.assertNotIn("EASE(", str(getattr(world, "_last_action_sent_display", "")))
 
 
 if __name__ == "__main__":

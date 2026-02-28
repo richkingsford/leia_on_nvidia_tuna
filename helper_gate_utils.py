@@ -12,6 +12,7 @@ DEFAULT_GATE_CHECKER_CONFIG = {
     "majority_window": 26,
     "majority_required": 14,
 }
+VISIBLE_FALSE_FAIL_CONFIDENCE_MIN = 70.0
 
 
 def _coerce_int(value, fallback, minimum=1):
@@ -217,6 +218,39 @@ def metric_progress(value, stats):
     return None
 
 
+def bool_gate_target(stats):
+    if not isinstance(stats, dict):
+        return None
+    for key in ("min", "max", "target"):
+        value = stats.get(key)
+        if isinstance(value, bool):
+            return bool(value)
+    return None
+
+
+def visible_false_gate_confidently_seen(
+    measurement,
+    stats,
+    min_confidence=VISIBLE_FALSE_FAIL_CONFIDENCE_MIN,
+):
+    if bool_gate_target(stats) is not False:
+        return False
+    visible_now = bool((measurement or {}).get("visible"))
+    if not visible_now:
+        return False
+    confidence = (measurement or {}).get("confidence")
+    if confidence is None:
+        confidence = (measurement or {}).get("conf")
+    if confidence is None:
+        # If confidence is unavailable but visibility is true, be conservative.
+        return True
+    try:
+        conf_val = float(confidence)
+    except (TypeError, ValueError):
+        return True
+    return conf_val >= float(min_confidence)
+
+
 def step_progress(measurement, success_gates):
     if not success_gates:
         return None
@@ -240,6 +274,13 @@ def gate_satisfied(measurement, gates):
         if value is None:
             continue
         saw_value = True
+        if metric == "visible" and bool_gate_target(stats) is False:
+            # Strict boolean semantics: visible=true never satisfies visible=false.
+            if bool(value):
+                return False
+            if visible_false_gate_confidently_seen(measurement, stats):
+                return False
+            continue
         err = metric_error(value, stats)
         if err is None or err > 0:
             return False

@@ -17,6 +17,10 @@ class _DummyAppState:
         self.brick_frame_buffer = []
         self.demos_dir = Path(".")
         self.world = SimpleNamespace(process_rules={}, rules={}, step_state=None)
+        self.stream_state = {
+            "lock": threading.Lock(),
+            "success_gate_step": "ALIGN_BRICK",
+        }
 
 
 class TestSetupManualTrainingMiniXAxisRandomGate(unittest.TestCase):
@@ -44,6 +48,7 @@ class TestSetupManualTrainingMiniXAxisRandomGate(unittest.TestCase):
         ok = setup_manual_training.run_auto_step(app, setup_manual_training.StepState.POSITION_BRICK)
         self.assertFalse(ok)
         self.assertEqual(calls["mini"], 0)
+        self.assertEqual(app.stream_state.get("success_gate_step"), "POSITION_BRICK")
 
     def test_mini_x_axis_runs_when_random_roll_below_gate(self):
         app = _DummyAppState()
@@ -64,6 +69,7 @@ class TestSetupManualTrainingMiniXAxisRandomGate(unittest.TestCase):
         ok = setup_manual_training.run_auto_step(app, setup_manual_training.StepState.POSITION_BRICK)
         self.assertFalse(ok)
         self.assertEqual(calls["mini"], 1)
+        self.assertEqual(app.stream_state.get("success_gate_step"), "POSITION_BRICK")
 
 
 if __name__ == "__main__":

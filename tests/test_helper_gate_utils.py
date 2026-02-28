@@ -54,10 +54,25 @@ class TestHelperGateUtils(unittest.TestCase):
             "STEP_A": {"success_gates": {"visible": {"min": True}}},
             "STEP_B": {"success_gates": {"visible": {"min": False}}},
         }
-        measurement = {"visible": True}
+        measurement = {"visible": True, "confidence": 90.0}
         satisfied = helper_gate_utils.satisfied_steps(measurement, steps)
         self.assertIn("STEP_A", satisfied)
         self.assertNotIn("STEP_B", satisfied)
+
+    def test_visible_false_gate_fails_when_visibility_is_true_even_if_confidence_is_low(self):
+        gates = {"visible": {"min": False}}
+        measurement = {"visible": True, "confidence": 55.0}
+        self.assertFalse(helper_gate_utils.gate_satisfied(measurement, gates))
+
+    def test_visible_false_gate_fails_when_visibility_confidence_is_high(self):
+        gates = {"visible": {"min": False}}
+        measurement = {"visible": True, "confidence": 75.0}
+        self.assertFalse(helper_gate_utils.gate_satisfied(measurement, gates))
+
+    def test_visible_false_gate_passes_when_visibility_is_false(self):
+        gates = {"visible": {"min": False}}
+        measurement = {"visible": False, "confidence": 0.0}
+        self.assertTrue(helper_gate_utils.gate_satisfied(measurement, gates))
 
     def test_gatecheck_tracker_status_and_stream_line(self):
         class DummyWorld:

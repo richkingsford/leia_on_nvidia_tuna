@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from helper_demo_log_utils import extract_attempt_segments, load_demo_logs, normalize_step_label
+from helper_vision_config import demos_dir_for_mode
 from telemetry_robot import (
     manual_speed_for_cmd,
     SPEED_SCORE_DEFAULT,
@@ -86,7 +87,7 @@ METRIC_DIRECTIONS = {
     "confidence": "high",
 }
 
-DEFAULT_DEMOS_DIR = Path(__file__).resolve().parent / "demos"
+DEFAULT_DEMOS_DIR = demos_dir_for_mode()
 
 
 def _step_name(step):

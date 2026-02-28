@@ -10,6 +10,8 @@ import helper_gate_utils as gate_utils
 START_GATE_MIN_CONFIDENCE = 25.0
 ALIGN_CONFIDENCE_MIN = 25.0
 VISIBILITY_LOST_GRACE_S = 0.5
+VISIBLE_FALSE_CONFIDENT_FRAMES_REQUIRED = 3
+VISIBLE_FALSE_CONFIDENT_MAX_SAMPLES = 6
 BRICK_SMOOTH_FRAMES = 3
 BRICK_SMOOTH_OUTLIER_MM = 12.0
 BRICK_SMOOTH_OUTLIER_DEG = 6.0
@@ -612,6 +614,63 @@ def _effective_visible(world, visible, grace_s=VISIBILITY_LOST_GRACE_S):
     return (time.time() - last_seen) <= grace_s
 
 
+def _recent_confident_visible_hits(
+    world,
+    *,
+    min_confidence=gate_utils.VISIBLE_FALSE_FAIL_CONFIDENCE_MIN,
+    required_frames=VISIBLE_FALSE_CONFIDENT_FRAMES_REQUIRED,
+    max_samples=VISIBLE_FALSE_CONFIDENT_MAX_SAMPLES,
+):
+    try:
+        required = max(1, int(required_frames or 1))
+    except (TypeError, ValueError):
+        required = int(VISIBLE_FALSE_CONFIDENT_FRAMES_REQUIRED)
+    try:
+        scan_limit = max(required, int(max_samples or required))
+    except (TypeError, ValueError):
+        scan_limit = max(required, int(VISIBLE_FALSE_CONFIDENT_MAX_SAMPLES))
+
+    raw_history = getattr(world, "_raw_brick_visibility_history", None)
+    source = raw_history if isinstance(raw_history, list) and raw_history else getattr(world, "_brick_frame_buffer", None)
+    if not source:
+        return False
+
+    hits = 0
+    scanned = 0
+    for frame in reversed(list(source)):
+        if scanned >= scan_limit:
+            break
+        if not isinstance(frame, dict):
+            continue
+        scanned += 1
+
+        found_raw = frame.get("found")
+        if found_raw is None:
+            found_raw = frame.get("visible")
+        found = bool(found_raw)
+
+        conf_raw = frame.get("conf")
+        if conf_raw is None:
+            conf_raw = frame.get("confidence")
+        try:
+            conf_val = float(conf_raw or 0.0)
+        except (TypeError, ValueError):
+            conf_val = 0.0
+
+        if found and conf_val >= float(min_confidence):
+            hits += 1
+            if hits >= required:
+                return True
+            continue
+    return False
+
+
+def visible_false_gate_confident_recent(world, stats):
+    if gate_utils.bool_gate_target(stats) is not False:
+        return False
+    return _recent_confident_visible_hits(world)
+
+
 def metric_status(value, success_stats, failure_stats, direction):
     if success_stats is None or direction is None:
         return "unknown"
@@ -1096,6 +1155,27 @@ def _success_gate_eval(world, step, learned_rules, process_rules=None, visibilit
             min_val = stats.get("min")
             max_val = stats.get("max")
             entry["value"] = bool(effective_visible)
+            confidence_val = float(brick.get("confidence", 0.0) or 0.0)
+            entry["confidence"] = confidence_val
+            confidence_measurement = {
+                "visible": bool(visible),
+                "confidence": confidence_val,
+            }
+            confident_recent = visible_false_gate_confident_recent(world, stats)
+            entry["confident_visible_recent"] = bool(confident_recent)
+            target_visible = gate_utils.bool_gate_target(stats)
+            if target_visible is False:
+                # Strict boolean semantics for visible=false success gates.
+                if bool(effective_visible):
+                    reasons.append("visible gate")
+                    entries.append(entry)
+                    continue
+                if confident_recent or gate_utils.visible_false_gate_confidently_seen(confidence_measurement, stats):
+                    reasons.append("visible gate")
+                    entries.append(entry)
+                    continue
+                entries.append(entry)
+                continue
             if isinstance(min_val, bool):
                 if bool(effective_visible) != min_val:
                     reasons.append("visible gate")

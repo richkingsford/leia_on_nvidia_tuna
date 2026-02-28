@@ -12,6 +12,12 @@ from pathlib import Path
 from helper_demo_log_utils import extract_attempt_segments, load_demo_logs, normalize_step_label
 from helper_manual_config import load_manual_training_config
 from helper_vision_aruco import ArucoBrickVision
+from helper_vision_config import (
+    VISION_MODE_ARUCO,
+    VISION_MODE_CYAN,
+    active_vision_mode as _world_model_active_vision_mode,
+    demos_dir_for_mode,
+)
 import helper_gate_utils as gate_utils
 from helper_robot_control import Robot
 from telemetry_robot import MotionEvent, StepState, WorldModel, draw_telemetry_overlay
@@ -25,7 +31,7 @@ USE_LEARNED_POLICY = False
 GLOBAL_POLICY = None
 
 
-DEMO_DIR = Path(__file__).resolve().parent / "demos"
+DEMO_DIR = demos_dir_for_mode()
 PROCESS_MODEL_FILE = Path(__file__).resolve().parent / "world_model_process.json"
 GATE_CHECKER_MODEL_FILE = gate_utils.GATE_CHECKER_MODEL_FILE
 
@@ -77,6 +83,7 @@ FAST_POST_ACT_GATECHECK_STEPS = {
 
 PROCESS_SUCCESS_METRICS_BY_STEP = {
     "FIND_WALL": ("visible", "angle_abs"),
+    "EXIT_WALL": ("visible",),
     "APPROACH_VECTOR_BRICK_SUPPLY": ("visible", "angle_abs"),
     "FIND_TOPMOST_BRICK": ("visible", "brick_above"),
     "FIND_TOPMOST_BRICK_WALL": ("visible", "brick_above"),
@@ -109,6 +116,9 @@ ALIGN_RECOVERY_LOST_VISIBLE_FRAMES = 3
 ALIGN_RECOVERY_LOST_VISIBLE_MIN_S = 0.20
 ALIGN_RECOVERY_PREMOVE_RECHECK_ROUNDS = 3
 ALIGN_RECOVERY_PREMOVE_RECHECK_HOLD_MULTIPLIER = 3.0
+ALIGN_RECOVERY_PREMOVE_RECHECK_CYAN_HOLD_MULTIPLIER = 3.0
+CYAN_RAW_FALLBACK_MIN_CONFIDENCE_PCT = 10.0
+ARUCO_RAW_FALLBACK_MIN_CONFIDENCE_PCT = 50.0
 ALIGN_BRICK_TOPMOST_LIFT_SCORE = 1
 ALIGN_BRICK_TOPMOST_MAX_ACTS = 70
 ALIGN_BRICK_TOPMOST_TIMEOUT_S = 30.0
@@ -162,6 +172,15 @@ FIND_BRICK_TURN_CHECK_MAX_SCORE = 1
 MIN_MM_TOL = 1.5
 X_AXIS_OFFSET_ABS_TOL_MM = 1.4
 
+LOCKED_SUCCESS_GATE_MODE_ALIASES = {
+    "aruco": VISION_MODE_ARUCO,
+    "marker": VISION_MODE_ARUCO,
+    "markers": VISION_MODE_ARUCO,
+    "cyan": VISION_MODE_CYAN,
+    "yolo": VISION_MODE_CYAN,
+    "markerless": VISION_MODE_CYAN,
+}
+
 
 
 def _as_float(value, fallback):
@@ -191,6 +210,60 @@ def default_speed_for_cmd(cmd, score=DEFAULT_SPEED_SCORE):
 
 def max_speed_for_cmd(cmd, score=MAX_SPEED_SCORE):
     return telemetry_robot_module.manual_speed_for_cmd(cmd, score)
+
+
+def _vision_backend_name(vision):
+    if isinstance(vision, ArucoBrickVision):
+        return "aruco"
+    return "cyan"
+
+
+def _raw_visibility_fallback_min_confidence_pct(vision):
+    backend = _vision_backend_name(vision)
+    if backend == "aruco":
+        return max(1.0, float(ARUCO_RAW_FALLBACK_MIN_CONFIDENCE_PCT))
+    # Cyan can be noisier than ArUco; use a relaxed confidence floor when
+    # deciding whether raw detections are good enough to keep telemetry visible.
+    floor = float(CYAN_RAW_FALLBACK_MIN_CONFIDENCE_PCT)
+    try:
+        conf_threshold = float(getattr(vision, "conf_threshold", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        conf_threshold = 0.0
+    if conf_threshold > 0.0:
+        floor = min(floor, conf_threshold * 100.0)
+    return max(1.0, float(floor))
+
+
+def _allow_raw_visibility_fallback(vision, frame):
+    backend = _vision_backend_name(vision)
+    if backend not in ("cyan", "aruco"):
+        return False
+    if not bool((frame or {}).get("found")):
+        return False
+    try:
+        conf = float((frame or {}).get("conf", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        conf = 0.0
+    return conf >= _raw_visibility_fallback_min_confidence_pct(vision)
+
+
+def _visibility_recheck_mode_hold_multiplier(vision):
+    # Runtime uses exactly two backends today: ArUco markers and cyan/YOLO.
+    # Keep ArUco timing unchanged; extend hold window only for cyan backend.
+    if vision is None or isinstance(vision, ArucoBrickVision):
+        return 1.0
+    return max(1.0, float(ALIGN_RECOVERY_PREMOVE_RECHECK_CYAN_HOLD_MULTIPLIER))
+
+
+def visibility_recheck_hold_seconds(vision, *, base_hold_s=None, control_dt=None):
+    if base_hold_s is None:
+        base_hold_s = VISIBILITY_LOST_HOLD_S
+    if control_dt is None:
+        control_dt = CONTROL_DT
+    hold_window_s = max(float(control_dt), float(base_hold_s))
+    hold_window_s *= max(1.0, float(ALIGN_RECOVERY_PREMOVE_RECHECK_HOLD_MULTIPLIER))
+    hold_window_s *= _visibility_recheck_mode_hold_multiplier(vision)
+    return float(hold_window_s)
 
 
 def apply_autobuild_config(cfg):
@@ -420,8 +493,10 @@ COLOR_RED = "\033[31m"
 COLOR_WHITE = "\033[37m"
 COLOR_GRAY = "\033[90m"
 COLOR_CYAN = "\033[36m"
+COLOR_BLUE_BRIGHT = "\033[94m"
 COLOR_YELLOW = "\033[33m"
 COLOR_ORANGE_BRIGHT = "\033[38;5;208m"
+COLOR_PINK = "\033[38;5;213m"
 ACTION_DISPLAY_TTL_S = 3.0
 
 
@@ -551,11 +626,9 @@ def new_success_tracker(step, process_rules=None):
     majority_window = int(GATECHECK_MAJORITY_WINDOW)
     majority_required = int(GATECHECK_MAJORITY_REQUIRED)
     visible_only = isinstance(process_rules, dict) and next_module.success_gates_visible_only(process_rules, step)
-
-    # Visible-only gates can be noisy; confirm success ("positive") for ~2x as long as
-    # we confirm not-success ("negative"), then accept success as soon as either:
-    # - 50% of the consecutive window passes in a row, or
-    # - 50% of the majority window has passes.
+    # Visible-only gates can be noisy in the positive direction; keep relaxed
+    # pass thresholds there. Visibility-loss (visible=false) strictness is
+    # handled in the per-sample gatecheck logic, not by doubling tracker windows.
     if visible_only:
         negative_frames = max(1, consecutive_required // 2)
         majority_window = max(1, consecutive_required + negative_frames)
@@ -674,9 +747,17 @@ def _format_success_gate_entry(world, entry):
             gate_bits.append(f"{_fmt_gate_value(target)} +/- {_fmt_gate_value(tol)}")
         else:
             if "min" in stats:
-                gate_bits.append(f">={_fmt_gate_value(stats.get('min'))}")
+                min_val = stats.get("min")
+                if isinstance(min_val, bool):
+                    gate_bits.append(f"={_fmt_gate_value(min_val)}")
+                else:
+                    gate_bits.append(f">={_fmt_gate_value(min_val)}")
             if "max" in stats:
-                gate_bits.append(f"<={_fmt_gate_value(stats.get('max'))}")
+                max_val = stats.get("max")
+                if isinstance(max_val, bool):
+                    gate_bits.append(f"={_fmt_gate_value(max_val)}")
+                else:
+                    gate_bits.append(f"<={_fmt_gate_value(max_val)}")
         if "mu" in stats:
             gate_bits.append(f"mu={_fmt_gate_value(stats.get('mu'))}")
         if "sigma" in stats:
@@ -707,11 +788,43 @@ def _format_success_gate_entry(world, entry):
     return metric, actual_str, gate_desc
 
 
-def format_success_event_lines(world, step):
+def _success_entry_matches(step, entry):
+    metric = entry.get("metric")
+    stats = entry.get("stats") or {}
+    value = entry.get("value")
+    direction = metric_direction(metric, step)
+    matched = _gate_entry_matches(metric, value, stats, direction)
+    if metric == "visible" and bool(entry.get("confident_visible_recent")) and gate_utils.bool_gate_target(stats) is False:
+        return False
+    return bool(matched)
+
+
+def _success_event_state_and_suffix(entry, actual):
+    actual_text = str(actual if actual is not None else "n/a")
+    value = entry.get("value")
+    state_text = _fmt_gate_value(value) if value is not None else "n/a"
+    if state_text and actual_text.startswith(state_text):
+        return state_text, actual_text[len(state_text):]
+    if " (" in actual_text:
+        head, tail = actual_text.split(" (", 1)
+        if head:
+            return head, f" ({tail}"
+    return actual_text, ""
+
+
+def format_success_event_lines(world, step, *, colored=False):
     entries = _success_gate_entries(world, step)
-    return [f"{metric}={actual} ({gate})" for metric, actual, gate in (
-        _format_success_gate_entry(world, entry) for entry in entries
-    )]
+    lines = []
+    for entry in entries:
+        metric, actual, gate = _format_success_gate_entry(world, entry)
+        if not colored:
+            lines.append(f"{metric}={actual} ({gate})")
+            continue
+        match_ok = _success_entry_matches(step, entry)
+        color = COLOR_GREEN if match_ok else COLOR_RED
+        state_text, suffix = _success_event_state_and_suffix(entry, actual)
+        lines.append(f"{metric}={color}{state_text}{COLOR_RESET}{suffix} ({gate})")
+    return lines
 
 
 def format_success_details(world, step):
@@ -722,7 +835,7 @@ def format_success_details(world, step):
 
 
 def print_success_events(world, step):
-    lines = format_success_event_lines(world, step)
+    lines = format_success_event_lines(world, step, colored=True)
     if not lines:
         print(format_headline("[SUCCESS EVENTS] no success gates", COLOR_WHITE))
         return
@@ -840,6 +953,7 @@ def action_sent_display_text(
     pwm=None,
     power=None,
     duration_ms=None,
+    ease_note=None,
     anti_alias_note=None,
 ):
     # Operator-facing displays should report semantic motion intent (`cmd`).
@@ -870,8 +984,9 @@ def action_sent_display_text(
             ms_val = None
         if ms_val is not None:
             parts.append(f"{ms_val}ms")
-    if anti_alias_note:
-        parts.append(str(anti_alias_note))
+    note_value = ease_note if ease_note else anti_alias_note
+    if note_value:
+        parts.append(str(note_value))
     details = ""
     if len(parts) > 1:
         details = " (" + ", ".join(parts[1:]) + ")"
@@ -893,6 +1008,7 @@ def auto_action_detail_text(cmd, speed_score=None, *, action_meta=None):
             pwm=action_meta.get("pwm"),
             power=action_meta.get("power"),
             duration_ms=duration_ms,
+            ease_note=action_meta.get("ease_in_out_note"),
             anti_alias_note=action_meta.get("anti_alias_note"),
         )
     return action_display_text(cmd, speed_score)
@@ -908,6 +1024,7 @@ def record_action_display(
     cmd_sent=None,
     pwm=None,
     duration_ms=None,
+    ease_note=None,
     score_model=None,
     anti_alias_note=None,
 ):
@@ -923,7 +1040,9 @@ def record_action_display(
     world._last_action_cmd_sent = cmd_sent
     world._last_action_pwm = pwm
     world._last_action_duration_ms = duration_ms
-    world._last_action_anti_alias_note = anti_alias_note
+    note_value = ease_note if ease_note else anti_alias_note
+    world._last_action_ease_in_out_note = note_value
+    world._last_action_anti_alias_note = note_value
     world._last_action_display = action_display_text(cmd, speed_score)
     world._last_action_sent_display = action_sent_display_text(
         cmd,
@@ -932,6 +1051,7 @@ def record_action_display(
         pwm=pwm,
         power=speed,
         duration_ms=duration_ms,
+        ease_note=note_value,
         anti_alias_note=anti_alias_note,
     )
 
@@ -1125,6 +1245,7 @@ def send_robot_command_pwm(
     turn_intensity_requested=None,
     turn_intensity_effective=None,
     half_first_turn_pulse=True,
+    ease_in_out_enabled=None,
 ):
     if robot is None or cmd is None:
         return None
@@ -1225,32 +1346,43 @@ def send_robot_command_pwm(
                 if floor_ms is not None and floor_ms > 0:
                     duration_used_ms = max(int(duration_used_ms), int(floor_ms))
 
-    anti_alias_profile = None
-    anti_alias_note = None
-    # Drive anti-aliasing emits multiple timed commands. That is only valid when
-    # the transport/firmware can queue or faithfully sequence timed pulses.
-    # Without queueing, back-to-back timed writes can overwrite each other and the
-    # robot executes only the tail segment, violating "do what we say and say what
-    # we do" (log shows one strong pulse, motion behaves like a tiny tail pulse).
+    ease_profile = None
+    ease_note = None
+    # Easing can run in two modes:
+    # 1) Queued transport/firmware: send timed segments back-to-back.
+    # 2) Manual non-queued transport: block between segment writes to preserve
+    #    sequence fidelity for hotkey presses.
+    # Auto non-queued remains disabled to avoid adding long sleeps into the
+    # autonomous control loop.
     supports_timed_command_queue = bool(
         getattr(robot, "supports_timed_command_queue", False)
         or getattr(robot, "supports_timed_segment_queue", False)
     )
-    if bool(auto_mode) and supports_timed_command_queue:
-        try:
-            anti_alias_profile = telemetry_robot_module.drive_anti_alias_segments(
-                cmd,
-                speed_score=requested_score if requested_score is not None else speed_score,
-                power=power_val,
-                pwm=pwm_val,
-                duration_ms=duration_used_ms,
-            )
-        except Exception:
-            anti_alias_profile = None
+    if ease_in_out_enabled is None:
+        ease_allowed = True
+    else:
+        ease_allowed = bool(ease_in_out_enabled)
+    allow_sequenced_ease = bool(ease_allowed and (supports_timed_command_queue or not bool(auto_mode)))
+    if allow_sequenced_ease:
+        ease_builder = getattr(telemetry_robot_module, "drive_ease_in_out_segments", None)
+        if not callable(ease_builder):
+            ease_builder = getattr(telemetry_robot_module, "drive_anti_alias_segments", None)
+        if callable(ease_builder):
+            try:
+                ease_profile = ease_builder(
+                    cmd,
+                    speed_score=requested_score if requested_score is not None else speed_score,
+                    power=power_val,
+                    pwm=pwm_val,
+                    duration_ms=duration_used_ms,
+                )
+            except Exception:
+                ease_profile = None
 
-    if isinstance(anti_alias_profile, dict):
-        seg_defs = anti_alias_profile.get("segments")
+    if isinstance(ease_profile, dict):
+        seg_defs = ease_profile.get("segments")
         if isinstance(seg_defs, list) and seg_defs:
+            valid_seg_defs = [seg for seg in seg_defs if isinstance(seg, dict)]
             sent_segments = []
             wire_parts = []
             total_model_ms = 0
@@ -1258,9 +1390,7 @@ def send_robot_command_pwm(
             final_cmd_sent = cmd_sent
             peak_pwm = int(pwm_val)
             peak_power = float(power_val)
-            for seg in seg_defs:
-                if not isinstance(seg, dict):
-                    continue
+            for seg_idx, seg in enumerate(valid_seg_defs):
                 try:
                     seg_pwm = int(round(float(seg.get("pwm") or 0)))
                 except (TypeError, ValueError):
@@ -1281,12 +1411,21 @@ def send_robot_command_pwm(
                         seg_score_model = telemetry_robot_module.normalize_speed_score(seg_score_model)
                 except Exception:
                     seg_score_model = None
+                seg_cmd_model = str(seg.get("cmd") or cmd).strip().lower() or str(cmd)
 
                 seg_send_result = None
                 if hasattr(robot, "send_command_pwm"):
-                    seg_send_result = robot.send_command_pwm(cmd, seg_pwm, duration_ms=seg_duration_model_ms)
+                    seg_send_result = robot.send_command_pwm(
+                        seg_cmd_model,
+                        seg_pwm,
+                        duration_ms=seg_duration_model_ms,
+                    )
                 else:
-                    seg_send_result = robot.send_command(cmd, seg_power, duration_ms=seg_duration_model_ms)
+                    seg_send_result = robot.send_command(
+                        seg_cmd_model,
+                        seg_power,
+                        duration_ms=seg_duration_model_ms,
+                    )
 
                 seg_cmd_sent = cmd_sent
                 seg_pwm_actual = int(seg_pwm)
@@ -1314,6 +1453,7 @@ def send_robot_command_pwm(
                 wire_parts.append(f"{seg_cmd_sent} {int(seg_pwm_actual)} {int(seg_duration_used_ms)}")
                 sent_segments.append(
                     {
+                        "cmd_model": seg_cmd_model,
                         "cmd_sent": seg_cmd_sent,
                         "power": float(seg_power),
                         "pwm": int(seg_pwm_actual),
@@ -1323,6 +1463,13 @@ def send_robot_command_pwm(
                         "score_effective": seg_score_effective,
                     }
                 )
+                if not supports_timed_command_queue and seg_idx < (len(valid_seg_defs) - 1):
+                    try:
+                        wait_s = max(0.0, float(seg_duration_used_ms) / 1000.0)
+                    except (TypeError, ValueError):
+                        wait_s = 0.0
+                    if wait_s > 0.0:
+                        time.sleep(wait_s)
 
             if sent_segments:
                 cmd_sent = final_cmd_sent
@@ -1332,10 +1479,17 @@ def send_robot_command_pwm(
                 duration_used_ms = int(total_used_ms or duration_used_ms)
                 top_score_effective = _score_effective_for_cmd(cmd_sent, power_val, speed_score)
                 try:
-                    ramp_ms = int(round(float(anti_alias_profile.get("ramp_ms") or 0)))
+                    ramp_ms = int(round(float(ease_profile.get("ramp_ms") or 0)))
                 except (TypeError, ValueError):
                     ramp_ms = 0
-                anti_alias_note = f"AA({len(sent_segments)} seg, ramp={max(0, int(ramp_ms))}ms)"
+                try:
+                    ramp_ms_eff = int(round(float(ease_profile.get("ramp_ms_effective") or 0)))
+                except (TypeError, ValueError):
+                    ramp_ms_eff = 0
+                ease_note = (
+                    f"EASE({len(sent_segments)} seg, in={max(0, int(ramp_ms))}ms, "
+                    f"out={max(0, int(ramp_ms))}ms, eff={max(0, int(ramp_ms_eff))}ms)"
+                )
 
                 if world is not None:
                     wire_text = " | ".join([str(p) for p in wire_parts if p])
@@ -1354,8 +1508,9 @@ def send_robot_command_pwm(
                     cmd_sent=cmd_sent,
                     pwm=pwm_val,
                     duration_ms=duration_used_ms,
+                    ease_note=ease_note,
                     score_model=speed_score,
-                    anti_alias_note=anti_alias_note,
+                    anti_alias_note=ease_note,
                 )
                 return {
                     "cmd_sent": cmd_sent,
@@ -1368,16 +1523,27 @@ def send_robot_command_pwm(
                     "turn_intensity_requested": turn_intensity_requested,
                     "turn_intensity_effective": turn_intensity_effective,
                     "segments": sent_segments,
-                    "anti_alias_note": anti_alias_note,
+                    "ease_in_out_note": ease_note,
+                    "anti_alias_note": ease_note,
+                    "ease_in_out": {
+                        "applied": True,
+                        "kind": "ease_in_out",
+                        "ramp_ms": ease_profile.get("ramp_ms"),
+                        "ramp_ms_effective": ease_profile.get("ramp_ms_effective"),
+                        "ramp_steps": ease_profile.get("ramp_steps"),
+                        "slice_ms": ease_profile.get("slice_ms"),
+                        "target_score": ease_profile.get("target_score"),
+                        "threshold_score": ease_profile.get("threshold_score"),
+                    },
                     "anti_aliasing": {
                         "applied": True,
-                        "kind": "drive_ramp",
-                        "ramp_ms": anti_alias_profile.get("ramp_ms"),
-                        "ramp_ms_effective": anti_alias_profile.get("ramp_ms_effective"),
-                        "ramp_steps": anti_alias_profile.get("ramp_steps"),
-                        "slice_ms": anti_alias_profile.get("slice_ms"),
-                        "target_score": anti_alias_profile.get("target_score"),
-                        "threshold_score": anti_alias_profile.get("threshold_score"),
+                        "kind": "ease_in_out",
+                        "ramp_ms": ease_profile.get("ramp_ms"),
+                        "ramp_ms_effective": ease_profile.get("ramp_ms_effective"),
+                        "ramp_steps": ease_profile.get("ramp_steps"),
+                        "slice_ms": ease_profile.get("slice_ms"),
+                        "target_score": ease_profile.get("target_score"),
+                        "threshold_score": ease_profile.get("threshold_score"),
                     },
                 }
 
@@ -1418,8 +1584,9 @@ def send_robot_command_pwm(
         cmd_sent=cmd_sent,
         pwm=pwm_val,
         duration_ms=duration_used_ms,
+        ease_note=ease_note,
         score_model=speed_score,
-        anti_alias_note=anti_alias_note,
+        anti_alias_note=ease_note,
     )
 
     try:
@@ -1436,7 +1603,8 @@ def send_robot_command_pwm(
         "score_effective": score_effective,
         "turn_intensity_requested": turn_intensity_requested,
         "turn_intensity_effective": turn_intensity_effective,
-        "anti_alias_note": anti_alias_note,
+        "ease_in_out_note": ease_note,
+        "anti_alias_note": ease_note,
     }
 
 
@@ -1451,6 +1619,7 @@ def send_robot_command(
     turn_intensity=None,
     duration_override_ms=None,
     half_first_turn_pulse=True,
+    ease_in_out_enabled=None,
 ):
     if robot is None or cmd is None:
         return None
@@ -1486,6 +1655,7 @@ def send_robot_command(
                 turn_intensity_requested=turn_intensity_requested,
                 turn_intensity_effective=turn_intensity_effective,
                 half_first_turn_pulse=half_first_turn_pulse,
+                ease_in_out_enabled=ease_in_out_enabled,
             )
 
     score_used = speed_score
@@ -1519,6 +1689,7 @@ def send_robot_command(
         turn_intensity_requested=turn_intensity_requested,
         turn_intensity_effective=turn_intensity_effective,
         half_first_turn_pulse=half_first_turn_pulse,
+        ease_in_out_enabled=ease_in_out_enabled,
     )
 
 
@@ -1817,6 +1988,62 @@ def print_gatecheck_entry_proof_line(world, step, *, phase=None, success_ok=None
     )
 
 
+def _gatecheck_failure_detail(world, step):
+    rows = _success_gate_state_rows(world, step)
+    fail_parts = []
+    for row in rows:
+        if str(row.get("status") or "") != "FAIL":
+            continue
+        fail_parts.append(
+            f"{row.get('metric')} state={row.get('value_text')} gate={row.get('gate_text')}"
+        )
+    if fail_parts:
+        return "; ".join(fail_parts)
+    status = getattr(world, "_gatecheck_status", None)
+    if isinstance(status, dict):
+        streak = int(status.get("streak", 0) or 0)
+        need = max(1, int(status.get("need", 1) or 1))
+        window_pass = int(status.get("window_pass", 0) or 0)
+        window_total = max(1, int(status.get("window_total", 1) or 1))
+        return (
+            "effective sample failed"
+            f" (consec {streak}/{need}, majority {window_pass}/{window_total})"
+        )
+    return "effective sample failed"
+
+
+def _log_gatecheck_failure(world, step, phase, *, log=True):
+    if not log:
+        return
+    step_key = normalize_step_label(step) or str(step) or "UNKNOWN"
+    phase_key = str(phase or "run").strip().lower() or "run"
+    detail = _gatecheck_failure_detail(world, step)
+    print(format_headline(f"[GATECHECK-FAIL] {step_key} {phase_key}: {detail}", COLOR_RED))
+
+
+def _gatecheck_next_action_text(cmd, speed_score=None, reason=None):
+    cmd_key = str(cmd or "").strip().lower()
+    reason_text = str(reason or "").strip()
+    if cmd_key:
+        act_text = action_display_text(cmd_key, speed_score)
+        if reason_text:
+            return f"continuing with next act {act_text} ({reason_text})"
+        return f"continuing with next act {act_text}"
+    if reason_text:
+        return f"no known next act ({reason_text})"
+    return "no known next act"
+
+
+def _log_gatecheck_next_action(step, phase, cmd, speed_score=None, reason=None, *, log=True):
+    if not log:
+        return
+    step_key = normalize_step_label(step) or str(step) or "UNKNOWN"
+    phase_key = str(phase or "run").strip().lower() or "run"
+    text = _gatecheck_next_action_text(cmd, speed_score=speed_score, reason=reason)
+    color = COLOR_WHITE if str(cmd or "").strip() else COLOR_YELLOW
+    print(format_headline(f"[GATECHECK-NEXT] {step_key} {phase_key}: {text}", color))
+
+
 def pause_after_fail(robot):
     if robot:
         robot.stop()
@@ -1910,6 +2137,31 @@ def success_gate_metrics_for_step(metrics, step, step_rules=None):
     if obj_key in SUCCESS_GATE_EXCLUDE_ANGLE_STEPS:
         metrics_out = [metric for metric in metrics_out if metric != "angle_abs"]
     return metrics_out
+
+
+def _visible_only_success_gate_steps(step_rules=None):
+    out = set()
+    for step_name, metric_list in PROCESS_SUCCESS_METRICS_BY_STEP.items():
+        if not isinstance(metric_list, (list, tuple)):
+            continue
+        metric_keys = {str(metric).strip() for metric in metric_list if str(metric).strip()}
+        if metric_keys == {"visible"}:
+            norm = normalize_step_label(step_name)
+            if norm:
+                out.add(norm)
+    if isinstance(step_rules, dict):
+        for step_name, step_cfg in step_rules.items():
+            if not isinstance(step_cfg, dict):
+                continue
+            metrics = step_cfg.get("success_metrics")
+            if not isinstance(metrics, list):
+                continue
+            metric_keys = {str(metric).strip() for metric in metrics if str(metric).strip()}
+            if metric_keys == {"visible"}:
+                norm = normalize_step_label(step_name)
+                if norm:
+                    out.add(norm)
+    return out
 
 
 def metric_value_from_state(state, metric):
@@ -2230,6 +2482,46 @@ def tighten_x_axis_success_tolerance(success_gates, *, tol_mm=X_AXIS_OFFSET_ABS_
     return success_gates
 
 
+def _clone_gate_config(gates):
+    if not isinstance(gates, dict):
+        return {}
+    cloned = {}
+    for metric, stats in gates.items():
+        key = str(metric or "").strip()
+        if not key:
+            continue
+        if isinstance(stats, dict):
+            cloned[key] = dict(stats)
+        else:
+            cloned[key] = stats
+    return cloned
+
+
+def _normalize_locked_success_gates_by_mode(raw):
+    if not isinstance(raw, dict):
+        return {}
+    normalized = {}
+    for mode_key, gates in raw.items():
+        mode = LOCKED_SUCCESS_GATE_MODE_ALIASES.get(str(mode_key or "").strip().lower())
+        if mode not in (VISION_MODE_ARUCO, VISION_MODE_CYAN):
+            continue
+        cloned = _clone_gate_config(gates)
+        if cloned:
+            normalized[mode] = cloned
+    return normalized
+
+
+def _active_success_gate_mode():
+    try:
+        mode = str(_world_model_active_vision_mode() or "").strip().lower()
+    except Exception:
+        mode = ""
+    mode = LOCKED_SUCCESS_GATE_MODE_ALIASES.get(mode)
+    if mode in (VISION_MODE_ARUCO, VISION_MODE_CYAN):
+        return mode
+    return VISION_MODE_ARUCO
+
+
 def update_process_model_from_demos(logs, path=PROCESS_MODEL_FILE):
     model = load_process_model(path)
     steps = model.get("steps")
@@ -2254,28 +2546,20 @@ def update_process_model_from_demos(logs, path=PROCESS_MODEL_FILE):
 
     start_gates = derive_start_gates(success_segments)
     wall_step_rules = telemetry_wall.load_wall_step_rules()
-    wall_visible_only_steps = set()
-    if isinstance(wall_step_rules, dict):
-        for step_name, step_cfg in wall_step_rules.items():
-            if not isinstance(step_cfg, dict):
-                continue
-            metrics = step_cfg.get("success_metrics")
-            if not isinstance(metrics, list):
-                continue
-            metric_keys = {str(metric).strip() for metric in metrics if str(metric).strip()}
-            if metric_keys == {"visible"}:
-                wall_visible_only_steps.add(normalize_step_label(step_name))
+    wall_visible_only_steps = _visible_only_success_gate_steps(wall_step_rules)
     step_rules = {}
     if isinstance(wall_step_rules, dict):
         step_rules.update(wall_step_rules)
     if isinstance(steps, dict):
         step_rules.update(steps)
-    for step_name in wall_visible_only_steps:
+    visible_only_success_steps = set(wall_visible_only_steps)
+    visible_only_success_steps.update(_visible_only_success_gate_steps(step_rules))
+    for step_name in visible_only_success_steps:
         cfg = step_rules.get(step_name)
         if not isinstance(cfg, dict):
             cfg = {}
             step_rules[step_name] = cfg
-        # Wall telemetry marks these steps as visibility-only targets.
+        # Visibility-only steps must retain only `visible` in success gates.
         cfg["success_metrics"] = ["visible"]
     success_gate_scales = derive_success_gate_scales(segments_by_obj, step_rules)
 
@@ -2306,12 +2590,13 @@ def update_process_model_from_demos(logs, path=PROCESS_MODEL_FILE):
     all_steps.update(start_gates.keys())
     all_steps.update(success_gates.keys())
     all_steps.update(attempt_types.keys())
-    all_steps.update(wall_visible_only_steps)
+    all_steps.update(visible_only_success_steps)
     all_steps = {
         name
         for name in all_steps
         if normalize_step_label(name) not in RETIRED_PROCESS_STEPS
     }
+    active_gate_mode = _active_success_gate_mode()
 
     for obj in all_steps:
         cfg = steps.setdefault(obj, {})
@@ -2319,6 +2604,13 @@ def update_process_model_from_demos(logs, path=PROCESS_MODEL_FILE):
         lock_all_gates = bool(cfg.get("lock_gates")) if isinstance(cfg, dict) else False
         lock_start_gates = lock_all_gates or (bool(cfg.get("lock_start_gates")) if isinstance(cfg, dict) else False)
         lock_success_gates = lock_all_gates or (bool(cfg.get("lock_success_gates")) if isinstance(cfg, dict) else False)
+        locked_success_by_mode = _normalize_locked_success_gates_by_mode(
+            cfg.get("locked_success_gates_by_mode")
+        )
+        if locked_success_by_mode:
+            cfg["locked_success_gates_by_mode"] = locked_success_by_mode
+        else:
+            cfg.pop("locked_success_gates_by_mode", None)
 
         if obj in start_gates and not _no_start_gates_step(obj):
             if not lock_start_gates or not isinstance(cfg.get("start_gates"), dict) or not cfg.get("start_gates"):
@@ -2327,12 +2619,31 @@ def update_process_model_from_demos(logs, path=PROCESS_MODEL_FILE):
             if not lock_start_gates:
                 cfg.pop("start_gates", None)
 
-        if obj in success_gates:
-            if not lock_success_gates or not isinstance(cfg.get("success_gates"), dict) or not cfg.get("success_gates"):
-                cfg["success_gates"] = success_gates[obj]
-        else:
-            if not lock_success_gates:
+        derived_success = success_gates.get(obj)
+        if locked_success_by_mode:
+            active_locked = locked_success_by_mode.get(active_gate_mode)
+            if isinstance(derived_success, dict):
+                if not lock_success_gates or not isinstance(active_locked, dict) or not active_locked:
+                    locked_success_by_mode[active_gate_mode] = _clone_gate_config(derived_success)
+                    active_locked = locked_success_by_mode.get(active_gate_mode)
+            elif not lock_success_gates:
+                locked_success_by_mode.pop(active_gate_mode, None)
+                active_locked = locked_success_by_mode.get(active_gate_mode)
+            if locked_success_by_mode:
+                cfg["locked_success_gates_by_mode"] = locked_success_by_mode
+            else:
+                cfg.pop("locked_success_gates_by_mode", None)
+            if isinstance(active_locked, dict) and active_locked:
+                cfg["success_gates"] = _clone_gate_config(active_locked)
+            elif not lock_success_gates:
                 cfg.pop("success_gates", None)
+        else:
+            if isinstance(derived_success, dict):
+                if not lock_success_gates or not isinstance(cfg.get("success_gates"), dict) or not cfg.get("success_gates"):
+                    cfg["success_gates"] = derived_success
+            else:
+                if not lock_success_gates:
+                    cfg.pop("success_gates", None)
         if obj in SUCCESS_GATE_EXCLUDE_ANGLE_STEPS and isinstance(cfg.get("success_gates"), dict):
             cfg["success_gates"].pop("angle_abs", None)
         obj_key = normalize_step_label(obj)
@@ -2354,15 +2665,22 @@ def update_process_model_from_demos(logs, path=PROCESS_MODEL_FILE):
                         current_start[metric_key] = fallback_gate
                 if current_start:
                     cfg["start_gates"] = current_start
-        if obj_key in wall_visible_only_steps:
-            gates = cfg.get("success_gates")
-            if not isinstance(gates, dict):
-                cfg["success_gates"] = {"visible": {"min": True}}
-            else:
-                visible_gate = gates.get("visible")
-                if not isinstance(visible_gate, dict):
-                    visible_gate = {"min": True}
-                cfg["success_gates"] = {"visible": visible_gate}
+        if obj_key in visible_only_success_steps:
+            derived_visible_gate = None
+            derived_cfg = success_gates.get(obj)
+            if isinstance(derived_cfg, dict):
+                candidate = derived_cfg.get("visible")
+                if isinstance(candidate, dict):
+                    derived_visible_gate = dict(candidate)
+            if not isinstance(derived_visible_gate, dict):
+                gates = cfg.get("success_gates")
+                if isinstance(gates, dict):
+                    candidate = gates.get("visible")
+                    if isinstance(candidate, dict):
+                        derived_visible_gate = dict(candidate)
+            if not isinstance(derived_visible_gate, dict):
+                derived_visible_gate = {"min": True}
+            cfg["success_gates"] = {"visible": derived_visible_gate}
 
         cfg.pop("fail_gates", None)
         visible_gate = cfg.get("success_gates", {}).get("visible", {})
@@ -2660,6 +2978,14 @@ def update_world_from_vision(world, vision, log=True):
             fps = (len(cam_times) - 1) / span
     world._camera_fps = fps
 
+    vision_backend = _vision_backend_name(vision)
+    world._vision_backend = vision_backend
+    world._raw_visibility_fallback_confidence_min = _raw_visibility_fallback_min_confidence_pct(vision)
+    if vision_backend == "cyan":
+        world._cyan_raw_fallback_confidence_min = world._raw_visibility_fallback_confidence_min
+    else:
+        world._cyan_raw_fallback_confidence_min = None
+
     found, angle, dist, offset_x, conf, cam_h, brick_above, brick_below = vision.read()
     if dist == -1:
         found = False
@@ -2694,6 +3020,20 @@ def update_world_from_vision(world, vision, log=True):
     if fresh_input_frame:
         # Frame counter tracks fresh camera inputs (not just smoothed gate frames).
         world._frame_id = getattr(world, "_frame_id", 0) + 1
+        raw_history = getattr(world, "_raw_brick_visibility_history", None)
+        if raw_history is None:
+            raw_history = []
+            setattr(world, "_raw_brick_visibility_history", raw_history)
+        raw_history.append(
+            {
+                "frame_id": int(getattr(world, "_frame_id", 0) or 0),
+                "timestamp": time.time(),
+                "found": bool(frame.get("found")),
+                "conf": float(frame.get("conf", 0.0) or 0.0),
+            }
+        )
+        if len(raw_history) > 120:
+            del raw_history[:-120]
     if len(buffer) > telemetry_brick.BRICK_SMOOTH_FRAMES:
         buffer.pop(0)
     avg = None
@@ -2729,38 +3069,66 @@ def update_world_from_vision(world, vision, log=True):
             elif not getattr(world, "suppress_brick_state_log", False):
                 pass
     elif len(buffer) >= telemetry_brick.BRICK_SMOOTH_FRAMES:
-        # Mark inconsistent snapshot: force confidence to 0 and visible false until we stabilize.
-        telemetry_brick.update_stack_flags_from_raw(
-            world,
-            bool(found),
-            bool(brick_above),
-            bool(brick_below),
-        )
-        world._brick_inconsistent = True
-        world.brick["visible"] = False
-        world.brick["confidence"] = 0.0
-        world.brick["dist"] = 0.0
-        world.brick["angle"] = 0.0
-        world.brick["offset_x"] = 0.0
-        world.brick["x_axis"] = 0.0
-        world.brick["offset_y"] = 0.0
-        world.brick["y_axis"] = 0.0
+        if _allow_raw_visibility_fallback(vision, frame):
+            world._brick_inconsistent = False
+            world._last_obs_note = f"{vision_backend} raw visibility fallback"
+            world.update_vision(
+                bool(frame.get("found")),
+                frame.get("dist", 0.0),
+                frame.get("angle", 0.0),
+                frame.get("conf", 0.0),
+                frame.get("offset_x", 0.0),
+                frame.get("cam_h", 0.0),
+                bool(frame.get("brick_above")),
+                bool(frame.get("brick_below")),
+            )
+        else:
+            # Mark inconsistent snapshot: force confidence to 0 and visible false until we stabilize.
+            telemetry_brick.update_stack_flags_from_raw(
+                world,
+                bool(found),
+                bool(brick_above),
+                bool(brick_below),
+            )
+            world._brick_inconsistent = True
+            world.brick["visible"] = False
+            world.brick["confidence"] = 0.0
+            world.brick["dist"] = 0.0
+            world.brick["angle"] = 0.0
+            world.brick["offset_x"] = 0.0
+            world.brick["x_axis"] = 0.0
+            world.brick["offset_y"] = 0.0
+            world.brick["y_axis"] = 0.0
     else:
-        telemetry_brick.update_stack_flags_from_raw(
-            world,
-            bool(found),
-            bool(brick_above),
-            bool(brick_below),
-        )
-        world._brick_inconsistent = True
-        world.brick["visible"] = False
-        world.brick["confidence"] = 0.0
-        world.brick["dist"] = 0.0
-        world.brick["angle"] = 0.0
-        world.brick["offset_x"] = 0.0
-        world.brick["x_axis"] = 0.0
-        world.brick["offset_y"] = 0.0
-        world.brick["y_axis"] = 0.0
+        if _allow_raw_visibility_fallback(vision, frame):
+            world._brick_inconsistent = False
+            world._last_obs_note = f"{vision_backend} raw visibility fallback"
+            world.update_vision(
+                bool(frame.get("found")),
+                frame.get("dist", 0.0),
+                frame.get("angle", 0.0),
+                frame.get("conf", 0.0),
+                frame.get("offset_x", 0.0),
+                frame.get("cam_h", 0.0),
+                bool(frame.get("brick_above")),
+                bool(frame.get("brick_below")),
+            )
+        else:
+            telemetry_brick.update_stack_flags_from_raw(
+                world,
+                bool(found),
+                bool(brick_above),
+                bool(brick_below),
+            )
+            world._brick_inconsistent = True
+            world.brick["visible"] = False
+            world.brick["confidence"] = 0.0
+            world.brick["dist"] = 0.0
+            world.brick["angle"] = 0.0
+            world.brick["offset_x"] = 0.0
+            world.brick["x_axis"] = 0.0
+            world.brick["offset_y"] = 0.0
+            world.brick["y_axis"] = 0.0
     visible_now = bool(world.brick.get("visible"))
     lost_frames = getattr(world, "_visibility_lost_frames", 0)
     if visible_now:
@@ -2882,6 +3250,8 @@ STREAM_RED = (0, 0, 255)
 STREAM_WHITE = (255, 255, 255)
 STREAM_ORANGE = (0, 165, 255)
 STREAM_GRAY = (180, 180, 180)
+STREAM_PINK = (180, 105, 255)
+STREAM_BLUE_BRIGHT = (255, 120, 0)
 
 
 def _gate_requirement_text(stats):
@@ -2956,6 +3326,50 @@ def _fmt_metric_value_with_unit(metric, value):
     return str(value_text)
 
 
+def _format_align_result_observation(metric_name, curr_err, prev_err, *, overshot=False):
+    """
+    Single canonical formatter for alignment result observations.
+    Ensures all operator logs use one consistent sentence shape.
+    """
+    try:
+        curr_err_f = float(curr_err)
+        prev_err_f = float(prev_err)
+    except (TypeError, ValueError):
+        return None, None, None
+
+    metric_label = str(metric_name or "").strip() or "metric"
+    result_prefix_plain = "Result:"
+    result_prefix_colored = f"{COLOR_BLUE_BRIGHT}Result:{COLOR_RESET}"
+    if overshot:
+        body = f"overshot target; previous {metric_label}={prev_err_f:+.2f}mm"
+        color = COLOR_RED
+        plain = f"{result_prefix_plain} {body}"
+        colored = f"{result_prefix_colored} {body}"
+        return plain, colored, color
+
+    delta_local = abs(float(prev_err_f)) - abs(float(curr_err_f))
+    if abs(delta_local) < 0.05:
+        body = f"~unchanged; previous {metric_label}={prev_err_f:+.2f}mm"
+        color = COLOR_YELLOW
+        plain = f"{result_prefix_plain} {body}"
+        colored = f"{result_prefix_colored} {body}"
+        return plain, colored, color
+    elif delta_local > 0.0:
+        delta_text = f"{delta_local:+.2f}mm"
+        body_tail = f"better than previous {metric_label}={prev_err_f:+.2f}mm"
+        color = COLOR_GREEN
+        plain = f"{result_prefix_plain} {delta_text} {body_tail}"
+        colored = f"{result_prefix_colored} {color}{delta_text}{COLOR_RESET} {body_tail}"
+        return plain, colored, color
+    else:
+        delta_text = f"{delta_local:+.2f}mm"
+        body_tail = f"worse than previous {metric_label}={prev_err_f:+.2f}mm"
+        color = COLOR_RED
+        plain = f"{result_prefix_plain} {delta_text} {body_tail}"
+        colored = f"{result_prefix_colored} {color}{delta_text}{COLOR_RESET} {body_tail}"
+    return plain, colored, color
+
+
 def _auto_diag_value_from_entry(entry):
     metric = entry.get("metric")
     if metric == "visible":
@@ -3002,7 +3416,6 @@ def _gate_distance_to_success(metric, value, stats, direction):
         numeric = float(value)
     except (TypeError, ValueError):
         return None
-
     target = stats.get("target")
     tol = stats.get("tol")
     if target is not None and tol is not None:
@@ -3013,6 +3426,8 @@ def _gate_distance_to_success(metric, value, stats, direction):
             target_num = None
             tol_num = None
         if target_num is not None and tol_num is not None:
+            if metric in ("xAxis_offset_abs", "yAxis_offset_abs"):
+                return max(0.0, abs(numeric - target_num) - tol_num)
             if direction == "high":
                 return max(0.0, (target_num - tol_num) - numeric)
             if direction == "low":
@@ -3212,6 +3627,175 @@ def _auto_diag_entries_snapshot_colored(entries, step, *, include_requirement=Tr
     return ", ".join(parts) if parts else f"{COLOR_WHITE}none{COLOR_RESET}"
 
 
+def _auto_diag_lite_gate_detail(world, step):
+    if world is None:
+        return None
+    step_key = normalize_step_label(step) or str(step) or "UNKNOWN"
+    status = getattr(world, "_gatecheck_status", None)
+    if not isinstance(status, dict):
+        status = {}
+
+    mode = str(status.get("mode") or getattr(world, "_gatecheck_mode", "traditional") or "traditional").strip().lower()
+    checks = max(0, int(status.get("checks", 0) or 0))
+    truth_ok = bool(status.get("truth_ok", False))
+    lite_required = max(
+        0,
+        int(
+            status.get(
+                "lite_required",
+                getattr(world, "_gatecheck_lite_required", 0),
+            )
+            or 0
+        ),
+    )
+    lite_collected = max(
+        0,
+        int(
+            status.get(
+                "lite_collected",
+                getattr(world, "_gatecheck_lite_collected", 0),
+            )
+            or 0
+        ),
+    )
+    lite_passed = getattr(world, "_gatecheck_lite_passed", None)
+
+    measurement, lite_meta = _lite_gate_measurement_for_step(world, step_key)
+    if isinstance(lite_meta, dict):
+        if lite_required <= 0:
+            lite_required = max(0, int(lite_meta.get("required", 0) or 0))
+        if lite_collected <= 0:
+            lite_collected = max(0, int(lite_meta.get("collected", 0) or 0))
+    rows = _success_gate_state_rows(
+        world,
+        step_key,
+        measurement=measurement if isinstance(measurement, dict) else None,
+    )
+    if not rows:
+        rows = _success_gate_state_rows(world, step_key)
+
+    if mode == "lite":
+        mode_text = "lite"
+    elif lite_required > 0 and lite_passed is True:
+        mode_text = "traditional (lite passed)"
+    elif lite_required > 0 and lite_passed is False:
+        mode_text = "lite pending"
+    else:
+        mode_text = mode or "traditional"
+
+    if lite_required > 0:
+        lite_text = f"{lite_collected}/{lite_required}"
+    else:
+        lite_text = "n/a"
+    truth_text = "pass" if truth_ok else "wait"
+
+    plain = f"lite gatecheck: mode={mode_text}, lite={lite_text}, sample={truth_text}, checks={checks}"
+    colored = (
+        f"{COLOR_GRAY}lite gatecheck: mode={mode_text}, lite={lite_text}, "
+        f"sample={truth_text}, checks={checks}{COLOR_RESET}"
+    )
+    if bool(getattr(world, "_lite_gate_visible_false_confident_seen", False)):
+        plain += "; confident_visible_recent=true"
+        colored += f"{COLOR_GRAY}; confident_visible_recent=true{COLOR_RESET}"
+
+    if rows:
+        row_plain_parts = []
+        row_colored_parts = []
+        for row in rows:
+            metric = str(row.get("metric") or "?")
+            value_text = str(row.get("value_text") or "n/a")
+            gate_text = str(row.get("gate_text") or "n/a")
+            status_text = str(row.get("status") or "N/A").upper()
+            if status_text == "PASS":
+                value_color = COLOR_GREEN
+            elif status_text == "FAIL":
+                value_color = COLOR_RED
+            else:
+                value_color = COLOR_GRAY
+            row_plain_parts.append(f"{metric} ({value_text})/{gate_text}")
+            row_colored_parts.append(
+                f"{COLOR_GRAY}{metric} {COLOR_RESET}{value_color}({value_text}){COLOR_RESET}{COLOR_GRAY}/{gate_text}{COLOR_RESET}"
+            )
+        plain += "; gates: " + "; ".join(row_plain_parts)
+        colored += f"{COLOR_GRAY}; gates:{COLOR_RESET} " + f"{COLOR_GRAY}; {COLOR_RESET}".join(row_colored_parts)
+    return {
+        "plain": plain,
+        "colored": colored,
+    }
+
+
+def _result_lite_gate_detail(world, step):
+    step_key = normalize_step_label(step) or str(step) or "UNKNOWN"
+    measurement, _lite_meta = _lite_gate_measurement_for_step(world, step_key)
+    rows = _success_gate_state_rows(
+        world,
+        step_key,
+        measurement=measurement if isinstance(measurement, dict) else None,
+    )
+
+    if not rows:
+        detail = _auto_diag_lite_gate_detail(world, step)
+        if not isinstance(detail, dict):
+            return None
+        plain = detail.get("plain")
+        colored = detail.get("colored") or plain
+        if not plain and not colored:
+            return None
+        token = "lite gatecheck:"
+        pink_token = f"{COLOR_PINK}lite{COLOR_RESET}{COLOR_GRAY} gatecheck:"
+        colored_text = str(colored).replace(token, pink_token, 1)
+        return {
+            "plain": plain,
+            "colored": colored_text,
+        }
+
+    row_plain_parts = []
+    row_colored_parts = []
+    for row in rows:
+        metric = str(row.get("metric") or "?")
+        value_text = str(row.get("value_text") or "n/a")
+        gate_text = str(row.get("gate_text") or "n/a")
+        status_text = str(row.get("status") or "N/A").upper()
+        if status_text == "PASS":
+            value_color = COLOR_GREEN
+        elif status_text == "FAIL":
+            value_color = COLOR_RED
+        else:
+            value_color = COLOR_GRAY
+
+        if gate_text.startswith("="):
+            gate_rhs = gate_text[1:]
+            is_match = status_text == "PASS"
+            sep_plain = "=" if is_match else "!="
+            sep_colored = (
+                f"{COLOR_GRAY}={COLOR_RESET}"
+                if is_match
+                else f"{COLOR_GRAY}!={COLOR_RESET}"
+            )
+        else:
+            gate_rhs = gate_text
+            sep_plain = "/"
+            sep_colored = f"{COLOR_GRAY}/{COLOR_RESET}"
+
+        row_plain_parts.append(f"{metric} ({value_text}){sep_plain}{gate_rhs}")
+        row_colored_parts.append(
+            f"{COLOR_WHITE}{metric}{COLOR_RESET} "
+            f"{value_color}({value_text}){COLOR_RESET}"
+            f"{sep_colored}"
+            f"{COLOR_GRAY}{gate_rhs}{COLOR_RESET}"
+        )
+
+    plain = "lite gatecheck: " + "; ".join(row_plain_parts)
+    colored_text = (
+        f"{COLOR_PINK}lite{COLOR_RESET}{COLOR_GRAY} gatecheck:{COLOR_RESET} "
+        + f"{COLOR_GRAY}; {COLOR_RESET}".join(row_colored_parts)
+    )
+    return {
+        "plain": plain,
+        "colored": colored_text,
+    }
+
+
 def _switch_metric_to_success_metric(metric_name_local):
     metric_key = str(metric_name_local or "").strip().lower()
     return {
@@ -3305,6 +3889,19 @@ def _success_gate_state_rows(world, step, *, measurement=None):
             }
         )
     return rows
+
+
+def _lite_measurement_rows_all_pass(world, step):
+    if world is None:
+        return False
+    step_key = normalize_step_label(step) or str(step) or "UNKNOWN"
+    measurement, _meta = _lite_gate_measurement_for_step(world, step_key)
+    if not isinstance(measurement, dict):
+        return False
+    rows = _success_gate_state_rows(world, step_key, measurement=measurement)
+    if not rows:
+        return False
+    return all(str(row.get("status") or "").upper() == "PASS" for row in rows)
 
 
 def _gap_switch_lite_gate_reassurance(world, step, metric_name_local):
@@ -3543,8 +4140,10 @@ def _ansi_to_stream_segments(colored_text):
         COLOR_GREEN: STREAM_GREEN,
         COLOR_RED: STREAM_RED,
         COLOR_WHITE: STREAM_WHITE,
+        COLOR_BLUE_BRIGHT: STREAM_BLUE_BRIGHT,
         COLOR_ORANGE_BRIGHT: STREAM_ORANGE,
         COLOR_GRAY: STREAM_GRAY,
+        COLOR_PINK: STREAM_PINK,
     }
     current = STREAM_WHITE
     segments = []
@@ -3598,6 +4197,28 @@ def _strip_auto_prefix_segments(segments):
         if txt:
             cleaned.append((txt, color))
     return cleaned
+
+
+def _split_stream_segments_lines(segments):
+    if not isinstance(segments, list):
+        return []
+    lines = []
+    current = []
+    for seg in segments:
+        if not isinstance(seg, (tuple, list)) or not seg:
+            continue
+        txt = str(seg[0])
+        color = seg[1] if len(seg) > 1 else STREAM_WHITE
+        parts = txt.split("\n")
+        for idx, part in enumerate(parts):
+            if part:
+                current.append((part, color))
+            if idx < (len(parts) - 1):
+                lines.append(current)
+                current = []
+    if current:
+        lines.append(current)
+    return [line for line in lines if isinstance(line, list) and line]
 
 
 def _strip_known_ansi(text):
@@ -3761,7 +4382,7 @@ def _build_auto_step_diagnostic(
         else:
             outcome_plain = f"resulting in NOT meeting the success gates{post_tail}"
             outcome_colored = (
-                f"resulting in {COLOR_RED}NOT meeting the success gates{COLOR_RESET}{post_tail_colored}"
+                f"resulting in {COLOR_RED}NOT{COLOR_RESET} meeting the success gates{post_tail_colored}"
             )
     else:
         if compact_boolean_delta:
@@ -3773,7 +4394,7 @@ def _build_auto_step_diagnostic(
             else:
                 outcome_plain = f"resulting in NOT meeting the success gates{post_tail}"
                 outcome_colored = (
-                    f"resulting in {COLOR_RED}NOT meeting the success gates{COLOR_RESET}{post_tail_colored}"
+                    f"resulting in {COLOR_RED}NOT{COLOR_RESET} meeting the success gates{post_tail_colored}"
                 )
         else:
             outcome_plain = f"getting us {delta_plain}{post_tail}"
@@ -3802,12 +4423,18 @@ def _build_auto_step_diagnostic(
         prefix_plain = "[AUTO] "
         prefix_colored = f"{COLOR_WHITE}[AUTO] {COLOR_RESET}"
         gate_plain = "FAILED success gates"
-        gate_colored = f"{COLOR_RED}FAILED success gates{COLOR_RESET}"
+        gate_colored = f"{COLOR_RED}FAILED{COLOR_RESET} success gates"
 
-    plain = f"{prefix_plain}{gate_plain} ({pre_snapshot}), so I {action_plain}, {outcome_plain}."
-    colored = (
-        f"{prefix_colored}{gate_colored} ({pre_obs_text_colored}), so I {action_colored}, {outcome_colored}."
-    )
+    plain = f"{prefix_plain}{gate_plain} ({pre_snapshot}), so I {action_plain}.\n{outcome_plain}."
+    colored = f"{prefix_colored}{gate_colored} ({pre_obs_text_colored}), so I {action_colored}.\n{outcome_colored}."
+    lite_detail = _auto_diag_lite_gate_detail(world, step_key)
+    if isinstance(lite_detail, dict):
+        lite_plain = str(lite_detail.get("plain") or "").strip()
+        lite_colored = str(lite_detail.get("colored") or "").strip()
+        if lite_plain:
+            plain = f"{plain}\n{lite_plain}"
+        if lite_colored:
+            colored = f"{colored}\n{lite_colored}"
     return {
         "plain": plain,
         "colored": colored,
@@ -4116,12 +4743,13 @@ def emit_auto_step_diagnostic(
 
 
 def _gate_entry_matches(metric, value, stats, direction):
+    stats = stats if isinstance(stats, dict) else {}
     if metric == "visible":
         if value is None:
             return False
         bool_val = bool(value)
-        min_val = stats.get("min") if isinstance(stats, dict) else None
-        max_val = stats.get("max") if isinstance(stats, dict) else None
+        min_val = stats.get("min")
+        max_val = stats.get("max")
         if isinstance(min_val, bool):
             return bool_val == min_val
         if isinstance(max_val, bool):
@@ -4147,24 +4775,24 @@ def _gate_entry_matches(metric, value, stats, direction):
         numeric = float(value)
     except (TypeError, ValueError):
         return False
-    target = stats.get("target") if isinstance(stats, dict) else None
-    tol = stats.get("tol") if isinstance(stats, dict) else None
+    target = stats.get("target")
+    tol = stats.get("tol")
     if target is not None and tol is not None:
         try:
             target_num = float(target)
-            tol_num = float(tol)
+            tol_num = abs(float(tol))
         except (TypeError, ValueError):
             target_num = None
             tol_num = None
         if target_num is not None and tol_num is not None:
-            if direction == "high":
-                return numeric >= (target_num - tol_num)
-            if direction == "low":
-                return numeric <= (target_num + tol_num)
-            return abs(numeric - target_num) <= tol_num
+            if metric in ("xAxis_offset_abs", "yAxis_offset_abs"):
+                return abs(numeric - target_num) <= tol_num
+            ok = next_module._target_tol_ok(numeric, stats, direction)
+            if ok is not None:
+                return bool(ok)
 
-    min_val = stats.get("min") if isinstance(stats, dict) else None
-    max_val = stats.get("max") if isinstance(stats, dict) else None
+    min_val = stats.get("min")
+    max_val = stats.get("max")
     try:
         min_num = float(min_val) if min_val is not None else None
     except (TypeError, ValueError):
@@ -4185,12 +4813,16 @@ def _stream_success_gate_line(step, entry):
     stats = entry.get("stats") or {}
     value = entry.get("value")
     requirement = _gate_requirement_text(stats)
+    force_mismatch = False
     if metric == "visible":
         effective = entry.get("effective_visible")
         raw = entry.get("raw_visible")
         current = _fmt_gate_value(bool(effective))
         if raw is not None and bool(raw) != bool(effective):
             current = f"{current} raw={_fmt_gate_value(bool(raw))}"
+        if bool(entry.get("confident_visible_recent")) and gate_utils.bool_gate_target(stats) is False:
+            force_mismatch = True
+            current = f"{current} recent_confident_visible=true"
     else:
         current = _fmt_gate_value(value) if value is not None else "n/a"
         if metric == "dist" and isinstance(stats, dict):
@@ -4203,6 +4835,8 @@ def _stream_success_gate_line(step, entry):
                 pass
     direction = metric_direction(metric, step)
     matched = _gate_entry_matches(metric, value, stats, direction)
+    if force_mismatch:
+        matched = False
     return {
         "segments": [
             (f"{metric}{requirement} ", STREAM_WHITE),
@@ -4211,7 +4845,7 @@ def _stream_success_gate_line(step, entry):
     }
 
 
-def compute_stream_gate_summary(world, step, active=True):
+def compute_stream_gate_summary(world, step, active=True, include_step_line=True):
     if not active:
         return [], None
     obj_name = normalize_step_label(step)
@@ -4286,85 +4920,10 @@ def compute_stream_gate_summary(world, step, active=True):
             pwm=pwm,
             duration_ms=duration_ms,
         )
-    summary = [f"STEP: {obj_name}"]
+    summary = []
+    if include_step_line:
+        summary.append(f"STEP: {obj_name}")
     summary.extend(metric_lines)
-
-    diag_line = getattr(world, "_last_auto_step_diag_line", None)
-    diag_step = normalize_step_label(getattr(world, "_last_auto_step_diag_step", None))
-    diag_time = getattr(world, "_last_auto_step_diag_time", None)
-    diag_sent_snapshot = getattr(world, "_last_auto_step_diag_sent", None)
-    diag_fresh = False
-    if diag_line and diag_step == obj_name:
-        try:
-            age_s = float(time.time() - float(diag_time))
-        except (TypeError, ValueError):
-            age_s = None
-        diag_fresh = age_s is None or age_s <= 8.0
-    sent_snapshot = _capture_sent_action_snapshot(world)
-    if (
-        diag_line
-        and diag_step == obj_name
-        and diag_fresh
-        and isinstance(diag_sent_snapshot, dict)
-    ):
-        current_event_time = _snapshot_event_time(sent_snapshot)
-        diag_event_time = _snapshot_event_time(diag_sent_snapshot)
-        if (
-            current_event_time is None
-            or diag_event_time is None
-            or current_event_time <= (diag_event_time + 1e-6)
-        ):
-            sent_snapshot = dict(diag_sent_snapshot)
-    sent_value = _format_sent_snapshot_value(sent_snapshot, obj_name)
-
-    auto_line_text = None
-    auto_line_segments = None
-    if diag_line and diag_step == obj_name and diag_fresh:
-        line_text = str(diag_line)
-        if line_text.startswith("[AUTO] "):
-            line_text = line_text[len("[AUTO] "):]
-        auto_line_text = line_text
-        diag_segments = getattr(world, "_last_auto_step_diag_segments", None)
-        if isinstance(diag_segments, list) and diag_segments:
-            cleaned = _strip_auto_prefix_segments(diag_segments)
-            if cleaned:
-                auto_line_segments = cleaned
-    elif nominal_only:
-        act_text = sent_value if sent_value != "(none)" else suggested
-        auto_line_text = f"ACT ONLY (nominal): {act_text}"
-        auto_line_segments = [
-            ("ACT ONLY (nominal): ", STREAM_WHITE),
-            (str(act_text), STREAM_ORANGE),
-        ]
-    else:
-        fallback_action = suggested
-        if suggested_cmd:
-            fallback_action = action_display_text(suggested_cmd, suggested_score)
-        fallback_diag_payload = _build_auto_step_diagnostic(
-            world,
-            obj_name,
-            fallback_action,
-            _auto_gate_snapshot_text(world, obj_name, include_requirements=False),
-            pre_focus=_capture_auto_diag_focus(world, obj_name),
-            success_override=_current_success_ok(world, obj_name),
-        )
-        fallback_diag = fallback_diag_payload["plain"]
-        if fallback_diag.startswith("[AUTO] "):
-            fallback_diag = fallback_diag[len("[AUTO] "):]
-        auto_line_text = fallback_diag
-        fallback_segments = fallback_diag_payload.get("segments")
-        if isinstance(fallback_segments, list) and fallback_segments:
-            cleaned = _strip_auto_prefix_segments(fallback_segments)
-            if cleaned:
-                auto_line_segments = cleaned
-    if auto_line_segments:
-        summary.append(
-            {
-                "segments": [("AUTO: ", STREAM_WHITE)] + list(auto_line_segments),
-            }
-        )
-    else:
-        summary.append(f"AUTO: {auto_line_text}")
     return summary, analytics
 
 
@@ -4565,7 +5124,26 @@ def _evaluate_lite_gate_brick_success(world, step, process_rules):
         return False
     world._lite_gate_measurement = measurement
     world._lite_gate_frame_ids = [int(frame.get("frame_id", 0) or 0) for frame in frames]
-    return gate_utils.gate_satisfied(measurement, success_gates)
+    visible_stats = success_gates.get("visible") if isinstance(success_gates, dict) else None
+    if telemetry_brick.visible_false_gate_confident_recent(world, visible_stats):
+        world._lite_gate_visible_false_confident_seen = True
+        return False
+    world._lite_gate_visible_false_confident_seen = False
+    visible_now = bool(measurement.get("visible"))
+    visibility_required_metrics = {"angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "confidence"}
+    saw_metric = False
+    for metric, stats in success_gates.items():
+        metric_key = str(metric or "").strip()
+        if not metric_key:
+            continue
+        saw_metric = True
+        if (metric_key in visibility_required_metrics) and (not visible_now):
+            return False
+        value = gate_utils.metric_value_from_measurement(measurement, metric_key)
+        direction = metric_direction(metric_key, step)
+        if not _gate_entry_matches(metric_key, value, stats, direction):
+            return False
+    return bool(saw_metric)
 
 
 def _evaluate_traditional_brick_success(world, step, telemetry_rules, process_rules):
@@ -4928,11 +5506,19 @@ def observe_success_gatecheck(
     hold_for_confirm = False
     if tracker is not None:
         visible_only = next_module.success_gates_visible_only(world.process_rules or {}, step)
-        hold_for_confirm = bool(
-            gate_utils.should_hold_for_success_confirmation(visible_only, tracker, success_met)
-        )
-    if bool(hold_on_positive) and bool(instant_success_ok) and not bool(success_met):
+        if bool(effective_success_ok):
+            hold_for_confirm = bool(
+                gate_utils.should_hold_for_success_confirmation(visible_only, tracker, success_met)
+            )
+    if bool(hold_on_positive) and bool(instant_success_ok) and bool(effective_success_ok) and not bool(success_met):
         hold_for_confirm = True
+    # If lite precheck rows are currently all passing but we still have not entered
+    # full tracker confirmation, hold position and keep observing rather than moving.
+    # This prevents oscillation loops where motion keeps perturbing a near-pass state.
+    if not hold_for_confirm:
+        mode_now = str(getattr(world, "_gatecheck_mode", "traditional") or "traditional").strip().lower()
+        if mode_now == "lite" and not bool(success_met):
+            hold_for_confirm = bool(_lite_measurement_rows_all_pass(world, step))
     return {
         "success_ok": bool(success_ok),
         "instant_success_ok": bool(instant_success_ok),
@@ -5522,58 +6108,21 @@ def run_alignment_segment(
             return plain, colored
 
         def _switch_result_observation_pair(metric_name_local, curr_err_local, prev_err_local, *, overshot_local=False):
-            try:
-                curr_err_f = float(curr_err_local)
-                prev_err_f = float(prev_err_local)
-            except (TypeError, ValueError):
-                return None, None
-            if overshot_local:
-                plain = f"Result observation: overshot target; previous {metric_name_local}={prev_err_f:+.2f}mm"
-                colored = (
-                    f"Result observation: "
-                    f"{COLOR_RED}overshot target; previous {metric_name_local}={prev_err_f:+.2f}mm{COLOR_RESET}"
-                )
-                return plain, colored
-            delta_local = abs(float(prev_err_f)) - abs(float(curr_err_f))
-            if abs(delta_local) < 0.05:
-                plain = f"Result observation: ~unchanged; previous {metric_name_local}={prev_err_f:+.2f}mm"
-                color = COLOR_YELLOW
-                body = f"~unchanged; previous {metric_name_local}={prev_err_f:+.2f}mm"
-            elif delta_local > 0.0:
-                plain = (
-                    f"Result observation: {delta_local:+.2f}mm better than previous "
-                    f"{metric_name_local}={prev_err_f:+.2f}mm"
-                )
-                color = COLOR_GREEN
-                body = f"{delta_local:+.2f}mm better than previous {metric_name_local}={prev_err_f:+.2f}mm"
-            else:
-                plain = (
-                    f"Result observation: {delta_local:+.2f}mm worse than previous "
-                    f"{metric_name_local}={prev_err_f:+.2f}mm"
-                )
-                color = COLOR_RED
-                body = f"{delta_local:+.2f}mm worse than previous {metric_name_local}={prev_err_f:+.2f}mm"
-            colored = f"Result observation: {color}{body}{COLOR_RESET}"
+            plain, colored, _ = _format_align_result_observation(
+                metric_name_local,
+                curr_err_local,
+                prev_err_local,
+                overshot=bool(overshot_local),
+            )
             return plain, colored
 
-        def _comparison_line_pair(metric_name_local, curr_err_local, prev_err_local):
-            try:
-                curr_err_f = float(curr_err_local)
-                prev_err_f = float(prev_err_local)
-            except (TypeError, ValueError):
-                return None, None, None
-            delta_local = abs(float(prev_err_f)) - abs(float(curr_err_f))
-            if abs(delta_local) < 0.05:
-                plain = f"~unchanged; previous {metric_name_local}={prev_err_f:+.2f}"
-                colored = f"{COLOR_YELLOW}~unchanged{COLOR_RESET}; previous {metric_name_local}={prev_err_f:+.2f}"
-                return plain, colored, COLOR_YELLOW
-            if delta_local > 0.0:
-                plain = f"{delta_local:+.2f} better than previous {metric_name_local}={prev_err_f:+.2f}"
-                colored = f"{COLOR_GREEN}{delta_local:+.2f}{COLOR_RESET} better than previous {metric_name_local}={prev_err_f:+.2f}"
-                return plain, colored, COLOR_GREEN
-            plain = f"{delta_local:+.2f} worse than previous {metric_name_local}={prev_err_f:+.2f}"
-            colored = f"{COLOR_RED}{delta_local:+.2f}{COLOR_RESET} worse than previous {metric_name_local}={prev_err_f:+.2f}"
-            return plain, colored, COLOR_RED
+        def _comparison_line_pair(metric_name_local, curr_err_local, prev_err_local, *, overshot_local=False):
+            return _format_align_result_observation(
+                metric_name_local,
+                curr_err_local,
+                prev_err_local,
+                overshot=bool(overshot_local),
+            )
 
         if correction_type == "distance":
             metric_name = "dist_err"
@@ -5699,11 +6248,16 @@ def run_alignment_segment(
                     else:
                         metric_color = COLOR_YELLOW
                 elif overshot:
-                    metric_color = COLOR_RED
-                    comparison_message = f"overshot target; previous {metric_name}={float(prev_err):+.2f}"
-                    comparison_message_colored = (
-                        f"{COLOR_RED}overshot target{COLOR_RESET}; previous {metric_name}={float(prev_err):+.2f}"
+                    comparison_message, comparison_message_colored, cmp_color = _comparison_line_pair(
+                        metric_name,
+                        curr_err,
+                        prev_err,
+                        overshot_local=True,
                     )
+                    if cmp_color is not None:
+                        metric_color = cmp_color
+                    else:
+                        metric_color = COLOR_RED
                 else:
                     comparison_message, comparison_message_colored, cmp_color = _comparison_line_pair(
                         metric_name,
@@ -5777,9 +6331,11 @@ def run_alignment_segment(
         if motor_duration_ms is not None:
             parts.append(f"t={int(motor_duration_ms)}ms")
         if isinstance(action_meta, dict):
-            anti_alias_note = action_meta.get("anti_alias_note")
-            if anti_alias_note:
-                parts.append(str(anti_alias_note))
+            ease_in_out_note = action_meta.get("ease_in_out_note")
+            if not ease_in_out_note:
+                ease_in_out_note = action_meta.get("anti_alias_note")
+            if ease_in_out_note:
+                parts.append(str(ease_in_out_note))
         if parts:
             motor_details = f" {COLOR_GRAY}({', '.join(parts)}){COLOR_RESET}"
 
@@ -5790,6 +6346,19 @@ def run_alignment_segment(
         else:
             phase_base = f"{active_step_label}_ALIGN"
         phase_label = f"{phase_base}_SETTLE" if bool(settle) else phase_base
+
+        def _print_result_lite_gate_line():
+            detail = _result_lite_gate_detail(world, step)
+            if not isinstance(detail, dict):
+                return
+            line_text = detail.get("colored") or detail.get("plain")
+            if not line_text:
+                return
+            print(
+                f"{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}] "
+                f"{line_text}{COLOR_RESET}"
+            )
+
         if switch_message:
             if result_observation_message:
                 result_render = result_observation_message_colored or result_observation_message
@@ -5797,6 +6366,7 @@ def run_alignment_segment(
                     f"{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}] "
                     f"{result_render}{COLOR_RESET}"
                 )
+                _print_result_lite_gate_line()
             switch_render = switch_message_colored or switch_message
             print(
                 f"{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}] "
@@ -5819,9 +6389,12 @@ def run_alignment_segment(
                         f"{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}] "
                         f"{render_line}{COLOR_RESET}"
                     )
+                # Gap-switch result observation already emitted above in canonical form.
+                comparison_message = None
+                comparison_message_colored = None
         cmd_log = str(cmd).strip().lower()
         print(
-            f"{COLOR_CYAN}[T{trial_num}.{int(action_index)} {phase_label}]{COLOR_RESET} "
+            f"{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}]{COLOR_RESET} "
             f"{metric_name}={metric_text} → "
             f"{COLOR_ORANGE_BRIGHT}{cmd_log} {int(score_display)}%{COLOR_RESET}{motor_details}"
         )
@@ -5831,6 +6404,7 @@ def run_alignment_segment(
                 f"{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}] "
                 f"{comparison_render}{COLOR_RESET}"
             )
+            _print_result_lite_gate_line()
 
     def _dominant_turn_from_steps(motion_steps):
         if not motion_steps:
@@ -6193,10 +6767,7 @@ def run_alignment_segment(
             rounds_local = max(1, int(rounds))
         except (TypeError, ValueError):
             rounds_local = int(ALIGN_RECOVERY_PREMOVE_RECHECK_ROUNDS)
-        hold_window_s = (
-            max(float(CONTROL_DT), float(VISIBILITY_LOST_HOLD_S))
-            * max(1.0, float(ALIGN_RECOVERY_PREMOVE_RECHECK_HOLD_MULTIPLIER))
-        )
+        hold_window_s = visibility_recheck_hold_seconds(vision)
         if robot:
             robot.stop()
         record_hold_display(world, step, f"visibility recheck x{int(rounds_local)}")
@@ -6954,18 +7525,12 @@ def run_alignment_segment(
                 align_target_lock_bootstrap_done = True
                 align_target_lock_required = False
         gate_obs = None
-        local_gate = next_module.align_local_gate_status(
-            world,
-            step,
-            process_rules=world.process_rules or {},
-        )
         gate_obs = observe_success_gatecheck(
             world,
             step,
             success_tracker,
             phase="align",
             log=not align_silent,
-            extra_ok=bool(local_gate.get("ok", True)),
         )
         success_met = bool(gate_obs.get("success_met"))
         if success_met:
@@ -7384,18 +7949,12 @@ def run_alignment_segment(
         if observer:
             observer("frame", world, vision, None, None, None)
         gate_obs = None
-        local_gate = next_module.align_local_gate_status(
-            world,
-            step,
-            process_rules=world.process_rules or {},
-        )
         gate_obs = observe_success_gatecheck(
             world,
             step,
             settle_tracker,
             phase="settle",
             log=not align_silent,
-            extra_ok=bool(local_gate.get("ok", True)),
         )
         if bool(gate_obs.get("success_met")):
             if not align_silent:
@@ -8205,7 +8764,11 @@ def replay_segment(
             phase=phase,
         )
 
+        checked_this_frame = False
+        success_met = False
+        gate_obs = None
         if success_checks_enabled and fresh_frame and phase == "check":
+            checked_this_frame = True
             gate_obs = observe_success_gatecheck(
                 world,
                 step_key,
@@ -8224,6 +8787,27 @@ def replay_segment(
                 force_check_until = max(float(force_check_until or 0.0), now + float(AUTO_CYCLE_CHECK_S))
                 phase = "check"
                 desired_score = check_score
+
+        if checked_this_frame and not success_met:
+            if not bool((gate_obs or {}).get("effective_success_ok")):
+                _log_gatecheck_failure(world, step_key, "settle", log=True)
+            if last_cmd:
+                _log_gatecheck_next_action(
+                    step_key,
+                    "settle",
+                    last_cmd,
+                    speed_score=desired_score,
+                    reason="adaptive replay",
+                    log=True,
+                )
+            else:
+                _log_gatecheck_next_action(
+                    step_key,
+                    "settle",
+                    None,
+                    reason="replay has no command to continue",
+                    log=True,
+                )
 
         flush_auto_step_diagnostic(world, step_key, emit=True)
         if last_cmd:
@@ -8315,7 +8899,11 @@ def replay_segment(
                 phase=phase,
             )
 
+            checked_this_frame = False
+            success_met = False
+            gate_obs = None
             if success_checks_enabled and fresh_frame and phase == "check":
+                checked_this_frame = True
                 gate_obs = observe_success_gatecheck(
                     world,
                     step_key,
@@ -8336,6 +8924,27 @@ def replay_segment(
                     force_check_until = max(float(force_check_until or 0.0), now + float(AUTO_CYCLE_CHECK_S))
                     phase = "check"
                     desired_score = check_score
+
+            if checked_this_frame and not success_met:
+                if not bool((gate_obs or {}).get("effective_success_ok")):
+                    _log_gatecheck_failure(world, step_key, "tail", log=True)
+                if last_cmd:
+                    _log_gatecheck_next_action(
+                        step_key,
+                        "tail",
+                        last_cmd,
+                        speed_score=desired_score,
+                        reason=f"auto-cycle {phase}",
+                        log=True,
+                    )
+                else:
+                    _log_gatecheck_next_action(
+                        step_key,
+                        "tail",
+                        None,
+                        reason="replay has no command to continue",
+                        log=True,
+                    )
 
             flush_auto_step_diagnostic(world, step_key, emit=True)
             if last_cmd:

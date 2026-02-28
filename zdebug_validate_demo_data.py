@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 
 from helper_demo_log_utils import read_demo_log, resolve_session_log, normalize_step_label
+from helper_vision_config import demos_dir_for_mode
 
 
 def validate_session(session_path):
@@ -72,7 +73,7 @@ def validate_session(session_path):
     return True, f"READY: {complete_runs}/{total_runs} runs, {len(entries)} entries"
 
 def main():
-    demos_dir = Path(__file__).resolve().parent / "demos"
+    demos_dir = demos_dir_for_mode()
     if not demos_dir.exists():
         print(f"Error: {demos_dir} not found.")
         return

@@ -58,7 +58,8 @@ class TestTelemetryProcessAutoDiag(unittest.TestCase):
             pre_focus=pre_focus,
         )
         self.assertIn("FAILED success gates", diag["plain"])
-        self.assertIn("so I L 20%,", diag["plain"])
+        self.assertIn("so I L 20%.", diag["plain"])
+        self.assertIn("\ngetting us", diag["plain"])
         self.assertIn("getting us 3.0mm closer to the success gates", diag["plain"])
         self.assertIn("(xAxis_offset_abs=7.0mm)", diag["plain"])
         self.assertIn(telemetry_process.COLOR_ORANGE_BRIGHT, diag["colored"])
@@ -87,6 +88,84 @@ class TestTelemetryProcessAutoDiag(unittest.TestCase):
         )
         self.assertIn("getting us 3.0mm further from the success gates", diag["plain"])
         self.assertIn(telemetry_process.COLOR_RED, diag["colored"])
+
+    def test_auto_diag_failure_uses_multiline_result_and_word_only_red_highlight(self):
+        world = _DummyWorld()
+        world.process_rules = {
+            "EXIT_WALL": {
+                "success_gates": {
+                    "visible": {"min": False},
+                }
+            }
+        }
+        world.brick["visible"] = True
+        world.brick["confidence"] = 95.0
+        world.last_visible_time = None
+        diag = telemetry_process._build_auto_step_diagnostic(
+            world,
+            "EXIT_WALL",
+            "U 1% (pwm=93, power=0.260, 250ms)",
+            "visible=true",
+            success_override=False,
+        )
+        self.assertIn(
+            "\nresulting in NOT meeting the success gates (visible=true).",
+            diag["plain"],
+        )
+        self.assertIn(
+            f"{telemetry_process.COLOR_RED}FAILED{telemetry_process.COLOR_RESET} success gates",
+            diag["colored"],
+        )
+        self.assertIn(
+            f"resulting in {telemetry_process.COLOR_RED}NOT{telemetry_process.COLOR_RESET} meeting the success gates",
+            diag["colored"],
+        )
+        self.assertNotIn(
+            f"{telemetry_process.COLOR_RED}FAILED success gates{telemetry_process.COLOR_RESET}",
+            diag["colored"],
+        )
+        self.assertNotIn(
+            f"{telemetry_process.COLOR_RED}NOT meeting the success gates{telemetry_process.COLOR_RESET}",
+            diag["colored"],
+        )
+
+    def test_auto_diag_appends_lite_details_in_gray_with_value_highlights(self):
+        world = _DummyWorld()
+        world.process_rules = {
+            "BRICK_LOCK": {
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": -6.22, "tol": 4.0},
+                    "dist": {"target": 154.61, "tol": 4.0},
+                }
+            }
+        }
+        world.brick["visible"] = True
+        world.brick["x_axis"] = -6.0
+        world.brick["dist"] = 170.0
+        world._gatecheck_status = {
+            "mode": "lite",
+            "checks": 2,
+            "truth_ok": False,
+            "lite_collected": 2,
+            "lite_required": 3,
+        }
+        world._gatecheck_lite_required = 3
+        world._gatecheck_lite_collected = 2
+        world._gatecheck_lite_passed = False
+
+        diag = telemetry_process._build_auto_step_diagnostic(
+            world,
+            "BRICK_LOCK",
+            "L 3%",
+            "xAxis_offset_abs=-6.0mm",
+        )
+
+        self.assertIn("\nlite gatecheck:", diag["plain"])
+        self.assertIn("xAxis_offset_abs (", diag["plain"])
+        self.assertIn("dist (", diag["plain"])
+        self.assertIn(telemetry_process.COLOR_GRAY, diag["colored"])
+        self.assertIn(f"{telemetry_process.COLOR_GREEN}(", diag["colored"])
+        self.assertIn(f"{telemetry_process.COLOR_RED}(", diag["colored"])
 
     def test_auto_diag_align_step_pre_snapshot_shows_only_focus_offset_metric(self):
         world = _DummyWorld()
@@ -323,6 +402,155 @@ class TestTelemetryProcessAutoDiag(unittest.TestCase):
         self.assertEqual(unchanged, 2)
         self.assertEqual(unknown, 0)
         self.assertEqual(total, closer + backward + unchanged + unknown)
+
+    def test_success_event_lines_use_strict_boolean_gate_text(self):
+        world = _DummyWorld()
+        world.process_rules = {
+            "EXIT_WALL": {
+                "success_gates": {
+                    "visible": {"min": False},
+                }
+            }
+        }
+        world.brick["visible"] = False
+        world.brick["confidence"] = 0.0
+        world.last_visible_time = None
+
+        lines = telemetry_process.format_success_event_lines(world, "EXIT_WALL")
+        joined = " ".join(lines)
+        self.assertIn("=false", joined)
+        self.assertNotIn(">=false", joined)
+
+    def test_success_event_lines_color_current_state_red_when_not_matching_gate(self):
+        world = _DummyWorld()
+        world.process_rules = {
+            "EXIT_WALL": {
+                "success_gates": {
+                    "visible": {"min": False},
+                }
+            }
+        }
+        world.brick["visible"] = True
+        world.brick["confidence"] = 95.0
+        world.last_visible_time = None
+
+        lines = telemetry_process.format_success_event_lines(world, "EXIT_WALL", colored=True)
+        joined = " ".join(lines)
+        self.assertIn(telemetry_process.COLOR_RED, joined)
+        self.assertIn("visible=", joined)
+        self.assertIn(
+            f"visible={telemetry_process.COLOR_RED}true{telemetry_process.COLOR_RESET}",
+            joined,
+        )
+        self.assertIn(" (grace=0.20s)", joined)
+        self.assertNotIn(
+            f"{telemetry_process.COLOR_RED}true (grace=0.20s){telemetry_process.COLOR_RESET}",
+            joined,
+        )
+
+    def test_success_event_lines_color_current_state_green_when_matching_gate(self):
+        world = _DummyWorld()
+        world.process_rules = {
+            "EXIT_WALL": {
+                "success_gates": {
+                    "visible": {"min": False},
+                }
+            }
+        }
+        world.brick["visible"] = False
+        world.brick["confidence"] = 0.0
+        world.last_visible_time = None
+
+        lines = telemetry_process.format_success_event_lines(world, "EXIT_WALL", colored=True)
+        joined = " ".join(lines)
+        self.assertIn(telemetry_process.COLOR_GREEN, joined)
+        self.assertIn("visible=", joined)
+        self.assertIn(
+            f"visible={telemetry_process.COLOR_GREEN}false{telemetry_process.COLOR_RESET}",
+            joined,
+        )
+        self.assertIn(" (grace=0.20s)", joined)
+        self.assertNotIn(
+            f"{telemetry_process.COLOR_GREEN}false (grace=0.20s){telemetry_process.COLOR_RESET}",
+            joined,
+        )
+
+    def test_align_result_observation_formatter_uses_single_canonical_better_shape(self):
+        plain, colored, color = telemetry_process._format_align_result_observation(
+            "dist_err",
+            -9.25,
+            -10.54,
+        )
+        self.assertEqual(color, telemetry_process.COLOR_GREEN)
+        self.assertEqual(
+            plain,
+            "Result: +1.29mm better than previous dist_err=-10.54mm",
+        )
+        self.assertIn(
+            f"{telemetry_process.COLOR_BLUE_BRIGHT}Result:{telemetry_process.COLOR_RESET}",
+            colored,
+        )
+        self.assertIn(
+            f"{telemetry_process.COLOR_GREEN}+1.29mm{telemetry_process.COLOR_RESET}",
+            colored,
+        )
+        self.assertNotIn(
+            f"{telemetry_process.COLOR_GREEN}+1.29mm better than previous",
+            colored,
+        )
+
+    def test_align_result_observation_formatter_uses_single_canonical_overshot_shape(self):
+        plain, colored, color = telemetry_process._format_align_result_observation(
+            "x_err",
+            -0.80,
+            +0.92,
+            overshot=True,
+        )
+        self.assertEqual(color, telemetry_process.COLOR_RED)
+        self.assertEqual(
+            plain,
+            "Result: overshot target; previous x_err=+0.92mm",
+        )
+        self.assertIn(
+            f"{telemetry_process.COLOR_BLUE_BRIGHT}Result:{telemetry_process.COLOR_RESET}",
+            colored,
+        )
+        self.assertNotIn("Result observation:", colored)
+
+    def test_result_lite_gate_detail_colors_first_word_pink(self):
+        world = _DummyWorld()
+        world.process_rules = {
+            "BRICK_LOCK": {
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": -6.22, "tol": 4.0},
+                }
+            }
+        }
+        world._gatecheck_status = {
+            "mode": "lite",
+            "checks": 1,
+            "truth_ok": False,
+            "lite_collected": 1,
+            "lite_required": 3,
+        }
+        world._gatecheck_lite_required = 3
+        world._gatecheck_lite_collected = 1
+        world._gatecheck_lite_passed = False
+
+        detail = telemetry_process._result_lite_gate_detail(world, "BRICK_LOCK")
+        self.assertIsInstance(detail, dict)
+        self.assertIn("lite gatecheck:", str(detail.get("plain")))
+        self.assertNotIn("mode=lite", str(detail.get("plain")))
+        self.assertNotIn("/=", str(detail.get("plain")))
+        self.assertIn("!=", str(detail.get("plain")))
+        self.assertIn(
+            f"{telemetry_process.COLOR_PINK}lite{telemetry_process.COLOR_RESET}{telemetry_process.COLOR_GRAY} gatecheck:",
+            str(detail.get("colored")),
+        )
+        self.assertIn(
+            f"{telemetry_process.COLOR_WHITE}xAxis_offset_abs{telemetry_process.COLOR_RESET}",
+            str(detail.get("colored")),
+        )
 
 
 if __name__ == "__main__":
