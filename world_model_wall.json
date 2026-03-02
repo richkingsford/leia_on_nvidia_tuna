@@ -26,6 +26,9 @@
             "success_metrics": [
                 "visible"
             ]
+        },
+        "RETREAT": {
+            "requires_wall_origin": false
         }
     }
 }

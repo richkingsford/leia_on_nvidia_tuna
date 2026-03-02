@@ -517,7 +517,7 @@ class TestTelemetryProcessAutoDiag(unittest.TestCase):
         )
         self.assertNotIn("Result observation:", colored)
 
-    def test_result_lite_gate_detail_colors_first_word_pink(self):
+    def test_result_lite_gate_detail_uses_white_text_except_saw_value(self):
         world = _DummyWorld()
         world.process_rules = {
             "BRICK_LOCK": {
@@ -544,11 +544,11 @@ class TestTelemetryProcessAutoDiag(unittest.TestCase):
         self.assertNotIn("/=", str(detail.get("plain")))
         self.assertIn("!=", str(detail.get("plain")))
         self.assertIn(
-            f"{telemetry_process.COLOR_PINK}lite{telemetry_process.COLOR_RESET}{telemetry_process.COLOR_GRAY} gatecheck:",
+            f"{telemetry_process.COLOR_WHITE}lite gatecheck: {telemetry_process.COLOR_RESET}",
             str(detail.get("colored")),
         )
         self.assertIn(
-            f"{telemetry_process.COLOR_WHITE}xAxis_offset_abs{telemetry_process.COLOR_RESET}",
+            f"{telemetry_process.COLOR_WHITE}xAxis_offset_abs (",
             str(detail.get("colored")),
         )
 

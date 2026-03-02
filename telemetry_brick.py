@@ -1,5 +1,6 @@
 import math
 import time
+import os
 from collections import deque
 from dataclasses import dataclass, field
 from typing import List
@@ -65,17 +66,155 @@ METRICS_BY_STEP = {
     "BRICK_LOCK_WALL": ("xAxis_offset_abs", "dist", "brick_above", "brick_below", "visible"),
     "ALIGN_BRICK": ("xAxis_offset_abs", "yAxis_offset_abs", "dist", "visible"),
     "SEAT_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
-    "SEAT_BRICK2": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
+    "SEAT_BRICK2": ("angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "visible"),
     "ELEVATE_BRICK": ("visible",),
     "FIND_WALL2": ("visible",),
     "APPROACH_VECTOR_WALL": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "POSITION_BRICK": ("angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "brick_above", "visible"),
-    "RETREAT": ("visible",),
+    "RETREAT": ("visible", "dist"),
 }
 
 SCOOP_LIKE_STEPS = {"SEAT_BRICK", "SEAT_BRICK2"}
 
 VISIBILITY_REQUIRED_METRICS = {"angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist"}
+
+DEFAULT_ARUCO_MARKER_SIZE_MM = 20.0
+BRICK_HEIGHT_MM = 44.0
+
+
+def brick_height_mm():
+    return float(BRICK_HEIGHT_MM)
+
+
+def brick_count_to_height_mm(brick_count):
+    try:
+        count = int(round(float(brick_count)))
+    except (TypeError, ValueError):
+        return None
+    if count < 0:
+        count = 0
+    return float(count) * float(BRICK_HEIGHT_MM)
+
+
+def height_mm_to_brick_count(height_mm, *, minimum=0, maximum=None):
+    try:
+        mm_val = float(height_mm)
+    except (TypeError, ValueError):
+        return None
+    mm_val = max(0.0, float(mm_val))
+    brick_mm = max(1e-6, float(BRICK_HEIGHT_MM))
+    count = int(round(mm_val / brick_mm))
+    try:
+        min_count = int(round(float(minimum)))
+    except (TypeError, ValueError):
+        min_count = 0
+    count = max(int(min_count), int(count))
+    if maximum is not None:
+        try:
+            max_count = int(round(float(maximum)))
+        except (TypeError, ValueError):
+            max_count = None
+        if max_count is not None:
+            count = min(int(count), int(max_count))
+    return int(count)
+
+
+def _crosshair_overlap_half_extents_mm():
+    marker_size = DEFAULT_ARUCO_MARKER_SIZE_MM
+    try:
+        env_size = os.getenv("ARUCO_MARKER_SIZE_MM", "")
+        if str(env_size).strip():
+            parsed = float(env_size)
+            if parsed > 0.0:
+                marker_size = parsed
+    except (TypeError, ValueError):
+        marker_size = DEFAULT_ARUCO_MARKER_SIZE_MM
+    half = float(marker_size) / 2.0
+    return half, half
+
+
+_CROSSHAIR_HALF_WIDTH_MM, _CROSSHAIR_HALF_HEIGHT_MM = _crosshair_overlap_half_extents_mm()
+
+
+def _coerce_crosshair_float(value, fallback=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(fallback)
+
+
+def _in_crosshairs_center_from_step_cfg(step_cfg):
+    if not isinstance(step_cfg, dict):
+        return 0.0, 0.0
+    center_cfg = step_cfg.get("in_crosshairs_center_mm")
+    if not isinstance(center_cfg, dict):
+        exception_cfg = step_cfg.get("topmost_crosshair_exception")
+        if isinstance(exception_cfg, dict):
+            center_cfg = exception_cfg.get("in_crosshairs_center_mm")
+    if not isinstance(center_cfg, dict):
+        return 0.0, 0.0
+
+    x_raw = center_cfg.get("x")
+    if x_raw is None:
+        x_raw = center_cfg.get("center_x_mm")
+    if x_raw is None:
+        x_raw = center_cfg.get("target_x_mm")
+
+    y_raw = center_cfg.get("y")
+    if y_raw is None:
+        y_raw = center_cfg.get("center_y_mm")
+    if y_raw is None:
+        y_raw = center_cfg.get("target_y_mm")
+
+    return _coerce_crosshair_float(x_raw, 0.0), _coerce_crosshair_float(y_raw, 0.0)
+
+
+def in_crosshairs_center_mm(world=None, step=None, process_rules=None):
+    step_ref = step if step is not None else getattr(world, "step_state", None)
+    if step_ref is None:
+        return 0.0, 0.0
+    step_key = _step_name(step_ref)
+    rules = process_rules
+    if not isinstance(rules, dict):
+        rules = getattr(world, "process_rules", None)
+    if not isinstance(rules, dict):
+        return 0.0, 0.0
+    step_cfg = rules.get(step_key, {}) if step_key else {}
+    return _in_crosshairs_center_from_step_cfg(step_cfg)
+
+
+def _compute_in_crosshairs(found, x_axis_mm, y_axis_mm, *, center_x_mm=0.0, center_y_mm=0.0):
+    if not bool(found):
+        return False
+    try:
+        x_val = float(x_axis_mm)
+        y_val = float(y_axis_mm)
+    except (TypeError, ValueError):
+        return False
+    center_x = _coerce_crosshair_float(center_x_mm, 0.0)
+    center_y = _coerce_crosshair_float(center_y_mm, 0.0)
+    marker_left = x_val - _CROSSHAIR_HALF_WIDTH_MM
+    marker_right = x_val + _CROSSHAIR_HALF_WIDTH_MM
+    marker_top = y_val - _CROSSHAIR_HALF_HEIGHT_MM
+    marker_bottom = y_val + _CROSSHAIR_HALF_HEIGHT_MM
+    x_overlaps = marker_left <= center_x <= marker_right
+    y_overlaps = marker_top <= center_y <= marker_bottom
+    return bool(x_overlaps and y_overlaps)
+
+
+def compute_in_crosshairs_for_step(world, found, x_axis_mm, y_axis_mm, *, step=None, process_rules=None):
+    center_x_mm, center_y_mm = in_crosshairs_center_mm(
+        world,
+        step=step,
+        process_rules=process_rules,
+    )
+    return _compute_in_crosshairs(
+        found,
+        x_axis_mm,
+        y_axis_mm,
+        center_x_mm=center_x_mm,
+        center_y_mm=center_y_mm,
+    )
 
 
 def _average_brick_frames(frames):
@@ -150,6 +289,7 @@ def smoothed_brick_snapshot(world):
         # do not assert true/false until the stack-specific lite+full checks confirm.
         "brickAbove": (world.brick or {}).get("brickAbove"),
         "brickBelow": (world.brick or {}).get("brickBelow"),
+        "inCrosshairs": (world.brick or {}).get("inCrosshairs"),
     }
 
 
@@ -265,6 +405,18 @@ def metric_value(brick, metric):
             value = brick.get("brick_below")
             return None if value is None else bool(value)
         return None
+    if metric in ("inCrosshairs", "in_crosshairs"):
+        if "inCrosshairs" in brick:
+            value = brick.get("inCrosshairs")
+            return None if value is None else bool(value)
+        if "in_crosshairs" in brick:
+            value = brick.get("in_crosshairs")
+            return None if value is None else bool(value)
+        return _compute_in_crosshairs(
+            bool(brick.get("visible")),
+            brick.get("x_axis", brick.get("offset_x")),
+            brick.get("y_axis", brick.get("offset_y")),
+        )
     return None
 
 
@@ -823,7 +975,7 @@ def compute_brick_analytics(world, process_rules, learned_rules, step, duration_
                     continue
                 ok = False
                 continue
-            direction = metric_direction_for_step(metric, obj_name)
+            direction = metric_direction_for_step(metric, obj_name, process_rules=process_rules)
             if direction is None:
                 ok = False
                 continue
@@ -902,6 +1054,14 @@ def update_from_vision(world, found, dist, angle, conf, offset_x=0, cam_h=0, bri
     world.brick["x_axis"] = float(offset_x)
     world.brick["offset_y"] = float(offset_y)
     world.brick["y_axis"] = float(offset_y)
+    world.brick["inCrosshairs"] = compute_in_crosshairs_for_step(
+        world,
+        found,
+        offset_x,
+        offset_y,
+        step=getattr(world, "step_state", None),
+        process_rules=getattr(world, "process_rules", None),
+    )
     update_stack_flags_from_raw(world, found, brick_above, brick_below)
     if found:
         world.last_visible_time = time.time()
@@ -1034,7 +1194,7 @@ def evaluate_start_gates(world, step, learned_rules, process_rules=None):
                         reasons.append("visible gate")
                 continue
             value = metric_value(brick, metric)
-            if metric in ("brick_above", "brickAbove", "brick_below", "brickBelow"):
+            if metric in ("brick_above", "brickAbove", "brick_below", "brickBelow", "inCrosshairs", "in_crosshairs"):
                 ok = _bool_metric_gate_matches(value, stats)
                 if ok is not True:
                     reasons.append(f"{metric} gate")
@@ -1062,6 +1222,7 @@ def _success_gate_eval(world, step, learned_rules, process_rules=None, visibilit
         return GateCheck(ok=False, reasons=["no success envelope"]), []
 
     brick = smoothed_brick_snapshot(world)
+    raw_brick = getattr(world, "brick", None) or {}
     visible = bool(brick.get("visible"))
     visible_gate = success_metrics.get("visible") or {}
     if visibility_grace_s is None:
@@ -1086,7 +1247,7 @@ def _success_gate_eval(world, step, learned_rules, process_rules=None, visibilit
         reasons.append("brick already stacked")
 
     for metric, stats in success_metrics.items():
-        direction = metric_direction_for_step(metric, obj_name)
+        direction = metric_direction_for_step(metric, obj_name, process_rules=process_rules)
         entry = {
             "metric": metric,
             "stats": stats,
@@ -1098,12 +1259,14 @@ def _success_gate_eval(world, step, learned_rules, process_rules=None, visibilit
         if metric in ("angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "confidence") and not visible:
             reasons.append("brick not visible")
             entry["value"] = None
+            entry["raw_value"] = metric_value(raw_brick, metric)
             entries.append(entry)
             continue
 
         if metric == "angle_abs":
             angle_val = abs(brick.get("angle", 0.0))
             entry["value"] = angle_val
+            entry["raw_value"] = metric_value(raw_brick, metric)
             ok = _target_tol_ok(angle_val, stats, direction)
             if ok is False:
                 reasons.append("angle_abs gate")
@@ -1112,6 +1275,7 @@ def _success_gate_eval(world, step, learned_rules, process_rules=None, visibilit
         elif metric == "xAxis_offset_abs":
             offset_val = brick.get("x_axis", brick.get("offset_x", 0.0))
             entry["value"] = offset_val
+            entry["raw_value"] = metric_value(raw_brick, metric)
             target = stats.get("target") if isinstance(stats, dict) else None
             tol = stats.get("tol") if isinstance(stats, dict) else None
             if target is not None and tol is not None:
@@ -1125,6 +1289,7 @@ def _success_gate_eval(world, step, learned_rules, process_rules=None, visibilit
         elif metric == "yAxis_offset_abs":
             offset_val = brick.get("y_axis", brick.get("offset_y", 0.0))
             entry["value"] = offset_val
+            entry["raw_value"] = metric_value(raw_brick, metric)
             target = stats.get("target") if isinstance(stats, dict) else None
             tol = stats.get("tol") if isinstance(stats, dict) else None
             if target is not None and tol is not None:
@@ -1138,6 +1303,7 @@ def _success_gate_eval(world, step, learned_rules, process_rules=None, visibilit
         elif metric == "dist":
             dist_val = brick.get("dist", 0.0)
             entry["value"] = dist_val
+            entry["raw_value"] = metric_value(raw_brick, metric)
             ok = _target_tol_ok(dist_val, stats, direction)
             if ok is False:
                 reasons.append("dist gate")
@@ -1146,6 +1312,7 @@ def _success_gate_eval(world, step, learned_rules, process_rules=None, visibilit
         elif metric == "confidence":
             conf_val = brick.get("confidence", 0.0)
             entry["value"] = conf_val
+            entry["raw_value"] = metric_value(raw_brick, metric)
             ok = _target_tol_ok(conf_val, stats, direction)
             if ok is False:
                 reasons.append("confidence gate")
@@ -1185,7 +1352,7 @@ def _success_gate_eval(world, step, learned_rules, process_rules=None, visibilit
             else:
                 if (1.0 if effective_visible else 0.0) < stats.get("min", 0.0):
                     reasons.append("visible gate")
-        elif metric in ("brick_above", "brickAbove", "brick_below", "brickBelow"):
+        elif metric in ("brick_above", "brickAbove", "brick_below", "brickBelow", "inCrosshairs", "in_crosshairs"):
             bool_val = metric_value(brick, metric)
             entry["value"] = bool_val
             if _bool_metric_gate_matches(bool_val, stats) is not True:
@@ -1244,7 +1411,7 @@ def evaluate_failure_gates(world, step, learned_rules, process_rules=None):
         if value is None:
             continue
         
-        direction = metric_direction_for_step(metric, obj_name)
+        direction = metric_direction_for_step(metric, obj_name, process_rules=process_rules)
         
         # If we have learned failure mu/sigma, check if we're in the failure zone
         if "mu" in stats and "sigma" in stats:

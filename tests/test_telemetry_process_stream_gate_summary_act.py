@@ -68,11 +68,24 @@ class TestTelemetryProcessStreamGateSummaryAct(unittest.TestCase):
         segments = line.get("segments") or []
         text = _line_text(line)
         self.assertIn("dist=94.6+/-4.3", text)
-        self.assertIn("(+18.3)", text)
-        self.assertNotIn("(112.9)", text)
+        self.assertIn("(112.9 Δ+18.3)", text)
         self.assertGreaterEqual(len(segments), 2)
         color = tuple(segments[1][1]) if isinstance(segments[1], (tuple, list)) and len(segments[1]) > 1 else None
         self.assertEqual(color, tuple(telemetry_process.STREAM_RED))
+
+    def test_stream_success_gate_line_includes_raw_value_when_sample_differs(self):
+        line = telemetry_process._stream_success_gate_line(
+            "SEAT_BRICK2",
+            {
+                "metric": "yAxis_offset_abs",
+                "stats": {"target": -2.7, "tol": 1.5},
+                "value": 11.9,
+                "raw_value": -2.0,
+            },
+        )
+        text = _line_text(line)
+        self.assertIn("yAxis_offset_abs=-2.7+/-1.5", text)
+        self.assertIn("(11.9 raw=-2.0)", text)
 
     def test_action_sent_display_text_uses_logical_command_even_with_wire_remap(self):
         text = telemetry_process.action_sent_display_text(

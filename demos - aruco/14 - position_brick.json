@@ -1,5 +1,8 @@
 [
-{"type": "keyframe", "timestamp": 1772159318.686, "marker": "SUCCESS_START", "step": "POSITION_BRICK"},
-{"type": "state", "timestamp": 1772159323.216, "run_id": "run_20260226_192449", "attempt_id": 1, "robot_pose": {"x": 12.39, "y": -0.21, "theta": -0.691, "height_mm": 5.91}, "wall": {"origin": {"x": 100.51, "y": -1.32, "theta": 0.0}, "angle_deg": 0.0, "valid": true}, "brick": {"visible": true, "dist": 87.02, "angle": -0.114, "x_axis": -3.64, "y_axis": 9.0, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 27.99},
-{"type": "keyframe", "timestamp": 1772159323.656, "marker": "SUCCESS_END", "step": "POSITION_BRICK"}
+{"type": "keyframe", "timestamp": 1772306931.094, "marker": "SUCCESS_START", "step": "POSITION_BRICK"},
+{"type": "state", "timestamp": 1772327907.244, "run_id": "run_20260228_181721", "attempt_id": 1, "robot_pose": {"x": 24.66, "y": 1.27, "theta": 3.829, "height_mm": null}, "brick": {"visible": true, "dist": 165, "angle": 0.377, "x_axis": -2.27, "y_axis": -0.07, "inCrosshairs": true, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.19},
+{"type": "state", "timestamp": 1772327907.591, "run_id": "run_20260228_181721", "attempt_id": 1, "robot_pose": {"x": 24.66, "y": 1.27, "theta": 3.829, "height_mm": null}, "brick": {"visible": true, "dist": 165, "angle": 0.323, "x_axis": -2.27, "y_axis": -0.07, "inCrosshairs": true, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.19},
+{"type": "state", "timestamp": 1772327907.942, "run_id": "run_20260228_181721", "attempt_id": 1, "robot_pose": {"x": 24.66, "y": 1.27, "theta": 3.829, "height_mm": null}, "brick": {"visible": true, "dist": 165, "angle": 0.106, "x_axis": -2.26, "y_axis": -0.08, "inCrosshairs": true, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.19},
+{"type": "state", "timestamp": 1772327908.274, "run_id": "run_20260228_181721", "attempt_id": 1, "robot_pose": {"x": 24.66, "y": 1.27, "theta": 3.829, "height_mm": null}, "brick": {"visible": true, "dist":165, "angle": 0.456, "x_axis": -2.26, "y_axis": -0.07, "inCrosshairs": true, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 0.19},
+{"type": "keyframe", "timestamp": 1772306933.807, "marker": "SUCCESS_END", "step": "POSITION_BRICK"}
 ]

@@ -3,6 +3,7 @@ import json
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -35,10 +36,20 @@ class TestTelemetryProcessLiteGate(unittest.TestCase):
     def setUp(self):
         self.prev_default = getattr(telemetry_process, "LITE_GATE_DEFAULT_UNIQUE_FRAMES", 3)
         self.prev_steps = dict(getattr(telemetry_process, "LITE_GATE_STEP_UNIQUE_FRAMES", {}))
+        self.prev_lite_only_aruco_experiment = bool(
+            getattr(telemetry_process, "GATECHECK_LITE_ONLY_ARUCO_EXPERIMENT", False)
+        )
+        self.prev_aruco_full_pass_scale = float(
+            getattr(telemetry_process, "GATECHECK_ARUCO_FULL_PASS_SCALE", 1.0)
+        )
+        telemetry_process.GATECHECK_LITE_ONLY_ARUCO_EXPERIMENT = False
+        telemetry_process.GATECHECK_ARUCO_FULL_PASS_SCALE = 1.0
 
     def tearDown(self):
         telemetry_process.LITE_GATE_DEFAULT_UNIQUE_FRAMES = self.prev_default
         telemetry_process.LITE_GATE_STEP_UNIQUE_FRAMES = self.prev_steps
+        telemetry_process.GATECHECK_LITE_ONLY_ARUCO_EXPERIMENT = self.prev_lite_only_aruco_experiment
+        telemetry_process.GATECHECK_ARUCO_FULL_PASS_SCALE = self.prev_aruco_full_pass_scale
 
     def test_apply_lite_gate_check_config_parses_step_frames(self):
         telemetry_process.apply_lite_gate_check_config(
@@ -53,6 +64,34 @@ class TestTelemetryProcessLiteGate(unittest.TestCase):
         self.assertEqual(telemetry_process.lite_gate_unique_frames("ALIGN_BRICK"), 3)
         self.assertEqual(telemetry_process.lite_gate_unique_frames("POSITION_BRICK"), 4)
         self.assertEqual(telemetry_process.lite_gate_unique_frames("FIND_BRICK"), 3)
+
+    def test_apply_gate_checker_config_parses_aruco_full_pass_scale(self):
+        prev_consec = telemetry_process.GATECHECK_CONSECUTIVE_REQUIRED
+        prev_majority_window = telemetry_process.GATECHECK_MAJORITY_WINDOW
+        prev_majority_required = telemetry_process.GATECHECK_MAJORITY_REQUIRED
+        prev_lite_only = telemetry_process.GATECHECK_LITE_ONLY_ARUCO_EXPERIMENT
+        prev_scale = telemetry_process.GATECHECK_ARUCO_FULL_PASS_SCALE
+        try:
+            telemetry_process.apply_gate_checker_config(
+                {
+                    "consecutive_required": 6,
+                    "majority_window": 13,
+                    "majority_required": 5,
+                    "lite_only_aruco_experiment": False,
+                    "aruco_full_gatecheck_pass_scale": 0.5,
+                }
+            )
+            self.assertEqual(int(telemetry_process.GATECHECK_CONSECUTIVE_REQUIRED), 6)
+            self.assertEqual(int(telemetry_process.GATECHECK_MAJORITY_WINDOW), 13)
+            self.assertEqual(int(telemetry_process.GATECHECK_MAJORITY_REQUIRED), 5)
+            self.assertFalse(bool(telemetry_process.GATECHECK_LITE_ONLY_ARUCO_EXPERIMENT))
+            self.assertAlmostEqual(float(telemetry_process.GATECHECK_ARUCO_FULL_PASS_SCALE), 0.5, places=3)
+        finally:
+            telemetry_process.GATECHECK_CONSECUTIVE_REQUIRED = prev_consec
+            telemetry_process.GATECHECK_MAJORITY_WINDOW = prev_majority_window
+            telemetry_process.GATECHECK_MAJORITY_REQUIRED = prev_majority_required
+            telemetry_process.GATECHECK_LITE_ONLY_ARUCO_EXPERIMENT = prev_lite_only
+            telemetry_process.GATECHECK_ARUCO_FULL_PASS_SCALE = prev_scale
 
     def test_lite_gate_defaults_apply_to_all_modeled_steps(self):
         root = Path(__file__).resolve().parents[1]
@@ -189,6 +228,35 @@ class TestTelemetryProcessLiteGate(unittest.TestCase):
         self.assertIsInstance(status, dict)
         self.assertEqual(status.get("mode"), "lite")
 
+    def test_lite_mode_gatecheck_progress_is_logged(self):
+        world = _DummyWorld()
+        world._gatecheck_mode = "traditional"
+        world._gatecheck_lite_required = 3
+        world._gatecheck_lite_collected = 1
+        world._gatecheck_lite_checks = 0
+        world._frame_id = 44
+
+        tracker = telemetry_process.gate_utils.SuccessGateTracker(12, 26, 13)
+        tracker.total_checks = 0
+
+        with mock.patch("builtins.print") as mock_print:
+            success_met = telemetry_process.update_gatecheck_with_precheck(
+                world,
+                "SEAT_BRICK2",
+                tracker,
+                False,
+                phase="align",
+                log=True,
+            )
+
+        self.assertFalse(success_met)
+        printed = "\n".join(
+            " ".join(str(arg) for arg in call.args)
+            for call in mock_print.call_args_list
+        )
+        self.assertIn("[GATECHECK] SEAT_BRICK2 align: lite", printed)
+        self.assertIn("lite 1/3", printed)
+
     def test_full_gate_tracker_starts_on_first_post_lite_success_sample(self):
         world = _DummyWorld()
         world._gatecheck_mode = "traditional"
@@ -242,6 +310,191 @@ class TestTelemetryProcessLiteGate(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertEqual(len(wait_calls), 1)
+
+    def test_evaluate_gate_status_lite_only_aruco_skips_traditional_brick_check(self):
+        world = _DummyWorld()
+        telemetry_process.GATECHECK_LITE_ONLY_ARUCO_EXPERIMENT = True
+        with mock.patch.object(
+            telemetry_process,
+            "_evaluate_lite_gate_brick_success",
+            return_value=True,
+        ), mock.patch.object(
+            telemetry_process,
+            "_evaluate_traditional_brick_success",
+            side_effect=AssertionError("traditional brick check should be skipped"),
+        ), mock.patch.object(
+            telemetry_process,
+            "_active_success_gate_mode",
+            return_value=telemetry_process.VISION_MODE_ARUCO,
+        ), mock.patch.object(
+            telemetry_process.telemetry_wall,
+            "evaluate_success_gates",
+            return_value=SimpleNamespace(ok=True),
+        ), mock.patch.object(
+            telemetry_process.telemetry_robot_module,
+            "evaluate_success_gates",
+            return_value=SimpleNamespace(ok=True),
+        ):
+            ok, _ = telemetry_process.evaluate_gate_status(world, "BRICK_LOCK")
+
+        self.assertTrue(ok)
+        self.assertEqual(world._gatecheck_mode, "traditional")
+        self.assertTrue(bool(getattr(world, "_gatecheck_lite_passed", False)))
+
+    def test_update_gatecheck_with_precheck_lite_only_aruco_returns_immediate_truth(self):
+        world = _DummyWorld()
+        world._gatecheck_mode = "traditional"
+        world._gatecheck_lite_required = 3
+        world._gatecheck_lite_collected = 3
+        world._gatecheck_lite_passed = True
+        world._frame_id = 77
+        tracker = telemetry_process.gate_utils.SuccessGateTracker(12, 26, 13)
+        telemetry_process.GATECHECK_LITE_ONLY_ARUCO_EXPERIMENT = True
+
+        with mock.patch.object(
+            telemetry_process,
+            "_active_success_gate_mode",
+            return_value=telemetry_process.VISION_MODE_ARUCO,
+        ):
+            success_met = telemetry_process.update_gatecheck_with_precheck(
+                world,
+                "BRICK_LOCK",
+                tracker,
+                True,
+                phase="align",
+                log=False,
+            )
+
+        self.assertTrue(success_met)
+        self.assertEqual(tracker.total_checks, 0)
+        status = getattr(world, "_gatecheck_status", None)
+        self.assertIsInstance(status, dict)
+        self.assertEqual(status.get("truth_by"), "lite_only_aruco")
+        self.assertEqual(status.get("need"), 1)
+        self.assertEqual(status.get("window_total"), 1)
+
+    def test_update_gatecheck_with_precheck_lite_only_aruco_logs_warning_on_lite_pass(self):
+        world = _DummyWorld()
+        world._gatecheck_mode = "traditional"
+        world._gatecheck_lite_required = 3
+        world._gatecheck_lite_collected = 3
+        world._gatecheck_lite_passed = True
+        world._frame_id = 78
+        tracker = telemetry_process.gate_utils.SuccessGateTracker(12, 26, 13)
+        telemetry_process.GATECHECK_LITE_ONLY_ARUCO_EXPERIMENT = True
+
+        with mock.patch.object(
+            telemetry_process,
+            "_active_success_gate_mode",
+            return_value=telemetry_process.VISION_MODE_ARUCO,
+        ), mock.patch("builtins.print") as print_mock:
+            telemetry_process.update_gatecheck_with_precheck(
+                world,
+                "BRICK_LOCK",
+                tracker,
+                True,
+                phase="align",
+                log=True,
+            )
+
+        printed = [str(call.args[0]) for call in print_mock.call_args_list if call.args]
+        self.assertTrue(
+            any("TEMPORARY ARUCO LITE-ONLY EXPERIMENT" in line for line in printed),
+            printed,
+        )
+
+    def test_run_full_gatecheck_after_act_lite_only_aruco_uses_one_check(self):
+        world = _DummyWorld()
+        world._gatecheck_lite_required = 3
+        vision = object()
+        tracker = telemetry_process.gate_utils.SuccessGateTracker(12, 26, 13)
+        telemetry_process.GATECHECK_LITE_ONLY_ARUCO_EXPERIMENT = True
+        wait_calls = []
+
+        def _fake_wait_for_fresh_frames(*args, **kwargs):
+            wait_calls.append((args, kwargs))
+            world._frame_id += 1
+            return {"advanced": 1}
+
+        with mock.patch.object(
+            telemetry_process,
+            "_active_success_gate_mode",
+            return_value=telemetry_process.VISION_MODE_ARUCO,
+        ), mock.patch.object(
+            telemetry_process.gate_utils,
+            "wait_for_fresh_frames",
+            side_effect=_fake_wait_for_fresh_frames,
+        ), mock.patch.object(
+            telemetry_process,
+            "update_world_from_vision",
+            return_value=None,
+        ), mock.patch.object(
+            telemetry_process,
+            "gatecheck_after_move",
+            return_value=False,
+        ):
+            ok = telemetry_process.run_full_gatecheck_after_act(
+                world,
+                vision,
+                "APPROACH_VECTOR_WALL",
+                tracker,
+                phase="align",
+                log=False,
+                observer=None,
+            )
+
+        self.assertFalse(ok)
+        self.assertEqual(len(wait_calls), 1)
+
+    def test_new_success_tracker_halves_pass_thresholds_in_aruco_only(self):
+        prev_consec = telemetry_process.GATECHECK_CONSECUTIVE_REQUIRED
+        prev_majority_window = telemetry_process.GATECHECK_MAJORITY_WINDOW
+        prev_majority_required = telemetry_process.GATECHECK_MAJORITY_REQUIRED
+        telemetry_process.GATECHECK_CONSECUTIVE_REQUIRED = 6
+        telemetry_process.GATECHECK_MAJORITY_WINDOW = 13
+        telemetry_process.GATECHECK_MAJORITY_REQUIRED = 5
+        telemetry_process.GATECHECK_ARUCO_FULL_PASS_SCALE = 0.5
+        try:
+            with mock.patch.object(
+                telemetry_process,
+                "_active_success_gate_mode",
+                return_value=telemetry_process.VISION_MODE_ARUCO,
+            ):
+                tracker = telemetry_process.new_success_tracker("BRICK_LOCK", process_rules={})
+        finally:
+            telemetry_process.GATECHECK_CONSECUTIVE_REQUIRED = prev_consec
+            telemetry_process.GATECHECK_MAJORITY_WINDOW = prev_majority_window
+            telemetry_process.GATECHECK_MAJORITY_REQUIRED = prev_majority_required
+
+        self.assertEqual(int(tracker.consecutive_required), 6)
+        self.assertEqual(int(tracker.majority_required), 5)
+        self.assertEqual(int(getattr(tracker, "consecutive_pass_required", tracker.consecutive_required)), 3)
+        self.assertEqual(int(getattr(tracker, "majority_pass_required", tracker.majority_required)), 3)
+
+    def test_new_success_tracker_keeps_pass_thresholds_for_cyan(self):
+        prev_consec = telemetry_process.GATECHECK_CONSECUTIVE_REQUIRED
+        prev_majority_window = telemetry_process.GATECHECK_MAJORITY_WINDOW
+        prev_majority_required = telemetry_process.GATECHECK_MAJORITY_REQUIRED
+        telemetry_process.GATECHECK_CONSECUTIVE_REQUIRED = 6
+        telemetry_process.GATECHECK_MAJORITY_WINDOW = 13
+        telemetry_process.GATECHECK_MAJORITY_REQUIRED = 5
+        telemetry_process.GATECHECK_ARUCO_FULL_PASS_SCALE = 0.5
+        try:
+            with mock.patch.object(
+                telemetry_process,
+                "_active_success_gate_mode",
+                return_value=telemetry_process.VISION_MODE_CYAN,
+            ):
+                tracker = telemetry_process.new_success_tracker("BRICK_LOCK", process_rules={})
+        finally:
+            telemetry_process.GATECHECK_CONSECUTIVE_REQUIRED = prev_consec
+            telemetry_process.GATECHECK_MAJORITY_WINDOW = prev_majority_window
+            telemetry_process.GATECHECK_MAJORITY_REQUIRED = prev_majority_required
+
+        self.assertEqual(int(tracker.consecutive_required), 6)
+        self.assertEqual(int(tracker.majority_required), 5)
+        self.assertEqual(int(getattr(tracker, "consecutive_pass_required", tracker.consecutive_required)), 6)
+        self.assertEqual(int(getattr(tracker, "majority_pass_required", tracker.majority_required)), 5)
 
     def test_lite_visible_false_gate_fails_when_recent_raw_frames_confidently_see_brick(self):
         telemetry_process.apply_lite_gate_check_config({"default_unique_smoothed_frames": 3})

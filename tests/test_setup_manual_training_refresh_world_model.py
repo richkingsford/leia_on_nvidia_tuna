@@ -101,7 +101,7 @@ class TestSetupManualTrainingRefreshWorldModel(unittest.TestCase):
             app = _DummyAppState(demos_dir)
             update_calls = {"count": 0}
 
-            def _fake_update(_logs, path):
+            def _fake_update(_logs, path, **_kwargs):
                 update_calls["count"] += 1
                 Path(path).write_text(
                     json.dumps(
@@ -138,6 +138,85 @@ class TestSetupManualTrainingRefreshWorldModel(unittest.TestCase):
 
             setup_manual_training.refresh_world_model_from_demos(app, force=False, min_interval_s=0.0)
             self.assertEqual(update_calls["count"], 1)
+
+    def test_refresh_world_model_can_force_success_gate_rederive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            demos_dir = root / "demos"
+            demos_dir.mkdir(parents=True, exist_ok=True)
+            process_file = root / "world_model_process.json"
+            process_file.write_text(json.dumps({"steps": {}}, indent=2) + "\n")
+            now = float(int(time.time()))
+            os.utime(process_file, (now - 5.0, now - 5.0))
+
+            app = _DummyAppState(demos_dir)
+            call_args = {}
+
+            def _fake_update(_logs, _path, **kwargs):
+                call_args["force_rederive_success_gates"] = bool(
+                    kwargs.get("force_rederive_success_gates")
+                )
+
+            self._patch_module_attr("PROCESS_MODEL_FILE", process_file)
+            self._patch_module_attr("_latest_demo_mtime", lambda _demos: now - 10.0)
+            self._patch_module_attr("load_demo_logs", lambda _demos: [(Path("demo.json"), [{"type": "keyframe"}])])
+            self._patch_module_attr("update_process_model_from_demos", _fake_update)
+            self._patch_module_attr("refresh_autobuild_config", lambda _path: None)
+            self._patch_module_attr("load_process_model", lambda path: json.loads(Path(path).read_text()))
+            self._patch_module_attr("load_align_profile", lambda _root: {})
+            self._patch_module_attr(
+                "inject_align_profile_into_learned_rules",
+                lambda learned, _profile: dict(learned or {}),
+            )
+            self._patch_time_now(lambda: now)
+
+            setup_manual_training.refresh_world_model_from_demos(
+                app,
+                force=True,
+                min_interval_s=0.0,
+                force_rederive_success_gates=True,
+            )
+
+            self.assertTrue(call_args.get("force_rederive_success_gates"))
+
+    def test_refresh_world_model_default_does_not_force_success_gate_rederive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            demos_dir = root / "demos"
+            demos_dir.mkdir(parents=True, exist_ok=True)
+            process_file = root / "world_model_process.json"
+            process_file.write_text(json.dumps({"steps": {}}, indent=2) + "\n")
+            now = float(int(time.time()))
+            os.utime(process_file, (now - 5.0, now - 5.0))
+
+            app = _DummyAppState(demos_dir)
+            call_args = {}
+
+            def _fake_update(_logs, _path, **kwargs):
+                call_args["force_rederive_success_gates"] = bool(
+                    kwargs.get("force_rederive_success_gates")
+                )
+
+            self._patch_module_attr("PROCESS_MODEL_FILE", process_file)
+            self._patch_module_attr("_latest_demo_mtime", lambda _demos: now - 10.0)
+            self._patch_module_attr("load_demo_logs", lambda _demos: [(Path("demo.json"), [{"type": "keyframe"}])])
+            self._patch_module_attr("update_process_model_from_demos", _fake_update)
+            self._patch_module_attr("refresh_autobuild_config", lambda _path: None)
+            self._patch_module_attr("load_process_model", lambda path: json.loads(Path(path).read_text()))
+            self._patch_module_attr("load_align_profile", lambda _root: {})
+            self._patch_module_attr(
+                "inject_align_profile_into_learned_rules",
+                lambda learned, _profile: dict(learned or {}),
+            )
+            self._patch_time_now(lambda: now)
+
+            setup_manual_training.refresh_world_model_from_demos(
+                app,
+                force=True,
+                min_interval_s=0.0,
+            )
+
+            self.assertFalse(call_args.get("force_rederive_success_gates"))
 
 
 if __name__ == "__main__":

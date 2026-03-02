@@ -16,12 +16,19 @@ class TestHelperGateUtils(unittest.TestCase):
             "angle": -10.0,
             "x_axis": 5.0,
             "offset_x": 5.0,
+            "y_axis": 0.0,
+            "offset_y": 0.0,
             "dist": 42.0,
         }
         self.assertEqual(helper_gate_utils.metric_value_from_measurement(measurement, "visible"), True)
         self.assertEqual(helper_gate_utils.metric_value_from_measurement(measurement, "angle_abs"), 10.0)
         self.assertEqual(helper_gate_utils.metric_value_from_measurement(measurement, "xAxis_offset_abs"), 5.0)
         self.assertEqual(helper_gate_utils.metric_value_from_measurement(measurement, "dist"), 42.0)
+        self.assertEqual(helper_gate_utils.metric_value_from_measurement(measurement, "inCrosshairs"), True)
+
+        measurement_shifted = dict(measurement)
+        measurement_shifted["in_crosshairs_center_y"] = -12.0
+        self.assertEqual(helper_gate_utils.metric_value_from_measurement(measurement_shifted, "inCrosshairs"), False)
 
     def test_metric_error_target_tol(self):
         stats = {"target": 10.0, "tol": 2.0}
@@ -129,6 +136,8 @@ class TestHelperGateUtils(unittest.TestCase):
                             "consecutive_required": 0,
                             "majority_window": 4,
                             "majority_required": 7,
+                            "lite_only_aruco_experiment": True,
+                            "aruco_full_gatecheck_pass_scale": 0.5,
                         }
                     }
                 )
@@ -137,6 +146,8 @@ class TestHelperGateUtils(unittest.TestCase):
         self.assertEqual(cfg["consecutive_required"], 1)
         self.assertEqual(cfg["majority_window"], 4)
         self.assertEqual(cfg["majority_required"], 4)
+        self.assertTrue(cfg["lite_only_aruco_experiment"])
+        self.assertAlmostEqual(float(cfg["aruco_full_gatecheck_pass_scale"]), 0.5, places=3)
 
     def test_should_hold_for_success_confirmation_with_pending_majority_window(self):
         tracker = helper_gate_utils.SuccessGateTracker(

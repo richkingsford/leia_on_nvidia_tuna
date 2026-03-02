@@ -1,7 +1,9 @@
 {
     "gate_checker": {
-        "consecutive_required": 6,
-        "majority_window": 13,
-        "majority_required": 5
+        "consecutive_required": 1,
+        "majority_window": 1,
+        "majority_required": 1,
+        "lite_only_aruco_experiment": false,
+        "aruco_full_gatecheck_pass_scale": 1.0
     }
 }

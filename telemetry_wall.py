@@ -100,11 +100,22 @@ def init_wall_state(envelope: WallEnvelope):
         "range_mm": None,
         "bearing_deg": None,
     }
+def _wall_step_config(world, obj_name):
+    model = getattr(world, "wall_model", None)
+    if not isinstance(model, dict):
+        return {}
+    steps = model.get("steps")
+    if not isinstance(steps, dict):
+        return {}
+    cfg = steps.get(obj_name)
+    return cfg if isinstance(cfg, dict) else {}
 
 
-
-
-def _needs_wall_origin(obj_name):
+def _step_requires_wall_origin(world, obj_name):
+    cfg = _wall_step_config(world, obj_name)
+    for key in ("requires_wall_origin", "require_wall_origin", "needs_wall_origin"):
+        if key in cfg:
+            return bool(cfg.get(key))
     if obj_name in ("PLACE", "RETREAT", "POSITION_BRICK"):
         return True
     return "ALIGN" in obj_name and "WALL" in obj_name
@@ -200,7 +211,7 @@ def update_from_motion(world, delta, envelope: WallEnvelope):
 
 def evaluate_start_gates(world, step, envelope: WallEnvelope):
     obj_name = _step_name(step)
-    if not _needs_wall_origin(obj_name):
+    if not _step_requires_wall_origin(world, obj_name):
         return GateCheck(ok=True)
     wall = world.wall
     reasons = []
@@ -213,7 +224,7 @@ def evaluate_start_gates(world, step, envelope: WallEnvelope):
 
 def evaluate_failure_gates(world, step, envelope: WallEnvelope):
     obj_name = _step_name(step)
-    if not _needs_wall_origin(obj_name):
+    if not _step_requires_wall_origin(world, obj_name):
         return GateCheck(ok=True)
     wall = world.wall
     if wall.get("origin") is None:
@@ -225,7 +236,7 @@ def evaluate_failure_gates(world, step, envelope: WallEnvelope):
 
 def evaluate_success_gates(world, step, envelope: WallEnvelope):
     obj_name = _step_name(step)
-    if not _needs_wall_origin(obj_name):
+    if not _step_requires_wall_origin(world, obj_name):
         return GateCheck(ok=True)
     wall = world.wall
     if wall.get("origin") is None:

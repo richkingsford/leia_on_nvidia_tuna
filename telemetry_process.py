@@ -68,9 +68,15 @@ DEFAULT_AUTOBUILD_CONFIG = {
 }
 
 DEFAULT_LITE_GATE_CHECK_CONFIG = {
-    "default_unique_smoothed_frames": 3,
+    "default_unique_smoothed_frames": 1,
     "steps": {},
 }
+GATECHECK_LITE_ONLY_ARUCO_EXPERIMENT = bool(
+    gate_utils.DEFAULT_GATE_CHECKER_CONFIG.get("lite_only_aruco_experiment", False)
+)
+GATECHECK_ARUCO_FULL_PASS_SCALE = float(
+    gate_utils.DEFAULT_GATE_CHECKER_CONFIG.get("aruco_full_gatecheck_pass_scale", 1.0)
+)
 
 # Steps that should keep an observe->act cadence without extra post-act settle waits.
 # Full confirmation still runs through the gatecheck tracker/lite precheck rules.
@@ -79,23 +85,26 @@ FAST_POST_ACT_GATECHECK_STEPS = {
     "POSITION_BRICK",
     "BRICK_LOCK",
     "BRICK_LOCK_WALL",
+    "SEAT_BRICK",
+    "EXIT_WALL",
 }
 
 PROCESS_SUCCESS_METRICS_BY_STEP = {
     "FIND_WALL": ("visible", "angle_abs"),
     "EXIT_WALL": ("visible",),
     "APPROACH_VECTOR_BRICK_SUPPLY": ("visible", "angle_abs"),
-    "FIND_TOPMOST_BRICK": ("visible", "brick_above"),
-    "FIND_TOPMOST_BRICK_WALL": ("visible", "brick_above"),
+    "FIND_TOPMOST_BRICK": ("visible", "brick_above", "inCrosshairs"),
+    "FIND_TOPMOST_BRICK_WALL": ("visible", "brick_above", "inCrosshairs"),
     "BRICK_LOCK": ("xAxis_offset_abs", "dist"),
-    "BRICK_LOCK_WALL": ("xAxis_offset_abs", "dist"),
+    "BRICK_LOCK_WALL": ("xAxis_offset_abs", "yAxis_offset_abs", "dist"),
     "ALIGN_BRICK": ("visible", "xAxis_offset_abs", "yAxis_offset_abs", "dist"),
     "SEAT_BRICK": ("visible", "dist"),
-    "SEAT_BRICK2": ("visible", "dist"),
+    "SEAT_BRICK2": ("visible", "xAxis_offset_abs", "yAxis_offset_abs", "dist"),
     "ELEVATE_BRICK": ("visible",),
     "FIND_WALL2": ("visible",),
     "APPROACH_VECTOR_WALL": ("visible", "angle_abs"),
     "POSITION_BRICK": ("visible", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "brick_above"),
+    "RETREAT": ("visible", "dist"),
 }
 
 PROCESS_START_METRICS_BY_STEP = {
@@ -171,6 +180,13 @@ FIND_BRICK_TURN_MOVE_MAX_SCORE = 2
 FIND_BRICK_TURN_CHECK_MAX_SCORE = 1
 MIN_MM_TOL = 1.5
 X_AXIS_OFFSET_ABS_TOL_MM = 1.4
+try:
+    ARUCO_GATE_MIN_CONFIDENCE = float(
+        _MANUAL_CONFIG.get("aruco_gate_min_confidence", 50.0)
+    )
+except (TypeError, ValueError):
+    ARUCO_GATE_MIN_CONFIDENCE = 50.0
+ARUCO_GATE_MIN_CONFIDENCE = max(0.0, min(100.0, float(ARUCO_GATE_MIN_CONFIDENCE)))
 
 LOCKED_SUCCESS_GATE_MODE_ALIASES = {
     "aruco": VISION_MODE_ARUCO,
@@ -454,6 +470,8 @@ def apply_gate_checker_config(cfg):
     global GATECHECK_CONSECUTIVE_REQUIRED
     global GATECHECK_MAJORITY_WINDOW
     global GATECHECK_MAJORITY_REQUIRED
+    global GATECHECK_LITE_ONLY_ARUCO_EXPERIMENT
+    global GATECHECK_ARUCO_FULL_PASS_SCALE
     cfg = cfg or {}
     default_cfg = gate_utils.DEFAULT_GATE_CHECKER_CONFIG
     GATECHECK_CONSECUTIVE_REQUIRED = _as_int(
@@ -473,6 +491,25 @@ def apply_gate_checker_config(cfg):
     GATECHECK_MAJORITY_REQUIRED = max(
         1,
         min(GATECHECK_MAJORITY_REQUIRED, GATECHECK_MAJORITY_WINDOW),
+    )
+    GATECHECK_LITE_ONLY_ARUCO_EXPERIMENT = bool(
+        cfg.get(
+            "lite_only_aruco_experiment",
+            default_cfg.get("lite_only_aruco_experiment", False),
+        )
+    )
+    GATECHECK_ARUCO_FULL_PASS_SCALE = max(
+        0.05,
+        min(
+            1.0,
+            _as_float(
+                cfg.get(
+                    "aruco_full_gatecheck_pass_scale",
+                    default_cfg.get("aruco_full_gatecheck_pass_scale", 1.0),
+                ),
+                default_cfg.get("aruco_full_gatecheck_pass_scale", 1.0),
+            ),
+        ),
     )
 
 
@@ -497,6 +534,7 @@ COLOR_BLUE_BRIGHT = "\033[94m"
 COLOR_YELLOW = "\033[33m"
 COLOR_ORANGE_BRIGHT = "\033[38;5;208m"
 COLOR_PINK = "\033[38;5;213m"
+COLOR_MAGENTA_BRIGHT = "\033[95m"
 ACTION_DISPLAY_TTL_S = 3.0
 
 
@@ -534,6 +572,58 @@ def format_headline(headline, color, details=""):
     if details is None:
         details = ""
     return f"{color}{headline}{COLOR_RESET}{details}"
+
+
+def _log_dist_priority_cheat_act(step, act_plan, *, align_silent=False, settle=False):
+    if align_silent or not isinstance(act_plan, dict):
+        return
+    if not bool(act_plan.get("cheat_dist_priority")):
+        return
+    step_key = normalize_step_label(step) or str(step or "UNKNOWN")
+    phase_label = "SETTLE" if bool(settle) else "ALIGN"
+    cmd = str(act_plan.get("cmd") or "").strip().upper() or "NONE"
+    try:
+        score = int(round(float(act_plan.get("score"))))
+    except (TypeError, ValueError):
+        score = None
+    ctx = act_plan.get("cheat_dist_priority_context")
+    if not isinstance(ctx, dict):
+        ctx = {}
+
+    def _fmt(name, precision=2):
+        try:
+            return f"{float(ctx.get(name)):.{int(precision)}f}"
+        except (TypeError, ValueError):
+            return "N/A"
+
+    score_text = str(int(score)) if score is not None else "N/A"
+    print(
+        format_headline(
+            f"[DIST PRIORITY CHEAT ACT] {step_key} {phase_label}: FORCING DISTANCE GAP CORRECTION",
+            COLOR_MAGENTA_BRIGHT,
+        )
+    )
+    print(
+        format_headline(
+            (
+                f"[DIST PRIORITY CHEAT ACT] {step_key} {phase_label}: "
+                f"CMD={cmd} SCORE={score_text} "
+                f"DIST_OUTSIDE_MM={_fmt('dist_outside_mm')} DIST_RATIO={_fmt('dist_ratio')} "
+                f"X_OUTSIDE_MM={_fmt('x_outside_mm')} X_RATIO={_fmt('x_ratio')} "
+                f"Y_OUTSIDE_MM={_fmt('y_outside_mm')} Y_RATIO={_fmt('y_ratio')}"
+            ),
+            COLOR_MAGENTA_BRIGHT,
+        )
+    )
+    print(
+        format_headline(
+            (
+                f"[DIST PRIORITY CHEAT ACT] {step_key} {phase_label}: "
+                f"THRESHOLDS MIN_RATIO={_fmt('min_ratio')} MIN_OUTSIDE_MM={_fmt('min_outside_mm')}"
+            ),
+            COLOR_MAGENTA_BRIGHT,
+        )
+    )
 
 
 @dataclass
@@ -626,22 +716,60 @@ def new_success_tracker(step, process_rules=None):
     majority_window = int(GATECHECK_MAJORITY_WINDOW)
     majority_required = int(GATECHECK_MAJORITY_REQUIRED)
     visible_only = isinstance(process_rules, dict) and next_module.success_gates_visible_only(process_rules, step)
-    # Visible-only gates can be noisy in the positive direction; keep relaxed
-    # pass thresholds there. Visibility-loss (visible=false) strictness is
-    # handled in the per-sample gatecheck logic, not by doubling tracker windows.
-    if visible_only:
-        negative_frames = max(1, consecutive_required // 2)
-        majority_window = max(1, consecutive_required + negative_frames)
-        majority_required = max(1, int(math.ceil(float(majority_window) / 2.0)))
 
     tracker = gate_utils.SuccessGateTracker(
         consecutive_required,
         majority_window,
         majority_required,
     )
+    if _active_success_gate_mode() == VISION_MODE_ARUCO:
+        pass_scale = max(0.05, min(1.0, float(GATECHECK_ARUCO_FULL_PASS_SCALE)))
+        if pass_scale < 1.0:
+            base_consec_pass = max(
+                1,
+                int(getattr(tracker, "consecutive_pass_required", consecutive_required)),
+            )
+            base_majority_pass = max(
+                1,
+                int(getattr(tracker, "majority_pass_required", majority_required)),
+            )
+            tracker.consecutive_pass_required = max(
+                1,
+                min(
+                    int(consecutive_required),
+                    int(math.ceil(float(base_consec_pass) * float(pass_scale))),
+                ),
+            )
+            tracker.majority_pass_required = max(
+                1,
+                min(
+                    int(majority_required),
+                    int(math.ceil(float(base_majority_pass) * float(pass_scale))),
+                ),
+            )
     if visible_only:
-        tracker.consecutive_pass_required = max(1, int(math.ceil(float(consecutive_required) / 2.0)))
-        tracker.majority_pass_required = max(1, int(majority_required))
+        # Do not relax full gatecheck thresholds for visible-only steps.
+        # Keep strict tracker semantics consistent with configured windows.
+        tracker.consecutive_pass_required = int(consecutive_required)
+        tracker.majority_pass_required = int(majority_required)
+    # Full gatecheck hardening: if tracker windows require multi-frame evidence,
+    # never allow pass thresholds to collapse to a single-frame confirmation.
+    if max(int(consecutive_required), int(majority_required)) > 1:
+        full_floor = 2
+        tracker.consecutive_pass_required = min(
+            int(consecutive_required),
+            max(
+                int(full_floor),
+                int(getattr(tracker, "consecutive_pass_required", consecutive_required)),
+            ),
+        )
+        tracker.majority_pass_required = min(
+            int(majority_required),
+            max(
+                int(full_floor),
+                int(getattr(tracker, "majority_pass_required", majority_required)),
+            ),
+        )
     if lite_frames is not None:
         # Lite check is a precheck only; full gate tracking still uses
         # traditional consecutive/majority confirmation.
@@ -788,11 +916,11 @@ def _format_success_gate_entry(world, entry):
     return metric, actual_str, gate_desc
 
 
-def _success_entry_matches(step, entry):
+def _success_entry_matches(step, entry, process_rules=None):
     metric = entry.get("metric")
     stats = entry.get("stats") or {}
     value = entry.get("value")
-    direction = metric_direction(metric, step)
+    direction = metric_direction(metric, step, process_rules=process_rules)
     matched = _gate_entry_matches(metric, value, stats, direction)
     if metric == "visible" and bool(entry.get("confident_visible_recent")) and gate_utils.bool_gate_target(stats) is False:
         return False
@@ -815,12 +943,13 @@ def _success_event_state_and_suffix(entry, actual):
 def format_success_event_lines(world, step, *, colored=False):
     entries = _success_gate_entries(world, step)
     lines = []
+    process_rules = getattr(world, "process_rules", None) if world is not None else None
     for entry in entries:
         metric, actual, gate = _format_success_gate_entry(world, entry)
         if not colored:
             lines.append(f"{metric}={actual} ({gate})")
             continue
-        match_ok = _success_entry_matches(step, entry)
+        match_ok = _success_entry_matches(step, entry, process_rules=process_rules)
         color = COLOR_GREEN if match_ok else COLOR_RED
         state_text, suffix = _success_event_state_and_suffix(entry, actual)
         lines.append(f"{metric}={color}{state_text}{COLOR_RESET}{suffix} ({gate})")
@@ -993,7 +1122,23 @@ def action_sent_display_text(
     return f"{parts[0]}{score_suffix}{details}"
 
 
-def auto_action_detail_text(cmd, speed_score=None, *, action_meta=None):
+def _join_action_notes(*notes):
+    merged = []
+    seen = set()
+    for note in notes:
+        text = str(note or "").strip()
+        if not text:
+            continue
+        if text in seen:
+            continue
+        merged.append(text)
+        seen.add(text)
+    if not merged:
+        return None
+    return " | ".join(merged)
+
+
+def auto_action_detail_text(cmd, speed_score=None, *, action_meta=None, context_note=None):
     if isinstance(action_meta, dict):
         score_effective = action_meta.get("score_effective")
         if score_effective is None:
@@ -1001,6 +1146,11 @@ def auto_action_detail_text(cmd, speed_score=None, *, action_meta=None):
         duration_ms = action_meta.get("duration_ms")
         if duration_ms is None:
             duration_ms = action_meta.get("duration_model_ms")
+        note_value = _join_action_notes(
+            action_meta.get("ease_in_out_note"),
+            action_meta.get("anti_alias_note"),
+            context_note,
+        )
         return action_sent_display_text(
             cmd,
             score_effective,
@@ -1008,10 +1158,14 @@ def auto_action_detail_text(cmd, speed_score=None, *, action_meta=None):
             pwm=action_meta.get("pwm"),
             power=action_meta.get("power"),
             duration_ms=duration_ms,
-            ease_note=action_meta.get("ease_in_out_note"),
-            anti_alias_note=action_meta.get("anti_alias_note"),
+            ease_note=note_value,
+            anti_alias_note=note_value,
         )
-    return action_display_text(cmd, speed_score)
+    text = action_display_text(cmd, speed_score)
+    note_text = str(context_note or "").strip()
+    if not note_text:
+        return text
+    return f"{text} ({note_text})"
 
 
 def record_action_display(
@@ -1199,6 +1353,106 @@ def _cap_auto_speed_score(score):
     return min(int(score_val), int(AUTO_SPEED_SCORE_HARD_MAX))
 
 
+def _align_correction_type_for_cmd(cmd, *, fallback=None):
+    cmd_key = str(cmd or "").strip().lower()
+    if cmd_key in ("f", "b"):
+        return "distance"
+    if cmd_key in ("l", "r"):
+        return "x_axis"
+    if cmd_key in ("u", "d"):
+        return "y_axis"
+    fallback_key = str(fallback or "").strip().lower()
+    if fallback_key in {"distance", "x_axis", "y_axis"}:
+        return fallback_key
+    return "x_axis"
+
+
+def _align_error_signature_for_correction(correction_type, local_gate_before_action):
+    ctype = str(correction_type or "").strip().lower()
+    state = local_gate_before_action if isinstance(local_gate_before_action, dict) else {}
+    try:
+        if ctype == "distance":
+            dist_now = state.get("dist")
+            dist_target = state.get("dist_target")
+            return round(float(dist_now) - float(dist_target), 2)
+        if ctype == "y_axis":
+            return round(float(state.get("y_err")), 2)
+        return round(float(state.get("x_err")), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _maybe_apply_repeated_unchanged_speed_bump(
+    *,
+    cmd,
+    score,
+    delta_class,
+    correction_type,
+    error_signature,
+    previous_cmd,
+    state=None,
+):
+    cmd_key = str(cmd or "").strip().lower()
+    prev_cmd_key = str(previous_cmd or "").strip().lower()
+    reset_state = {
+        "streak": 0,
+        "cmd": None,
+        "correction_type": None,
+        "error_signature": None,
+    }
+    base_state = {
+        "streak": 0,
+        "cmd": None,
+        "correction_type": None,
+        "error_signature": None,
+    }
+    if isinstance(state, dict):
+        base_state.update(
+            {
+                "streak": int(state.get("streak", 0) or 0),
+                "cmd": state.get("cmd"),
+                "correction_type": state.get("correction_type"),
+                "error_signature": state.get("error_signature"),
+            }
+        )
+
+    ctype = str(correction_type or "").strip().lower() or "x_axis"
+    should_track = (
+        cmd_key in ("f", "b", "l", "r", "u", "d")
+        and prev_cmd_key == cmd_key
+        and str(delta_class or "").strip().lower() == "unchanged"
+    )
+    if not should_track:
+        return score, reset_state, False
+
+    if (
+        str(base_state.get("cmd") or "").strip().lower() == cmd_key
+        and str(base_state.get("correction_type") or "").strip().lower() == ctype
+        and base_state.get("error_signature") == error_signature
+    ):
+        streak = int(base_state.get("streak", 0) or 0) + 1
+    else:
+        streak = 1
+    next_state = {
+        "streak": int(streak),
+        "cmd": cmd_key,
+        "correction_type": ctype,
+        "error_signature": error_signature,
+    }
+
+    try:
+        score_now = _cap_auto_speed_score(score)
+    except Exception:
+        score_now = None
+    if score_now is None:
+        return score, next_state, False
+
+    score_boosted = _cap_auto_speed_score(int(score_now) + 1)
+    if int(score_boosted) <= int(score_now):
+        return int(score_now), next_state, False
+    return int(score_boosted), next_state, True
+
+
 def _apply_find_brick_turn_speed_policy(step, cmd, score, *, phase=None):
     if score is None:
         return None
@@ -1227,9 +1481,331 @@ def _apply_find_brick_turn_speed_policy(step, cmd, score, *, phase=None):
     return min(int(score_val), int(cap))
 
 
+def _auto_cycle_speed_label(score):
+    if score is None:
+        return None
+    try:
+        score_val = int(telemetry_robot_module.normalize_speed_score(score))
+    except Exception:
+        return None
+    try:
+        normal_score = int(telemetry_robot_module.normalize_speed_score(AUTO_CYCLE_CHECK_SCORE))
+    except Exception:
+        normal_score = int(telemetry_robot_module.SPEED_SCORE_MIN)
+    try:
+        standard_score = int(telemetry_robot_module.normalize_speed_score(AUTO_CYCLE_MOVE_SCORE))
+    except Exception:
+        standard_score = int(normal_score)
+    try:
+        fast_score = int(telemetry_robot_module.normalize_speed_score(AUTO_SPEED_SCORE_HARD_MAX))
+    except Exception:
+        fast_score = int(standard_score)
+    if score_val >= int(fast_score):
+        return "fast"
+    if score_val >= int(standard_score):
+        return "standard"
+    if score_val >= int(normal_score):
+        return "normal"
+    return "normal"
+
+
+def _visible_only_replay_speed_tier(world, step, *, step_cfg=None, cmd=None):
+    cmd_key = str(cmd or "").strip().lower()
+    if cmd_key not in ("f", "b", "l", "r", "u", "d"):
+        return None
+    process_rules = getattr(world, "process_rules", None) or {}
+    if not next_module.success_gates_visible_only(process_rules, step):
+        return None
+    cfg = step_cfg if isinstance(step_cfg, dict) else {}
+    if not cfg:
+        obj_key = normalize_step_label(step)
+        cfg = (process_rules.get(obj_key, {}) if isinstance(process_rules, dict) else {}) or {}
+    tier_cfg = cfg.get("visible_only_speed_tiers") if isinstance(cfg, dict) else None
+    enabled = False
+    if isinstance(tier_cfg, bool):
+        enabled = bool(tier_cfg)
+        tier_cfg = {}
+    elif isinstance(tier_cfg, dict):
+        enabled = bool(tier_cfg.get("enabled", True))
+    if not enabled:
+        return None
+    if not isinstance(tier_cfg, dict):
+        tier_cfg = {}
+
+    normal_score = _cap_auto_speed_score(tier_cfg.get("normal", AUTO_CYCLE_CHECK_SCORE))
+    standard_score = _cap_auto_speed_score(tier_cfg.get("standard", AUTO_CYCLE_MOVE_SCORE))
+    fast_score = _cap_auto_speed_score(tier_cfg.get("fast", AUTO_SPEED_SCORE_HARD_MAX))
+    standard_score = max(int(normal_score), int(standard_score))
+    fast_score = max(int(standard_score), int(fast_score))
+    tiers = (
+        ("normal", int(normal_score)),
+        ("standard", int(standard_score)),
+        ("fast", int(fast_score)),
+    )
+    try:
+        cycle_idx = int(getattr(world, "_visible_speed_cycle", 0) or 0)
+    except Exception:
+        cycle_idx = 0
+    cycle_idx = max(0, min(int(cycle_idx), len(tiers) - 1))
+    tier_label, tier_score = tiers[cycle_idx]
+    return {
+        "label": str(tier_label),
+        "score": int(tier_score),
+    }
+
+
 def _auto_uses_demo_speed(step):
     step_key = normalize_step_label(step)
     return step_key in AUTO_DEMO_SPEED_STEPS
+
+
+def _height_intel_brick_height_mm():
+    try:
+        return float(getattr(telemetry_brick, "BRICK_HEIGHT_MM", 44.0))
+    except Exception:
+        return 44.0
+
+
+def _height_intel_step_cfg(world, step):
+    step_key = normalize_step_label(step)
+    process_rules = getattr(world, "process_rules", None) or {}
+    if not isinstance(process_rules, dict):
+        return step_key, {}
+    step_cfg = process_rules.get(step_key, {})
+    if not isinstance(step_cfg, dict):
+        return step_key, {}
+    return step_key, step_cfg
+
+
+def height_intel_values(world):
+    values = {
+        "brick_height_mm": float(_height_intel_brick_height_mm()),
+        "wall_height_mm": None,
+        "wall_height_bricks": None,
+        "brick_supply_height_mm": None,
+        "brick_supply_height_bricks": None,
+    }
+    if world is None:
+        return values
+
+    def _num(value):
+        return _as_float(value, None)
+
+    def _whole(value):
+        try:
+            return int(round(float(value)))
+        except (TypeError, ValueError):
+            return None
+
+    wall_mm = _num(getattr(world, "wall_height_mm", None))
+    wall_bricks = _whole(getattr(world, "wall_height_bricks", None))
+    supply_mm = _num(getattr(world, "brick_supply_height_mm", None))
+    supply_bricks = _whole(getattr(world, "brick_supply_height_bricks", None))
+
+    if wall_bricks is None and wall_mm is not None:
+        try:
+            wall_bricks = telemetry_brick.height_mm_to_brick_count(wall_mm, minimum=0)
+        except Exception:
+            wall_bricks = None
+    if wall_mm is None and wall_bricks is not None:
+        try:
+            wall_mm = telemetry_brick.brick_count_to_height_mm(wall_bricks)
+        except Exception:
+            wall_mm = None
+
+    if supply_bricks is None and supply_mm is not None:
+        try:
+            supply_bricks = telemetry_brick.height_mm_to_brick_count(supply_mm, minimum=0)
+        except Exception:
+            supply_bricks = None
+    if supply_mm is None and supply_bricks is not None:
+        try:
+            supply_mm = telemetry_brick.brick_count_to_height_mm(supply_bricks)
+        except Exception:
+            supply_mm = None
+
+    values["wall_height_mm"] = wall_mm
+    values["wall_height_bricks"] = wall_bricks
+    values["brick_supply_height_mm"] = supply_mm
+    values["brick_supply_height_bricks"] = supply_bricks
+    return values
+
+
+def _height_intel_value_text(name, bricks, mm):
+    if bricks is None and mm is None:
+        return f"{name}=unknown"
+    if bricks is None:
+        return f"{name}={float(mm):.1f}mm"
+    if mm is None:
+        return f"{name}={int(bricks)} bricks"
+    return f"{name}={int(bricks)} bricks ({float(mm):.1f}mm)"
+
+
+def height_intel_values_text(world):
+    values = height_intel_values(world)
+    return (
+        f"{_height_intel_value_text('wall_height', values.get('wall_height_bricks'), values.get('wall_height_mm'))}, "
+        f"{_height_intel_value_text('brick_supply_height', values.get('brick_supply_height_bricks'), values.get('brick_supply_height_mm'))}, "
+        f"brick_height={float(values.get('brick_height_mm') or 44.0):.1f}mm"
+    )
+
+
+def height_intel_step_begin_line(world, step):
+    step_key = normalize_step_label(step) or str(step or "UNKNOWN")
+    return f"[HEIGHT INTEL] {step_key} start: {height_intel_values_text(world)}"
+
+
+def apply_height_snapshot_from_step(world, step, *, log=True):
+    step_key, step_cfg = _height_intel_step_cfg(world, step)
+    cfg = step_cfg.get("height_snapshot") if isinstance(step_cfg, dict) else {}
+    if not isinstance(cfg, dict) or not bool(cfg.get("enabled", False)):
+        return {"applied": False, "reason": "disabled", "step": step_key}
+
+    target = str(cfg.get("target") or "").strip().lower()
+    if target not in {"wall_height", "brick_supply_height"}:
+        return {"applied": False, "reason": "invalid_target", "step": step_key}
+
+    source = str(cfg.get("source") or "lift_height").strip().lower()
+    measured_mm = None
+    if source == "lift_height":
+        measured_mm = _as_float(getattr(world, "lift_height", None), None)
+    elif source in {"wall_height", "brick_supply_height"}:
+        source_values = height_intel_values(world)
+        measured_mm = _as_float(source_values.get(f"{source}_mm"), None)
+    else:
+        measured_mm = _as_float(getattr(world, source, None), None)
+
+    if measured_mm is None:
+        return {"applied": False, "reason": "missing_measurement", "step": step_key}
+
+    try:
+        min_bricks = max(0, int(_as_int(cfg.get("min_bricks"), 1)))
+    except Exception:
+        min_bricks = 1
+    max_bricks = _as_int(cfg.get("max_bricks"), None)
+    if max_bricks is not None:
+        max_bricks = max(int(min_bricks), int(max_bricks))
+    try:
+        bricks = telemetry_brick.height_mm_to_brick_count(
+            measured_mm,
+            minimum=int(min_bricks),
+            maximum=max_bricks,
+        )
+    except Exception:
+        bricks = None
+    if bricks is None:
+        return {"applied": False, "reason": "conversion_failed", "step": step_key}
+    try:
+        quantized_mm = telemetry_brick.brick_count_to_height_mm(bricks)
+    except Exception:
+        quantized_mm = float(bricks) * float(_height_intel_brick_height_mm())
+
+    if target == "wall_height":
+        setattr(world, "wall_height_bricks", int(bricks))
+        setattr(world, "wall_height_mm", float(quantized_mm))
+    else:
+        setattr(world, "brick_supply_height_bricks", int(bricks))
+        setattr(world, "brick_supply_height_mm", float(quantized_mm))
+
+    if log:
+        print(
+            format_headline(
+                (
+                    f"[HEIGHT INTEL] {step_key} snapshot -> {target}={int(bricks)} bricks "
+                    f"({float(quantized_mm):.1f}mm) from {source}={float(measured_mm):.1f}mm; "
+                    f"{height_intel_values_text(world)}"
+                ),
+                COLOR_WHITE,
+            )
+        )
+
+    return {
+        "applied": True,
+        "step": step_key,
+        "target": str(target),
+        "source": str(source),
+        "source_mm": float(measured_mm),
+        "bricks": int(bricks),
+        "height_mm": float(quantized_mm),
+    }
+
+
+def _apply_height_intel_replay_override(world, step, cmd, score, *, phase=None, log=True):
+    cmd_key = str(cmd or "").strip().lower()
+    if cmd_key not in ("f", "b", "l", "r", "u", "d"):
+        return cmd, score, None, False
+    step_key, step_cfg = _height_intel_step_cfg(world, step)
+    cfg = step_cfg.get("height_intelligence") if isinstance(step_cfg, dict) else {}
+    if not isinstance(cfg, dict) or not bool(cfg.get("enabled", False)):
+        return cmd, score, None, False
+
+    apply_when_visible_false = bool(cfg.get("apply_when_visible_false", True))
+    brick = getattr(world, "brick", None) or {}
+    if apply_when_visible_false and bool(brick.get("visible")):
+        return cmd, score, None, False
+
+    allowed_cmds = cfg.get("apply_on_cmds")
+    if not isinstance(allowed_cmds, (list, tuple, set)) or not allowed_cmds:
+        allowed_cmds = ("f", "b", "l", "r")
+    allowed = {str(item).strip().lower() for item in allowed_cmds if item is not None}
+    if cmd_key not in allowed:
+        return cmd, score, None, False
+
+    values = height_intel_values(world)
+    source_key = str(cfg.get("source") or "").strip().lower()
+    source_bricks = None
+    if source_key == "wall_height":
+        source_bricks = values.get("wall_height_bricks")
+    elif source_key == "brick_supply_height":
+        source_bricks = values.get("brick_supply_height_bricks")
+    if source_bricks is None:
+        return cmd, score, None, False
+
+    low_cmd = str(cfg.get("low_cmd") or "d").strip().lower()
+    high_cmd = str(cfg.get("high_cmd") or "u").strip().lower()
+    if low_cmd not in ("u", "d"):
+        low_cmd = "d"
+    if high_cmd not in ("u", "d"):
+        high_cmd = "u"
+
+    low_max = _as_int(cfg.get("low_bricks_max"), 2)
+    high_min = _as_int(cfg.get("high_bricks_min"), 4)
+    chosen_cmd = None
+    reason_key = None
+    if low_max is not None and int(source_bricks) <= int(low_max):
+        chosen_cmd = str(low_cmd)
+        reason_key = "low"
+    elif high_min is not None and int(source_bricks) >= int(high_min):
+        chosen_cmd = str(high_cmd)
+        reason_key = "high"
+    if chosen_cmd is None:
+        return cmd, score, None, False
+
+    cooldown_s = max(0.0, float(_as_float(cfg.get("cooldown_s"), 0.6)))
+    now_s = float(time.time())
+    cooldown_by_step = getattr(world, "_height_intel_last_override_ts", None)
+    if not isinstance(cooldown_by_step, dict):
+        cooldown_by_step = {}
+    last_ts = _as_float(cooldown_by_step.get(step_key), None)
+    if last_ts is not None and cooldown_s > 0.0 and (now_s - float(last_ts)) < float(cooldown_s):
+        return cmd, score, None, False
+    cooldown_by_step[step_key] = float(now_s)
+    setattr(world, "_height_intel_last_override_ts", cooldown_by_step)
+
+    score_out = _cap_auto_speed_score(cfg.get("score", telemetry_robot_module.SPEED_SCORE_MIN))
+    context_note = f"height intel ({source_key} {reason_key})"
+    if log:
+        phase_key = str(phase or "replay").strip().lower() or "replay"
+        print(
+            format_headline(
+                (
+                    f"[HEIGHT INTEL] {step_key} {phase_key}: {source_key}={int(source_bricks)} bricks -> "
+                    f"{str(chosen_cmd).upper()} {int(score_out)}%; {height_intel_values_text(world)}"
+                ),
+                COLOR_MAGENTA_BRIGHT,
+            )
+        )
+    return str(chosen_cmd), int(score_out), context_note, True
 
 
 def send_robot_command_pwm(
@@ -1706,12 +2282,14 @@ def step_uses_alignment_control(step, process_rules):
         metrics = [metric for metric in alignment_metrics if metric]
         if not metrics:
             return False
-        if set(metrics).issubset({"visible"}):
+        non_alignment_metrics = {"visible", "confidence"}
+        if set(metrics).issubset(non_alignment_metrics):
             return False
         return True
     success_gates = rules.get("success_gates") or {}
     gate_metrics = {metric for metric in success_gates.keys() if metric}
-    if gate_metrics and gate_metrics.issubset({"visible"}):
+    non_alignment_metrics = {"visible", "confidence"}
+    if gate_metrics and gate_metrics.issubset(non_alignment_metrics):
         return False
     return bool(gate_metrics)
 
@@ -1917,8 +2495,6 @@ def print_gatecheck_progress_line(world, step=None, *, log=True, force=False):
     truth_ok = bool(status.get("truth_ok", False))
 
     if mode == "lite":
-        if not force:
-            return
         lite_collected = max(0, int(status.get("lite_collected", 0) or 0))
         lite_required = max(1, int(status.get("lite_required", 1) or 1))
         state = "pass" if truth_ok else "wait"
@@ -1927,14 +2503,17 @@ def print_gatecheck_progress_line(world, step=None, *, log=True, force=False):
             f"lite {lite_collected}/{lite_required} {state} "
             f"(checks={checks})"
         )
+        # Lite checks can run frequently; dedupe by progress state and emit a
+        # periodic heartbeat bucket so operator logs still show forward motion.
+        heartbeat_bucket = max(0, int(checks) // 20)
         sig = (
             step_key,
             phase,
             mode,
-            checks,
             lite_collected,
             lite_required,
             truth_ok,
+            heartbeat_bucket,
         )
     else:
         lite_required = int(status.get("lite_required", 0) or 0)
@@ -1968,6 +2547,12 @@ def print_gatecheck_progress_line(world, step=None, *, log=True, force=False):
         return
     world._last_gatecheck_progress_sig = sig
     print(format_headline(text, COLOR_WHITE))
+    if mode == "lite" and phase == "start":
+        detail = _result_lite_gate_detail(world, step_key)
+        if isinstance(detail, dict):
+            detail_line = detail.get("colored") or detail.get("plain")
+            if detail_line:
+                print(format_headline(f"[GATECHECK-DETAIL] {step_key} {phase}: {detail_line}", COLOR_WHITE))
 
 
 def print_gatecheck_entry_proof_line(world, step, *, phase=None, success_ok=None, log=True):
@@ -2019,6 +2604,11 @@ def _log_gatecheck_failure(world, step, phase, *, log=True):
     phase_key = str(phase or "run").strip().lower() or "run"
     detail = _gatecheck_failure_detail(world, step)
     print(format_headline(f"[GATECHECK-FAIL] {step_key} {phase_key}: {detail}", COLOR_RED))
+    lite_detail = _result_lite_gate_detail(world, step)
+    if isinstance(lite_detail, dict):
+        lite_line = lite_detail.get("colored") or lite_detail.get("plain")
+        if lite_line:
+            print(format_headline(f"[GATECHECK-DETAIL] {step_key} {phase_key}: {lite_line}", COLOR_WHITE))
 
 
 def _gatecheck_next_action_text(cmd, speed_score=None, reason=None):
@@ -2050,13 +2640,84 @@ def pause_after_fail(robot):
     time.sleep(FAIL_PAUSE_S)
 
 
+def _visible_success_target_false(gates):
+    if not isinstance(gates, dict):
+        return False
+    visible_cfg = gates.get("visible")
+    if not isinstance(visible_cfg, dict):
+        return False
+    return gate_utils.bool_gate_target(visible_cfg) is False
+
+
+def _inject_aruco_confidence_gate(gates):
+    if not isinstance(gates, dict):
+        return
+    if _visible_success_target_false(gates):
+        gates.pop("confidence", None)
+        return
+    min_conf = float(ARUCO_GATE_MIN_CONFIDENCE)
+    existing = gates.get("confidence")
+    if isinstance(existing, dict):
+        try:
+            existing_min = float(existing.get("min"))
+            min_conf = max(float(min_conf), float(existing_min))
+        except (TypeError, ValueError):
+            pass
+    gates["confidence"] = {"min": round(float(min_conf), 1)}
+
+
+def _remove_aruco_confidence_gate(gates):
+    if not isinstance(gates, dict):
+        return
+    gates.pop("confidence", None)
+
+
+def _aruco_confidence_gate_enabled(step_cfg):
+    if not isinstance(step_cfg, dict):
+        return True
+    setting = step_cfg.get("aruco_confidence_gate")
+    if setting is None:
+        return True
+    return bool(setting)
+
+
+def _apply_aruco_confidence_policy(model):
+    if not isinstance(model, dict):
+        return model
+    steps = model.get("steps")
+    if not isinstance(steps, dict):
+        return model
+    if _active_success_gate_mode() != VISION_MODE_ARUCO:
+        return model
+    for _, cfg in steps.items():
+        if not isinstance(cfg, dict):
+            continue
+        allow_confidence_gate = _aruco_confidence_gate_enabled(cfg)
+        success_gates = cfg.get("success_gates")
+        if isinstance(success_gates, dict):
+            if allow_confidence_gate:
+                _inject_aruco_confidence_gate(success_gates)
+            else:
+                _remove_aruco_confidence_gate(success_gates)
+        locked = cfg.get("locked_success_gates_by_mode")
+        if isinstance(locked, dict):
+            aruco_locked = locked.get(VISION_MODE_ARUCO)
+            if isinstance(aruco_locked, dict):
+                if allow_confidence_gate:
+                    _inject_aruco_confidence_gate(aruco_locked)
+                else:
+                    _remove_aruco_confidence_gate(aruco_locked)
+    return model
+
+
 def load_process_model(path=PROCESS_MODEL_FILE):
     if not path.exists():
-        return {"steps": {}}
+        return _apply_aruco_confidence_policy(_canonicalize_process_model({"steps": {}}))
     try:
-        return json.loads(path.read_text())
+        model = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
-        return {"steps": {}}
+        model = {"steps": {}}
+    return _apply_aruco_confidence_policy(_canonicalize_process_model(model))
 
 
 def refresh_autobuild_config(path=PROCESS_MODEL_FILE, gate_checker_path=GATE_CHECKER_MODEL_FILE):
@@ -2200,6 +2861,14 @@ def metric_value_from_state(state, metric):
             val = brick.get("brick_below")
             return None if val is None else bool(val)
         return None
+    if metric in ("inCrosshairs", "in_crosshairs"):
+        if "inCrosshairs" in brick:
+            val = brick.get("inCrosshairs")
+            return None if val is None else bool(val)
+        if "in_crosshairs" in brick:
+            val = brick.get("in_crosshairs")
+            return None if val is None else bool(val)
+        return None
     if metric == "visible":
         return bool(brick.get("visible"))
     if metric == "confidence":
@@ -2209,9 +2878,9 @@ def metric_value_from_state(state, metric):
     return None
 
 
-def metric_direction(metric, step):
+def metric_direction(metric, step, process_rules=None):
     if metric in next_module.METRIC_DIRECTIONS:
-        return next_module.metric_direction_for_step(metric, step)
+        return next_module.metric_direction_for_step(metric, step, process_rules=process_rules)
     return telemetry_robot_module.METRIC_DIRECTIONS.get(metric)
 
 
@@ -2417,7 +3086,7 @@ def refine_success_gates_with_failures(success_gates, fail_segments, step_rules=
             if not values:
                 continue
 
-            direction = metric_direction(metric, obj)
+            direction = metric_direction(metric, obj, process_rules=step_rules)
             if direction not in ("low", "high"):
                 continue
 
@@ -2497,6 +3166,31 @@ def _clone_gate_config(gates):
     return cloned
 
 
+def _merge_existing_tolerance_overrides(derived_gates, existing_gates):
+    """Keep explicit per-metric tolerance overrides from existing gate config."""
+    if not isinstance(derived_gates, dict):
+        return derived_gates
+    merged = _clone_gate_config(derived_gates)
+    if not isinstance(existing_gates, dict):
+        return merged
+    for metric, derived_stats in list(merged.items()):
+        if not isinstance(derived_stats, dict):
+            continue
+        existing_stats = existing_gates.get(metric)
+        if not isinstance(existing_stats, dict):
+            continue
+        if "tol" not in existing_stats:
+            continue
+        try:
+            tol_val = abs(float(existing_stats.get("tol")))
+        except (TypeError, ValueError):
+            continue
+        if tol_val <= 0.0:
+            continue
+        derived_stats["tol"] = round_value(tol_val)
+    return merged
+
+
 def _normalize_locked_success_gates_by_mode(raw):
     if not isinstance(raw, dict):
         return {}
@@ -2522,7 +3216,47 @@ def _active_success_gate_mode():
     return VISION_MODE_ARUCO
 
 
-def update_process_model_from_demos(logs, path=PROCESS_MODEL_FILE):
+def _lite_only_aruco_experiment_active():
+    if not bool(GATECHECK_LITE_ONLY_ARUCO_EXPERIMENT):
+        return False
+    return _active_success_gate_mode() == VISION_MODE_ARUCO
+
+
+def _log_lite_only_aruco_gatecheck_pass(world, step, phase):
+    if world is None:
+        return
+    step_key = normalize_step_label(step) or str(step) or "UNKNOWN"
+    phase_key = str(phase or "run").strip().upper() or "RUN"
+    frame_id = int(getattr(world, "_frame_id", 0) or 0)
+    sig = (step_key, phase_key, frame_id)
+    if getattr(world, "_last_lite_only_aruco_pass_log_sig", None) == sig:
+        return
+    world._last_lite_only_aruco_pass_log_sig = sig
+    print(
+        format_headline(
+            (
+                "[TEMPORARY ARUCO LITE-ONLY EXPERIMENT] "
+                f"{step_key} {phase_key}: LITE GATE PASSED - SKIPPING FULL GATE CHECK"
+            ),
+            COLOR_MAGENTA_BRIGHT,
+        )
+    )
+
+
+def update_process_model_from_demos(
+    logs,
+    path=PROCESS_MODEL_FILE,
+    *,
+    force_rederive_success_gates=False,
+):
+    """
+    Rebuild process gates from demo logs.
+
+    By default, success-gate lock flags are respected. When
+    `force_rederive_success_gates=True`, demo-derived success gates overwrite
+    locked success gates for the active mode so startup always refreshes numeric
+    gates from the latest demos.
+    """
     model = load_process_model(path)
     steps = model.get("steps")
     if not isinstance(steps, dict):
@@ -2597,6 +3331,7 @@ def update_process_model_from_demos(logs, path=PROCESS_MODEL_FILE):
         if normalize_step_label(name) not in RETIRED_PROCESS_STEPS
     }
     active_gate_mode = _active_success_gate_mode()
+    force_success_rederive = bool(force_rederive_success_gates)
 
     for obj in all_steps:
         cfg = steps.setdefault(obj, {})
@@ -2604,6 +3339,7 @@ def update_process_model_from_demos(logs, path=PROCESS_MODEL_FILE):
         lock_all_gates = bool(cfg.get("lock_gates")) if isinstance(cfg, dict) else False
         lock_start_gates = lock_all_gates or (bool(cfg.get("lock_start_gates")) if isinstance(cfg, dict) else False)
         lock_success_gates = lock_all_gates or (bool(cfg.get("lock_success_gates")) if isinstance(cfg, dict) else False)
+        effective_lock_success_gates = bool(lock_success_gates and not force_success_rederive)
         locked_success_by_mode = _normalize_locked_success_gates_by_mode(
             cfg.get("locked_success_gates_by_mode")
         )
@@ -2620,13 +3356,27 @@ def update_process_model_from_demos(logs, path=PROCESS_MODEL_FILE):
                 cfg.pop("start_gates", None)
 
         derived_success = success_gates.get(obj)
+        if isinstance(derived_success, dict) and force_success_rederive and lock_success_gates:
+            existing_success = cfg.get("success_gates")
+            derived_success = _merge_existing_tolerance_overrides(derived_success, existing_success)
+            if locked_success_by_mode:
+                active_locked_existing = locked_success_by_mode.get(active_gate_mode)
+                derived_success = _merge_existing_tolerance_overrides(
+                    derived_success,
+                    active_locked_existing,
+                )
         if locked_success_by_mode:
             active_locked = locked_success_by_mode.get(active_gate_mode)
             if isinstance(derived_success, dict):
-                if not lock_success_gates or not isinstance(active_locked, dict) or not active_locked:
+                if (
+                    force_success_rederive
+                    or not effective_lock_success_gates
+                    or not isinstance(active_locked, dict)
+                    or not active_locked
+                ):
                     locked_success_by_mode[active_gate_mode] = _clone_gate_config(derived_success)
                     active_locked = locked_success_by_mode.get(active_gate_mode)
-            elif not lock_success_gates:
+            elif not effective_lock_success_gates and not force_success_rederive:
                 locked_success_by_mode.pop(active_gate_mode, None)
                 active_locked = locked_success_by_mode.get(active_gate_mode)
             if locked_success_by_mode:
@@ -2635,14 +3385,19 @@ def update_process_model_from_demos(logs, path=PROCESS_MODEL_FILE):
                 cfg.pop("locked_success_gates_by_mode", None)
             if isinstance(active_locked, dict) and active_locked:
                 cfg["success_gates"] = _clone_gate_config(active_locked)
-            elif not lock_success_gates:
+            elif not effective_lock_success_gates and not force_success_rederive:
                 cfg.pop("success_gates", None)
         else:
             if isinstance(derived_success, dict):
-                if not lock_success_gates or not isinstance(cfg.get("success_gates"), dict) or not cfg.get("success_gates"):
+                if (
+                    force_success_rederive
+                    or not effective_lock_success_gates
+                    or not isinstance(cfg.get("success_gates"), dict)
+                    or not cfg.get("success_gates")
+                ):
                     cfg["success_gates"] = derived_success
             else:
-                if not lock_success_gates:
+                if not effective_lock_success_gates and not force_success_rederive:
                     cfg.pop("success_gates", None)
         if obj in SUCCESS_GATE_EXCLUDE_ANGLE_STEPS and isinstance(cfg.get("success_gates"), dict):
             cfg["success_gates"].pop("angle_abs", None)
@@ -2815,43 +3570,6 @@ def min_acts_prefix_duration(events, min_acts):
     return total
 
 
-def trim_motion_steps_prefix(steps, trim_s):
-    if not steps:
-        return []
-    out = []
-    try:
-        trim_left = max(0.0, float(trim_s or 0.0))
-    except (TypeError, ValueError):
-        trim_left = 0.0
-    if trim_left <= 1e-6:
-        return list(steps)
-    for step in steps:
-        if step is None:
-            continue
-        try:
-            duration_s = max(0.0, float(getattr(step, "duration_s", 0.0) or 0.0))
-        except (TypeError, ValueError):
-            duration_s = 0.0
-        if duration_s <= 0.0:
-            continue
-        if trim_left > 1e-9:
-            if trim_left >= (duration_s - 1e-9):
-                trim_left -= duration_s
-                continue
-            duration_s = duration_s - trim_left
-            trim_left = 0.0
-        out.append(
-            MotionStep(
-                getattr(step, "cmd", None),
-                float(getattr(step, "speed", 0.0) or 0.0),
-                duration_s,
-                getattr(step, "label", None),
-                speed_score=getattr(step, "speed_score", None),
-            )
-        )
-    return out
-
-
 def smooth_motion_steps(steps, speed_score=DEFAULT_SPEED_SCORE, step_s=SMOOTH_STEP_S):
     if not steps:
         return []
@@ -2987,6 +3705,51 @@ def update_world_from_vision(world, vision, log=True):
         world._cyan_raw_fallback_confidence_min = None
 
     found, angle, dist, offset_x, conf, cam_h, brick_above, brick_below = vision.read()
+    floor_lift_mm = getattr(vision, "floor_lift_mm", None)
+    floor_lift_quality = getattr(vision, "floor_lift_quality", 0.0)
+    try:
+        floor_lift_mm = float(floor_lift_mm) if floor_lift_mm is not None else None
+    except (TypeError, ValueError):
+        floor_lift_mm = None
+    try:
+        floor_lift_quality = float(floor_lift_quality)
+    except (TypeError, ValueError):
+        floor_lift_quality = 0.0
+
+    def _update_world_vision_safe(
+        found_val,
+        dist_val,
+        angle_val,
+        conf_val,
+        offset_x_val,
+        cam_h_val,
+        brick_above_val,
+        brick_below_val,
+    ):
+        try:
+            world.update_vision(
+                found_val,
+                dist_val,
+                angle_val,
+                conf_val,
+                offset_x_val,
+                cam_h_val,
+                brick_above_val,
+                brick_below_val,
+                floor_lift_mm=floor_lift_mm,
+                floor_lift_quality=floor_lift_quality,
+            )
+        except TypeError:
+            world.update_vision(
+                found_val,
+                dist_val,
+                angle_val,
+                conf_val,
+                offset_x_val,
+                cam_h_val,
+                brick_above_val,
+                brick_below_val,
+            )
     if dist == -1:
         found = False
         angle = 0.0
@@ -3051,7 +3814,7 @@ def update_world_from_vision(world, vision, log=True):
         # above/below observations to reduce lag vs the green marker overlays.
         latest_stack_above = bool(frame.get("brick_above"))
         latest_stack_below = bool(frame.get("brick_below"))
-        world.update_vision(
+        _update_world_vision_safe(
             avg["found"],
             avg["dist"],
             avg["angle"],
@@ -3072,7 +3835,7 @@ def update_world_from_vision(world, vision, log=True):
         if _allow_raw_visibility_fallback(vision, frame):
             world._brick_inconsistent = False
             world._last_obs_note = f"{vision_backend} raw visibility fallback"
-            world.update_vision(
+            _update_world_vision_safe(
                 bool(frame.get("found")),
                 frame.get("dist", 0.0),
                 frame.get("angle", 0.0),
@@ -3099,11 +3862,12 @@ def update_world_from_vision(world, vision, log=True):
             world.brick["x_axis"] = 0.0
             world.brick["offset_y"] = 0.0
             world.brick["y_axis"] = 0.0
+            world.brick["inCrosshairs"] = False
     else:
         if _allow_raw_visibility_fallback(vision, frame):
             world._brick_inconsistent = False
             world._last_obs_note = f"{vision_backend} raw visibility fallback"
-            world.update_vision(
+            _update_world_vision_safe(
                 bool(frame.get("found")),
                 frame.get("dist", 0.0),
                 frame.get("angle", 0.0),
@@ -3129,6 +3893,7 @@ def update_world_from_vision(world, vision, log=True):
             world.brick["x_axis"] = 0.0
             world.brick["offset_y"] = 0.0
             world.brick["y_axis"] = 0.0
+            world.brick["inCrosshairs"] = False
     visible_now = bool(world.brick.get("visible"))
     lost_frames = getattr(world, "_visibility_lost_frames", 0)
     if visible_now:
@@ -3706,15 +4471,16 @@ def _auto_diag_lite_gate_detail(world, step):
             value_text = str(row.get("value_text") or "n/a")
             gate_text = str(row.get("gate_text") or "n/a")
             status_text = str(row.get("status") or "N/A").upper()
+            cmp_text = "=" if status_text == "PASS" else "!=" if status_text == "FAIL" else "?"
             if status_text == "PASS":
                 value_color = COLOR_GREEN
             elif status_text == "FAIL":
                 value_color = COLOR_RED
             else:
                 value_color = COLOR_GRAY
-            row_plain_parts.append(f"{metric} ({value_text})/{gate_text}")
+            row_plain_parts.append(f"{metric} ({cmp_text} Expected {gate_text} & saw {value_text})")
             row_colored_parts.append(
-                f"{COLOR_GRAY}{metric} {COLOR_RESET}{value_color}({value_text}){COLOR_RESET}{COLOR_GRAY}/{gate_text}{COLOR_RESET}"
+                f"{COLOR_GRAY}{metric} ({cmp_text} Expected {gate_text} & saw {COLOR_RESET}{value_color}({value_text}){COLOR_RESET}{COLOR_GRAY}){COLOR_RESET}"
             )
         plain += "; gates: " + "; ".join(row_plain_parts)
         colored += f"{COLOR_GRAY}; gates:{COLOR_RESET} " + f"{COLOR_GRAY}; {COLOR_RESET}".join(row_colored_parts)
@@ -3756,6 +4522,7 @@ def _result_lite_gate_detail(world, step):
         value_text = str(row.get("value_text") or "n/a")
         gate_text = str(row.get("gate_text") or "n/a")
         status_text = str(row.get("status") or "N/A").upper()
+        cmp_text = "=" if status_text == "PASS" else "!=" if status_text == "FAIL" else "?"
         if status_text == "PASS":
             value_color = COLOR_GREEN
         elif status_text == "FAIL":
@@ -3763,32 +4530,17 @@ def _result_lite_gate_detail(world, step):
         else:
             value_color = COLOR_GRAY
 
-        if gate_text.startswith("="):
-            gate_rhs = gate_text[1:]
-            is_match = status_text == "PASS"
-            sep_plain = "=" if is_match else "!="
-            sep_colored = (
-                f"{COLOR_GRAY}={COLOR_RESET}"
-                if is_match
-                else f"{COLOR_GRAY}!={COLOR_RESET}"
-            )
-        else:
-            gate_rhs = gate_text
-            sep_plain = "/"
-            sep_colored = f"{COLOR_GRAY}/{COLOR_RESET}"
-
-        row_plain_parts.append(f"{metric} ({value_text}){sep_plain}{gate_rhs}")
+        gate_rhs = gate_text[1:] if gate_text.startswith("=") else gate_text
+        row_plain_parts.append(f"{metric} ({cmp_text} Expected {gate_rhs} & saw {value_text})")
         row_colored_parts.append(
-            f"{COLOR_WHITE}{metric}{COLOR_RESET} "
-            f"{value_color}({value_text}){COLOR_RESET}"
-            f"{sep_colored}"
-            f"{COLOR_GRAY}{gate_rhs}{COLOR_RESET}"
+            f"{COLOR_WHITE}{metric} ({cmp_text} Expected {gate_rhs} & saw {COLOR_RESET}"
+            f"{value_color}({value_text}){COLOR_RESET}{COLOR_WHITE}){COLOR_RESET}"
         )
 
     plain = "lite gatecheck: " + "; ".join(row_plain_parts)
     colored_text = (
-        f"{COLOR_PINK}lite{COLOR_RESET}{COLOR_GRAY} gatecheck:{COLOR_RESET} "
-        + f"{COLOR_GRAY}; {COLOR_RESET}".join(row_colored_parts)
+        f"{COLOR_WHITE}lite gatecheck: {COLOR_RESET}"
+        + f"{COLOR_WHITE}; {COLOR_RESET}".join(row_colored_parts)
     )
     return {
         "plain": plain,
@@ -3823,7 +4575,11 @@ def _lite_gate_measurement_for_step(world, step):
             "collected": int(collected),
             "source": "pending",
         }
-    measurement = _average_smoothed_frames(frames)
+    measurement = _average_smoothed_frames(
+        frames,
+        step=step,
+        process_rules=getattr(world, "process_rules", None),
+    )
     if not isinstance(measurement, dict):
         return None, {
             "enabled": True,
@@ -3848,14 +4604,13 @@ def _success_gate_state_rows(world, step, *, measurement=None):
         return []
 
     entry_map = {}
-    if not isinstance(measurement, dict):
-        entries = _success_gate_entries(world, step_key)
-        for entry in entries or []:
-            if not isinstance(entry, dict):
-                continue
-            metric = entry.get("metric")
-            if metric:
-                entry_map[str(metric)] = entry
+    entries = _success_gate_entries(world, step_key)
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        metric = entry.get("metric")
+        if metric:
+            entry_map[str(metric)] = entry
 
     rows = []
     for metric, stats in success_gates.items():
@@ -3864,8 +4619,8 @@ def _success_gate_state_rows(world, step, *, measurement=None):
         value = None
         if isinstance(measurement, dict):
             value = gate_utils.metric_value_from_measurement(measurement, metric_key)
+        fallback_entry = entry_map.get(metric_key)
         if value is None:
-            fallback_entry = entry_map.get(metric_key)
             if isinstance(fallback_entry, dict):
                 value = _auto_diag_value_from_entry(fallback_entry)
 
@@ -3875,9 +4630,23 @@ def _success_gate_state_rows(world, step, *, measurement=None):
         else:
             direction = metric_direction(metric_key, step_key)
             matched = bool(_gate_entry_matches(metric_key, value, stats_dict, direction))
+            if (
+                metric_key == "visible"
+                and gate_utils.bool_gate_target(stats_dict) is False
+                and isinstance(fallback_entry, dict)
+                and bool(fallback_entry.get("confident_visible_recent"))
+            ):
+                matched = False
             distance = _gate_distance_to_success(metric_key, value, stats_dict, direction)
         requirement = _gate_requirement_text(stats_dict) or "n/a"
         value_text = _fmt_metric_value_with_unit(metric_key, value)
+        if (
+            metric_key == "visible"
+            and gate_utils.bool_gate_target(stats_dict) is False
+            and isinstance(fallback_entry, dict)
+            and bool(fallback_entry.get("confident_visible_recent"))
+        ):
+            value_text = f"{value_text} (recent_confident_visible=true)"
         status = "PASS" if matched is True else "FAIL" if matched is False else "N/A"
         rows.append(
             {
@@ -4808,10 +5577,11 @@ def _gate_entry_matches(metric, value, stats, direction):
     return True
 
 
-def _stream_success_gate_line(step, entry):
+def _stream_success_gate_line(step, entry, *, process_rules=None):
     metric = entry.get("metric")
     stats = entry.get("stats") or {}
     value = entry.get("value")
+    raw_value = entry.get("raw_value")
     requirement = _gate_requirement_text(stats)
     force_mismatch = False
     if metric == "visible":
@@ -4825,15 +5595,23 @@ def _stream_success_gate_line(step, entry):
             current = f"{current} recent_confident_visible=true"
     else:
         current = _fmt_gate_value(value) if value is not None else "n/a"
-        if metric == "dist" and isinstance(stats, dict):
-            target = stats.get("target")
-            tol = stats.get("tol")
+        target = stats.get("target") if isinstance(stats, dict) else None
+        if metric == "dist":
+            delta_text = None
             try:
-                if value is not None and target is not None and tol is not None:
-                    current = f"{(float(value) - float(target)):+.1f}"
+                if value is not None and target is not None:
+                    delta_text = f"{(float(value) - float(target)):+.1f}"
             except (TypeError, ValueError):
-                pass
-    direction = metric_direction(metric, step)
+                delta_text = None
+            if delta_text is not None:
+                current = f"{_fmt_gate_value(value)} Δ{delta_text}"
+        try:
+            if value is not None and raw_value is not None:
+                if abs(float(raw_value) - float(value)) >= 0.05:
+                    current = f"{current} raw={_fmt_gate_value(raw_value)}"
+        except (TypeError, ValueError):
+            pass
+    direction = metric_direction(metric, step, process_rules=process_rules)
     matched = _gate_entry_matches(metric, value, stats, direction)
     if force_mismatch:
         matched = False
@@ -4864,7 +5642,13 @@ def compute_stream_gate_summary(world, step, active=True, include_step_line=True
         align = {}
     metric_lines = []
     for entry in _success_gate_entries(world, obj_name):
-        metric_lines.append(_stream_success_gate_line(obj_name, entry))
+        metric_lines.append(
+            _stream_success_gate_line(
+                obj_name,
+                entry,
+                process_rules=(world.process_rules or {}),
+            )
+        )
 
     suggested_cmd = None
     suggested_score = None
@@ -5065,7 +5849,7 @@ def _latest_unique_smoothed_frames(world, required_frames):
     return selected
 
 
-def _average_smoothed_frames(frames):
+def _average_smoothed_frames(frames, *, step=None, process_rules=None):
     if not frames:
         return None
 
@@ -5086,6 +5870,21 @@ def _average_smoothed_frames(frames):
 
     x_axis = mean("x_axis")
     y_axis = mean("y_axis")
+    try:
+        center_x_mm, center_y_mm = telemetry_brick.in_crosshairs_center_mm(
+            None,
+            step=step,
+            process_rules=process_rules if isinstance(process_rules, dict) else {},
+        )
+    except Exception:
+        center_x_mm, center_y_mm = 0.0, 0.0
+    in_crosshairs = telemetry_brick._compute_in_crosshairs(
+        majority("visible"),
+        x_axis,
+        y_axis,
+        center_x_mm=center_x_mm,
+        center_y_mm=center_y_mm,
+    )
     return {
         "visible": majority("visible"),
         "dist": mean("dist"),
@@ -5094,6 +5893,10 @@ def _average_smoothed_frames(frames):
         "offset_x": mean("offset_x"),
         "y_axis": y_axis,
         "offset_y": mean("offset_y"),
+        "inCrosshairs": bool(in_crosshairs),
+        "in_crosshairs": bool(in_crosshairs),
+        "in_crosshairs_center_x": float(center_x_mm),
+        "in_crosshairs_center_y": float(center_y_mm),
         "confidence": mean("confidence"),
         "brick_above": majority_optional_bool("brick_above"),
         "brick_below": majority_optional_bool("brick_below"),
@@ -5119,7 +5922,11 @@ def _evaluate_lite_gate_brick_success(world, step, process_rules):
     if len(frames) < required_frames:
         return False
 
-    measurement = _average_smoothed_frames(frames)
+    measurement = _average_smoothed_frames(
+        frames,
+        step=step,
+        process_rules=process_rules,
+    )
     if measurement is None:
         return False
     world._lite_gate_measurement = measurement
@@ -5140,7 +5947,7 @@ def _evaluate_lite_gate_brick_success(world, step, process_rules):
         if (metric_key in visibility_required_metrics) and (not visible_now):
             return False
         value = gate_utils.metric_value_from_measurement(measurement, metric_key)
-        direction = metric_direction(metric_key, step)
+        direction = metric_direction(metric_key, step, process_rules=process_rules)
         if not _gate_entry_matches(metric_key, value, stats, direction):
             return False
     return bool(saw_metric)
@@ -5196,12 +6003,15 @@ def evaluate_gate_status(world, step):
         # As soon as lite precheck passes, switch to full confirmation checks.
         world._gatecheck_mode = "traditional"
         world._gatecheck_lite_passed = True
-        brick_ok = _evaluate_traditional_brick_success(
-            world,
-            step,
-            telemetry_rules,
-            process_rules,
-        )
+        if _lite_only_aruco_experiment_active():
+            brick_ok = True
+        else:
+            brick_ok = _evaluate_traditional_brick_success(
+                world,
+                step,
+                telemetry_rules,
+                process_rules,
+            )
     wall_success = telemetry_wall.evaluate_success_gates(world, step, world.wall_envelope)
     robot_success = telemetry_robot_module.evaluate_success_gates(world, step, telemetry_rules, process_rules)
 
@@ -5250,12 +6060,49 @@ def update_gatecheck_with_precheck(world, step, tracker, success_ok, *, phase, l
             "frame_id": int(getattr(world, "_frame_id", 0) or 0),
             "timestamp": time.time(),
         }
+        if log:
+            print_gatecheck_progress_line(world, step, log=log)
         return False
 
     lite_required = int(getattr(world, "_gatecheck_lite_required", 0) or 0)
     lite_passed = getattr(world, "_gatecheck_lite_passed", None)
     if lite_required > 0 and lite_passed is False:
         return False
+
+    if _lite_only_aruco_experiment_active() and lite_required > 0:
+        step_key = normalize_step_label(step) or str(step)
+        phase_key = phase or "run"
+        world._gatecheck_lite_checks = 0
+        truth_ok = bool(success_ok)
+        world._gatecheck_status = {
+            "step": step_key,
+            "phase": phase_key,
+            "mode": "traditional",
+            "checks": 1,
+            "pass": 1 if truth_ok else 0,
+            "fail": 0 if truth_ok else 1,
+            "streak": 1 if truth_ok else 0,
+            "need": 1,
+            "need_pass": 1,
+            "consecutive_ok": truth_ok,
+            "window_pass": 1 if truth_ok else 0,
+            "window_size": 1,
+            "window_total": 1,
+            "window_need": 1,
+            "window_need_pass": 1,
+            "majority_ok": truth_ok,
+            "truth_ok": truth_ok,
+            "truth_by": "lite_only_aruco" if truth_ok else None,
+            "lite_required": int(getattr(world, "_gatecheck_lite_required", 0) or 0),
+            "lite_collected": int(getattr(world, "_gatecheck_lite_collected", 0) or 0),
+            "frame_id": int(getattr(world, "_frame_id", 0) or 0),
+            "timestamp": time.time(),
+        }
+        if log:
+            print_gatecheck_progress_line(world, step, log=log)
+            if truth_ok:
+                _log_lite_only_aruco_gatecheck_pass(world, step, phase)
+        return truth_ok
 
     if int(getattr(tracker, "total_checks", 0) or 0) <= 0:
         print_gatecheck_entry_proof_line(
@@ -5512,13 +6359,11 @@ def observe_success_gatecheck(
             )
     if bool(hold_on_positive) and bool(instant_success_ok) and bool(effective_success_ok) and not bool(success_met):
         hold_for_confirm = True
-    # If lite precheck rows are currently all passing but we still have not entered
-    # full tracker confirmation, hold position and keep observing rather than moving.
-    # This prevents oscillation loops where motion keeps perturbing a near-pass state.
-    if not hold_for_confirm:
-        mode_now = str(getattr(world, "_gatecheck_mode", "traditional") or "traditional").strip().lower()
-        if mode_now == "lite" and not bool(success_met):
-            hold_for_confirm = bool(_lite_measurement_rows_all_pass(world, step))
+    # Single-lite rule: in lite mode, a non-pass should immediately return
+    # control to correction planning rather than parking in confirmation hold.
+    mode_now = str(getattr(world, "_gatecheck_mode", "traditional") or "traditional").strip().lower()
+    if mode_now == "lite" and not bool(success_met):
+        hold_for_confirm = False
     return {
         "success_ok": bool(success_ok),
         "instant_success_ok": bool(instant_success_ok),
@@ -5553,22 +6398,8 @@ def run_full_gatecheck_after_act(
 ):
     if tracker is None:
         return False
-    step_key = normalize_step_label(step)
-    # Keep observe→act cadence fast for brick-alignment loops (including brick-lock
-    # variants). Full streak/majority confirmation still happens across loop
-    # iterations via tracker state.
-    fast_post_act_gatecheck = step_key in FAST_POST_ACT_GATECHECK_STEPS
-    if fast_post_act_gatecheck:
-        checks_per_act = 1
-    else:
-        checks_per_act = max(
-            1,
-            int(getattr(tracker, "consecutive_required", 1)),
-            int(getattr(tracker, "majority_window", 1)),
-        )
-    lite_frames = lite_gate_unique_frames(step)
-    if (not fast_post_act_gatecheck) and lite_frames is not None:
-        checks_per_act = max(checks_per_act, int(lite_frames))
+    # Single full gatecheck sample per act for all steps.
+    checks_per_act = 1
     truth_hit = False
     truth_by = None
     for _ in range(checks_per_act):
@@ -5909,6 +6740,8 @@ def wait_for_start_gates(
             )
             success_ok = bool(gate_obs.get("effective_success_ok"))
             success_met = bool(gate_obs.get("success_met"))
+            gate_status = getattr(world, "_gatecheck_status", None)
+            gate_mode = str((gate_status or {}).get("mode") or "").strip().lower()
             if success_ok and not success_seen and robot:
                 robot.stop()
                 success_seen = True
@@ -5917,6 +6750,22 @@ def wait_for_start_gates(
                 if robot:
                     robot.stop()
                 return "success"
+            if (not success_ok) and gate_mode == "lite":
+                # Start gates are satisfied; if the first lite success precheck
+                # fails, leave start-hold immediately and continue with normal
+                # adjustment acts in the step loop instead of re-checking lite
+                # in place until timeout.
+                if log:
+                    _log_gatecheck_next_action(
+                        step,
+                        "start",
+                        cmd,
+                        speed_score=None,
+                        reason="lite precheck failed; proceeding to adjustment acts",
+                    )
+                if robot:
+                    robot.stop()
+                return "start"
             if not success_ok:
                 success_seen = False
             if bool(gate_obs.get("hold_for_confirm")):
@@ -6447,13 +7296,94 @@ def run_alignment_segment(
         }.get(str(cmd))
 
     action_speeds = derive_action_speeds(raw_steps)
+    step_key = normalize_step_label(step)
     step_rules = {}
     if isinstance(getattr(world, "process_rules", None), dict):
-        step_rules = world.process_rules.get(normalize_step_label(step), {}) or {}
+        step_rules = world.process_rules.get(step_key, {}) or {}
     success_gate_cfg = step_rules.get("success_gates") if isinstance(step_rules, dict) else {}
     success_gate_keys = {
         str(key) for key in (success_gate_cfg or {}).keys() if key is not None
     } if isinstance(success_gate_cfg, dict) else set()
+    progress_mast_cfg = step_rules.get("progress_mast_exception") if isinstance(step_rules, dict) else {}
+    if not isinstance(progress_mast_cfg, dict):
+        progress_mast_cfg = {}
+    progress_mast_enabled = bool(progress_mast_cfg.get("enabled"))
+    progress_mast_reminder = str(progress_mast_cfg.get("operator_log_reminder") or "").strip()
+    progress_mast_trigger_fraction = max(
+        0.0,
+        min(1.0, float(_as_float(progress_mast_cfg.get("trigger_progress_fraction"), 0.25))),
+    )
+    progress_mast_cmd = str(progress_mast_cfg.get("command") or "d").strip().lower()
+    if progress_mast_cmd not in ("d", "u"):
+        progress_mast_cmd = "d"
+    progress_mast_score = _as_int(
+        progress_mast_cfg.get("score"),
+        int(telemetry_robot_module.SPEED_SCORE_MIN),
+    )
+    progress_mast_score = max(
+        int(telemetry_robot_module.SPEED_SCORE_MIN),
+        min(int(MAX_SPEED_SCORE), int(progress_mast_score)),
+    )
+    progress_mast_acts = max(1, int(_as_int(progress_mast_cfg.get("acts"), 4)))
+    progress_mast_min_gap_mm = max(
+        0.0,
+        float(_as_float(progress_mast_cfg.get("min_start_to_target_gap_mm"), 1.0)),
+    )
+    progress_mast_target_dist = _as_float(progress_mast_cfg.get("dist_target"), None)
+    if progress_mast_target_dist is None and isinstance(success_gate_cfg, dict):
+        dist_gate_cfg = success_gate_cfg.get("dist")
+        if isinstance(dist_gate_cfg, dict):
+            progress_mast_target_dist = _as_float(dist_gate_cfg.get("target"), None)
+    progress_mast_active = bool(progress_mast_enabled and progress_mast_target_dist is not None)
+    crosshair_gate_cfg = None
+    if isinstance(success_gate_cfg, dict):
+        crosshair_gate_cfg = success_gate_cfg.get("inCrosshairs")
+        if crosshair_gate_cfg is None:
+            crosshair_gate_cfg = success_gate_cfg.get("in_crosshairs")
+    topmost_requires_crosshair_false = gate_utils.bool_gate_target(crosshair_gate_cfg) is False
+    topmost_gate_metrics = ["visible", "brick_above"]
+    if topmost_requires_crosshair_false:
+        topmost_gate_metrics.append("inCrosshairs")
+    topmost_gate_target_text = "visible, brickAbove=NO"
+    if topmost_requires_crosshair_false:
+        topmost_gate_target_text += ", inCrosshairs=NO"
+    topmost_exception_cfg = step_rules.get("topmost_crosshair_exception") if isinstance(step_rules, dict) else {}
+    if not isinstance(topmost_exception_cfg, dict):
+        topmost_exception_cfg = {}
+    topmost_exception_enabled = bool(topmost_exception_cfg.get("enabled"))
+    topmost_exception_reminder = str(topmost_exception_cfg.get("operator_log_reminder") or "").strip()
+    topmost_post_desc_cfg = topmost_exception_cfg.get("post_success_descend")
+    if not isinstance(topmost_post_desc_cfg, dict):
+        topmost_post_desc_cfg = {}
+    topmost_post_desc_cmd = str(topmost_post_desc_cfg.get("command") or "d").strip().lower()
+    if topmost_post_desc_cmd not in ("d", "u"):
+        topmost_post_desc_cmd = "d"
+    topmost_post_seek_true_score = _as_int(
+        topmost_post_desc_cfg.get("seek_true_score"),
+        int(ALIGN_BRICK_TOPMOST_LIFT_SCORE),
+    )
+    topmost_post_seek_true_score = max(
+        int(telemetry_robot_module.SPEED_SCORE_MIN),
+        min(int(MAX_SPEED_SCORE), int(topmost_post_seek_true_score)),
+    )
+    topmost_post_seek_true_max_acts = max(1, _as_int(topmost_post_desc_cfg.get("seek_true_max_acts"), 16))
+    topmost_post_seek_false_score = _as_int(
+        topmost_post_desc_cfg.get("seek_false_score"),
+        int(ALIGN_BRICK_TOPMOST_LIFT_SCORE),
+    )
+    topmost_post_seek_false_score = max(
+        int(telemetry_robot_module.SPEED_SCORE_MIN),
+        min(int(MAX_SPEED_SCORE), int(topmost_post_seek_false_score)),
+    )
+    topmost_post_seek_false_max_acts = max(1, _as_int(topmost_post_desc_cfg.get("seek_false_max_acts"), 16))
+    topmost_post_auto_continue_delay_s = max(
+        0.0,
+        float(_as_float(topmost_post_desc_cfg.get("auto_continue_delay_s"), 3.0)),
+    )
+    topmost_post_continue_blank_lines = max(
+        0,
+        int(_as_int(topmost_post_desc_cfg.get("post_continue_blank_lines"), 4)),
+    )
     stack_gate_keys = {"brick_above", "brick_below", "brickAbove", "brickBelow"}
     demo_stack_lift_actions = []
     for action in nominal_actions_from_events(segment.get("events") or []):
@@ -6581,7 +7511,6 @@ def run_alignment_segment(
 
     start_cmd = scan_cmd
     start_speed = action_speeds["scan"]
-    step_key = normalize_step_label(step)
     is_align_brick_step = step_key == "ALIGN_BRICK"
     is_find_topmost_step = step_key in {"FIND_TOPMOST_BRICK", "FIND_TOPMOST_BRICK_WALL"}
     # Use the same gate-shape test as helper_next's unified selector so any step
@@ -6654,11 +7583,17 @@ def run_alignment_segment(
     skip_align_gap_correction_type_once = None
     last_align_action = None
     last_align_signature = None
+    unchanged_speed_bump_state = None
     recent_align_acts = collections.deque(maxlen=32)
     align_target_lock = None
     align_target_lock_required = False
     align_target_lock_bootstrap_done = False
     loop_id = 0
+    last_no_action_gatecheck_reason = None
+    last_no_action_gatecheck_log_loop = 0
+    no_action_lite_failed_reason = None
+    progress_mast_start_dist = None
+    progress_mast_triggered = False
 
     def _clear_align_brick_target_lock(*, clear_required=False):
         nonlocal align_target_lock, align_target_lock_required
@@ -6700,6 +7635,152 @@ def run_alignment_segment(
             except (TypeError, ValueError):
                 pass
         return ", ".join(parts)
+
+    def _maybe_run_progress_mast_exception():
+        nonlocal progress_mast_start_dist, progress_mast_triggered, last_align_action
+        if not bool(progress_mast_active):
+            return False, None
+        if bool(progress_mast_triggered):
+            return False, None
+        brick_local = getattr(world, "brick", {}) or {}
+        if not bool(brick_local.get("visible")):
+            return False, None
+        curr_dist_local = _as_float(brick_local.get("dist"), None)
+        if curr_dist_local is None:
+            return False, None
+        if progress_mast_start_dist is None:
+            progress_mast_start_dist = float(curr_dist_local)
+            return False, None
+
+        start_dist_local = float(progress_mast_start_dist)
+        target_dist_local = float(progress_mast_target_dist)
+        start_to_target = float(target_dist_local - start_dist_local)
+        total_gap_abs = abs(float(start_to_target))
+        if total_gap_abs < float(progress_mast_min_gap_mm):
+            progress_mast_triggered = True
+            if not align_silent:
+                print(
+                    format_headline(
+                        (
+                            f"[{step_key} EXCEPTION] Progress mast exception skipped: "
+                            f"start dist too close to target (start={start_dist_local:.2f}, "
+                            f"target={target_dist_local:.2f}, gap={total_gap_abs:.2f}mm)."
+                        ),
+                        COLOR_MAGENTA_BRIGHT,
+                    )
+                )
+            return False, None
+
+        start_to_curr = float(curr_dist_local - start_dist_local)
+        if float(start_to_target) * float(start_to_curr) <= 0.0:
+            return False, None
+
+        progress_ratio = min(1.0, max(0.0, abs(float(start_to_curr)) / float(total_gap_abs)))
+        if float(progress_ratio) + 1e-9 < float(progress_mast_trigger_fraction):
+            return False, None
+
+        progress_mast_triggered = True
+        if not align_silent:
+            if progress_mast_reminder:
+                print(
+                    format_headline(
+                        f"[{step_key} EXCEPTION] {progress_mast_reminder}",
+                        COLOR_MAGENTA_BRIGHT,
+                    )
+                )
+            print(
+                format_headline(
+                    (
+                        f"[{step_key} EXCEPTION] Triggered at {float(progress_ratio) * 100.0:.1f}% "
+                        f"dist progress (start={start_dist_local:.2f}, now={float(curr_dist_local):.2f}, "
+                        f"target={target_dist_local:.2f}); executing "
+                        f"{str(progress_mast_cmd).upper()} {int(progress_mast_score)}% x{int(progress_mast_acts)}."
+                    ),
+                    COLOR_MAGENTA_BRIGHT,
+                )
+            )
+
+        for idx in range(1, int(progress_mast_acts) + 1):
+            if confirm_callback and not confirm_callback(world, vision):
+                return True, "confirm cancelled"
+            cmd_local = str(progress_mast_cmd)
+            score_local = int(progress_mast_score)
+            speed_local = telemetry_robot_module.manual_speed_for_cmd(cmd_local, score_local)
+            action_tag = "progress_mast_exception"
+            if observer:
+                observer("analysis", world, vision, cmd_local, speed_local, action_tag)
+            action_meta_local = send_robot_command(
+                robot,
+                world,
+                step,
+                cmd_local,
+                speed_local,
+                speed_score=score_local,
+                auto_mode=True,
+            )
+            recent_align_acts.append({"cmd": str(cmd_local), "score": int(score_local)})
+            if isinstance(action_meta_local, dict):
+                last_align_action = {
+                    "cmd": str(cmd_local),
+                    "cmd_sent": action_meta_local.get("cmd_sent"),
+                    "score": int(score_local),
+                    "pwm": action_meta_local.get("pwm"),
+                    "power": action_meta_local.get("power"),
+                    "duration_ms": action_meta_local.get("duration_ms"),
+                }
+            else:
+                last_align_action = {"cmd": str(cmd_local), "score": int(score_local)}
+
+            segments_local = []
+            if isinstance(action_meta_local, dict) and isinstance(action_meta_local.get("segments"), list):
+                segments_local = [seg for seg in action_meta_local.get("segments") if isinstance(seg, dict)]
+            elif isinstance(action_meta_local, dict):
+                segments_local = [action_meta_local]
+            for seg_local in segments_local:
+                duration_ms_local = (
+                    seg_local.get("duration_model_ms")
+                    or seg_local.get("duration_ms")
+                    or int(CONTROL_DT * 1000)
+                )
+                power_local = seg_local.get("power")
+                if power_local is None:
+                    power_local = speed_local
+                evt_local = MotionEvent(
+                    cmd_to_motion_type(cmd_local),
+                    int(float(power_local) * 255),
+                    int(duration_ms_local),
+                    speed_score=seg_local.get("score_effective") or seg_local.get("score_model"),
+                )
+                world.update_from_motion(evt_local)
+
+            if confirm_callback and robot:
+                robot.stop()
+            post_act_analysis(
+                world,
+                vision,
+                step=step,
+                log=not align_silent,
+                include_pause=False,
+            )
+            if observer:
+                observer("action", world, vision, cmd_local, speed_local, action_tag)
+            if not align_silent:
+                print(
+                    format_headline(
+                        f"[{step_key} EXCEPTION] Pulse {int(idx)}/{int(progress_mast_acts)} complete.",
+                        COLOR_MAGENTA_BRIGHT,
+                    )
+                )
+            time.sleep(CONTROL_DT)
+
+        if not align_silent:
+            print(
+                format_headline(
+                    f"[{step_key} EXCEPTION] Completed {str(progress_mast_cmd).upper()} {int(progress_mast_score)}% x{int(progress_mast_acts)}; resuming alignment.",
+                    COLOR_MAGENTA_BRIGHT,
+                )
+            )
+        return True, None
 
     def _recover_visibility(source="unknown", reason=None, reverse_max_acts=None):
         source_key = str(source or "").strip().lower()
@@ -7108,6 +8189,188 @@ def run_alignment_segment(
                 f"maj {maj_seen}/{maj_total}"
             )
 
+        def _run_topmost_crosshair_exception_post_success():
+            nonlocal last_align_action, topmost_seek_moved_last, topmost_seek_last_fail_reason
+            if not (is_find_topmost_step and topmost_exception_enabled and topmost_requires_crosshair_false):
+                return True, "disabled"
+            if not align_silent:
+                if topmost_exception_reminder:
+                    print(format_headline(f"[ALIGN_TOP] {topmost_exception_reminder}", COLOR_ORANGE_BRIGHT))
+                print(
+                    format_headline(
+                        "[ALIGN_TOP] Special exception: post-success descent uses inCrosshairs NO->YES->NO to park just below the topmost brick.",
+                        COLOR_ORANGE_BRIGHT,
+                    )
+                )
+
+            def _apply_motion_segments(cmd_local, speed_local, action_meta_local):
+                segments_local = []
+                if isinstance(action_meta_local, dict) and isinstance(action_meta_local.get("segments"), list):
+                    segments_local = [seg for seg in action_meta_local.get("segments") if isinstance(seg, dict)]
+                elif isinstance(action_meta_local, dict):
+                    segments_local = [action_meta_local]
+                for seg_local in segments_local:
+                    duration_ms_local = (
+                        seg_local.get("duration_model_ms")
+                        or seg_local.get("duration_ms")
+                        or int(CONTROL_DT * 1000)
+                    )
+                    power_local = seg_local.get("power")
+                    if power_local is None:
+                        power_local = speed_local
+                    evt_local = MotionEvent(
+                        cmd_to_motion_type(cmd_local),
+                        int(float(power_local) * 255),
+                        int(duration_ms_local),
+                        speed_score=seg_local.get("score_effective") or seg_local.get("score_model"),
+                    )
+                    world.update_from_motion(evt_local)
+
+            def _observe_crosshair_state(phase_label):
+                if robot:
+                    robot.stop()
+                record_hold_display(world, step, f"align_top: {phase_label} observe")
+                update_world_from_vision(world, vision, log=not align_silent)
+                if observer:
+                    observer("frame", world, vision, None, None, None)
+                brick_local = getattr(world, "brick", {}) or {}
+                visible_local = bool(brick_local.get("visible"))
+                in_crosshairs_local = brick_local.get("inCrosshairs")
+                in_crosshairs_local = bool(in_crosshairs_local) if in_crosshairs_local is not None else False
+                return visible_local, in_crosshairs_local
+
+            def _run_phase(*, phase_label, action_tag, target_in_crosshairs, score_local, max_acts_local):
+                nonlocal last_align_action, topmost_seek_moved_last, topmost_seek_last_fail_reason
+                acts_local = 0
+                target_bool = bool(target_in_crosshairs)
+                while acts_local < int(max_acts_local):
+                    visible_local, in_crosshairs_local = _observe_crosshair_state(phase_label)
+                    if visible_local and (bool(in_crosshairs_local) == target_bool):
+                        if robot:
+                            robot.stop()
+                        if not align_silent:
+                            target_text_local = "YES" if target_bool else "NO"
+                            print(
+                                format_headline(
+                                    f"[ALIGN_TOP] {phase_label}: reached inCrosshairs={target_text_local}.",
+                                    COLOR_GREEN,
+                                )
+                            )
+                        return True, acts_local
+                    if not visible_local:
+                        topmost_seek_last_fail_reason = f"{phase_label}: brick not visible"
+                        if not align_silent:
+                            print(
+                                format_headline(
+                                    f"[ALIGN_TOP] {phase_label}: visibility lost; cannot continue exception descent.",
+                                    COLOR_RED,
+                                )
+                            )
+                        return False, acts_local
+
+                    target_text = "YES" if target_bool else "NO"
+                    current_text = "YES" if bool(in_crosshairs_local) else "NO"
+                    if not align_silent:
+                        print(
+                            format_headline(
+                                f"[ALIGN_TOP] {phase_label} assess: inCrosshairs={current_text}; "
+                                f"plan {topmost_post_desc_cmd.upper()} {int(score_local)}% -> {target_text}.",
+                                COLOR_WHITE,
+                            )
+                        )
+                    if confirm_callback:
+                        if not confirm_callback(world, vision):
+                            topmost_seek_last_fail_reason = "confirm cancelled"
+                            return False, acts_local
+                    speed_local = telemetry_robot_module.manual_speed_for_cmd(
+                        topmost_post_desc_cmd,
+                        score_local,
+                    )
+                    if observer:
+                        observer("analysis", world, vision, topmost_post_desc_cmd, speed_local, action_tag)
+                    action_meta_local = send_robot_command(
+                        robot,
+                        world,
+                        step,
+                        topmost_post_desc_cmd,
+                        speed_local,
+                        speed_score=score_local,
+                        auto_mode=True,
+                    )
+                    acts_local += 1
+                    topmost_seek_moved_last = True
+                    recent_align_acts.append({"cmd": str(topmost_post_desc_cmd), "score": int(score_local)})
+                    if isinstance(action_meta_local, dict):
+                        last_align_action = {
+                            "cmd": str(topmost_post_desc_cmd),
+                            "cmd_sent": action_meta_local.get("cmd_sent"),
+                            "score": int(score_local),
+                            "pwm": action_meta_local.get("pwm"),
+                            "power": action_meta_local.get("power"),
+                            "duration_ms": action_meta_local.get("duration_ms"),
+                        }
+                    else:
+                        last_align_action = {"cmd": str(topmost_post_desc_cmd), "score": int(score_local)}
+                    _apply_motion_segments(topmost_post_desc_cmd, speed_local, action_meta_local)
+                    if observer:
+                        observer("action", world, vision, topmost_post_desc_cmd, speed_local, action_tag)
+                    time.sleep(CONTROL_DT)
+
+                topmost_seek_last_fail_reason = (
+                    f"{phase_label}: max acts reached ({int(acts_local)}/{int(max_acts_local)})"
+                )
+                if not align_silent:
+                    print(
+                        format_headline(
+                            f"[ALIGN_TOP] {phase_label}: {topmost_seek_last_fail_reason}.",
+                            COLOR_RED,
+                        )
+                    )
+                return False, acts_local
+
+            phase1_ok, _phase1_acts = _run_phase(
+                phase_label="exception phase 1",
+                action_tag="align_top_exception_seek_true",
+                target_in_crosshairs=True,
+                score_local=int(topmost_post_seek_true_score),
+                max_acts_local=int(topmost_post_seek_true_max_acts),
+            )
+            if not phase1_ok:
+                return False, str(topmost_seek_last_fail_reason or "exception phase 1 failed")
+
+            phase2_ok, _phase2_acts = _run_phase(
+                phase_label="exception phase 2",
+                action_tag="align_top_exception_seek_false",
+                target_in_crosshairs=False,
+                score_local=int(topmost_post_seek_false_score),
+                max_acts_local=int(topmost_post_seek_false_max_acts),
+            )
+            if not phase2_ok:
+                return False, str(topmost_seek_last_fail_reason or "exception phase 2 failed")
+
+            if topmost_post_auto_continue_delay_s > 0.0:
+                if robot:
+                    robot.stop()
+                record_hold_display(
+                    world,
+                    step,
+                    f"align_top: auto-continue in {float(topmost_post_auto_continue_delay_s):.1f}s",
+                )
+                if not align_silent:
+                    print(
+                        format_headline(
+                            f"[ALIGN_TOP] Exception complete. Auto-continue after {float(topmost_post_auto_continue_delay_s):.1f}s.",
+                            COLOR_WHITE,
+                        )
+                    )
+                time.sleep(max(float(CONTROL_DT), float(topmost_post_auto_continue_delay_s)))
+
+            if not align_silent and topmost_post_continue_blank_lines > 0:
+                for _ in range(int(topmost_post_continue_blank_lines)):
+                    print("")
+
+            return True, "positioned below topmost brick"
+
         def _finish_topmost_ready(success_reason):
             nonlocal topmost_seek_last_fail_reason
             topmost_seek_last_fail_reason = str(success_reason or "topmost success gates met")
@@ -7131,6 +8394,10 @@ def run_alignment_segment(
                     return "confirm cancelled"
                 if robot:
                     robot.stop()
+            post_ok, post_reason = _run_topmost_crosshair_exception_post_success()
+            if not post_ok:
+                topmost_seek_last_fail_reason = str(post_reason or "topmost exception post-success positioning failed")
+                return str(topmost_seek_last_fail_reason)
             _reset_stack_visibility_gate_state(log_reason="topmost confirmed")
             # Step 5 ends at topmost confirmation. Step 6 now handles any descent to
             # lower bricks and target locking.
@@ -7154,7 +8421,7 @@ def run_alignment_segment(
             )
             print(
                 format_headline(
-                    "[ALIGN_TOP] Targeting success gates: visible, brickAbove=NO.",
+                    f"[ALIGN_TOP] Targeting success gates: {topmost_gate_target_text}.",
                     COLOR_WHITE,
                 )
             )
@@ -7194,7 +8461,7 @@ def run_alignment_segment(
                     world,
                     step,
                     phase="align_top",
-                    metrics=("visible", "brick_above"),
+                    metrics=tuple(topmost_gate_metrics),
                     log=not align_silent,
                 )
                 if observer:
@@ -7412,19 +8679,19 @@ def run_alignment_segment(
                 world,
                 step,
                 phase="align_top",
-                metrics=("visible", "brick_above"),
+                metrics=tuple(topmost_gate_metrics),
                 log=True,
                 force=True,
             )
             reason_tail = str(topmost_seek_last_fail_reason or "unknown").strip()
             if reason_tail:
                 reason_tail = f" reason: {reason_tail}"
-            print(
-                format_headline(
-                    f"[ALIGN_TOP] Failed to confirm uppermost brick (need brickAbove=NO).{reason_tail}",
-                    COLOR_RED,
+                print(
+                    format_headline(
+                        f"[ALIGN_TOP] Failed to confirm uppermost brick (need {topmost_gate_target_text}).{reason_tail}",
+                        COLOR_RED,
+                    )
                 )
-            )
         return "topmost target not confirmed"
 
     _restore_align_brick_target_lock_from_world()
@@ -7494,6 +8761,13 @@ def run_alignment_segment(
             pause_after_fail(robot)
         return False, str(topmost_seek_status or "topmost target not confirmed")
 
+    if bool(progress_mast_active) and not align_silent:
+        reminder_msg = progress_mast_reminder or (
+            f"Exception active: after {float(progress_mast_trigger_fraction) * 100.0:.1f}% dist progress, "
+            f"run {str(progress_mast_cmd).upper()} {int(progress_mast_score)}% x{int(progress_mast_acts)}."
+        )
+        print(format_headline(f"[{step_key} EXCEPTION] {reminder_msg}", COLOR_MAGENTA_BRIGHT))
+
     while True:
         loop_id += 1
         world.loop_id = loop_id
@@ -7547,6 +8821,12 @@ def run_alignment_segment(
             if observer:
                 observer("action", world, vision, None, 0.0, "gate confirm hold")
             time.sleep(CONTROL_DT)
+            continue
+
+        exception_ran, exception_status = _maybe_run_progress_mast_exception()
+        if exception_status == "confirm cancelled":
+            return False, "confirm cancelled"
+        if exception_ran:
             continue
 
         if use_align_gap_micro_planner and not visible_now:
@@ -7607,6 +8887,7 @@ def run_alignment_segment(
             previous_correction_type=last_align_gap_correction_type,
             avoid_correction_type=skip_align_gap_correction_type_once,
         )
+        _log_dist_priority_cheat_act(step, act_plan, align_silent=align_silent, settle=False)
         use_micro_align_gap_planner = str(act_plan.get("planner") or "").strip().lower() == "gap"
         cmd = act_plan.get("cmd")
         speed = act_plan.get("speed") or 0.0
@@ -7628,6 +8909,80 @@ def run_alignment_segment(
                 cmd_reason = demo_fallback.get("reason") or "demo stack lift"
                 speed_score = demo_fallback.get("speed_score")
                 duration_override_ms = demo_fallback.get("duration_override_ms")
+        # If planner reports no actionable command, immediately run gatecheck
+        # confirmation (lite precheck + full tracker) instead of idling.
+        if cmd is None:
+            no_action_reason = str(cmd_reason or "").strip().lower() or "none"
+            if str(no_action_lite_failed_reason or "") != str(no_action_reason):
+                no_action_lite_failed_reason = None
+            force_gatecheck_hold = True
+            if (
+                bool(progress_mast_active)
+                and not bool(progress_mast_triggered)
+                and no_action_reason != "all_gaps_within_gate"
+            ):
+                force_gatecheck_hold = False
+            # Single-lite rule for no-action holds: after one lite precheck fail
+            # for the current no-action reason, stop gatecheck-holding and let
+            # the loop proceed to re-plan/adjust.
+            if force_gatecheck_hold and str(no_action_lite_failed_reason or "") == str(no_action_reason):
+                force_gatecheck_hold = False
+            if force_gatecheck_hold:
+                if not align_silent:
+                    if (
+                        no_action_reason != last_no_action_gatecheck_reason
+                        or (int(loop_id) - int(last_no_action_gatecheck_log_loop)) >= 20
+                    ):
+                        print(
+                            format_headline(
+                                (
+                                    f"[WAIT] {step_key} no actionable command "
+                                    f"(reason={no_action_reason}); running gatecheck hold."
+                                ),
+                                COLOR_WHITE,
+                            )
+                        )
+                        last_no_action_gatecheck_reason = str(no_action_reason)
+                        last_no_action_gatecheck_log_loop = int(loop_id)
+                if robot:
+                    robot.stop()
+                if observer:
+                    observer("action", world, vision, None, 0.0, "gatecheck hold")
+                success_hit = run_full_gatecheck_after_act(
+                    world,
+                    vision,
+                    step,
+                    success_tracker,
+                    phase="align",
+                    log=not align_silent,
+                    observer=observer,
+                )
+                if success_hit:
+                    if robot:
+                        robot.stop()
+                    if not align_silent:
+                        print(format_headline(f"[SUCCESS] {step} criteria met", COLOR_GREEN))
+                        print_gate_summary_line(world, success_tracker)
+                        print_success_events(world, step)
+                    return True, "success gate"
+                gate_status = getattr(world, "_gatecheck_status", None)
+                gate_mode = str((gate_status or {}).get("mode") or "").strip().lower()
+                gate_truth_ok = bool((gate_status or {}).get("truth_ok", False)) if isinstance(gate_status, dict) else False
+                if gate_mode == "lite" and not gate_truth_ok:
+                    no_action_lite_failed_reason = str(no_action_reason)
+                    if not align_silent:
+                        _log_gatecheck_next_action(
+                            step,
+                            "align",
+                            cmd,
+                            speed_score=speed_score,
+                            reason="single lite precheck failed; resuming adjustment planning",
+                            log=True,
+                        )
+                time.sleep(CONTROL_DT)
+                continue
+        else:
+            no_action_lite_failed_reason = None
         cmd, speed, speed_score, cmd_reason = _apply_turn_only_demo_policy(
             cmd,
             speed,
@@ -7656,6 +9011,53 @@ def run_alignment_segment(
                 step,
                 process_rules=world.process_rules or {},
             )
+            correction_type_for_stats = _align_correction_type_for_cmd(
+                cmd,
+                fallback=prev_log_correction_type,
+            )
+            delta_class_for_stats = _classify_align_delta_class(
+                correction_type=correction_type_for_stats,
+                local_gate_before_action=local_gate_before_action,
+                prev_log_correction_type=prev_log_correction_type,
+                prev_log_x_err=prev_log_x_err,
+                prev_log_y_err=prev_log_y_err,
+                prev_log_dist=prev_log_dist,
+            )
+            previous_cmd_for_bump = str(
+                ((last_align_action or {}).get("cmd") if isinstance(last_align_action, dict) else "") or ""
+            ).strip().lower()
+            previous_speed_score = speed_score
+            speed_score, unchanged_speed_bump_state, bumped_for_unchanged = _maybe_apply_repeated_unchanged_speed_bump(
+                cmd=cmd,
+                score=speed_score,
+                delta_class=delta_class_for_stats,
+                correction_type=correction_type_for_stats,
+                error_signature=_align_error_signature_for_correction(
+                    correction_type_for_stats,
+                    local_gate_before_action,
+                ),
+                previous_cmd=previous_cmd_for_bump,
+                state=unchanged_speed_bump_state,
+            )
+            if bumped_for_unchanged and not align_silent:
+                try:
+                    prev_score_txt = int(round(float(previous_speed_score)))
+                except (TypeError, ValueError):
+                    prev_score_txt = None
+                try:
+                    new_score_txt = int(round(float(speed_score)))
+                except (TypeError, ValueError):
+                    new_score_txt = None
+                if prev_score_txt is not None and new_score_txt is not None:
+                    print(
+                        format_headline(
+                            (
+                                f"[ADAPT] repeated unchanged result on {str(cmd).upper()}: "
+                                f"bumping speed {int(prev_score_txt)}% -> {int(new_score_txt)}%"
+                            ),
+                            COLOR_ORANGE_BRIGHT,
+                        )
+                    )
             pre_frame_id = getattr(world, "_frame_id", 0)
             pre_gate_text = None
             pre_focus = None
@@ -7754,21 +9156,7 @@ def run_alignment_segment(
                 )
                 force_gap_switch_after_recovery = False
             if suppress_auto_diag:
-                correction_type_for_stats = (
-                    "distance" if cmd in ("f", "b")
-                    else "x_axis" if cmd in ("l", "r")
-                    else "y_axis" if cmd in ("u", "d")
-                    else None
-                )
-                delta_class = _classify_align_delta_class(
-                    correction_type=correction_type_for_stats,
-                    local_gate_before_action=local_gate_before_action,
-                    prev_log_correction_type=prev_log_correction_type,
-                    prev_log_x_err=prev_log_x_err,
-                    prev_log_y_err=prev_log_y_err,
-                    prev_log_dist=prev_log_dist,
-                )
-                _record_auto_step_action_stats(world, step, delta_class)
+                _record_auto_step_action_stats(world, step, delta_class_for_stats)
             action_detail = None
             if not suppress_auto_diag:
                 action_detail = auto_action_detail_text(
@@ -7986,6 +9374,7 @@ def run_alignment_segment(
             previous_correction_type=last_align_gap_correction_type,
             avoid_correction_type=skip_align_gap_correction_type_once,
         )
+        _log_dist_priority_cheat_act(step, act_plan, align_silent=align_silent, settle=True)
         use_micro_align_gap_planner = str(act_plan.get("planner") or "").strip().lower() == "gap"
         cmd = act_plan.get("cmd")
         speed = act_plan.get("speed") or 0.0
@@ -8031,6 +9420,53 @@ def run_alignment_segment(
                 step,
                 process_rules=world.process_rules or {},
             )
+            correction_type_for_stats = _align_correction_type_for_cmd(
+                cmd,
+                fallback=prev_log_correction_type,
+            )
+            delta_class_for_stats = _classify_align_delta_class(
+                correction_type=correction_type_for_stats,
+                local_gate_before_action=local_gate_before_action,
+                prev_log_correction_type=prev_log_correction_type,
+                prev_log_x_err=prev_log_x_err,
+                prev_log_y_err=prev_log_y_err,
+                prev_log_dist=prev_log_dist,
+            )
+            previous_cmd_for_bump = str(
+                ((last_align_action or {}).get("cmd") if isinstance(last_align_action, dict) else "") or ""
+            ).strip().lower()
+            previous_speed_score = speed_score
+            speed_score, unchanged_speed_bump_state, bumped_for_unchanged = _maybe_apply_repeated_unchanged_speed_bump(
+                cmd=cmd,
+                score=speed_score,
+                delta_class=delta_class_for_stats,
+                correction_type=correction_type_for_stats,
+                error_signature=_align_error_signature_for_correction(
+                    correction_type_for_stats,
+                    local_gate_before_action,
+                ),
+                previous_cmd=previous_cmd_for_bump,
+                state=unchanged_speed_bump_state,
+            )
+            if bumped_for_unchanged and not align_silent:
+                try:
+                    prev_score_txt = int(round(float(previous_speed_score)))
+                except (TypeError, ValueError):
+                    prev_score_txt = None
+                try:
+                    new_score_txt = int(round(float(speed_score)))
+                except (TypeError, ValueError):
+                    new_score_txt = None
+                if prev_score_txt is not None and new_score_txt is not None:
+                    print(
+                        format_headline(
+                            (
+                                f"[ADAPT] repeated unchanged result on {str(cmd).upper()}: "
+                                f"bumping speed {int(prev_score_txt)}% -> {int(new_score_txt)}%"
+                            ),
+                            COLOR_ORANGE_BRIGHT,
+                        )
+                    )
             pre_gate_text = None
             pre_focus = None
             pre_entries = None
@@ -8182,29 +9618,19 @@ def replay_segment(
     prefer_demo_speed = _auto_uses_demo_speed(step_key)
     if isinstance(cfg, dict) and cfg.get("prefer_demo_speed") is not None:
         prefer_demo_speed = bool(cfg.get("prefer_demo_speed"))
-    demo_prefix_acts = 0
-    if isinstance(cfg, dict) and cfg.get("demo_prefix_acts") is not None:
-        try:
-            demo_prefix_acts = int(cfg.get("demo_prefix_acts"))
-        except (TypeError, ValueError):
-            demo_prefix_acts = 0
-    demo_prefix_acts = max(0, int(demo_prefix_acts))
-    keep_check_phase_with_demo_score = bool(
-        isinstance(cfg, dict) and cfg.get("keep_check_phase_with_demo_score")
+    visible_only_tiering_enabled = bool(
+        _visible_only_replay_speed_tier(world, step_key, step_cfg=cfg, cmd="f") is not None
     )
+    if visible_only_tiering_enabled:
+        # Tiered visible-only replay owns speed selection (normal/standard/fast).
+        # Ignore demo speed scores for this step so runtime follows the tier policy.
+        prefer_demo_speed = False
+        loop_demo_acts = False
     demo_actions = nominal_actions_from_events(events)
-    demo_prefix_actions = demo_actions[: min(int(demo_prefix_acts), len(demo_actions or []))]
-    demo_prefix_duration_s = 0.0
-    for action in demo_prefix_actions:
-        try:
-            demo_prefix_duration_s += max(0.0, float((action or {}).get("duration_s") or 0.0))
-        except (TypeError, ValueError):
-            continue
-    demo_actions_replay = demo_actions[int(len(demo_prefix_actions)) :] if demo_prefix_actions else list(demo_actions)
+    demo_actions_replay = list(demo_actions)
     if prefer_demo_speed and demo_actions:
         loop_demo_acts = True
-    use_raw_steps = bool(isinstance(cfg, dict) and cfg.get("use_raw_steps"))
-    steps = raw_steps if (loop_demo_acts or use_raw_steps) else smooth_motion_steps(raw_steps)
+    steps = raw_steps if loop_demo_acts else smooth_motion_steps(raw_steps)
     if step_uses_alignment_control(step, world.process_rules):
         return run_alignment_segment(
             segment,
@@ -8291,7 +9717,7 @@ def replay_segment(
                     if observer:
                         observer("action", world, vision, cmd, speed, "nominal replay")
                     time.sleep(action_duration_s)
-                    post_act_analysis(world, vision, step=step, log=True)
+                    post_act_analysis(world, vision, step=step, log=not align_silent)
                 else:
                     if robot:
                         robot.stop()
@@ -8349,117 +9775,15 @@ def replay_segment(
         pause_after_fail(robot)
         return False, _start_gate_failure_reason_from_wait_status(start_status)
 
-    demo_prefix_count = 0
-    prefix_last_cmd = None
-    prefix_last_speed_base = None
-    if demo_prefix_actions:
-        if not align_silent:
-            print(
-                format_headline(
-                    f"[DEMO_PREFIX] {step_key}: replaying first {len(demo_prefix_actions)} demo acts exactly before adaptive replay.",
-                    COLOR_ORANGE_BRIGHT,
-                )
-            )
-        for idx, action in enumerate(demo_prefix_actions, start=1):
-            cmd = action.get("cmd")
-            if not cmd:
-                if robot:
-                    robot.stop()
-                time.sleep(CONTROL_DT)
-                continue
-            score = action.get("speed_score")
-            if score is None:
-                score = move_score
-            if max_speed_score is not None:
-                score = min(int(max_speed_score), int(score))
-            score = _apply_find_brick_turn_speed_policy(step_key, cmd, score, phase="demo")
-            action_duration_s = max(0.001, float(action.get("duration_s") or CONTROL_DT))
-            duration_override_ms = int(round(float(action_duration_s) * 1000.0))
-
-            if replay_action_start_time is None:
-                replay_action_start_time = time.time()
-            update_world_from_vision(world, vision)
-            if observer:
-                observer("frame", world, vision, None, None, None)
-
-            pre_entries = _success_gate_entries(world, step_key)
-            pre_gate_text = _auto_gate_snapshot_text(world, step_key, include_requirements=True)
-            pre_focus = _capture_auto_diag_focus(world, step_key)
-
-            action_meta = send_robot_command(
-                robot,
-                world,
-                step_key,
-                cmd,
-                0.0,
-                speed_score=score,
-                auto_mode=True,
-                duration_override_ms=duration_override_ms,
-            )
-            if isinstance(action_meta, dict):
-                active_speed = float(action_meta.get("power", 0.0) or 0.0)
-                score_effective = action_meta.get("score_effective")
-                if score_effective is None:
-                    score_effective = action_meta.get("score_model", score)
-                duration_ms = int(
-                    action_meta.get("duration_model_ms")
-                    or action_meta.get("duration_ms")
-                    or duration_override_ms
-                )
-            else:
-                active_speed = 0.0
-                score_effective = score
-                duration_ms = duration_override_ms
-
-            sent_snapshot = _capture_sent_action_snapshot(world)
-            world._last_action_line = format_control_action_line(
-                cmd,
-                active_speed,
-                f"demo prefix exact {idx}/{len(demo_prefix_actions)} {int(score_effective)}%",
-            )
-            evt = MotionEvent(
-                cmd_to_motion_type(cmd),
-                int(active_speed * 255),
-                int(duration_ms),
-            )
-            world.update_from_motion(evt)
-            if observer:
-                observer("action", world, vision, cmd, active_speed, "demo prefix exact")
-            time.sleep(max(0.001, float(duration_ms) / 1000.0))
-            post_act_analysis(world, vision, step=step_key, log=True, include_pause=False)
-            emit_auto_step_diagnostic(
-                world,
-                step_key,
-                auto_action_detail_text(cmd, score_effective, action_meta=action_meta),
-                pre_gate_text,
-                emit=True,
-                pre_focus=pre_focus,
-                sent_snapshot=sent_snapshot,
-                action_index=idx,
-                pre_entries=pre_entries,
-            )
-            demo_prefix_count = int(idx)
-            prefix_last_cmd = str(cmd)
-            prefix_last_speed_base = float(active_speed)
-
-        if demo_prefix_duration_s > 1e-6 and not loop_demo_acts:
-            steps = trim_motion_steps_prefix(steps, demo_prefix_duration_s)
-            if not steps:
-                steps = [MotionStep(None, 0.0, 0.1, "wait")]
-
     allow_early_exit = True
 
     success_tracker = new_success_tracker(step, world.process_rules)
     clear_pending_auto_step_diagnostic(world)
     last_action = None
-    last_cmd = prefix_last_cmd if prefix_last_cmd is not None else default_step.cmd
-    last_speed_base = (
-        float(prefix_last_speed_base)
-        if prefix_last_speed_base is not None
-        else float(default_step.speed or 0.0)
-    )
-    demo_replay_action_idx = int(demo_prefix_count)
-    replay_cycle_action_idx = int(demo_prefix_count)
+    last_cmd = default_step.cmd
+    last_speed_base = float(default_step.speed or 0.0)
+    demo_replay_action_idx = 0
+    replay_cycle_action_idx = 0
 
     if loop_demo_acts and demo_actions_replay:
         while True:
@@ -8487,6 +9811,16 @@ def replay_segment(
                 if max_speed_score is not None:
                     score = min(int(max_speed_score), int(score))
                 score = _apply_find_brick_turn_speed_policy(step_key, cmd, score, phase="demo")
+                cmd_exec = str(cmd)
+                score_exec = int(score)
+                cmd_exec, score_exec, height_context_note, _height_used = _apply_height_intel_replay_override(
+                    world,
+                    step_key,
+                    cmd_exec,
+                    score_exec,
+                    phase="demo",
+                    log=not align_silent,
+                )
                 action_duration_s = max(0.001, float(action.get("duration_s") or CONTROL_DT))
                 pre_entries = _success_gate_entries(world, step_key)
                 pre_gate_text = _auto_gate_snapshot_text(world, step_key, include_requirements=True)
@@ -8495,9 +9829,9 @@ def replay_segment(
                     robot,
                     world,
                     step_key,
-                    cmd,
+                    cmd_exec,
                     0.0,
-                    speed_score=score,
+                    speed_score=score_exec,
                     auto_mode=True,
                 )
                 pwm = None
@@ -8507,7 +9841,7 @@ def replay_segment(
                     active_speed = float(action_meta.get("power", 0.0) or 0.0)
                     score_effective = action_meta.get("score_effective")
                     if score_effective is None:
-                        score_effective = action_meta.get("score_model", score)
+                        score_effective = action_meta.get("score_model", score_exec)
                     pwm = action_meta.get("pwm")
                     cmd_sent = action_meta.get("cmd_sent")
                     duration_ms = int(
@@ -8517,47 +9851,49 @@ def replay_segment(
                     )
                 else:
                     active_speed = 0.0
-                    score_effective = score
+                    score_effective = score_exec
                 record_action_display(
                     world,
                     step_key,
-                    cmd,
+                    cmd_exec,
                     active_speed,
                     speed_score=score_effective,
                     cmd_sent=cmd_sent,
                     pwm=pwm,
                     duration_ms=duration_ms,
-                    score_model=score,
+                    score_model=score_exec,
                 )
                 sent_snapshot = _capture_sent_action_snapshot(world)
+                mode_suffix = f" {height_context_note}" if height_context_note else ""
                 world._last_action_line = format_control_action_line(
-                    cmd,
+                    cmd_exec,
                     active_speed,
-                    f"demo {int(score_effective)}%",
+                    f"demo {int(score_effective)}%{mode_suffix}",
                 )
                 evt = MotionEvent(
-                    cmd_to_motion_type(cmd),
+                    cmd_to_motion_type(cmd_exec),
                     int(active_speed * 255),
                     int(action_duration_s * 1000),
                 )
                 world.update_from_motion(evt)
                 if observer:
-                    observer("action", world, vision, cmd, active_speed, "demo replay")
+                    observer("action", world, vision, cmd_exec, active_speed, "demo replay")
                 time.sleep(action_duration_s)
-                post_act_analysis(world, vision, step=step_key, log=True, include_pause=False)
+                post_act_analysis(world, vision, step=step_key, log=not align_silent, include_pause=False)
                 success_hit = run_full_gatecheck_after_act(
                     world,
                     vision,
                     step_key,
                     success_tracker,
                     phase="replay",
-                    log=True,
+                    log=not align_silent,
                     observer=observer,
                 )
                 detail = auto_action_detail_text(
-                    cmd,
+                    cmd_exec,
                     score_effective,
                     action_meta=action_meta,
+                    context_note=height_context_note,
                 )
                 demo_replay_action_idx = int(demo_replay_action_idx) + 1
                 emit_auto_step_diagnostic(
@@ -8575,9 +9911,10 @@ def replay_segment(
                 if success_hit:
                     if robot:
                         robot.stop()
-                    print(format_headline(f"[SUCCESS] {step_key} criteria met 🎉", COLOR_GREEN))
-                    print_gate_summary_line(world, success_tracker)
-                    print_success_events(world, step_key)
+                    if not align_silent:
+                        print(format_headline(f"[SUCCESS] {step_key} criteria met 🎉", COLOR_GREEN))
+                        print_gate_summary_line(world, success_tracker)
+                        print_success_events(world, step_key)
                     return True, "success gate"
                 post_act_settle_pause(world, vision)
             if not loop_demo_acts:
@@ -8620,10 +9957,10 @@ def replay_segment(
                 forcing_check = now < float(force_check_until or 0.0)
                 phase = auto_cycle_phase(replay_action_elapsed_s, force_check=forcing_check)
                 desired_score = move_score if phase == "move" else check_score
-                if motion_step.speed_score is not None:
+                speed_tier_label = None
+                if motion_step.speed_score is not None and prefer_demo_speed:
                     desired_score = motion_step.speed_score
-                    if not keep_check_phase_with_demo_score:
-                        phase = "demo"
+                    phase = "demo"
                 elif prefer_demo_speed and motion_step.cmd:
                     try:
                         base_speed = float(motion_step.speed or 0.0)
@@ -8642,6 +9979,18 @@ def replay_segment(
                     desired_score,
                     phase=phase,
                 )
+                if visible_only_tiering_enabled:
+                    tier_override = _visible_only_replay_speed_tier(
+                        world,
+                        step_key,
+                        step_cfg=cfg,
+                        cmd=motion_step.cmd,
+                    )
+                    if isinstance(tier_override, dict):
+                        desired_score = int(tier_override.get("score") or desired_score)
+                        speed_tier_label = str(tier_override.get("label") or "").strip().lower() or None
+                if speed_tier_label is None:
+                    speed_tier_label = _auto_cycle_speed_label(desired_score)
 
                 # If we're seeing positive evidence, stay in slow/check mode while we confirm/refute.
                 if allow_early_exit and can_check_success and fresh_frame and phase == "check":
@@ -8650,7 +9999,7 @@ def replay_segment(
                         step_key,
                         success_tracker,
                         phase="replay",
-                        log=True,
+                        log=not align_silent,
                     )
                     success_met = bool(gate_obs.get("success_met"))
                     if success_met:
@@ -8659,11 +10008,24 @@ def replay_segment(
                     if bool(gate_obs.get("hold_for_confirm")):
                         force_check_until = max(float(force_check_until or 0.0), now + float(AUTO_CYCLE_CHECK_S))
                         phase = "check"
-                        desired_score = check_score
+                        if not visible_only_tiering_enabled:
+                            desired_score = check_score
+                            speed_tier_label = _auto_cycle_speed_label(desired_score)
 
                 flush_auto_step_diagnostic(world, step_key, emit=True)
                 cmd = motion_step.cmd
                 if cmd:
+                    cmd_exec = str(cmd)
+                    score_exec = int(desired_score)
+                    cmd_exec, score_exec, height_context_note, _height_used = _apply_height_intel_replay_override(
+                        world,
+                        step_key,
+                        cmd_exec,
+                        score_exec,
+                        phase=phase,
+                        log=not align_silent,
+                    )
+                    desired_score = int(score_exec)
                     pre_entries = _success_gate_entries(world, step_key)
                     pre_gate_text = _auto_gate_snapshot_text(world, step_key, include_requirements=True)
                     pre_focus = _capture_auto_diag_focus(world, step_key)
@@ -8671,40 +10033,54 @@ def replay_segment(
                         robot,
                         world,
                         step_key,
-                        cmd,
+                        cmd_exec,
                         0.0,
-                        speed_score=desired_score,
+                        speed_score=score_exec,
                         auto_mode=True,
                     )
                     if isinstance(action_meta, dict):
                         active_speed = float(action_meta.get("power", 0.0) or 0.0)
                         score_effective = action_meta.get("score_effective")
                         if score_effective is None:
-                            score_effective = action_meta.get("score_model", desired_score)
-                        cmd_sent = action_meta.get("cmd_sent") or cmd
+                            score_effective = action_meta.get("score_model", score_exec)
+                        cmd_sent = action_meta.get("cmd_sent") or cmd_exec
                     else:
                         active_speed = 0.0
-                        score_effective = desired_score
-                        cmd_sent = cmd
+                        score_effective = score_exec
+                        cmd_sent = cmd_exec
+                    action_context_note = speed_tier_label or _auto_cycle_speed_label(score_effective)
+                    if height_context_note:
+                        if action_context_note:
+                            action_context_note = f"{action_context_note}; {height_context_note}"
+                        else:
+                            action_context_note = str(height_context_note)
+                    mode_suffix = f" {action_context_note}" if action_context_note else ""
                     sent_snapshot = _capture_sent_action_snapshot(world)
                     world._last_action_line = format_control_action_line(
-                        cmd,
+                        cmd_exec,
                         active_speed,
-                        f"replay {phase} {int(score_effective)}%",
+                        f"replay {phase} {int(score_effective)}%{mode_suffix}",
                     )
                     evt = MotionEvent(
-                        cmd_to_motion_type(cmd),
+                        cmd_to_motion_type(cmd_exec),
                         int(active_speed * 255),
                         int(CONTROL_DT * 1000),
                     )
                     world.update_from_motion(evt)
+                    if visible_only_tiering_enabled:
+                        world._visible_speed_cycle = int(getattr(world, "_visible_speed_cycle", 0) or 0) + 1
                     if observer:
-                        observer("action", world, vision, cmd, active_speed, "replay")
+                        observer("action", world, vision, cmd_exec, active_speed, "replay")
                     replay_cycle_action_idx = int(replay_cycle_action_idx) + 1
                     queue_auto_step_diagnostic(
                         world,
                         step_key,
-                        auto_action_detail_text(cmd, score_effective, action_meta=action_meta),
+                        auto_action_detail_text(
+                            cmd_exec,
+                            score_effective,
+                            action_meta=action_meta,
+                            context_note=action_context_note,
+                        ),
                         pre_gate_text,
                         pre_focus=pre_focus,
                         sent_snapshot=sent_snapshot,
@@ -8719,9 +10095,10 @@ def replay_segment(
                 flush_auto_step_diagnostic(world, step_key, force=True, emit=True)
                 if robot:
                     robot.stop()
-                print(format_headline(f"[SUCCESS] {step_key} criteria met 🎉", COLOR_GREEN))
-                print_gate_summary_line(world, success_tracker)
-                print_success_events(world, step_key)
+                if not align_silent:
+                    print(format_headline(f"[SUCCESS] {step_key} criteria met 🎉", COLOR_GREEN))
+                    print_gate_summary_line(world, success_tracker)
+                    print_success_events(world, step_key)
                 return True, "success gate"
 
         if not loop_demo_acts:
@@ -8747,6 +10124,7 @@ def replay_segment(
         forcing_check = now < float(force_check_until or 0.0)
         phase = auto_cycle_phase(replay_action_elapsed_s, force_check=forcing_check)
         desired_score = move_score if phase == "move" else check_score
+        speed_tier_label = None
         if prefer_demo_speed and last_cmd:
             try:
                 last_base = float(last_speed_base or 0.0)
@@ -8763,6 +10141,18 @@ def replay_segment(
             desired_score,
             phase=phase,
         )
+        if visible_only_tiering_enabled:
+            tier_override = _visible_only_replay_speed_tier(
+                world,
+                step_key,
+                step_cfg=cfg,
+                cmd=last_cmd,
+            )
+            if isinstance(tier_override, dict):
+                desired_score = int(tier_override.get("score") or desired_score)
+                speed_tier_label = str(tier_override.get("label") or "").strip().lower() or None
+        if speed_tier_label is None:
+            speed_tier_label = _auto_cycle_speed_label(desired_score)
 
         checked_this_frame = False
         success_met = False
@@ -8774,31 +10164,37 @@ def replay_segment(
                 step_key,
                 settle_tracker,
                 phase="settle",
-                log=True,
+                log=not align_silent,
             )
             success_met = bool(gate_obs.get("success_met"))
             if success_met:
                 flush_auto_step_diagnostic(world, step_key, force=True, emit=True)
-                print(format_headline(f"[SUCCESS] {step_key} criteria met 🎉", COLOR_GREEN))
-                print_gate_summary_line(world, settle_tracker)
-                print_success_events(world, step_key)
+                if not align_silent:
+                    print(format_headline(f"[SUCCESS] {step_key} criteria met 🎉", COLOR_GREEN))
+                    print_gate_summary_line(world, settle_tracker)
+                    print_success_events(world, step_key)
                 return True, "success gate"
             if bool(gate_obs.get("hold_for_confirm")):
                 force_check_until = max(float(force_check_until or 0.0), now + float(AUTO_CYCLE_CHECK_S))
                 phase = "check"
-                desired_score = check_score
+                if not visible_only_tiering_enabled:
+                    desired_score = check_score
+                    speed_tier_label = _auto_cycle_speed_label(desired_score)
 
         if checked_this_frame and not success_met:
             if not bool((gate_obs or {}).get("effective_success_ok")):
-                _log_gatecheck_failure(world, step_key, "settle", log=True)
+                _log_gatecheck_failure(world, step_key, "settle", log=not align_silent)
             if last_cmd:
+                reason_text = "adaptive replay"
+                if speed_tier_label:
+                    reason_text = f"{reason_text}; {speed_tier_label} tier"
                 _log_gatecheck_next_action(
                     step_key,
                     "settle",
                     last_cmd,
                     speed_score=desired_score,
-                    reason="adaptive replay",
-                    log=True,
+                    reason=reason_text,
+                    log=not align_silent,
                 )
             else:
                 _log_gatecheck_next_action(
@@ -8806,11 +10202,22 @@ def replay_segment(
                     "settle",
                     None,
                     reason="replay has no command to continue",
-                    log=True,
+                    log=not align_silent,
                 )
 
         flush_auto_step_diagnostic(world, step_key, emit=True)
         if last_cmd:
+            cmd_exec = str(last_cmd)
+            score_exec = int(desired_score)
+            cmd_exec, score_exec, height_context_note, _height_used = _apply_height_intel_replay_override(
+                world,
+                step_key,
+                cmd_exec,
+                score_exec,
+                phase="settle",
+                log=not align_silent,
+            )
+            desired_score = int(score_exec)
             pre_entries = _success_gate_entries(world, step_key)
             pre_gate_text = _auto_gate_snapshot_text(world, step_key, include_requirements=True)
             pre_focus = _capture_auto_diag_focus(world, step_key)
@@ -8818,40 +10225,54 @@ def replay_segment(
                 robot,
                 world,
                 step_key,
-                last_cmd,
+                cmd_exec,
                 0.0,
-                speed_score=desired_score,
+                speed_score=score_exec,
                 auto_mode=True,
             )
             if isinstance(action_meta, dict):
                 active_speed = float(action_meta.get("power", 0.0) or 0.0)
                 score_effective = action_meta.get("score_effective")
                 if score_effective is None:
-                    score_effective = action_meta.get("score_model", desired_score)
-                cmd_sent = action_meta.get("cmd_sent") or last_cmd
+                    score_effective = action_meta.get("score_model", score_exec)
+                cmd_sent = action_meta.get("cmd_sent") or cmd_exec
             else:
                 active_speed = 0.0
-                score_effective = desired_score
-                cmd_sent = last_cmd
+                score_effective = score_exec
+                cmd_sent = cmd_exec
+            action_context_note = speed_tier_label or _auto_cycle_speed_label(score_effective)
+            if height_context_note:
+                if action_context_note:
+                    action_context_note = f"{action_context_note}; {height_context_note}"
+                else:
+                    action_context_note = str(height_context_note)
+            mode_suffix = f" {action_context_note}" if action_context_note else ""
             sent_snapshot = _capture_sent_action_snapshot(world)
             world._last_action_line = format_control_action_line(
-                last_cmd,
+                cmd_exec,
                 active_speed,
-                f"settle {phase} {int(score_effective)}%",
+                f"settle {phase} {int(score_effective)}%{mode_suffix}",
             )
             evt = MotionEvent(
-                cmd_to_motion_type(last_cmd),
+                cmd_to_motion_type(cmd_exec),
                 int(active_speed * 255),
                 int(CONTROL_DT * 1000),
             )
             world.update_from_motion(evt)
+            if visible_only_tiering_enabled:
+                world._visible_speed_cycle = int(getattr(world, "_visible_speed_cycle", 0) or 0) + 1
             if observer:
-                observer("action", world, vision, last_cmd, active_speed, "replay")
+                observer("action", world, vision, cmd_exec, active_speed, "replay")
             replay_cycle_action_idx = int(replay_cycle_action_idx) + 1
             queue_auto_step_diagnostic(
                 world,
                 step_key,
-                auto_action_detail_text(last_cmd, score_effective, action_meta=action_meta),
+                auto_action_detail_text(
+                    cmd_exec,
+                    score_effective,
+                    action_meta=action_meta,
+                    context_note=action_context_note,
+                ),
                 pre_gate_text,
                 pre_focus=pre_focus,
                 sent_snapshot=sent_snapshot,
@@ -8882,6 +10303,7 @@ def replay_segment(
             forcing_check = now < float(force_check_until or 0.0)
             phase = auto_cycle_phase(replay_action_elapsed_s, force_check=forcing_check)
             desired_score = move_score if phase == "move" else check_score
+            speed_tier_label = None
             if prefer_demo_speed and last_cmd:
                 try:
                     last_base = float(last_speed_base or 0.0)
@@ -8898,6 +10320,18 @@ def replay_segment(
                 desired_score,
                 phase=phase,
             )
+            if visible_only_tiering_enabled:
+                tier_override = _visible_only_replay_speed_tier(
+                    world,
+                    step_key,
+                    step_cfg=cfg,
+                    cmd=last_cmd,
+                )
+                if isinstance(tier_override, dict):
+                    desired_score = int(tier_override.get("score") or desired_score)
+                    speed_tier_label = str(tier_override.get("label") or "").strip().lower() or None
+            if speed_tier_label is None:
+                speed_tier_label = _auto_cycle_speed_label(desired_score)
 
             checked_this_frame = False
             success_met = False
@@ -8909,33 +10343,39 @@ def replay_segment(
                     step_key,
                     tail_tracker,
                     phase="tail",
-                    log=True,
+                    log=not align_silent,
                 )
                 success_met = bool(gate_obs.get("success_met"))
                 if success_met:
                     flush_auto_step_diagnostic(world, step_key, force=True, emit=True)
                     if robot:
                         robot.stop()
-                    print(format_headline(f"[SUCCESS] {step_key} criteria met 🎉", COLOR_GREEN))
-                    print_gate_summary_line(world, tail_tracker)
-                    print_success_events(world, step_key)
+                    if not align_silent:
+                        print(format_headline(f"[SUCCESS] {step_key} criteria met 🎉", COLOR_GREEN))
+                        print_gate_summary_line(world, tail_tracker)
+                        print_success_events(world, step_key)
                     return True, "success gate"
                 if bool(gate_obs.get("hold_for_confirm")):
                     force_check_until = max(float(force_check_until or 0.0), now + float(AUTO_CYCLE_CHECK_S))
                     phase = "check"
-                    desired_score = check_score
+                    if not visible_only_tiering_enabled:
+                        desired_score = check_score
+                        speed_tier_label = _auto_cycle_speed_label(desired_score)
 
             if checked_this_frame and not success_met:
                 if not bool((gate_obs or {}).get("effective_success_ok")):
-                    _log_gatecheck_failure(world, step_key, "tail", log=True)
+                    _log_gatecheck_failure(world, step_key, "tail", log=not align_silent)
                 if last_cmd:
+                    reason_text = f"auto-cycle {phase}"
+                    if speed_tier_label:
+                        reason_text = f"{reason_text}; {speed_tier_label} tier"
                     _log_gatecheck_next_action(
                         step_key,
                         "tail",
                         last_cmd,
                         speed_score=desired_score,
-                        reason=f"auto-cycle {phase}",
-                        log=True,
+                        reason=reason_text,
+                        log=not align_silent,
                     )
                 else:
                     _log_gatecheck_next_action(
@@ -8943,11 +10383,22 @@ def replay_segment(
                         "tail",
                         None,
                         reason="replay has no command to continue",
-                        log=True,
+                        log=not align_silent,
                     )
 
             flush_auto_step_diagnostic(world, step_key, emit=True)
             if last_cmd:
+                cmd_exec = str(last_cmd)
+                score_exec = int(desired_score)
+                cmd_exec, score_exec, height_context_note, _height_used = _apply_height_intel_replay_override(
+                    world,
+                    step_key,
+                    cmd_exec,
+                    score_exec,
+                    phase="tail",
+                    log=not align_silent,
+                )
+                desired_score = int(score_exec)
                 pre_entries = _success_gate_entries(world, step_key)
                 pre_gate_text = _auto_gate_snapshot_text(world, step_key, include_requirements=True)
                 pre_focus = _capture_auto_diag_focus(world, step_key)
@@ -8955,40 +10406,54 @@ def replay_segment(
                     robot,
                     world,
                     step_key,
-                    last_cmd,
+                    cmd_exec,
                     0.0,
-                    speed_score=desired_score,
+                    speed_score=score_exec,
                     auto_mode=True,
                 )
                 if isinstance(action_meta, dict):
                     active_speed = float(action_meta.get("power", 0.0) or 0.0)
                     score_effective = action_meta.get("score_effective")
                     if score_effective is None:
-                        score_effective = action_meta.get("score_model", desired_score)
-                    cmd_sent = action_meta.get("cmd_sent") or last_cmd
+                        score_effective = action_meta.get("score_model", score_exec)
+                    cmd_sent = action_meta.get("cmd_sent") or cmd_exec
                 else:
                     active_speed = 0.0
-                    score_effective = desired_score
-                    cmd_sent = last_cmd
+                    score_effective = score_exec
+                    cmd_sent = cmd_exec
+                action_context_note = speed_tier_label or _auto_cycle_speed_label(score_effective)
+                if height_context_note:
+                    if action_context_note:
+                        action_context_note = f"{action_context_note}; {height_context_note}"
+                    else:
+                        action_context_note = str(height_context_note)
+                mode_suffix = f" {action_context_note}" if action_context_note else ""
                 sent_snapshot = _capture_sent_action_snapshot(world)
                 world._last_action_line = format_control_action_line(
-                    last_cmd,
+                    cmd_exec,
                     active_speed,
-                    f"tail {phase} {int(score_effective)}%",
+                    f"tail {phase} {int(score_effective)}%{mode_suffix}",
                 )
                 evt = MotionEvent(
-                    cmd_to_motion_type(last_cmd),
+                    cmd_to_motion_type(cmd_exec),
                     int(active_speed * 255),
                     int(CONTROL_DT * 1000),
                 )
                 world.update_from_motion(evt)
+                if visible_only_tiering_enabled:
+                    world._visible_speed_cycle = int(getattr(world, "_visible_speed_cycle", 0) or 0) + 1
                 if observer:
-                    observer("action", world, vision, last_cmd, active_speed, "replay")
+                    observer("action", world, vision, cmd_exec, active_speed, "replay")
                 replay_cycle_action_idx = int(replay_cycle_action_idx) + 1
                 queue_auto_step_diagnostic(
                     world,
                     step_key,
-                    auto_action_detail_text(last_cmd, score_effective, action_meta=action_meta),
+                    auto_action_detail_text(
+                        cmd_exec,
+                        score_effective,
+                        action_meta=action_meta,
+                        context_note=action_context_note,
+                    ),
                     pre_gate_text,
                     pre_focus=pre_focus,
                     sent_snapshot=sent_snapshot,

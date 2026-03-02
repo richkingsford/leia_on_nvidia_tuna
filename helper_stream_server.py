@@ -4,16 +4,18 @@ import socket
 import logging
 import html
 import urllib.request
+from pathlib import Path
 from typing import Callable, Optional
 
 import cv2
 import numpy as np
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, request, send_file
 from flask import cli as flask_cli
 
 DEFAULT_STREAM_HOST = "127.0.0.1"
 DEFAULT_STREAM_FPS = 10
 DEFAULT_JPEG_QUALITY = 90
+DEFAULT_GONG_FILE = Path(__file__).resolve().parent / "gong.mp3"
 
 
 def format_stream_url(host, port):
@@ -37,7 +39,7 @@ class StreamServer:
     def __init__(
         self,
         frame_provider: Callable[[], Optional[np.ndarray]],
-        text_provider: Optional[Callable[[], Optional[list]]] = None,
+        text_provider: Optional[Callable[[], object]] = None,
         host: str = DEFAULT_STREAM_HOST,
         port: int = 5000,
         fps: int = DEFAULT_STREAM_FPS,
@@ -67,6 +69,7 @@ class StreamServer:
         success_gate_step_getter: Optional[Callable[[], str]] = None,
         success_gate_step_setter: Optional[Callable[[str], None]] = None,
         success_gate_step_options: Optional[list] = None,
+        gong_file_path: Optional[str] = None,
     ):
         self.frame_provider = frame_provider
         self.text_provider = text_provider
@@ -115,6 +118,7 @@ class StreamServer:
         self.success_gate_step_setter = success_gate_step_setter
         self.success_gate_step_options = self._normalize_options(success_gate_step_options)
         self._success_gate_step_allowed = {value for value, _label in self.success_gate_step_options}
+        self.gong_file_path = Path(gong_file_path) if gong_file_path is not None else Path(DEFAULT_GONG_FILE)
         self._stop = threading.Event()
         self._thread = None
         self._startup_error = None
@@ -138,6 +142,7 @@ class StreamServer:
         @self.app.route("/text")
         def text_feed():
             lines = []
+            step_success_payload = None
             if self.text_provider is not None:
                 try:
                     payload = self.text_provider()
@@ -145,7 +150,51 @@ class StreamServer:
                     payload = None
                 if isinstance(payload, list):
                     lines = payload
-            return jsonify({"lines": lines, "server_id": self._instance_id})
+                elif isinstance(payload, dict):
+                    raw_lines = payload.get("lines")
+                    if isinstance(raw_lines, list):
+                        lines = raw_lines
+                    raw_step_success = payload.get("step_success")
+                    if isinstance(raw_step_success, dict):
+                        seq_val = raw_step_success.get("seq")
+                        step_val = raw_step_success.get("step")
+                        at_val = raw_step_success.get("at")
+                        seq_out = None
+                        if seq_val is not None:
+                            try:
+                                seq_out = int(seq_val)
+                            except (TypeError, ValueError):
+                                seq_out = None
+                        step_out = None
+                        if step_val is not None:
+                            step_txt = str(step_val).strip()
+                            if step_txt:
+                                step_out = step_txt
+                        at_out = None
+                        if at_val is not None:
+                            try:
+                                at_out = float(at_val)
+                            except (TypeError, ValueError):
+                                at_out = None
+                        if seq_out is not None:
+                            step_success_payload = {
+                                "seq": int(seq_out),
+                                "step": step_out,
+                                "at": at_out,
+                            }
+            return jsonify(
+                {
+                    "lines": lines,
+                    "server_id": self._instance_id,
+                    "step_success": step_success_payload,
+                }
+            )
+
+        @self.app.route("/gong.mp3")
+        def gong_audio():
+            if self.gong_file_path.exists() and self.gong_file_path.is_file():
+                return send_file(str(self.gong_file_path), mimetype="audio/mpeg")
+            return ("", 404)
 
         @self.app.route("/__shutdown_stream_server__", methods=["POST"])
         def _shutdown_stream_server():
@@ -552,7 +601,10 @@ class StreamServer:
                 "merged.splice(successTitleIdx + 1, 0, renderSuccessGateStepControl());"
                 "return merged.join('');"
                 "};"
+                "let prefsSyncInFlight = false;"
                 "const syncPrefs = async () => {"
+                "if (prefsSyncInFlight) return;"
+                "prefsSyncInFlight = true;"
                 "try {"
                 "const res = await fetch('/stream_prefs', {cache:'no-store'});"
                 "if (!res.ok) return;"
@@ -578,6 +630,7 @@ class StreamServer:
                 "Array.isArray(data.success_gate_step_options) ? data.success_gate_step_options : null"
                 ");"
                 "} catch (e) { /* ignore */ }"
+                "finally { prefsSyncInFlight = false; }"
                 "};"
                 "if (centerLineToggle) {"
                 "centerLineToggle.addEventListener('change', async () => {"
@@ -621,6 +674,7 @@ class StreamServer:
                 "});"
                 "}"
                 "syncPrefs();"
+                "setInterval(syncPrefs, 350);"
                 "</script>"
             )
         if self.text_provider is None:
@@ -702,6 +756,25 @@ class StreamServer:
             "letter-spacing:0.04em;margin-bottom:6px;}"
             ".footer-line{padding:4px 0;border-bottom:1px solid #242424;}"
             ".footer-line:last-child{border-bottom:none;}"
+            ".celebration-flash{position:fixed;inset:0;pointer-events:none;z-index:9999;opacity:0;display:flex;align-items:center;justify-content:center;}"
+            ".celebration-flash.active{animation:celebrationFlashPulse 850ms ease-out forwards;}"
+            ".celebration-flash-label{font-weight:900;font-size:clamp(24px,5vw,56px);letter-spacing:0.06em;text-transform:uppercase;color:#111;"
+            "text-shadow:0 2px 0 rgba(255,255,255,0.75),0 10px 30px rgba(0,0,0,0.45);padding:14px 22px;border-radius:12px;background:rgba(255,255,255,0.72);"
+            "border:2px solid rgba(17,17,17,0.25);opacity:0;transform:scale(0.98);}"
+            ".celebration-flash.active .celebration-flash-label{animation:celebrationFlashLabel 850ms ease-out forwards;}"
+            "@keyframes celebrationFlashPulse{"
+            "0%{opacity:0;background:#ff1493;}"
+            "10%{opacity:0.98;background:#ff1493;}"
+            "45%{opacity:0.95;background:#ff8c00;}"
+            "75%{opacity:0.95;background:#ffffff;}"
+            "100%{opacity:0;background:#ffffff;}"
+            "}"
+            "@keyframes celebrationFlashLabel{"
+            "0%{opacity:0;transform:scale(0.98);}"
+            "14%{opacity:1;transform:scale(1.0);}"
+            "80%{opacity:1;transform:scale(1.0);}"
+            "100%{opacity:0;transform:scale(1.02);}"
+            "}"
             "@media (max-width: 760px){"
             ".layout{flex-direction:column;align-items:center;}"
             ".sidebar,.info-sidebar{min-width:min(520px, calc(100vw - 24px));max-width:min(520px, calc(100vw - 24px));}"
@@ -710,6 +783,7 @@ class StreamServer:
             "</head><body>"
             f"{header_html}"
             f"{controls_html}"
+            "<div id='celebrationFlash' class='celebration-flash'><div id='celebrationFlashLabel' class='celebration-flash-label'>STEP ACHIEVED</div></div>"
             "<div class='layout'>"
             "<div class='sidebar'><div id='telemetry' class='telemetry'></div></div>"
             f"<div class='stream'><img id='videoFeed' src='/video_feed?sid={html.escape(self._instance_id, quote=True)}'{layout_img_width_attr or width_attr}></div>"
@@ -718,10 +792,53 @@ class StreamServer:
             "<script>"
             "const telemetryEl = document.getElementById('telemetry');"
             "const videoFeedEl = document.getElementById('videoFeed');"
+            "const celebrationFlashEl = document.getElementById('celebrationFlash');"
+            "const celebrationFlashLabelEl = document.getElementById('celebrationFlashLabel');"
+            "const gongAudio = (() => {"
+            "try {"
+            "const a = new Audio('/gong.mp3');"
+            "a.preload = 'auto';"
+            "return a;"
+            "} catch (e) {"
+            "return null;"
+            "}"
+            "})();"
+            "let lastStepSuccessSeq = null;"
+            "let stepSuccessInitialized = false;"
             f"const pageServerId = {self._js_string_literal(self._instance_id)};"
             "let refreshFailures = 0;"
             "let videoFeedErrored = false;"
             "let reloadScheduled = false;"
+            "let celebrationClearTimer = null;"
+            "const _clearCelebrationFlash = () => {"
+            "if (!celebrationFlashEl) return;"
+            "celebrationFlashEl.classList.remove('active');"
+            "if (celebrationFlashLabelEl) celebrationFlashLabelEl.textContent = 'STEP ACHIEVED';"
+            "if (celebrationClearTimer) { clearTimeout(celebrationClearTimer); celebrationClearTimer = null; }"
+            "};"
+            "const _playGong = () => {"
+            "if (!gongAudio) return;"
+            "try {"
+            "gongAudio.pause();"
+            "gongAudio.currentTime = 0;"
+            "const p = gongAudio.play();"
+            "if (p && typeof p.catch === 'function') { p.catch(() => {}); }"
+            "} catch (e) { /* ignore */ }"
+            "};"
+            "const triggerStepSuccessCelebration = (stepLabel) => {"
+            "const label = (stepLabel !== null && stepLabel !== undefined) ? String(stepLabel).trim() : '';"
+            "if (celebrationFlashLabelEl) {"
+            "celebrationFlashLabelEl.textContent = label ? ('STEP ACHIEVED: ' + label) : 'STEP ACHIEVED';"
+            "}"
+            "if (celebrationFlashEl) {"
+            "celebrationFlashEl.classList.remove('active');"
+            "void celebrationFlashEl.offsetWidth;"
+            "celebrationFlashEl.classList.add('active');"
+            "if (celebrationClearTimer) clearTimeout(celebrationClearTimer);"
+            "celebrationClearTimer = setTimeout(_clearCelebrationFlash, 950);"
+            "}"
+            "_playGong();"
+            "};"
             "const scheduleReload = () => {"
             "if (reloadScheduled) return;"
             "reloadScheduled = true;"
@@ -761,6 +878,22 @@ class StreamServer:
             "return;"
                 "}"
                 "const lines = Array.isArray(data.lines) ? data.lines : [];"
+                "const stepSuccess = (data && typeof data.step_success === 'object' && data.step_success) ? data.step_success : null;"
+                "if (stepSuccess && stepSuccess.seq !== undefined && stepSuccess.seq !== null) {"
+                "let seqVal = null;"
+                "try { seqVal = parseInt(stepSuccess.seq, 10); } catch (e) { seqVal = null; }"
+                "if (Number.isFinite(seqVal)) {"
+                "if (!stepSuccessInitialized) {"
+                "lastStepSuccessSeq = seqVal;"
+                "stepSuccessInitialized = true;"
+                "} else if (lastStepSuccessSeq === null || seqVal > lastStepSuccessSeq) {"
+                "lastStepSuccessSeq = seqVal;"
+                "triggerStepSuccessCelebration(stepSuccess.step);"
+                "}"
+                "}"
+                "} else if (!stepSuccessInitialized) {"
+                "stepSuccessInitialized = true;"
+                "}"
                 "const renderedLines = lines.map(renderLine);"
                 "const activeEl = document.activeElement;"
                 "const successGateSelectFocused = !!(activeEl && activeEl.id === 'successGateStepSelect');"

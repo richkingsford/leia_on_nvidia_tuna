@@ -1,5 +1,5 @@
 {
-    "active_mode": "cyan",
+    "active_mode": "aruco",
     "demos_by_mode": {
         "aruco": "demos - aruco",
         "cyan": "demos - cyan"

@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import os
+import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from collections import deque
@@ -19,9 +20,42 @@ class BrickPose:
     brickBelow: bool = False
 
 class ArucoBrickVision:
-    def __init__(self, marker_size_mm: float = 20.0, debug: bool = True):
+    def __init__(
+        self,
+        marker_size_mm: float = 20.0,
+        debug: bool = True,
+        debug_rejected_candidates: bool = False,
+    ):
         self.marker_size = marker_size_mm
         self.debug = debug
+        env_rejected_debug = str(os.getenv("ARUCO_DEBUG_REJECTED_CANDIDATES", "")).strip().lower()
+        self.debug_rejected_candidates = bool(
+            debug_rejected_candidates or env_rejected_debug in {"1", "true", "yes", "on"}
+        )
+        env_rejected_fallback = str(
+            os.getenv("ARUCO_ENABLE_REJECTED_MARKER_FALLBACK", "1")
+        ).strip().lower()
+        self.enable_rejected_marker_fallback = bool(
+            env_rejected_fallback not in {"0", "false", "no", "off"}
+        )
+        self.rejected_marker_fallback_id = int(
+            os.getenv("ARUCO_REJECTED_MARKER_FALLBACK_ID", "11") or 11
+        )
+        self.target_marker_id = int(
+            os.getenv("ARUCO_TARGET_MARKER_ID", str(self.rejected_marker_fallback_id))
+            or self.rejected_marker_fallback_id
+        )
+        self.rejected_marker_fallback_max_candidates = int(
+            os.getenv("ARUCO_REJECTED_MARKER_FALLBACK_MAX_CANDIDATES", "80") or 80
+        )
+        self.visibility_hold_seconds = float(
+            os.getenv("ARUCO_VISIBILITY_HOLD_SECONDS", "0.8") or 0.8
+        )
+        # When loose detection already yields a reject storm, running CLAHE+loose can
+        # add large latency with low incremental decode value.
+        self.clahe_loose_max_rejected = int(
+            os.getenv("ARUCO_CLAHE_LOOSE_MAX_REJECTED", "600") or 600
+        )
         self.camera_matrix = None
         self.dist_coeffs = None
         self.debug_frame = None
@@ -59,6 +93,40 @@ class ArucoBrickVision:
         # Smoothing
         self.ALPHA = 0.2
         self.last_pose = None
+        self.last_found_ts_mono = 0.0
+
+        # Tiny ROI lift estimator (low-cost fallback when marker-based lift is unreliable).
+        env_tiny_lift_enabled = str(os.getenv("ARUCO_TINY_ROI_LIFT_ENABLED", "1")).strip().lower()
+        self.tiny_roi_lift_enabled = bool(env_tiny_lift_enabled not in {"0", "false", "no", "off"})
+        self.tiny_roi_lift_interval = max(1, int(os.getenv("ARUCO_TINY_ROI_LIFT_INTERVAL", "3") or 3))
+        self.tiny_roi_lift_max_features = max(8, int(os.getenv("ARUCO_TINY_ROI_LIFT_MAX_FEATURES", "32") or 32))
+        self.tiny_roi_lift_roi_h_pct = max(0.08, min(0.40, float(os.getenv("ARUCO_TINY_ROI_LIFT_ROI_H_PCT", "0.18") or 0.18)))
+        self.tiny_roi_lift_roi_w_pct = max(0.20, min(1.00, float(os.getenv("ARUCO_TINY_ROI_LIFT_ROI_W_PCT", "0.50") or 0.50)))
+        self.tiny_roi_lift_quality_min = max(
+            0.10,
+            min(0.95, float(os.getenv("ARUCO_TINY_ROI_LIFT_QUALITY_MIN", "0.35") or 0.35)),
+        )
+        self.tiny_roi_lift_deadband_px = max(
+            0.02,
+            float(os.getenv("ARUCO_TINY_ROI_LIFT_DEADBAND_PX", "0.12") or 0.12),
+        )
+        self.tiny_roi_lift_max_step_mm = max(
+            0.5,
+            float(os.getenv("ARUCO_TINY_ROI_LIFT_MAX_STEP_MM", "12.0") or 12.0),
+        )
+
+        mm_per_px = float(os.getenv("ARUCO_TINY_ROI_LIFT_MM_PER_PX", "1.0") or 1.0)
+        self._tiny_roi_calib_mm_per_px = max(0.05, abs(float(mm_per_px)))
+        self._tiny_roi_calib_sign = -1.0 if float(mm_per_px) < 0.0 else 1.0
+
+        self._tiny_roi_frame_idx = 0
+        self._tiny_roi_prev = None
+        self._tiny_roi_prev_pts = None
+        self._tiny_roi_last_cam_h = None
+
+        self.floor_lift_mm = 0.0
+        self.floor_lift_quality = 0.0
+        self.floor_lift_ok = False
 
     def _build_aruco_params(self, loose: bool) -> cv2.aruco.DetectorParameters:
         params = cv2.aruco.DetectorParameters()
@@ -85,8 +153,10 @@ class ArucoBrickVision:
 
         if loose:
             # Loose profile keeps support for clipped/partial candidates.
-            params.minMarkerPerimeterRate = 0.005
-            params.polygonalApproxAccuracyRate = 0.08
+            # The prior 0.005 perimeter rate can create thousands of rejected quads in
+            # textured floor/wall scenes, collapsing frame rate and starving control loops.
+            params.minMarkerPerimeterRate = 0.01
+            params.polygonalApproxAccuracyRate = 0.06
             params.minSideLengthCanonicalImg = 8
         else:
             # Primary profile favors stable full detections for the new 6x6 markers.
@@ -154,7 +224,6 @@ class ArucoBrickVision:
             ("raw", self.detector, gray),
             ("clahe", self.detector, clahe_gray),
             ("raw_loose", self.loose_detector, gray),
-            ("clahe_loose", self.loose_detector, clahe_gray),
         ):
             corners_i, ids_i, rejected_i = detector.detectMarkers(img)
             pass_results.append((label, corners_i, ids_i, rejected_i))
@@ -204,6 +273,28 @@ class ArucoBrickVision:
             self.last_detect_pass = f"{primary_label}+merge" if merged_from_later else str(primary_label)
             return merged_corners, np.asarray(merged_ids, dtype=np.int32).reshape(-1, 1), best_rejected
 
+        # If raw_loose already exploded in candidate count, skip CLAHE+loose by default.
+        # This preserves responsiveness in high-texture scenes while still allowing override.
+        raw_loose_rejected = 0
+        for label, _corners, _ids, rejected_i in pass_results:
+            if str(label) == "raw_loose":
+                raw_loose_rejected = int(len(rejected_i) if rejected_i is not None else 0)
+                break
+        if self.clahe_loose_max_rejected > 0 and raw_loose_rejected >= self.clahe_loose_max_rejected:
+            best = max(
+                pass_results,
+                key=lambda item: len(item[3]) if item[3] is not None else 0,
+            )
+            self.last_detect_pass = best[0]
+            return best[1], best[2], best[3]
+
+        corners_loose_clahe, ids_loose_clahe, rejected_loose_clahe = self.loose_detector.detectMarkers(clahe_gray)
+        pass_results.append(("clahe_loose", corners_loose_clahe, ids_loose_clahe, rejected_loose_clahe))
+
+        if ids_loose_clahe is not None and corners_loose_clahe is not None and len(ids_loose_clahe) > 0:
+            self.last_detect_pass = "clahe_loose"
+            return corners_loose_clahe, ids_loose_clahe, rejected_loose_clahe
+
         # No confirmed markers found; return whichever pass produced the richest rejected set
         # so the partial-stack fallback still has candidates to inspect.
         best = max(
@@ -212,6 +303,235 @@ class ArucoBrickVision:
         )
         self.last_detect_pass = best[0]
         return best[1], best[2], best[3]
+
+    def _norm_quad_pts(self, quad) -> Optional[np.ndarray]:
+        try:
+            pts = np.asarray(quad, dtype=np.float32)
+        except Exception:
+            return None
+        if pts.ndim == 3 and pts.shape[0] == 1:
+            pts = pts[0]
+        if pts.ndim != 2 or pts.shape[1] != 2 or pts.shape[0] < 4:
+            return None
+        return pts[:4].astype(np.float32)
+
+    def _order_quad_pts(self, pts: np.ndarray) -> Optional[np.ndarray]:
+        if pts is None:
+            return None
+        try:
+            pts4 = np.asarray(pts, dtype=np.float32).reshape(-1, 2)[:4].copy()
+        except Exception:
+            return None
+        if pts4.shape != (4, 2):
+            return None
+        s = pts4.sum(axis=1)
+        d = pts4[:, 1] - pts4[:, 0]
+        ordered = np.zeros((4, 2), dtype=np.float32)
+        ordered[0] = pts4[np.argmin(s)]  # top-left
+        ordered[2] = pts4[np.argmax(s)]  # bottom-right
+        ordered[1] = pts4[np.argmin(d)]  # top-right
+        ordered[3] = pts4[np.argmax(d)]  # bottom-left
+        return ordered
+
+    def _filter_target_marker_detections(self, corners, ids):
+        if ids is None or corners is None:
+            return corners, ids
+        target_id = int(self.target_marker_id)
+        kept_corners = []
+        kept_ids = []
+        count = min(len(corners), len(ids))
+        for i in range(count):
+            try:
+                marker_id = int(ids[i][0])
+            except Exception:
+                try:
+                    marker_id = int(ids[i])
+                except Exception:
+                    continue
+            if marker_id != target_id:
+                continue
+            kept_corners.append(corners[i])
+            kept_ids.append([marker_id])
+        if not kept_ids:
+            return None, None
+        return kept_corners, np.asarray(kept_ids, dtype=np.int32)
+
+    def _estimate_marker_confidence(self, corners_2d, rvec, tvec):
+        # Confidence is derived from the decoded target marker geometry only.
+        if corners_2d is None or rvec is None or tvec is None:
+            return 0.0
+        try:
+            corners = np.asarray(corners_2d, dtype=np.float32).reshape(4, 2)
+        except Exception:
+            return 0.0
+        try:
+            projected, _ = cv2.projectPoints(
+                self.marker_points_3d,
+                rvec,
+                tvec,
+                self.camera_matrix,
+                self.dist_coeffs,
+            )
+            projected = projected.reshape(4, 2).astype(np.float32)
+            reproj_err_px = float(np.mean(np.linalg.norm(projected - corners, axis=1)))
+        except Exception:
+            reproj_err_px = 999.0
+
+        side_lengths = []
+        for i in range(4):
+            j = (i + 1) % 4
+            try:
+                side_lengths.append(float(np.linalg.norm(corners[i] - corners[j])))
+            except Exception:
+                side_lengths.append(0.0)
+        mean_side = float(np.mean(side_lengths)) if side_lengths else 0.0
+        min_side = float(min(side_lengths)) if side_lengths else 0.0
+        max_side = float(max(side_lengths)) if side_lengths else 1.0
+
+        score_reproj = max(0.0, min(1.0, 1.0 - (reproj_err_px / 6.0)))
+        score_size = max(0.0, min(1.0, (mean_side - 12.0) / 70.0))
+        score_square = max(0.0, min(1.0, min_side / max(1.0, max_side)))
+        pass_label = str(getattr(self, "last_detect_pass", "") or "").strip().lower()
+        if "clahe_loose" in pass_label:
+            score_pass = 0.86
+        elif "raw_loose" in pass_label:
+            score_pass = 0.90
+        elif "clahe" in pass_label:
+            score_pass = 0.94
+        else:
+            score_pass = 1.00
+
+        score = (
+            0.10
+            + (0.50 * float(score_reproj))
+            + (0.25 * float(score_size))
+            + (0.15 * float(score_square))
+        ) * float(score_pass)
+        return max(0.0, min(100.0, round(float(score) * 100.0, 1)))
+
+    def _marker_like_quad_score(self, gray: np.ndarray, pts: np.ndarray) -> Optional[float]:
+        # Fast heuristic score for "this looks like a black/white square marker quad".
+        quad = self._order_quad_pts(pts)
+        if quad is None:
+            return None
+        warp_n = 56
+        dst = np.array(
+            [[0, 0], [warp_n - 1, 0], [warp_n - 1, warp_n - 1], [0, warp_n - 1]],
+            dtype=np.float32,
+        )
+        M = cv2.getPerspectiveTransform(quad, dst)
+        patch = cv2.warpPerspective(gray, M, (warp_n, warp_n), flags=cv2.INTER_LINEAR)
+        if patch is None or patch.size == 0:
+            return None
+
+        p5, p95 = np.percentile(patch, (5, 95))
+        contrast = float(p95 - p5)
+        if contrast < 35.0:
+            return None
+
+        _thr, bw = cv2.threshold(patch, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        bw01 = (bw > 0).astype(np.uint8)
+        white_frac = float(np.mean(bw01))
+        if not (0.08 <= white_frac <= 0.92):
+            return None
+
+        t = max(2, int(warp_n // 10))
+        border_black = [
+            1.0 - float(np.mean(bw01[:t, :])),
+            1.0 - float(np.mean(bw01[-t:, :])),
+            1.0 - float(np.mean(bw01[:, :t])),
+            1.0 - float(np.mean(bw01[:, -t:])),
+        ]
+        dark_sides = sum(1 for v in border_black if v >= 0.55)
+        ring_mask = np.zeros_like(bw01, dtype=np.uint8)
+        ring_mask[:t, :] = 1
+        ring_mask[-t:, :] = 1
+        ring_mask[:, :t] = 1
+        ring_mask[:, -t:] = 1
+        ring_black_ratio = 1.0 - float(np.mean(bw01[ring_mask == 1]))
+        if ring_black_ratio < 0.45 and dark_sides < 2:
+            return None
+
+        row = bw01[warp_n // 2, :]
+        col = bw01[:, warp_n // 2]
+        transitions = int(np.count_nonzero(row[1:] != row[:-1])) + int(
+            np.count_nonzero(col[1:] != col[:-1])
+        )
+        if transitions < 4:
+            return None
+
+        # Higher is better.
+        return float((contrast / 255.0) + ring_black_ratio + min(1.0, transitions / 20.0))
+
+    def _select_rejected_fallback_quad(self, gray: np.ndarray, rejected) -> Optional[np.ndarray]:
+        if (not self.enable_rejected_marker_fallback) or rejected is None:
+            return None
+        h, w = gray.shape[:2]
+        frame_area = float(max(1, h * w))
+        min_area_px = max(180.0, frame_area * 0.0004)
+        max_area_px = frame_area * 0.35
+        center_x = float(w) * 0.5
+        center_y = float(h) * 0.5
+        span_ref = float(max(w, h))
+
+        prelim = []
+        for quad in rejected:
+            pts = self._norm_quad_pts(quad)
+            if pts is None:
+                continue
+            area = abs(float(cv2.contourArea(pts)))
+            if area < min_area_px or area > max_area_px:
+                continue
+            rect = cv2.minAreaRect(pts)
+            (_cx, _cy), (rw, rh), _ang = rect
+            if rw <= 0 or rh <= 0:
+                continue
+            short_side = float(min(rw, rh))
+            long_side = float(max(rw, rh))
+            if short_side < 12.0:
+                continue
+            aspect = long_side / max(short_side, 1e-3)
+            if aspect > 1.55:
+                continue
+            rect_area = float(rw * rh)
+            if rect_area <= 1.0:
+                continue
+            fill_ratio = area / rect_area
+            if fill_ratio < 0.5:
+                continue
+            cx = float(np.mean(pts[:, 0]))
+            cy = float(np.mean(pts[:, 1]))
+            center_dist = float(np.hypot(cx - center_x, cy - center_y))
+            prelim_score = (
+                (area / frame_area) * 2.0
+                + fill_ratio * 0.4
+                - (center_dist / max(1.0, span_ref)) * 0.7
+            )
+            prelim.append((prelim_score, pts, area, center_dist))
+
+        if not prelim:
+            return None
+
+        prelim.sort(key=lambda item: item[0], reverse=True)
+        max_scan = max(1, int(self.rejected_marker_fallback_max_candidates))
+        scan = prelim[:max_scan]
+
+        best = None
+        for _score0, pts, area, center_dist in scan:
+            marker_score = self._marker_like_quad_score(gray, pts)
+            if marker_score is None:
+                continue
+            total = (
+                marker_score
+                + (area / frame_area) * 1.6
+                - (center_dist / max(1.0, span_ref)) * 0.45
+            )
+            if best is None or total > best[0]:
+                best = (total, pts)
+
+        if best is None:
+            return None
+        return self._order_quad_pts(best[1])
 
     def _candidate_camera_indices(self, preferred_index: Optional[int]) -> List[int]:
         candidates: List[int] = []
@@ -262,13 +582,12 @@ class ArucoBrickVision:
                 if cap is not None and cap.isOpened():
                     self.cap = cap
                     self.camera_index = idx
-                    print(f"[VISION] ArUco camera opened on index {idx}")
                     break
 
             if self.cap is None or not self.cap.isOpened():
                 self.cap = None
                 self.camera_index = None
-                print(f"[VISION] Unable to open camera. Tried indices: {tried_indices}")
+                print(f"[VISION] Unable to open camera. Tried indices: {tried_indices}", flush=True)
 
         # Approximate camera matrix if none provided
         focal_length = width
@@ -279,6 +598,184 @@ class ArucoBrickVision:
             [0, 0, 1]
         ], dtype=np.float32)
         self.dist_coeffs = np.zeros((5, 1), dtype=np.float32)
+
+    def _tiny_roi_bounds(self, gray: np.ndarray):
+        if gray is None:
+            return None
+        h, w = gray.shape[:2]
+        if h <= 0 or w <= 0:
+            return None
+        roi_h = max(24, int(round(float(h) * float(self.tiny_roi_lift_roi_h_pct))))
+        roi_w = max(48, int(round(float(w) * float(self.tiny_roi_lift_roi_w_pct))))
+        roi_h = min(int(h), int(roi_h))
+        roi_w = min(int(w), int(roi_w))
+        x0 = max(0, int((w - roi_w) // 2))
+        y0 = max(0, int(h - roi_h))
+        x1 = min(int(w), int(x0 + roi_w))
+        y1 = min(int(h), int(y0 + roi_h))
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return x0, y0, x1, y1
+
+    def _tiny_roi_extract(self, gray: np.ndarray):
+        bounds = self._tiny_roi_bounds(gray)
+        if bounds is None:
+            return None, None
+        x0, y0, x1, y1 = bounds
+        roi = gray[y0:y1, x0:x1]
+        if roi is None or roi.size <= 0:
+            return None, None
+        roi = cv2.GaussianBlur(roi, (3, 3), 0)
+        return roi, bounds
+
+    def _update_tiny_roi_lift(self, gray: np.ndarray, pose: BrickPose):
+        if not bool(self.tiny_roi_lift_enabled):
+            self.floor_lift_quality = 0.0
+            self.floor_lift_ok = False
+            return
+        if gray is None:
+            self.floor_lift_quality = 0.0
+            self.floor_lift_ok = False
+            return
+
+        self._tiny_roi_frame_idx = int(self._tiny_roi_frame_idx) + 1
+        roi_now, bounds = self._tiny_roi_extract(gray)
+        if roi_now is None:
+            self.floor_lift_quality = 0.0
+            self.floor_lift_ok = False
+            self._tiny_roi_prev = None
+            self._tiny_roi_prev_pts = None
+            return
+
+        if bool(pose.found) and float(pose.confidence) >= 60.0:
+            try:
+                self._tiny_roi_last_cam_h = float(pose.position[1])
+            except Exception:
+                pass
+
+        if self._tiny_roi_prev is None:
+            self._tiny_roi_prev = roi_now
+            self._tiny_roi_prev_pts = None
+            self.floor_lift_quality = 0.0
+            self.floor_lift_ok = False
+            return
+
+        if (int(self._tiny_roi_frame_idx) % int(self.tiny_roi_lift_interval)) != 0:
+            return
+
+        prev = self._tiny_roi_prev
+        pts_prev = self._tiny_roi_prev_pts
+        if pts_prev is None or len(pts_prev) < 8:
+            pts_prev = cv2.goodFeaturesToTrack(
+                prev,
+                maxCorners=int(self.tiny_roi_lift_max_features),
+                qualityLevel=0.02,
+                minDistance=5,
+                blockSize=5,
+            )
+        if pts_prev is None or len(pts_prev) < 6:
+            self.floor_lift_quality = 0.0
+            self.floor_lift_ok = False
+            self._tiny_roi_prev = roi_now
+            self._tiny_roi_prev_pts = None
+            return
+
+        next_pts, st, err = cv2.calcOpticalFlowPyrLK(
+            prev,
+            roi_now,
+            pts_prev,
+            None,
+            winSize=(15, 15),
+            maxLevel=2,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 0.03),
+        )
+        if next_pts is None or st is None:
+            self.floor_lift_quality = 0.0
+            self.floor_lift_ok = False
+            self._tiny_roi_prev = roi_now
+            self._tiny_roi_prev_pts = None
+            return
+
+        st_mask = (st.reshape(-1) == 1)
+        if err is not None:
+            try:
+                err_mask = (err.reshape(-1) <= 25.0)
+                st_mask = np.logical_and(st_mask, err_mask)
+            except Exception:
+                pass
+        if int(np.count_nonzero(st_mask)) < 6:
+            self.floor_lift_quality = 0.0
+            self.floor_lift_ok = False
+            self._tiny_roi_prev = roi_now
+            self._tiny_roi_prev_pts = None
+            return
+
+        good_prev = pts_prev.reshape(-1, 2)[st_mask]
+        good_next = next_pts.reshape(-1, 2)[st_mask]
+        disp = good_next - good_prev
+        dy = disp[:, 1]
+        med_dy = float(np.median(dy))
+        mad = float(np.median(np.abs(dy - med_dy)))
+        inlier_mask = np.abs(dy - med_dy) <= max(0.25, (2.5 * mad))
+        if int(np.count_nonzero(inlier_mask)) < 5:
+            self.floor_lift_quality = 0.0
+            self.floor_lift_ok = False
+            self._tiny_roi_prev = roi_now
+            self._tiny_roi_prev_pts = None
+            return
+
+        dy_in = dy[inlier_mask]
+        med_dy = float(np.median(dy_in))
+        mad_in = float(np.median(np.abs(dy_in - med_dy)))
+
+        feature_score = min(
+            1.0,
+            float(len(dy_in)) / max(8.0, float(self.tiny_roi_lift_max_features)),
+        )
+        coherence_score = 1.0 / (1.0 + max(0.0, float(mad_in)))
+        quality = max(0.0, min(1.0, float(feature_score * coherence_score)))
+        self.floor_lift_quality = float(quality)
+        self.floor_lift_ok = bool(quality >= float(self.tiny_roi_lift_quality_min))
+
+        if bool(pose.found) and float(pose.confidence) >= 60.0:
+            try:
+                cam_h_now = float(pose.position[1])
+            except Exception:
+                cam_h_now = None
+            cam_h_prev = self._tiny_roi_last_cam_h
+            if (
+                cam_h_now is not None
+                and cam_h_prev is not None
+                and abs(med_dy) >= float(self.tiny_roi_lift_deadband_px)
+            ):
+                delta_cam_h = float(cam_h_now) - float(cam_h_prev)
+                if abs(delta_cam_h) >= 0.4:
+                    est_mm_per_px = float(delta_cam_h) / float(med_dy)
+                    if 0.05 <= abs(est_mm_per_px) <= 20.0:
+                        self._tiny_roi_calib_mm_per_px = (
+                            (0.9 * float(self._tiny_roi_calib_mm_per_px))
+                            + (0.1 * abs(float(est_mm_per_px)))
+                        )
+                        self._tiny_roi_calib_sign = -1.0 if float(est_mm_per_px) < 0.0 else 1.0
+            if cam_h_now is not None:
+                self._tiny_roi_last_cam_h = float(cam_h_now)
+
+        if abs(med_dy) >= float(self.tiny_roi_lift_deadband_px) and quality >= 0.2:
+            delta_mm = (
+                float(med_dy)
+                * float(self._tiny_roi_calib_mm_per_px)
+                * float(self._tiny_roi_calib_sign)
+            )
+            delta_mm = max(
+                -float(self.tiny_roi_lift_max_step_mm),
+                min(float(self.tiny_roi_lift_max_step_mm), float(delta_mm)),
+            )
+            self.floor_lift_mm = max(0.0, float(self.floor_lift_mm) + float(delta_mm))
+
+        self._tiny_roi_prev = roi_now
+        self._tiny_roi_prev_pts = good_next[inlier_mask].reshape(-1, 1, 2).astype(np.float32)
+
+        # Keep tiny-ROI lift estimation telemetry-only. Do not draw ROI overlays on stream.
 
     def read(self):
         if self.cap is None or not self.cap.isOpened():
@@ -295,7 +792,9 @@ class ArucoBrickVision:
             return False, 0, -1, 0, 0, 0, False, False
 
         self.raw_frame = frame.copy()
-        pose = self.process(frame)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        pose = self.process(frame, gray=gray)
+        self._update_tiny_roi_lift(gray, pose)
         self.current_frame = self.debug_frame if self.debug_frame is not None else frame
         
         if not pose.found:
@@ -317,13 +816,18 @@ class ArucoBrickVision:
         if self.cap:
             self.cap.release()
 
-    def process(self, frame: np.ndarray) -> BrickPose:
+    def process(self, frame: np.ndarray, gray: Optional[np.ndarray] = None) -> BrickPose:
         if self.camera_matrix is None:
             self.init_camera(frame.shape[1], frame.shape[0])
-            
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if gray is None:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         corners, ids, rejected = self._detect_markers_with_fallback(gray)
-        
+        corners, ids = self._filter_target_marker_detections(corners, ids)
+        # Count of orange "possible marker" candidates drawn this frame.
+        # Keep this defined regardless of debug mode so downstream stack logic
+        # never references an undefined local.
+        possible_marker_hits = 0
+
         if self.debug:
             self.debug_frame = frame.copy()
             # Removed drawDetectedMarkers (dots)
@@ -455,7 +959,9 @@ class ArucoBrickVision:
                     if rw > 0 and rh > 0:
                         confirmed_short_sides.append(float(min(rw, rh)))
 
-            if rejected is not None:
+            # This pass is expensive when many rejected quads are present.
+            # Keep it opt-in so control loops stay responsive by default.
+            if self.debug_rejected_candidates and rejected is not None:
                 h, w = frame.shape[:2]
                 frame_area = float(max(1, h * w))
                 min_area_px = max(40.0, frame_area * 0.00005)
@@ -514,6 +1020,7 @@ class ArucoBrickVision:
 
                     box_pts = cv2.boxPoints(rect)
                     _draw_poly(box_pts, (0, 165, 255), thickness=2)  # bright orange
+                    possible_marker_hits += 1
 
         best_marker = None
         
@@ -545,7 +1052,7 @@ class ArucoBrickVision:
                         found=True,
                         position=(tvec[0][0], tvec[1][0], tvec[2][0]),
                         orientation=angles,
-                        confidence=100.0,
+                        confidence=self._estimate_marker_confidence(c, rvec, tvec),
                         marker_id=marker_id,
                         rvec=rvec,
                         tvec=tvec,
@@ -722,6 +1229,12 @@ class ArucoBrickVision:
                         if rejected_below_best is not None and not best_marker.brickBelow:
                             best_marker.brickBelow = True
 
+                # Operator intent: if we are drawing at least one orange "possible
+                # marker" candidate this frame, treat stack-above/below raw flags as true.
+                if possible_marker_hits > 0:
+                    best_marker.brickAbove = True
+                    best_marker.brickBelow = True
+
         if best_marker:
             if self.last_pose:
                 # Smoothing
@@ -730,6 +1243,27 @@ class ArucoBrickVision:
                     p.append(self.ALPHA * best_marker.position[i] + (1 - self.ALPHA) * self.last_pose.position[i])
                 best_marker.position = tuple(p)
             self.last_pose = best_marker
+            self.last_found_ts_mono = float(time.monotonic())
             return best_marker
         else:
+            if (
+                self.last_pose is not None
+                and float(self.visibility_hold_seconds) > 0.0
+                and (float(time.monotonic()) - float(self.last_found_ts_mono)) <= float(self.visibility_hold_seconds)
+            ):
+                # Hold last valid pose briefly to suppress one-frame decode flicker.
+                held = BrickPose(
+                    found=True,
+                    position=self.last_pose.position,
+                    orientation=self.last_pose.orientation,
+                    confidence=max(50.0, float(self.last_pose.confidence) * 0.8),
+                    marker_id=int(self.last_pose.marker_id),
+                    rvec=self.last_pose.rvec,
+                    tvec=self.last_pose.tvec,
+                    corners=self.last_pose.corners,
+                    brickAbove=bool(self.last_pose.brickAbove),
+                    brickBelow=bool(self.last_pose.brickBelow),
+                )
+                self.last_detect_pass = f"{self.last_detect_pass}_hold"
+                return held
             return BrickPose(False, (0, 0, 0), (0, 0, 0), 0.0, -1)

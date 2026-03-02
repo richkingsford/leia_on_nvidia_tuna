@@ -19,9 +19,27 @@ def build_text_provider(state, text_key="text_lines", lock_key="lock"):
     def _provider():
         lock = state.get(lock_key)
         if lock is None:
-            return state.get(text_key)
+            lines = state.get(text_key)
+            step_success = {
+                "seq": state.get("step_success_seq"),
+                "step": state.get("step_success_step"),
+                "at": state.get("step_success_at"),
+            }
+            return {
+                "lines": lines,
+                "step_success": step_success,
+            }
         with lock:
-            return state.get(text_key)
+            lines = state.get(text_key)
+            step_success = {
+                "seq": state.get("step_success_seq"),
+                "step": state.get("step_success_step"),
+                "at": state.get("step_success_at"),
+            }
+            return {
+                "lines": lines,
+                "step_success": step_success,
+            }
     return _provider
 
 

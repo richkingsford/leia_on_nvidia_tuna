@@ -106,6 +106,14 @@ ALIGN_POLICY_DEFAULTS = {
     "focus_dist_first_x_gap_lt_mm": 1000000000.0,
     "focus_dist_sticky_enabled": True,
     "focus_dist_sticky_release_mm": 100.0,
+    # Optional hard override for steps that should intentionally favor distance
+    # correction whenever distance is outside gate.
+    "dist_priority_cheat_enabled": False,
+    "dist_priority_cheat_min_ratio": 0.0,
+    "dist_priority_cheat_min_outside_mm": 0.0,
+    "y_axis_close_bottom_bias_enabled": True,
+    "y_axis_close_bottom_dist_mm_max": 100.0,
+    "y_axis_close_bottom_min_mm": 1.0,
     "dist_score_mode": "dist_value_bands",
     "turn_score_mode": "shared_turn_bands",
     "turn_fallback_score": ALIGN_STEPS_SHARED_TURN_FALLBACK_SCORE,
@@ -167,6 +175,52 @@ def _target_tol_ok(value, stats, direction):
     if direction == "low":
         return value <= (target + tol)
     return abs(value - target) <= tol
+
+
+def _target_tol_outside_mm(value, stats, direction):
+    target = stats.get("target") if isinstance(stats, dict) else None
+    tol = stats.get("tol") if isinstance(stats, dict) else None
+    if target is None or tol is None:
+        return None
+    try:
+        value_num = float(value)
+        target_num = float(target)
+        tol_num = abs(float(tol))
+    except (TypeError, ValueError):
+        return None
+    dir_key = str(direction or "").strip().lower()
+    if dir_key == "high":
+        return max(0.0, (target_num - tol_num) - value_num)
+    if dir_key == "low":
+        return max(0.0, value_num - (target_num + tol_num))
+    return max(0.0, abs(value_num - target_num) - tol_num)
+
+
+def _gate_outside_mm(value, stats, direction):
+    try:
+        value_num = float(value)
+    except (TypeError, ValueError):
+        return None
+    outside_target_tol = _target_tol_outside_mm(value_num, stats, direction)
+    if outside_target_tol is not None:
+        return float(outside_target_tol)
+    if not isinstance(stats, dict):
+        return 0.0
+    min_val = stats.get("min")
+    max_val = stats.get("max")
+    try:
+        min_num = float(min_val) if min_val is not None else None
+    except (TypeError, ValueError):
+        min_num = None
+    try:
+        max_num = float(max_val) if max_val is not None else None
+    except (TypeError, ValueError):
+        max_num = None
+    if min_num is not None and value_num < min_num:
+        return float(min_num - value_num)
+    if max_num is not None and value_num > max_num:
+        return float(value_num - max_num)
+    return 0.0
 
 
 def _score_from_mm(mm_off, slow_mm, fast_mm):
@@ -377,7 +431,7 @@ def success_gates_visible_only(process_rules, step):
     if not success_metrics:
         return False
     keys = {key for key in success_metrics.keys() if key is not None}
-    return keys == {"visible"}
+    return keys in ({"visible"}, {"visible", "confidence"})
 
 
 def _smoothstep01(value: float) -> float:
@@ -996,6 +1050,10 @@ GAP_ALIGN_OUTSIDE_GATE_RATIO_EPS = 1e-6
 # `y_err` should only be worked once the other gap(s) are nearly solved.
 # Ratio is normalized "outside gate" error: 0.10 means 10% beyond the gate tolerance.
 GAP_ALIGN_Y_AXIS_OTHER_GAPS_NEAR_RATIO_MAX = 0.10
+# If the marker is very near the top/bottom of frame (large |y offset|), force
+# y-axis correction immediately to re-center visibility before fine x/dist work.
+GAP_ALIGN_Y_AXIS_EDGE_FORCE_ABS_MM_MIN = 8.0
+GAP_ALIGN_Y_AXIS_EDGE_FORCE_TOL_MULT = 4.0
 
 
 def _success_gates_for_step(process_rules, step):
@@ -1100,6 +1158,7 @@ def select_align_brick_next_act(
     - Turn score source: `align_brick_x_axis_one_shot_score(...)`
     """
     step_name = _step_name(step) or "ALIGN_BRICK"
+    align_policy = _align_policy_for_step(process_rules, step_name)
     analytics = compute_alignment_decision(
         world=None,
         step=step_name,
@@ -1143,6 +1202,10 @@ def select_align_brick_next_act(
     y_tol = abs(float(y_tol) or 0.0)
     dist_tol = abs(_coerce_float(d_stats.get("tol"), 0.0) or 0.0)
 
+    x_direction = metric_direction_for_step("xAxis_offset_abs", step_name, process_rules=process_rules)
+    y_direction = metric_direction_for_step("yAxis_offset_abs", step_name, process_rules=process_rules)
+    d_direction = metric_direction_for_step("dist", step_name, process_rules=process_rules)
+
     x_axis_val = _coerce_float(x_axis_mm, 0.0) or 0.0
     x_err_mm = float(x_axis_val - x_target)
     y_axis_val = _coerce_float(y_axis_mm, None)
@@ -1152,18 +1215,36 @@ def select_align_brick_next_act(
         dist_err_mm = float("inf")
     else:
         dist_err_mm = abs(float(dist_val - dist_target))
+    x_gate_outside_mm = _gate_outside_mm(x_axis_val, x_stats, x_direction) if x_required else 0.0
+    y_gate_outside_mm = (
+        _gate_outside_mm(y_axis_val, y_stats, y_direction)
+        if (y_required and y_axis_val is not None)
+        else 0.0
+    )
+    dist_gate_outside_mm = (
+        _gate_outside_mm(dist_val, d_stats, d_direction)
+        if (d_required and dist_val is not None)
+        else 0.0
+    )
 
-    def _gate_ratio(abs_err_mm, tol_mm):
+    def _gate_ratio(outside_mm, tol_mm, *, fallback_scale=1.0):
         try:
-            err = max(0.0, float(abs_err_mm) - float(max(0.0, tol_mm)))
+            err = max(0.0, float(outside_mm or 0.0))
         except (TypeError, ValueError):
             return 0.0
-        denom = max(float(tol_mm), 1.0)
+        try:
+            denom = max(float(tol_mm), float(fallback_scale), 1.0)
+        except (TypeError, ValueError):
+            denom = max(float(fallback_scale), 1.0)
         return float(err) / float(denom)
 
-    x_ratio = _gate_ratio(abs(x_err_mm), x_tol) if x_required else 0.0
-    y_ratio = _gate_ratio(abs(y_err_mm), y_tol) if (y_required and y_err_mm is not None) else 0.0
-    d_ratio = _gate_ratio(dist_err_mm, dist_tol) if (d_required and dist_val is not None and dist_tol > 0.0) else 0.0
+    x_ratio = _gate_ratio(x_gate_outside_mm, x_tol) if x_required else 0.0
+    y_ratio = _gate_ratio(y_gate_outside_mm, y_tol) if (y_required and y_err_mm is not None) else 0.0
+    d_ratio = (
+        _gate_ratio(dist_gate_outside_mm, dist_tol, fallback_scale=max(abs(float(dist_target)), 1.0))
+        if (d_required and dist_val is not None)
+        else 0.0
+    )
     try:
         ratio_eps = max(0.0, float(GAP_ALIGN_OUTSIDE_GATE_RATIO_EPS))
     except (TypeError, ValueError):
@@ -1201,7 +1282,7 @@ def select_align_brick_next_act(
     if bool(x_stats):
         y_other_gaps_near_ready = y_other_gaps_near_ready and _ratio_is_near_gate(x_ratio)
     if bool(d_stats):
-        if dist_val is None or dist_tol <= 0.0:
+        if dist_val is None:
             y_other_gaps_near_ready = False
         else:
             y_other_gaps_near_ready = y_other_gaps_near_ready and _ratio_is_near_gate(d_ratio)
@@ -1212,9 +1293,10 @@ def select_align_brick_next_act(
             worst_metric = "xAxis_offset_abs"
 
     candidates = {}
+    recovery_fallback_candidates = {}
 
-    if x_required and x_ratio > ratio_eps:
-        candidates["x_axis"] = {
+    if x_required:
+        x_candidate = {
             "cmd": "l" if x_err_mm <= 0.0 else "r",
             "correction_type": "x_axis",
             "score": int(align_brick_x_axis_one_shot_score(x_err_mm)),
@@ -1223,9 +1305,12 @@ def select_align_brick_next_act(
             "worst_metric": "xAxis_offset_abs",
             "ratio": float(x_ratio),
         }
+        recovery_fallback_candidates["x_axis"] = dict(x_candidate)
+        if x_ratio > ratio_eps:
+            candidates["x_axis"] = dict(x_candidate)
 
-    if y_required and y_err_mm is not None and y_ratio > ratio_eps:
-        candidates["y_axis"] = {
+    if y_required and y_err_mm is not None:
+        y_candidate = {
             "cmd": "d" if float(y_err_mm) > 0.0 else "u",
             "correction_type": "y_axis",
             "score": int(align_brick_y_axis_one_shot_score(float(y_err_mm))),
@@ -1234,29 +1319,152 @@ def select_align_brick_next_act(
             "worst_metric": "yAxis_offset_abs",
             "ratio": float(y_ratio),
         }
+        recovery_fallback_candidates["y_axis"] = dict(y_candidate)
+        if y_ratio > ratio_eps:
+            candidates["y_axis"] = dict(y_candidate)
 
-    if d_required and dist_val is not None and d_ratio > ratio_eps:
-        # Single-source distance direction for gap micro-adjustments: derive from
-        # the signed distance error, not the generic analytics planner's cmd.
-        dist_cmd = "f" if float(dist_val) > float(dist_target) else "b"
-        score_float_dist = float(align_brick_dist_error_speed_score(dist_err_mm))
-        candidates["distance"] = {
-            "cmd": str(dist_cmd),
-            "correction_type": "distance",
-            "score": int(round(score_float_dist)),
-            "score_float": score_float_dist,
-            "reason": "distance_alignment",
-            "worst_metric": "dist",
-            "ratio": float(d_ratio),
-        }
+    if d_required and dist_val is not None:
+        dist_cmd = None
+        target_num = _coerce_float(d_stats.get("target"), None)
+        tol_num = _coerce_float(d_stats.get("tol"), None)
+        if target_num is not None and tol_num is not None:
+            tol_abs = abs(float(tol_num))
+            dir_key = str(d_direction or "").strip().lower()
+            if dir_key == "high":
+                if float(dist_val) < (float(target_num) - tol_abs):
+                    dist_cmd = "b"
+            elif dir_key == "low":
+                if float(dist_val) > (float(target_num) + tol_abs):
+                    dist_cmd = "f"
+            else:
+                if float(dist_val) > (float(target_num) + tol_abs):
+                    dist_cmd = "f"
+                elif float(dist_val) < (float(target_num) - tol_abs):
+                    dist_cmd = "b"
+        if dist_cmd is None:
+            d_min = _coerce_float(d_stats.get("min"), None)
+            d_max = _coerce_float(d_stats.get("max"), None)
+            if d_max is not None and float(dist_val) > float(d_max):
+                dist_cmd = "f"
+            elif d_min is not None and float(dist_val) < float(d_min):
+                dist_cmd = "b"
+        if dist_cmd is None and target_num is not None:
+            # Recovery fallback: when a correction type is disqualified after
+            # visibility loss, allow a toward-target distance nudge even if
+            # distance is currently inside its gate window.
+            dir_key = str(d_direction or "").strip().lower()
+            if dir_key == "low":
+                if float(dist_val) > float(target_num):
+                    dist_cmd = "f"
+            elif dir_key == "high":
+                if float(dist_val) < float(target_num):
+                    dist_cmd = "b"
+            else:
+                if float(dist_val) > float(target_num):
+                    dist_cmd = "f"
+                elif float(dist_val) < float(target_num):
+                    dist_cmd = "b"
+        if dist_cmd is not None:
+            dist_score_err_mm = dist_gate_outside_mm
+            if dist_score_err_mm is None:
+                dist_score_err_mm = dist_err_mm
+            score_float_dist = float(align_brick_dist_error_speed_score(dist_score_err_mm))
+            dist_candidate = {
+                "cmd": str(dist_cmd),
+                "correction_type": "distance",
+                "score": int(round(score_float_dist)),
+                "score_float": score_float_dist,
+                "reason": "distance_alignment",
+                "worst_metric": "dist",
+                "ratio": float(d_ratio),
+            }
+            recovery_fallback_candidates["distance"] = dict(dist_candidate)
+            if d_ratio > ratio_eps:
+                candidates["distance"] = dict(dist_candidate)
+
+    dist_priority_cheat_active = False
+    dist_priority_cheat_context = None
+    if bool(align_policy.get("dist_priority_cheat_enabled")) and "distance" in candidates:
+        try:
+            cheat_min_ratio = max(0.0, float(align_policy.get("dist_priority_cheat_min_ratio", 0.0)))
+        except (TypeError, ValueError):
+            cheat_min_ratio = 0.0
+        try:
+            cheat_min_outside_mm = max(0.0, float(align_policy.get("dist_priority_cheat_min_outside_mm", 0.0)))
+        except (TypeError, ValueError):
+            cheat_min_outside_mm = 0.0
+        try:
+            dist_ratio_now = max(0.0, float(d_ratio or 0.0))
+        except (TypeError, ValueError):
+            dist_ratio_now = 0.0
+        try:
+            dist_outside_now = max(0.0, float(dist_gate_outside_mm or 0.0))
+        except (TypeError, ValueError):
+            dist_outside_now = 0.0
+        if dist_ratio_now > max(float(ratio_eps), float(cheat_min_ratio)) and dist_outside_now >= float(
+            cheat_min_outside_mm
+        ):
+            dist_priority_cheat_active = True
+            dist_priority_cheat_context = {
+                "dist_ratio": float(dist_ratio_now),
+                "dist_outside_mm": float(dist_outside_now),
+                "x_ratio": float(x_ratio),
+                "x_outside_mm": float(x_gate_outside_mm or 0.0),
+                "y_ratio": float(y_ratio),
+                "y_outside_mm": float(y_gate_outside_mm or 0.0),
+                "min_ratio": float(cheat_min_ratio),
+                "min_outside_mm": float(cheat_min_outside_mm),
+            }
+
+    y_edge_force_triggered = False
+    y_edge_force_threshold_mm = None
+    if "y_axis" in candidates and y_err_mm is not None:
+        y_edge_force_enabled = bool(align_policy.get("y_axis_edge_force_enabled", True))
+        raw_edge_force_abs_mm = _coerce_float(align_policy.get("y_axis_edge_force_abs_mm"), None)
+        if raw_edge_force_abs_mm is not None and raw_edge_force_abs_mm > 0.0:
+            y_edge_force_threshold_mm = float(raw_edge_force_abs_mm)
+        else:
+            y_edge_force_threshold_mm = max(
+                float(GAP_ALIGN_Y_AXIS_EDGE_FORCE_ABS_MM_MIN),
+                float(y_tol) * float(GAP_ALIGN_Y_AXIS_EDGE_FORCE_TOL_MULT),
+            )
+        if y_edge_force_enabled:
+            y_edge_force_triggered = abs(float(y_err_mm)) > float(y_edge_force_threshold_mm)
+
+    y_close_bottom_bias_triggered = False
+    y_close_bottom_bias_dist_threshold_mm = None
+    y_close_bottom_bias_min_mm = None
+    if "y_axis" in candidates and y_err_mm is not None and dist_val is not None:
+        y_close_bottom_bias_enabled = bool(align_policy.get("y_axis_close_bottom_bias_enabled", True))
+        raw_dist_bias_threshold = _coerce_float(align_policy.get("y_axis_close_bottom_dist_mm_max"), None)
+        raw_bottom_min_mm = _coerce_float(align_policy.get("y_axis_close_bottom_min_mm"), None)
+        if raw_dist_bias_threshold is not None and raw_dist_bias_threshold > 0.0:
+            y_close_bottom_bias_dist_threshold_mm = float(raw_dist_bias_threshold)
+        else:
+            y_close_bottom_bias_dist_threshold_mm = 100.0
+        if raw_bottom_min_mm is not None and raw_bottom_min_mm >= 0.0:
+            y_close_bottom_bias_min_mm = float(raw_bottom_min_mm)
+        else:
+            y_close_bottom_bias_min_mm = max(1.0, 0.5 * float(y_tol))
+        if y_close_bottom_bias_enabled:
+            y_close_bottom_bias_triggered = bool(
+                float(dist_val) < float(y_close_bottom_bias_dist_threshold_mm)
+                and float(y_err_mm) >= float(y_close_bottom_bias_min_mm)
+            )
 
     # Vertical camera-center alignment:
     # Positive y offset means marker is below center, so move mast down (`d`) to
     # bring the marker upward in the image. Negative y offset uses mast up (`u`).
     use_y_axis_correction = bool(
         "y_axis" in candidates
-        and y_other_gaps_near_ready
-        and _priority_ratio("y_axis", y_ratio) >= max(float(x_ratio), float(d_ratio))
+        and (
+            bool(y_edge_force_triggered)
+            or bool(y_close_bottom_bias_triggered)
+            or (
+                y_other_gaps_near_ready
+                and _priority_ratio("y_axis", y_ratio) >= max(float(x_ratio), float(d_ratio))
+            )
+        )
     )
 
     # Single-source x-vs-dist safety focus (same intent as the best ALIGN_BRICK
@@ -1277,7 +1485,7 @@ def select_align_brick_next_act(
         elif dist_gap_mm > 150.0 and x_axis_gap_mm < 5.0:
             force_dist_focus = True
 
-    def _best_alternative(excluded_types):
+    def _best_alternative(excluded_types, *, include_recovery_fallback=False):
         viable = [
             dict(v)
             for k, v in candidates.items()
@@ -1290,6 +1498,19 @@ def select_align_brick_next_act(
                 )
             )
         ]
+        if not viable and include_recovery_fallback:
+            viable = [
+                dict(v)
+                for k, v in recovery_fallback_candidates.items()
+                if (
+                    str(k) not in excluded_types
+                    and str(v.get("correction_type") or "").strip().lower() != str(avoid_corr or "").strip().lower()
+                    and (
+                        str(v.get("correction_type") or "").strip().lower() != "y_axis"
+                        or bool(y_other_gaps_near_ready)
+                    )
+                )
+            ]
         if not viable:
             return None
         viable.sort(
@@ -1301,7 +1522,20 @@ def select_align_brick_next_act(
         )
         return viable[0]
 
-    if force_x_axis_focus and "x_axis" in candidates:
+    prev_corr = str(previous_correction_type or "").strip().lower()
+    avoid_corr = str(avoid_correction_type or "").strip().lower()
+
+    if bool(y_edge_force_triggered) and "y_axis" in candidates and avoid_corr != "y_axis":
+        chosen = dict(candidates["y_axis"])
+        chosen["reason"] = "y_axis_edge_force"
+    elif bool(y_close_bottom_bias_triggered) and "y_axis" in candidates and avoid_corr != "y_axis":
+        chosen = dict(candidates["y_axis"])
+        chosen["reason"] = "y_axis_close_bottom_bias"
+    elif dist_priority_cheat_active and "distance" in candidates and avoid_corr != "distance":
+        chosen = dict(candidates["distance"])
+        chosen["reason"] = "distance_priority_cheat"
+        chosen["_cheat_dist_priority"] = True
+    elif force_x_axis_focus and "x_axis" in candidates:
         chosen = dict(candidates["x_axis"])
     elif force_dist_focus and "distance" in candidates:
         chosen = dict(candidates["distance"])
@@ -1324,23 +1558,25 @@ def select_align_brick_next_act(
                 "ratio": 0.0,
             }
 
-    prev_corr = str(previous_correction_type or "").strip().lower()
-    avoid_corr = str(avoid_correction_type or "").strip().lower()
+    cheat_locked_choice = bool(chosen.get("_cheat_dist_priority"))
 
     rotation_override = False
     chosen_type = str(chosen.get("correction_type") or "").strip().lower()
     if avoid_corr and chosen_type == avoid_corr:
         alt = _best_alternative({avoid_corr})
+        if alt is None:
+            alt = _best_alternative({avoid_corr}, include_recovery_fallback=True)
         if alt is not None:
             chosen = alt
             chosen_type = str(chosen.get("correction_type") or "").strip().lower()
             rotation_override = True
-    elif prev_corr and chosen_type == prev_corr:
-        alt = _best_alternative({prev_corr})
-        if alt is not None:
-            chosen = alt
-            chosen_type = str(chosen.get("correction_type") or "").strip().lower()
-            rotation_override = True
+    elif not cheat_locked_choice:
+        if prev_corr and chosen_type == prev_corr:
+            alt = _best_alternative({prev_corr})
+            if alt is not None:
+                chosen = alt
+                chosen_type = str(chosen.get("correction_type") or "").strip().lower()
+                rotation_override = True
 
     correction_type = chosen.get("correction_type")
     score_float = chosen.get("score_float")
@@ -1368,12 +1604,29 @@ def select_align_brick_next_act(
         "reason": str(reason),
         "worst_metric": worst_metric,
         "rotation_override": bool(rotation_override),
+        "cheat_dist_priority": bool(chosen.get("_cheat_dist_priority")),
+        "cheat_dist_priority_context": (
+            dict(dist_priority_cheat_context) if isinstance(dist_priority_cheat_context, dict) else None
+        ),
         "x_err_mm": float(x_err_mm),
         "y_err_mm": (None if y_err_mm is None else float(y_err_mm)),
         "dist_err_mm": float(dist_err_mm),
         "dist_target_mm": float(dist_target),
         "x_tol_mm": float(x_tol),
         "y_tol_mm": float(y_tol),
+        "y_axis_edge_force_triggered": bool(y_edge_force_triggered),
+        "y_axis_edge_force_threshold_mm": (
+            None if y_edge_force_threshold_mm is None else float(y_edge_force_threshold_mm)
+        ),
+        "y_axis_close_bottom_bias_triggered": bool(y_close_bottom_bias_triggered),
+        "y_axis_close_bottom_bias_dist_threshold_mm": (
+            None
+            if y_close_bottom_bias_dist_threshold_mm is None
+            else float(y_close_bottom_bias_dist_threshold_mm)
+        ),
+        "y_axis_close_bottom_bias_min_mm": (
+            None if y_close_bottom_bias_min_mm is None else float(y_close_bottom_bias_min_mm)
+        ),
     }
 
 
@@ -1505,7 +1758,19 @@ def align_local_gate_status(world, step="ALIGN_BRICK", process_rules=None):
     d_target = _coerce_float(d_stats.get("target"), 0.0)
     d_tol = abs(_coerce_float(d_stats.get("tol"), 0.0) or 0.0)
     dist_err = None if dist_val is None else abs(float(dist_val - d_target))
-    dist_within_tol = (not d_required) or bool(dist_err is not None and dist_err <= d_tol)
+    d_direction = metric_direction_for_step("dist", _step_name(step), process_rules=rules)
+    dist_match = None
+    if d_required and dist_val is not None:
+        dist_match = _target_tol_ok(float(dist_val), d_stats, d_direction)
+        if dist_match is None:
+            d_min = _coerce_float(d_stats.get("min"), None)
+            d_max = _coerce_float(d_stats.get("max"), None)
+            dist_match = True
+            if d_min is not None and float(dist_val) < float(d_min):
+                dist_match = False
+            if d_max is not None and float(dist_val) > float(d_max):
+                dist_match = False
+    dist_within_tol = (not d_required) or bool(dist_match)
 
     ok = bool(
         visible

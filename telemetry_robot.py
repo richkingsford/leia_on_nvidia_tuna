@@ -1565,8 +1565,39 @@ def update_from_motion(world, event):
     return MotionDelta(dist_mm=dist_pulse, rot_deg=rot_pulse, lift_mm=lift_pulse)
 
 
-def update_lift_from_vision(world, cam_h, brick_height, conf):
+def update_lift_from_vision(
+    world,
+    cam_h,
+    brick_height,
+    conf,
+    *,
+    floor_lift_mm=None,
+    floor_lift_quality=None,
+):
+    try:
+        floor_quality = float(floor_lift_quality) if floor_lift_quality is not None else 0.0
+    except (TypeError, ValueError):
+        floor_quality = 0.0
+    try:
+        floor_mm = float(floor_lift_mm) if floor_lift_mm is not None else None
+    except (TypeError, ValueError):
+        floor_mm = None
+
+    if floor_mm is not None and floor_mm >= 0.0 and floor_quality >= 0.20:
+        # Tiny ROI estimator gives an absolute-ish lift-from-floor proxy.
+        # Blend it conservatively into dead-reckoned lift to avoid jumps.
+        alpha = 0.20 if floor_quality >= 0.60 else 0.10
+        world.lift_height = max(
+            0.0,
+            ((1.0 - float(alpha)) * float(world.lift_height)) + (float(alpha) * float(floor_mm)),
+        )
+        world.lift_height_source = "tiny_roi_floor"
+        world.lift_height_quality = max(0.0, min(1.0, float(floor_quality)))
+        return
+
     if cam_h <= 0 or conf < 50:
+        world.lift_height_source = "dead_reckon"
+        world.lift_height_quality = 0.0
         return
     brick_height = brick_height or 0.0
     if world.lift_height_anchor is None:
@@ -1574,6 +1605,8 @@ def update_lift_from_vision(world, cam_h, brick_height, conf):
 
     vis_lift = cam_h - world.lift_height_anchor + brick_height
     world.lift_height = (0.9 * world.lift_height) + (0.1 * vis_lift)
+    world.lift_height_source = "aruco_cam_h"
+    world.lift_height_quality = 1.0
 
 class StepState(Enum):
     FIND_WALL = "FIND_WALL"
@@ -1781,6 +1814,7 @@ class WorldModel:
             "x_axis": 0,
             "offset_y": 0,
             "y_axis": 0,
+            "inCrosshairs": False,
             "confidence": 0,
             "held": False,
             "brickAbove": None,
@@ -1791,6 +1825,13 @@ class WorldModel:
         self.lift_height = 0.0 # mm (estimated)
         self.camera_height_anchor = None
         self.height_mm = None
+        self.lift_height_source = "dead_reckon"
+        self.lift_height_quality = 0.0
+        # Height intelligence snapshots (derived from topmost-step telemetry).
+        self.wall_height_mm = None
+        self.wall_height_bricks = None
+        self.brick_supply_height_mm = None
+        self.brick_supply_height_bricks = None
 
         # Step
         self._step_state = None
@@ -1903,7 +1944,19 @@ class WorldModel:
                 
         return net_dist
 
-    def update_vision(self, found, dist, angle, conf, offset_x=0, cam_h=0, brick_above=False, brick_below=False):
+    def update_vision(
+        self,
+        found,
+        dist,
+        angle,
+        conf,
+        offset_x=0,
+        cam_h=0,
+        brick_above=False,
+        brick_below=False,
+        floor_lift_mm=None,
+        floor_lift_quality=None,
+    ):
         brick_module = _brick_module()
         wall_module = _wall_module()
         brick_height = brick_module.update_from_vision(
@@ -1917,7 +1970,14 @@ class WorldModel:
             brick_above,
             brick_below,
         )
-        update_lift_from_vision(self, cam_h, brick_height, conf)
+        update_lift_from_vision(
+            self,
+            cam_h,
+            brick_height,
+            conf,
+            floor_lift_mm=floor_lift_mm,
+            floor_lift_quality=floor_lift_quality,
+        )
         wall_module.update_from_vision(self, found, dist, angle, conf, self.wall_envelope)
 
     def get_scoop_corridor_limits(self, dist):
@@ -2483,6 +2543,7 @@ def draw_telemetry_overlay(
     put_line("", WHITE, 0.35, 1)
     put_line("--- BRICK[0] TELEMETRY ---", WHITE, 0.35, 1)
     visible_now = bool(wm.brick.get("visible"))
+    in_crosshairs_now = bool(wm.brick.get("inCrosshairs"))
     x_axis = wm.brick.get("x_axis", wm.brick.get("offset_x", 0.0))
     y_axis = wm.brick.get("y_axis", wm.brick.get("offset_y", 0.0))
     obj_rules = (wm.process_rules or {}).get("ALIGN_BRICK", {}) if wm.process_rules else {}
@@ -2497,11 +2558,7 @@ def draw_telemetry_overlay(
     stack_gate_state = getattr(wm, "_stack_visibility_gate", None)
 
     def _stack_bool_compact(value):
-        if value is True:
-            return "True"
-        if value is False:
-            return "False"
-        return "Wait"
+        return "true" if bool(value) else "false"
 
     def _stack_hud_pair(row_key, brick_key):
         row = (
@@ -2511,7 +2568,24 @@ def draw_telemetry_overlay(
         )
         raw_val = row.get("raw")
         conf_val = wm.brick.get(brick_key)
-        return f"r{_stack_bool_compact(raw_val)} c{_stack_bool_compact(conf_val)}"
+        return f"raw={_stack_bool_compact(raw_val)} confident={_stack_bool_compact(conf_val)}"
+
+    def _lift_hud_text(prefix=""):
+        lift_val = getattr(wm, "lift_height", None)
+        if not isinstance(lift_val, (int, float)):
+            return f"{prefix}LIFT:   -"
+        text = f"{prefix}LIFT:   {float(lift_val):.1f} mm"
+        source = str(getattr(wm, "lift_height_source", "") or "").strip()
+        try:
+            quality = float(getattr(wm, "lift_height_quality", 0.0))
+        except (TypeError, ValueError):
+            quality = 0.0
+        quality = max(0.0, min(1.0, float(quality)))
+        if source == "tiny_roi_floor":
+            return f"{text} ({source} q{quality:.2f})"
+        if source and source != "dead_reckon":
+            return f"{text} ({source})"
+        return text
 
     selected_metrics = _stream_overlay_metric_keys_for_step(
         wm.process_rules or {},
@@ -2536,6 +2610,8 @@ def draw_telemetry_overlay(
             return "brick_above"
         if key in ("brick_below", "brickbelow"):
             return "brick_below"
+        if key in ("incrosshairs", "in_crosshairs"):
+            return "inCrosshairs"
         if key in ("lift_height",):
             return "lift_height"
         return str(metric_name or "").strip()
@@ -2551,6 +2627,9 @@ def draw_telemetry_overlay(
         prefix = _metric_prefix(metric_name)
         if metric_key == "visible":
             put_line(f"{prefix}VISIBLE: {'true' if visible_now else 'false'}", WHITE, 0.38, 1)
+            return True
+        if metric_key == "inCrosshairs":
+            put_line(f"{prefix}inCrosshairs: {'true' if in_crosshairs_now else 'false'}", WHITE, 0.38, 1)
             return True
         if metric_key == "xAxis_offset_abs":
             if visible_now:
@@ -2593,17 +2672,23 @@ def draw_telemetry_overlay(
             put_line(f"{prefix}Brick below: {below_txt_local}", WHITE, 0.38, 1)
             return True
         if metric_key == "lift_height":
-            lift_val = getattr(wm, "lift_height", None)
-            if isinstance(lift_val, (int, float)):
-                put_line(f"{prefix}LIFT:   {float(lift_val):.0f} mm", WHITE, 0.38, 1)
-            else:
-                put_line(f"{prefix}LIFT:   -", WHITE, 0.38, 1)
+            put_line(_lift_hud_text(prefix), WHITE, 0.38, 1)
             return True
         return False
 
     rendered_any_selected = False
+    rendered_confidence_selected = False
+    rendered_stack_above = False
+    rendered_stack_below = False
     for metric_name in selected_metrics:
+        metric_key = _canon_metric(metric_name)
         rendered_any_selected = _render_selected_metric(metric_name) or rendered_any_selected
+        if metric_key == "confidence":
+            rendered_confidence_selected = True
+        if metric_key == "brick_above":
+            rendered_stack_above = True
+        elif metric_key == "brick_below":
+            rendered_stack_below = True
 
     if not rendered_any_selected:
         if visible_now:
@@ -2622,14 +2707,18 @@ def draw_telemetry_overlay(
             put_line(f"{dist_prefix}DIST:   {wm.brick['dist']:.0f} mm", WHITE, 0.38, 1)
         else:
             put_line(f"{dist_prefix}DIST:   -", WHITE, 0.38, 1)
-        if visible_now:
-            put_line(f"CONF:   {brick_conf:.0f}%", WHITE, 0.38, 1)
+    if not rendered_confidence_selected:
+        if visible_now and isinstance(brick_conf, (int, float)):
+            put_line(f"CONF:   {float(brick_conf):.0f}%", WHITE, 0.38, 1)
         else:
             put_line("CONF:   -", WHITE, 0.38, 1)
+    if not rendered_stack_above:
         above_txt = _stack_hud_pair("above", "brickAbove")
-        below_txt = _stack_hud_pair("below", "brickBelow")
         put_line(f"Brick above: {above_txt}", WHITE, 0.38, 1)
+    if not rendered_stack_below:
+        below_txt = _stack_hud_pair("below", "brickBelow")
         put_line(f"Brick below: {below_txt}", WHITE, 0.38, 1)
+    put_line(f"inCrosshairs: {'true' if in_crosshairs_now else 'false'}", WHITE, 0.38, 1)
     if brick_extra_lines:
         for line in brick_extra_lines:
             if isinstance(line, (tuple, list)) and len(line) >= 2:
@@ -2644,7 +2733,7 @@ def draw_telemetry_overlay(
     put_line(f"X:      {wm.x:.1f} mm", WHITE, 0.38, 1)
     put_line(f"Y:      {wm.y:.1f} mm", WHITE, 0.38, 1)
     put_line(f"THETA:  {wm.theta:.1f} deg", WHITE, 0.38, 1)
-    put_line(f"LIFT:   {wm.lift_height:.0f} mm", WHITE, 0.38, 1)
+    put_line(_lift_hud_text(), WHITE, 0.38, 1)
     cam_times = getattr(wm, "_camera_frame_times", [])
     if cam_times:
         has_dupes = getattr(wm, "_camera_dupe_ms", False)

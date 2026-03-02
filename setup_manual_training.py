@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import random
 import sys
 import threading
@@ -54,9 +55,11 @@ from telemetry_robot import (
     quantize_speed,
 )
 from telemetry_process import (
+    apply_height_snapshot_from_step,
     build_motion_sequence,
     consume_auto_step_action_stats,
     compute_stream_gate_summary,
+    height_intel_step_begin_line,
     merge_motion_steps,
     nominal_actions_from_events,
     reset_auto_step_action_stats,
@@ -134,6 +137,11 @@ DEMOS_DIRS_BY_MODE = demos_dirs_by_mode()
 DEMOS_DIR = demos_dir_for_mode()
 PROCESS_MODEL_FILE = Path(__file__).resolve().parent / "world_model_process.json"
 DEMO_STEPS = step_sequence()
+try:
+    AUTO_CONTINUE_WAIT_S = float(_MANUAL_CONFIG.get("auto_continue_wait_s", 3.0))
+except (TypeError, ValueError):
+    AUTO_CONTINUE_WAIT_S = 3.0
+AUTO_CONTINUE_WAIT_S = max(0.0, float(AUTO_CONTINUE_WAIT_S))
 
 
 def _build_stream_success_gate_step_options():
@@ -398,6 +406,18 @@ LIFT_GROUND_PREFLIGHT_SETTLE_S = float(_MANUAL_CONFIG.get("lift_ground_preflight
 LIFT_GROUND_PREFLIGHT_NO_MOVE_MM = float(_MANUAL_CONFIG.get("lift_ground_preflight_no_move_mm", 0.35))
 LIFT_GROUND_PREFLIGHT_STABLE_PULSES = int(_MANUAL_CONFIG.get("lift_ground_preflight_stable_pulses", 2))
 LIFT_GROUND_PREFLIGHT_MIN_CONF = float(_MANUAL_CONFIG.get("lift_ground_preflight_min_conf", 50.0))
+AUTO_ALIGN_MINI_VISIBILITY_RECOVERY_ENABLED = bool(
+    _MANUAL_CONFIG.get("auto_align_mini_visibility_recovery_enabled", True)
+)
+AUTO_ALIGN_MINI_VISIBILITY_RECOVERY_SCORE = int(
+    _MANUAL_CONFIG.get("auto_align_mini_visibility_recovery_score", 1)
+)
+AUTO_ALIGN_MINI_VISIBILITY_RECOVERY_MAX_ACTS = int(
+    _MANUAL_CONFIG.get("auto_align_mini_visibility_recovery_max_acts", 24)
+)
+AUTO_ALIGN_MINI_VISIBILITY_RECOVERY_TIMEOUT_S = float(
+    _MANUAL_CONFIG.get("auto_align_mini_visibility_recovery_timeout_s", 5.0)
+)
 
 
 def _vision_mode_cli_value(mode):
@@ -835,6 +855,9 @@ def _cmd_to_motion_action_type(cmd):
 
 
 def _demo_logging_active(app_state):
+    # Auto-steps should never record into demo/session logs.
+    if bool(getattr(app_state, "auto_running", False)):
+        return False
     if getattr(app_state, "active_attempt", None):
         return True
     return bool(getattr(app_state, "auto_demo_logging_active", False))
@@ -910,6 +933,16 @@ def _collect_lift_cam_h_samples(app_state, *, samples=4, timeout_s=1.5):
             cam_h_val = float(cam_h)
         except (TypeError, ValueError):
             cam_h_val = 0.0
+        floor_lift_mm = getattr(vision, "floor_lift_mm", None)
+        floor_lift_quality = getattr(vision, "floor_lift_quality", 0.0)
+        try:
+            floor_lift_mm = float(floor_lift_mm) if floor_lift_mm is not None else None
+        except (TypeError, ValueError):
+            floor_lift_mm = None
+        try:
+            floor_lift_quality = float(floor_lift_quality)
+        except (TypeError, ValueError):
+            floor_lift_quality = 0.0
         with app_state.lock:
             app_state.world.update_vision(
                 bool(found),
@@ -920,11 +953,95 @@ def _collect_lift_cam_h_samples(app_state, *, samples=4, timeout_s=1.5):
                 cam_h_val,
                 bool(brick_above),
                 bool(brick_below),
+                floor_lift_mm=floor_lift_mm,
+                floor_lift_quality=floor_lift_quality,
             )
         if bool(found) and conf_val >= float(LIFT_GROUND_PREFLIGHT_MIN_CONF) and cam_h_val > 0.0:
             vals.append(float(cam_h_val))
         time.sleep(0.02)
     return vals
+
+
+def _auto_align_visible_now(app_state):
+    if app_state is None:
+        return False
+    world = getattr(app_state, "world", None)
+    vision = getattr(app_state, "vision", None)
+    if world is None or vision is None:
+        return False
+    lock = getattr(app_state, "vision_io_lock", None)
+    try:
+        if lock is not None:
+            with lock:
+                update_world_from_vision(world, vision, log=False)
+        else:
+            update_world_from_vision(world, vision, log=False)
+    except Exception:
+        return False
+    brick = getattr(world, "brick", None)
+    if not isinstance(brick, dict):
+        return False
+    return bool(brick.get("visible"))
+
+
+def run_align_mini_visibility_recovery(app_state, *, step_key="ALIGN_BRICK"):
+    if not AUTO_ALIGN_MINI_VISIBILITY_RECOVERY_ENABLED:
+        return {"ok": True, "skipped": True, "reason": "disabled"}
+    if app_state is None or getattr(app_state, "robot", None) is None or getattr(app_state, "vision", None) is None:
+        return {"ok": True, "skipped": True, "reason": "robot/vision unavailable"}
+
+    step_name = normalize_step_label(step_key or "ALIGN_BRICK")
+    if step_name != "ALIGN_BRICK":
+        return {"ok": True, "skipped": True, "reason": "step not align"}
+
+    max_acts = max(1, int(AUTO_ALIGN_MINI_VISIBILITY_RECOVERY_MAX_ACTS))
+    timeout_s = max(0.5, float(AUTO_ALIGN_MINI_VISIBILITY_RECOVERY_TIMEOUT_S))
+    score = max(1, int(AUTO_ALIGN_MINI_VISIBILITY_RECOVERY_SCORE))
+
+    if _auto_align_visible_now(app_state):
+        log_line("[AUTO] ALIGN_BRICK mini x-axis recovery: brick already visible; no right-turn needed.")
+        return {"ok": True, "visible": True, "acts": 0, "reason": "already_visible"}
+
+    log_line(
+        "[AUTO] ALIGN_BRICK mini x-axis recovery: turning right until brick is visible again."
+    )
+
+    acts = 0
+    deadline = float(time.time()) + float(timeout_s)
+    while bool(getattr(app_state, "running", True)) and acts < max_acts and float(time.time()) < deadline:
+        send_result = send_robot_command(
+            app_state.robot,
+            app_state.world,
+            StepState.ALIGN_BRICK,
+            "r",
+            0.0,
+            speed_score=score,
+        )
+        acts += 1
+        try:
+            duration_ms = int(round(float((send_result or {}).get("duration_ms", 0))))
+        except (TypeError, ValueError):
+            duration_ms = 0
+        settle_s = max(0.02, min(0.25, float(duration_ms) / 1000.0 + 0.02))
+        time.sleep(settle_s)
+        if _auto_align_visible_now(app_state):
+            log_line(
+                f"[AUTO] ALIGN_BRICK mini x-axis recovery: visible=true after {int(acts)} right-turn acts."
+            )
+            return {"ok": True, "visible": True, "acts": int(acts), "reason": "visible_recovered"}
+
+    visible_now = _auto_align_visible_now(app_state)
+    if bool(visible_now):
+        log_line(
+            f"[AUTO] ALIGN_BRICK mini x-axis recovery: visible=true after {int(acts)} right-turn acts."
+        )
+        return {"ok": True, "visible": True, "acts": int(acts), "reason": "visible_recovered_late"}
+
+    log_line(
+        "[AUTO] ALIGN_BRICK mini x-axis recovery: visibility not recovered; "
+        f"continuing (acts={int(acts)}, timeout={float(timeout_s):.1f}s)."
+    )
+    return {"ok": False, "visible": False, "acts": int(acts), "reason": "visible_not_recovered"}
 
 
 def _current_hotkey_row(hotkey):
@@ -1489,6 +1606,12 @@ def step_code_for_obj(obj_enum):
     return normalize_step_label(getattr(obj_enum, "value", obj_enum))
 
 
+def log_step_codes_list(prefix="[CMD]"):
+    log_line(f"{prefix} Step codes:")
+    for idx, obj in enumerate(DEMO_STEPS):
+        log_line(f"{prefix}   {idx + 1}={str(obj.value).lower()}")
+
+
 def next_demo_step_obj(obj_enum):
     if obj_enum is None:
         return None
@@ -1496,10 +1619,85 @@ def next_demo_step_obj(obj_enum):
         idx = DEMO_STEPS.index(obj_enum)
     except ValueError:
         return None
-    next_idx = int(idx) + 1
-    if next_idx < 0 or next_idx >= len(DEMO_STEPS):
+    total_steps = int(len(DEMO_STEPS))
+    if total_steps <= 0:
         return None
-    return DEMO_STEPS[next_idx]
+    next_idx = (int(idx) + 1) % int(total_steps)
+    return DEMO_STEPS[int(next_idx)]
+
+
+def _auto_continue_pending_locked(app_state):
+    deadline = float(getattr(app_state, "auto_continue_deadline", 0.0) or 0.0)
+    target = getattr(app_state, "auto_continue_target_step", None)
+    return deadline > 0.0 and target is not None
+
+
+def _clear_auto_continue_locked(app_state):
+    app_state.auto_continue_deadline = 0.0
+    app_state.auto_continue_source_step = None
+    app_state.auto_continue_target_step = None
+    app_state.auto_continue_last_countdown_second = None
+
+
+def _schedule_auto_continue_after_success_locked(app_state, completed_step):
+    _clear_auto_continue_locked(app_state)
+    wait_s = max(0.0, float(AUTO_CONTINUE_WAIT_S))
+    if wait_s <= 0.0:
+        return None
+    next_obj = next_demo_step_obj(completed_step)
+    if next_obj is None:
+        return None
+    app_state.auto_continue_deadline = float(time.time()) + float(wait_s)
+    app_state.auto_continue_source_step = completed_step
+    app_state.auto_continue_target_step = next_obj
+    app_state.auto_continue_last_countdown_second = None
+    return next_obj, wait_s
+
+
+def _pop_due_auto_continue_locked(app_state, *, now_s=None):
+    if bool(getattr(app_state, "auto_running", False)):
+        return None
+    if getattr(app_state, "auto_request", None) is not None:
+        return None
+    if not _auto_continue_pending_locked(app_state):
+        return None
+    now_val = float(time.time()) if now_s is None else float(now_s)
+    deadline = float(getattr(app_state, "auto_continue_deadline", 0.0) or 0.0)
+    if now_val < deadline:
+        return None
+    next_obj = getattr(app_state, "auto_continue_target_step", None)
+    _clear_auto_continue_locked(app_state)
+    return next_obj
+
+
+def _auto_continue_countdown_message_locked(app_state, *, now_s=None):
+    if not _auto_continue_pending_locked(app_state):
+        return None
+    if bool(getattr(app_state, "auto_running", False)):
+        return None
+    if getattr(app_state, "auto_request", None) is not None:
+        return None
+
+    now_val = float(time.time()) if now_s is None else float(now_s)
+    deadline = float(getattr(app_state, "auto_continue_deadline", 0.0) or 0.0)
+    remaining_s = float(deadline) - float(now_val)
+    if remaining_s <= 0.0:
+        return None
+
+    remaining_sec = max(1, int(math.ceil(remaining_s)))
+    last_sec = getattr(app_state, "auto_continue_last_countdown_second", None)
+    if last_sec == remaining_sec:
+        return None
+    app_state.auto_continue_last_countdown_second = int(remaining_sec)
+
+    next_obj = getattr(app_state, "auto_continue_target_step", None)
+    next_code = step_code_for_obj(next_obj) if next_obj is not None else "?"
+    next_name = str(getattr(next_obj, "value", next_obj or "unknown")).lower()
+    esc_highlight = f"{ANSI_ORANGE_BRIGHT}escape{ANSI_RESET}"
+    return (
+        f"[AUTO] Auto-continue in {int(remaining_sec)}s: next step {next_code} ({next_name}). "
+        f"Press Enter to run now, or {esc_highlight} to cancel."
+    )
 
 
 def _split_footer_sentences(line, prefix):
@@ -1597,7 +1795,18 @@ def close_log(app_state, marker=None):
     app_state.logger_closed = True
     if app_state.log_path:
         valid_blocks = prune_log_file(app_state.log_path, delete_if_empty=False)
-        if int(valid_blocks) <= 0:
+        removed_empty_file = False
+        try:
+            raw = Path(app_state.log_path).read_text(encoding="utf-8")
+            parsed = json.loads(raw)
+            if isinstance(parsed, list) and len(parsed) == 0:
+                Path(app_state.log_path).unlink(missing_ok=True)
+                removed_empty_file = True
+        except Exception:
+            removed_empty_file = False
+        if removed_empty_file:
+            log_line(f"[SESSION] Deleted empty demo file: {app_state.log_path}")
+        elif int(valid_blocks) <= 0:
             log_line(
                 "[SESSION] No completed attempts found in the current log; "
                 f"kept file at {app_state.log_path}."
@@ -1649,6 +1858,7 @@ def run_auto_step(app_state, obj_enum):
     step_key = normalize_step_label(obj_enum.value)
     _set_stream_state_success_gate_step(app_state, step_key)
     log_line(f"[AUTO] Attempting {step_key}...")
+    mini_x_axis_ran = False
 
     if step_key in AUTO_MINI_X_AXIS_STEPS:
         if not AUTO_MINI_X_AXIS_ENABLED:
@@ -1664,6 +1874,7 @@ def run_auto_step(app_state, obj_enum):
                     f"(random gate roll={roll:.3f}, chance={run_chance * 100.0:.1f}%)."
                 )
             else:
+                mini_x_axis_ran = True
                 mini_result = run_mini_x_axis_calibration(
                     robot=app_state.robot,
                     vision=app_state.vision,
@@ -1680,6 +1891,8 @@ def run_auto_step(app_state, obj_enum):
                     )
                 with app_state.lock:
                     app_state.brick_frame_buffer = []
+    if mini_x_axis_ran and step_key == "ALIGN_BRICK":
+        run_align_mini_visibility_recovery(app_state, step_key=step_key)
 
     logs = load_demo_logs(app_state.demos_dir)
     update_process_model_from_demos(logs, PROCESS_MODEL_FILE)
@@ -1698,6 +1911,7 @@ def run_auto_step(app_state, obj_enum):
     app_state.world.rules = process_rules
 
     app_state.world.step_state = obj_enum
+    log_line(height_intel_step_begin_line(app_state.world, step_key))
     auto_demo_logging_started = False
     app_state.auto_demo_logging_active = False
 
@@ -1960,10 +2174,25 @@ def run_auto_step(app_state, obj_enum):
         if auto_demo_logging_started:
             _end_auto_demo_logging(app_state, obj_enum)
     if ok:
+        apply_height_snapshot_from_step(app_state.world, step_key, log=True)
+        _emit_stream_step_success_event(app_state, step_key)
+        auto_continue_plan = None
         with app_state.lock:
             app_state.last_auto_completed_step = obj_enum
+            auto_continue_plan = _schedule_auto_continue_after_success_locked(
+                app_state,
+                obj_enum,
+            )
         reason_text = reason.replace("_", " ") if isinstance(reason, str) else "success criteria met"
         log_line(f"[AUTO] {step_key} complete — {reason_text}.")
+        if auto_continue_plan:
+            next_obj, wait_s = auto_continue_plan
+            next_code = step_code_for_obj(next_obj)
+            next_name = str(getattr(next_obj, "value", next_obj)).lower()
+            log_line(
+                f"[AUTO] Press Enter to queue next step now, or wait {float(wait_s):.1f}s "
+                f"for auto-continue to {next_code} ({next_name}). Esc cancels."
+            )
         act_stats = consume_auto_step_action_stats(app_state.world, step_key)
         acts_total = int((act_stats or {}).get("total") or 0)
         acts_closer = int((act_stats or {}).get("closer") or 0)
@@ -2161,7 +2390,13 @@ def _latest_demo_mtime(demos_dir):
     return latest
 
 
-def refresh_world_model_from_demos(app_state, force=False, min_interval_s=0.5):
+def refresh_world_model_from_demos(
+    app_state,
+    force=False,
+    min_interval_s=0.5,
+    *,
+    force_rederive_success_gates=False,
+):
     now = time.time()
     if not force and (now - app_state.last_config_check) < min_interval_s:
         return
@@ -2179,7 +2414,11 @@ def refresh_world_model_from_demos(app_state, force=False, min_interval_s=0.5):
     logs = load_demo_logs(app_state.demos_dir)
     # Preserve existing process gates when no parseable demo logs are present.
     if logs:
-        update_process_model_from_demos(logs, PROCESS_MODEL_FILE)
+        update_process_model_from_demos(
+            logs,
+            PROCESS_MODEL_FILE,
+            force_rederive_success_gates=bool(force_rederive_success_gates),
+        )
     refresh_autobuild_config(PROCESS_MODEL_FILE)
     model = load_process_model(PROCESS_MODEL_FILE)
     process_rules = model.get("steps") if isinstance(model, dict) else {}
@@ -2673,12 +2912,11 @@ def print_command_help(app_state=None):
     log_line("[CMD] Example: :4s (scoop success), :4n (scoop nominal)")
     log_line("[CMD] Auto-run: type the full step number, then press Enter.")
     log_line("[CMD] Auto-run shortcut: blank Enter queues the next step after the last successful auto step.")
+    log_line(f"[CMD] Auto-continue: after a successful auto-step, next step auto-queues in {float(AUTO_CONTINUE_WAIT_S):.1f}s unless cancelled.")
     log_line("[CMD] Hotkey tuning: press a movement hotkey, then press y to edit that hotkey's vars.")
     log_line("[CMD] Lift preflight: :liftcal (discover O/K micro movement + find ground level).")
     log_line("[CMD] End attempt: press ':' to finish and return to the command prompt.")
-    log_line("[CMD] Step codes:")
-    for idx, obj in enumerate(DEMO_STEPS):
-        log_line(f"[CMD]   {idx + 1}={obj.value.lower()}")
+    log_step_codes_list(prefix="[CMD]")
 
 
 def format_hotkey_speeds():
@@ -2804,6 +3042,7 @@ def start_attempt(app_state, obj_enum, attempt_type):
     app_state.active_attempt = attempt_type
     app_state.world.attempt_status = ATTEMPT_STATUS[attempt_type]
     app_state.world.recording_active = True
+    log_line(height_intel_step_begin_line(app_state.world, obj_label))
     return True, f"[OBJ] {obj_label} {attempt_type} started."
 
 def end_attempt(app_state, complete_step=True):
@@ -2817,6 +3056,8 @@ def end_attempt(app_state, complete_step=True):
     should_close = False
 
     if attempt_type == "SUCCESS":
+        apply_height_snapshot_from_step(app_state.world, obj_label, log=True)
+        _emit_stream_step_success_event(app_state, obj_label)
         if complete_step:
             app_state.step_open = False
             app_state.open_step = None
@@ -2923,6 +3164,10 @@ class AppState:
         self.auto_confirm_event = threading.Event()
         self.last_enter_time = 0.0
         self.last_auto_completed_step = None
+        self.auto_continue_deadline = 0.0
+        self.auto_continue_source_step = None
+        self.auto_continue_target_step = None
+        self.auto_continue_last_countdown_second = None
 
         self.gate_status = []
         self.gate_progress = []
@@ -2938,8 +3183,12 @@ class AppState:
             "cyan_profile": _DEFAULT_CYAN_PROFILE,
             "cyan_visibility": _DEFAULT_CYAN_VISIBILITY,
             "success_gate_step": _DEFAULT_STREAM_SUCCESS_GATE_STEP,
+            "step_success_seq": 0,
+            "step_success_step": None,
+            "step_success_at": 0.0,
         }
         self.stream_enabled = False
+        self.pending_stream_started_url = None
         # Allow telemetry_process helpers to push frames directly during auto-run pauses.
         self.world._stream_state = self.stream_state
 
@@ -2996,6 +3245,7 @@ def keyboard_thread(app_state):
                 app_state.auto_cancel_event.clear()
             except Exception:
                 pass
+            _clear_auto_continue_locked(app_state)
             app_state.auto_request = obj_enum
             app_state.active_command = None
             app_state.active_hotkey = None
@@ -3131,7 +3381,11 @@ def keyboard_thread(app_state):
         if not ch:
             continue
         ch_lower = ch.lower()
+        auto_continue_cleared_by_input = False
         with app_state.lock:
+            if ch not in ('\n', '\r') and _auto_continue_pending_locked(app_state):
+                _clear_auto_continue_locked(app_state)
+                auto_continue_cleared_by_input = True
             auto_prompt = app_state.auto_prompt
             auto_confirm_needed = app_state.auto_confirm_needed
 
@@ -3162,6 +3416,8 @@ def keyboard_thread(app_state):
                     except Exception:
                         pass
                     messages.append("[AUTO] Cleared queued auto-step request.")
+                elif auto_continue_cleared_by_input:
+                    messages.append("[AUTO] Auto-continue cancelled (Esc).")
                 else:
                     messages.append("[AUTO] Esc: no auto-step is currently running.")
             if robot_to_stop is not None:
@@ -3226,6 +3482,7 @@ def keyboard_thread(app_state):
             if end_msg:
                 log_line(end_msg)
             log_line("[CMD] Enter command (ex: 4s, 4f, help). Use ':' or blank to exit.")
+            log_step_codes_list(prefix="[CMD]")
             
             # Force enable ECHO and ICANON so input() is visible
             fd_term = sys.stdin.fileno()
@@ -3367,7 +3624,7 @@ def build_vision(vision_mode, yolo_model_path=None):
     mode = normalize_vision_mode(vision_mode)
     if mode == VISION_MODE_CYAN:
         return YoloBrickDetector(debug=True, model_path=yolo_model_path)
-    return ArucoBrickVision(debug=True)
+    return ArucoBrickVision(debug=True, debug_rejected_candidates=True)
 
 
 def _stream_state_vision_mode(app_state, fallback):
@@ -3514,6 +3771,31 @@ def _set_stream_state_success_gate_step(app_state, step):
         return
     with lock:
         stream_state["success_gate_step"] = step_key
+
+
+def _emit_stream_step_success_event(app_state, step):
+    stream_state_raw = getattr(app_state, "stream_state", None)
+    stream_state = stream_state_raw if isinstance(stream_state_raw, dict) else None
+    if not stream_state:
+        return
+    step_key = normalize_step_label(step) or str(step or "").strip()
+    lock = stream_state.get("lock")
+
+    def _apply():
+        current_seq = stream_state.get("step_success_seq", 0)
+        try:
+            next_seq = int(current_seq) + 1
+        except (TypeError, ValueError):
+            next_seq = 1
+        stream_state["step_success_seq"] = int(max(1, next_seq))
+        stream_state["step_success_step"] = step_key or None
+        stream_state["step_success_at"] = float(time.time())
+
+    if lock is None:
+        _apply()
+        return
+    with lock:
+        _apply()
 
 
 def _set_detector_cyan_visibility(vision, mode):
@@ -3685,7 +3967,7 @@ def _vision_mode_label(mode):
     return "AruCo Markers"
 
 
-def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
+def control_loop(app_state, vision_mode="aruco", yolo_model_path=None, show_startup_help=False):
     app_state.robot = Robot()
     active_vision_mode = normalize_vision_mode(vision_mode)
     active_cyan_profile = _stream_state_cyan_profile(app_state, _DEFAULT_CYAN_PROFILE)
@@ -3737,6 +4019,12 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
             "[VISION] Cyan visibility: "
             f"{cyan_visibility_label(active_cyan_visibility)}"
         )
+    if bool(show_startup_help):
+        print_command_help(app_state)
+    pending_stream_url = str(getattr(app_state, "pending_stream_started_url", "") or "").strip()
+    if pending_stream_url:
+        log_line(f"[VISION] Stream started at {ANSI_ORANGE_BRIGHT}{pending_stream_url}{ANSI_RESET}")
+        app_state.pending_stream_started_url = None
 
     if app_state.stream_enabled:
         stream_t = threading.Thread(target=stream_refresh_loop, args=(app_state,), daemon=True)
@@ -3873,7 +4161,23 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
 
         refresh_world_model_from_demos(app_state)
         auto_obj = None
+        auto_continue_msg = None
+        auto_continue_countdown_msg = None
         with app_state.lock:
+            due_auto_obj = _pop_due_auto_continue_locked(app_state)
+            if due_auto_obj is not None:
+                app_state.auto_request = due_auto_obj
+                step_key_due = normalize_step_label(getattr(due_auto_obj, "value", due_auto_obj))
+                if step_key_due:
+                    app_state.stream_state["success_gate_step"] = step_key_due
+                due_code = step_code_for_obj(due_auto_obj)
+                due_name = str(getattr(due_auto_obj, "value", due_auto_obj)).lower()
+                auto_continue_msg = (
+                    f"[AUTO] Auto-continue after {float(AUTO_CONTINUE_WAIT_S):.1f}s: "
+                    f"queued step {due_code} ({due_name})."
+                )
+            else:
+                auto_continue_countdown_msg = _auto_continue_countdown_message_locked(app_state)
             if app_state.auto_request and not app_state.auto_running:
                 auto_obj = app_state.auto_request
                 app_state.auto_request = None
@@ -3887,6 +4191,11 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
                 app_state.active_speed = 0.0
                 app_state.active_speed_score = None
                 app_state.active_duration_ms = None
+
+        if auto_continue_msg:
+            log_line(auto_continue_msg)
+        elif auto_continue_countdown_msg:
+            log_line(auto_continue_countdown_msg)
 
         if auto_obj:
             if app_state.vision is None:
@@ -3946,6 +4255,16 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
             brick_above=brick_above,
             brick_below=brick_below,
         )
+        floor_lift_mm = getattr(vision, "floor_lift_mm", None)
+        floor_lift_quality = getattr(vision, "floor_lift_quality", 0.0)
+        try:
+            floor_lift_mm = float(floor_lift_mm) if floor_lift_mm is not None else None
+        except (TypeError, ValueError):
+            floor_lift_mm = None
+        try:
+            floor_lift_quality = float(floor_lift_quality)
+        except (TypeError, ValueError):
+            floor_lift_quality = 0.0
         app_state.world.update_vision(
             snapshot["found"],
             snapshot["dist"],
@@ -3955,6 +4274,8 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None):
             snapshot["cam_h"],
             snapshot["brick_above"],
             snapshot["brick_below"],
+            floor_lift_mm=floor_lift_mm,
+            floor_lift_quality=floor_lift_quality,
         )
         refresh_brick_telemetry(app_state, read_vision=False)
         
@@ -4227,7 +4548,11 @@ if __name__ == "__main__":
     startup_demos_dir.mkdir(parents=True, exist_ok=True)
     logs = load_demo_logs(startup_demos_dir)
     if logs:
-        update_process_model_from_demos(logs, PROCESS_MODEL_FILE)
+        update_process_model_from_demos(
+            logs,
+            PROCESS_MODEL_FILE,
+            force_rederive_success_gates=True,
+        )
 
     state = AppState(vision_mode=vision_mode)
     _set_stream_state_vision_mode(state, vision_mode)
@@ -4235,9 +4560,12 @@ if __name__ == "__main__":
     _set_stream_state_cyan_visibility(state, _DEFAULT_CYAN_VISIBILITY)
     _set_stream_state_success_gate_step(state, state.world.step_state.value)
     _set_active_demos_dir_for_mode(state, vision_mode)
-    refresh_world_model_from_demos(state, force=True)
+    refresh_world_model_from_demos(
+        state,
+        force=True,
+        force_rederive_success_gates=True,
+    )
     log_align_curve_lookup_table()
-    print_command_help(state)
     
     # Keyboard thread
     kb_t = threading.Thread(target=keyboard_thread, args=(state,), daemon=True)
@@ -4269,14 +4597,19 @@ if __name__ == "__main__":
             actual_port = getattr(stream_server, "port", STREAM_PORT)
             if actual_port != STREAM_PORT:
                 log_line(f"[VISION] Stream port {STREAM_PORT} busy; using {actual_port}")
-            log_line(f"[VISION] Stream started at {ANSI_ORANGE_BRIGHT}{url}{ANSI_RESET}")
+            state.pending_stream_started_url = str(url)
             _open_stream_in_chrome(url)
     else:
         state.stream_enabled = False
         log_line("[VISION] Stream disabled")
     
     try:
-        control_loop(state, vision_mode=vision_mode, yolo_model_path=args.yolo_model)
+        control_loop(
+            state,
+            vision_mode=vision_mode,
+            yolo_model_path=args.yolo_model,
+            show_startup_help=True,
+        )
     except KeyboardInterrupt:
         pass
     finally:

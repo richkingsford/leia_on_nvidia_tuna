@@ -1,4 +1,5 @@
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,8 +12,28 @@ DEFAULT_GATE_CHECKER_CONFIG = {
     "consecutive_required": 12,
     "majority_window": 26,
     "majority_required": 14,
+    "lite_only_aruco_experiment": False,
+    "aruco_full_gatecheck_pass_scale": 1.0,
 }
 VISIBLE_FALSE_FAIL_CONFIDENCE_MIN = 70.0
+DEFAULT_ARUCO_MARKER_SIZE_MM = 20.0
+
+
+def _crosshair_overlap_half_extents_mm():
+    marker_size = DEFAULT_ARUCO_MARKER_SIZE_MM
+    try:
+        env_size = os.getenv("ARUCO_MARKER_SIZE_MM", "")
+        if str(env_size).strip():
+            parsed = float(env_size)
+            if parsed > 0.0:
+                marker_size = parsed
+    except (TypeError, ValueError):
+        marker_size = DEFAULT_ARUCO_MARKER_SIZE_MM
+    half = float(marker_size) / 2.0
+    return half, half
+
+
+_CROSSHAIR_HALF_WIDTH_MM, _CROSSHAIR_HALF_HEIGHT_MM = _crosshair_overlap_half_extents_mm()
 
 
 def _coerce_int(value, fallback, minimum=1):
@@ -21,6 +42,17 @@ def _coerce_int(value, fallback, minimum=1):
     except (TypeError, ValueError):
         parsed = int(fallback)
     return max(int(minimum), parsed)
+
+
+def _coerce_float(value, fallback, minimum=0.0, maximum=None):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = float(fallback)
+    parsed = max(float(minimum), parsed)
+    if maximum is not None:
+        parsed = min(float(maximum), parsed)
+    return float(parsed)
 
 
 def load_gate_checker_config(path=GATE_CHECKER_MODEL_FILE, default_config=None):
@@ -54,10 +86,21 @@ def load_gate_checker_config(path=GATE_CHECKER_MODEL_FILE, default_config=None):
         minimum=1,
     )
     majority_required = min(majority_required, majority_window)
+    lite_only_aruco_experiment = bool(
+        raw.get("lite_only_aruco_experiment", cfg.get("lite_only_aruco_experiment", False))
+    )
+    aruco_full_gatecheck_pass_scale = _coerce_float(
+        raw.get("aruco_full_gatecheck_pass_scale"),
+        cfg.get("aruco_full_gatecheck_pass_scale", 1.0),
+        minimum=0.05,
+        maximum=1.0,
+    )
     return {
         "consecutive_required": consecutive_required,
         "majority_window": majority_window,
         "majority_required": majority_required,
+        "lite_only_aruco_experiment": lite_only_aruco_experiment,
+        "aruco_full_gatecheck_pass_scale": aruco_full_gatecheck_pass_scale,
     }
 
 
@@ -76,6 +119,40 @@ def metric_value_from_measurement(measurement, metric):
         return None
     if metric == "visible":
         return bool(measurement.get("visible"))
+    if metric in ("inCrosshairs", "in_crosshairs"):
+        if "inCrosshairs" in measurement:
+            value = measurement.get("inCrosshairs")
+            return None if value is None else bool(value)
+        if "in_crosshairs" in measurement:
+            value = measurement.get("in_crosshairs")
+            return None if value is None else bool(value)
+        found = bool(measurement.get("visible"))
+        if not found:
+            return False
+        try:
+            x_val = measurement.get("x_axis")
+            if x_val is None:
+                x_val = measurement.get("offset_x")
+            y_val = measurement.get("y_axis")
+            if y_val is None:
+                y_val = measurement.get("offset_y")
+            if y_val is None:
+                y_val = measurement.get("cam_h")
+            x_num = float(x_val)
+            y_num = float(y_val)
+            center_x = measurement.get("in_crosshairs_center_x", measurement.get("inCrosshairs_center_x", 0.0))
+            center_y = measurement.get("in_crosshairs_center_y", measurement.get("inCrosshairs_center_y", 0.0))
+            center_x_num = float(center_x)
+            center_y_num = float(center_y)
+        except (TypeError, ValueError):
+            return None
+        marker_left = x_num - _CROSSHAIR_HALF_WIDTH_MM
+        marker_right = x_num + _CROSSHAIR_HALF_WIDTH_MM
+        marker_top = y_num - _CROSSHAIR_HALF_HEIGHT_MM
+        marker_bottom = y_num + _CROSSHAIR_HALF_HEIGHT_MM
+        x_overlaps = marker_left <= center_x_num <= marker_right
+        y_overlaps = marker_top <= center_y_num <= marker_bottom
+        return bool(x_overlaps and y_overlaps)
     if metric in ("brick_above", "brickAbove"):
         if "brick_above" in measurement:
             value = measurement.get("brick_above")
@@ -117,6 +194,9 @@ def metric_value_from_measurement(measurement, metric):
         return float(value) if value is not None else None
     if metric == "dist":
         value = measurement.get("dist")
+        return float(value) if value is not None else None
+    if metric == "confidence":
+        value = measurement.get("confidence")
         return float(value) if value is not None else None
     if metric == "angle":
         return measurement.get("angle")

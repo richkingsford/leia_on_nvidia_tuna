@@ -32,10 +32,20 @@ def _success_log_rows(step, states):
 
 
 class TestTelemetryProcessGateDerivationRules(unittest.TestCase):
+    def test_success_gate_metrics_for_step_includes_x_and_y_axis_for_seat_brick2(self):
+        metrics = ["visible", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "angle_abs"]
+        filtered = telemetry_process.success_gate_metrics_for_step(metrics, "SEAT_BRICK2", step_rules={})
+        self.assertEqual(filtered, ["visible", "xAxis_offset_abs", "yAxis_offset_abs", "dist"])
+
     def test_success_gate_metrics_for_exit_wall_are_visible_only(self):
         metrics = ["angle_abs", "xAxis_offset_abs", "dist", "visible"]
         filtered = telemetry_process.success_gate_metrics_for_step(metrics, "EXIT_WALL", step_rules={})
         self.assertEqual(filtered, ["visible"])
+
+    def test_success_gate_metrics_for_retreat_are_visible_and_dist_only(self):
+        metrics = ["visible", "dist", "lift_height"]
+        filtered = telemetry_process.success_gate_metrics_for_step(metrics, "RETREAT", step_rules={})
+        self.assertEqual(filtered, ["visible", "dist"])
 
     def test_derive_success_gates_for_exit_wall_uses_demo_visible_only(self):
         success_segments = {
@@ -53,6 +63,29 @@ class TestTelemetryProcessGateDerivationRules(unittest.TestCase):
         self.assertIn("EXIT_WALL", gates)
         self.assertEqual(set(gates["EXIT_WALL"].keys()), {"visible"})
         self.assertIs(gates["EXIT_WALL"]["visible"].get("min"), False)
+
+    def test_derive_success_gates_for_retreat_uses_demo_visible_and_dist_only(self):
+        success_segments = {
+            "RETREAT": [
+                {
+                    "states": [
+                        {
+                            "timestamp": 1.0,
+                            "brick": {"visible": True, "dist": 80.0},
+                            "lift_height": 0.0,
+                        },
+                        {
+                            "timestamp": 1.1,
+                            "brick": {"visible": True, "dist": 86.0},
+                            "lift_height": 7.0,
+                        },
+                    ]
+                }
+            ]
+        }
+        gates = telemetry_process.derive_success_gates(success_segments, scale_by_step={}, step_rules={})
+        self.assertIn("RETREAT", gates)
+        self.assertEqual(set(gates["RETREAT"].keys()), {"visible", "dist"})
 
     def test_update_process_model_rewrites_exit_wall_success_gates_to_visible_only(self):
         with tempfile.TemporaryDirectory() as td:
@@ -253,6 +286,308 @@ class TestTelemetryProcessGateDerivationRules(unittest.TestCase):
             self.assertTrue(cyan_gates)
             self.assertEqual((aruco_gates.get("dist") or {}).get("target"), 154.61)
             self.assertEqual(cfg.get("success_gates"), cyan_gates)
+
+    def test_update_process_model_default_keeps_locked_success_gates_for_step15(self):
+        with tempfile.TemporaryDirectory() as td:
+            model_path = Path(td) / "world_model_process.json"
+            model_path.write_text(
+                json.dumps(
+                    {
+                        "steps": {
+                            "SEAT_BRICK2": {
+                                "lock_success_gates": True,
+                                "success_gates": {
+                                    "visible": {"min": True},
+                                    "yAxis_offset_abs": {"target": 999.0, "tol": 1.5},
+                                    "dist": {"target": 999.0, "tol": 1.5},
+                                },
+                            }
+                        }
+                    }
+                )
+            )
+            logs = [
+                (
+                    Path("seat_brick2_demo.json"),
+                    _success_log_rows(
+                        "SEAT_BRICK2",
+                        [
+                            {"type": "state", "timestamp": 1.1, "brick": {"visible": True, "dist": 40.0, "x_axis": 0.0, "y_axis": 2.0, "angle": 0.0}},
+                            {"type": "state", "timestamp": 1.2, "brick": {"visible": True, "dist": 42.0, "x_axis": 0.0, "y_axis": 3.0, "angle": 0.0}},
+                            {"type": "state", "timestamp": 1.3, "brick": {"visible": True, "dist": 44.0, "x_axis": 0.0, "y_axis": 4.0, "angle": 0.0}},
+                        ],
+                    ),
+                )
+            ]
+            updated = telemetry_process.update_process_model_from_demos(logs, path=model_path)
+            cfg = ((updated.get("steps") or {}).get("SEAT_BRICK2") or {})
+            self.assertEqual(((cfg.get("success_gates") or {}).get("dist") or {}).get("target"), 999.0)
+            self.assertEqual(((cfg.get("success_gates") or {}).get("yAxis_offset_abs") or {}).get("target"), 999.0)
+
+    def test_update_process_model_force_rederive_overrides_locked_success_gates_for_step15(self):
+        with tempfile.TemporaryDirectory() as td:
+            model_path = Path(td) / "world_model_process.json"
+            model_path.write_text(
+                json.dumps(
+                    {
+                        "steps": {
+                            "SEAT_BRICK2": {
+                                "lock_success_gates": True,
+                                "success_gates": {
+                                    "visible": {"min": True},
+                                    "yAxis_offset_abs": {"target": 999.0, "tol": 1.5},
+                                    "dist": {"target": 999.0, "tol": 1.5},
+                                },
+                            }
+                        }
+                    }
+                )
+            )
+            logs = [
+                (
+                    Path("seat_brick2_demo.json"),
+                    _success_log_rows(
+                        "SEAT_BRICK2",
+                        [
+                            {"type": "state", "timestamp": 1.1, "brick": {"visible": True, "dist": 40.0, "x_axis": 0.0, "y_axis": 2.0, "angle": 0.0}},
+                            {"type": "state", "timestamp": 1.2, "brick": {"visible": True, "dist": 42.0, "x_axis": 0.0, "y_axis": 3.0, "angle": 0.0}},
+                            {"type": "state", "timestamp": 1.3, "brick": {"visible": True, "dist": 44.0, "x_axis": 0.0, "y_axis": 4.0, "angle": 0.0}},
+                        ],
+                    ),
+                )
+            ]
+            updated = telemetry_process.update_process_model_from_demos(
+                logs,
+                path=model_path,
+                force_rederive_success_gates=True,
+            )
+            cfg = ((updated.get("steps") or {}).get("SEAT_BRICK2") or {})
+            target = ((cfg.get("success_gates") or {}).get("dist") or {}).get("target")
+            self.assertIsNotNone(target)
+            self.assertNotEqual(target, 999.0)
+            self.assertGreater(float(target), 30.0)
+            self.assertLess(float(target), 60.0)
+            y_target = ((cfg.get("success_gates") or {}).get("yAxis_offset_abs") or {}).get("target")
+            self.assertIsNotNone(y_target)
+            self.assertNotEqual(y_target, 999.0)
+            self.assertGreater(float(y_target), 1.0)
+            self.assertLess(float(y_target), 5.0)
+
+    def test_update_process_model_force_rederive_preserves_locked_step_tolerance_overrides(self):
+        with tempfile.TemporaryDirectory() as td:
+            model_path = Path(td) / "world_model_process.json"
+            model_path.write_text(
+                json.dumps(
+                    {
+                        "steps": {
+                            "SEAT_BRICK2": {
+                                "lock_success_gates": True,
+                                "success_gates": {
+                                    "visible": {"min": True},
+                                    "yAxis_offset_abs": {"target": 999.0, "tol": 0.7},
+                                    "dist": {"target": 999.0, "tol": 1.5},
+                                },
+                            }
+                        }
+                    }
+                )
+            )
+            logs = [
+                (
+                    Path("seat_brick2_demo.json"),
+                    _success_log_rows(
+                        "SEAT_BRICK2",
+                        [
+                            {"type": "state", "timestamp": 1.1, "brick": {"visible": True, "dist": 40.0, "x_axis": 0.0, "y_axis": 2.0, "angle": 0.0}},
+                            {"type": "state", "timestamp": 1.2, "brick": {"visible": True, "dist": 42.0, "x_axis": 0.0, "y_axis": 3.0, "angle": 0.0}},
+                            {"type": "state", "timestamp": 1.3, "brick": {"visible": True, "dist": 44.0, "x_axis": 0.0, "y_axis": 4.0, "angle": 0.0}},
+                        ],
+                    ),
+                )
+            ]
+            updated = telemetry_process.update_process_model_from_demos(
+                logs,
+                path=model_path,
+                force_rederive_success_gates=True,
+            )
+            cfg = ((updated.get("steps") or {}).get("SEAT_BRICK2") or {})
+            y_gate = (cfg.get("success_gates") or {}).get("yAxis_offset_abs") or {}
+            self.assertEqual(y_gate.get("tol"), 0.7)
+            self.assertNotEqual(y_gate.get("target"), 999.0)
+
+    def test_update_process_model_force_rederive_overrides_lock_gates(self):
+        with tempfile.TemporaryDirectory() as td:
+            model_path = Path(td) / "world_model_process.json"
+            model_path.write_text(
+                json.dumps(
+                    {
+                        "steps": {
+                            "SEAT_BRICK2": {
+                                "lock_gates": True,
+                                "success_gates": {
+                                    "visible": {"min": True},
+                                    "dist": {"target": 888.0, "tol": 1.5},
+                                },
+                            }
+                        }
+                    }
+                )
+            )
+            logs = [
+                (
+                    Path("seat_brick2_demo.json"),
+                    _success_log_rows(
+                        "SEAT_BRICK2",
+                        [
+                            {"type": "state", "timestamp": 1.1, "brick": {"visible": True, "dist": 41.0, "x_axis": 0.0, "angle": 0.0}},
+                            {"type": "state", "timestamp": 1.2, "brick": {"visible": True, "dist": 43.0, "x_axis": 0.0, "angle": 0.0}},
+                        ],
+                    ),
+                )
+            ]
+            updated = telemetry_process.update_process_model_from_demos(
+                logs,
+                path=model_path,
+                force_rederive_success_gates=True,
+            )
+            cfg = ((updated.get("steps") or {}).get("SEAT_BRICK2") or {})
+            target = ((cfg.get("success_gates") or {}).get("dist") or {}).get("target")
+            self.assertNotEqual(target, 888.0)
+
+    def test_update_process_model_force_rederive_updates_active_locked_mode_from_demos(self):
+        with tempfile.TemporaryDirectory() as td:
+            model_path = Path(td) / "world_model_process.json"
+            model_path.write_text(
+                json.dumps(
+                    {
+                        "steps": {
+                            "BRICK_LOCK": {
+                                "lock_success_gates": True,
+                                "locked_success_gates_by_mode": {
+                                    "aruco": {
+                                        "xAxis_offset_abs": {"target": -6.22, "tol": 4.0},
+                                        "dist": {"target": 154.61, "tol": 4.0},
+                                    },
+                                    "cyan": {
+                                        "xAxis_offset_abs": {"target": -3.2, "tol": 4.0},
+                                        "dist": {"target": 97.15, "tol": 4.0},
+                                    },
+                                },
+                            }
+                        }
+                    }
+                )
+            )
+            logs = [
+                (
+                    Path("brick_lock_demo.json"),
+                    _success_log_rows(
+                        "BRICK_LOCK",
+                        [
+                            {"type": "state", "timestamp": 1.1, "brick": {"visible": True, "x_axis": -2.5, "dist": 105.0}},
+                            {"type": "state", "timestamp": 1.2, "brick": {"visible": True, "x_axis": -2.7, "dist": 106.0}},
+                            {"type": "state", "timestamp": 1.3, "brick": {"visible": True, "x_axis": -2.9, "dist": 104.0}},
+                        ],
+                    ),
+                )
+            ]
+            with mock.patch.object(
+                telemetry_process,
+                "_world_model_active_vision_mode",
+                return_value="cyan",
+            ):
+                updated = telemetry_process.update_process_model_from_demos(
+                    logs,
+                    path=model_path,
+                    force_rederive_success_gates=True,
+                )
+
+            cfg = ((updated.get("steps") or {}).get("BRICK_LOCK") or {})
+            by_mode = cfg.get("locked_success_gates_by_mode") or {}
+            cyan_gates = by_mode.get("cyan") or {}
+            self.assertTrue(cyan_gates)
+            self.assertNotEqual((cyan_gates.get("dist") or {}).get("target"), 97.15)
+            self.assertEqual(cfg.get("success_gates"), cyan_gates)
+
+    def test_update_process_model_force_rederive_does_not_erase_step_without_demo_data(self):
+        with tempfile.TemporaryDirectory() as td:
+            model_path = Path(td) / "world_model_process.json"
+            model_path.write_text(
+                json.dumps(
+                    {
+                        "steps": {
+                            "SEAT_BRICK2": {
+                                "lock_success_gates": True,
+                                "success_gates": {
+                                    "visible": {"min": True},
+                                    "dist": {"target": 55.5, "tol": 1.5},
+                                },
+                            }
+                        }
+                    }
+                )
+            )
+
+            updated = telemetry_process.update_process_model_from_demos(
+                [],
+                path=model_path,
+                force_rederive_success_gates=True,
+            )
+            cfg = ((updated.get("steps") or {}).get("SEAT_BRICK2") or {})
+            self.assertEqual(((cfg.get("success_gates") or {}).get("dist") or {}).get("target"), 55.5)
+
+    def test_inject_aruco_confidence_gate_defaults_to_50(self):
+        gates = {"visible": {"min": True}}
+        telemetry_process._inject_aruco_confidence_gate(gates)
+        self.assertEqual(((gates.get("confidence") or {}).get("min")), 50.0)
+
+    def test_inject_aruco_confidence_gate_keeps_higher_existing_min(self):
+        gates = {
+            "visible": {"min": True},
+            "confidence": {"min": 72.0},
+        }
+        telemetry_process._inject_aruco_confidence_gate(gates)
+        self.assertEqual(((gates.get("confidence") or {}).get("min")), 72.0)
+
+    def test_inject_aruco_confidence_gate_removed_for_visible_false_success(self):
+        gates = {
+            "visible": {"min": False},
+            "confidence": {"min": 90.0},
+        }
+        telemetry_process._inject_aruco_confidence_gate(gates)
+        self.assertNotIn("confidence", gates)
+
+    def test_apply_aruco_confidence_policy_respects_step_opt_out(self):
+        model = {
+            "steps": {
+                "RETREAT": {
+                    "aruco_confidence_gate": False,
+                    "success_gates": {
+                        "visible": {"min": True},
+                        "dist": {"target": 80.68, "tol": 12.3},
+                        "confidence": {"min": 90.0},
+                    },
+                    "locked_success_gates_by_mode": {
+                        "aruco": {
+                            "visible": {"min": True},
+                            "dist": {"target": 80.68, "tol": 12.3},
+                            "confidence": {"min": 90.0},
+                        }
+                    },
+                }
+            }
+        }
+        with mock.patch.object(
+            telemetry_process,
+            "_world_model_active_vision_mode",
+            return_value="aruco",
+        ):
+            updated = telemetry_process._apply_aruco_confidence_policy(model)
+
+        retreat_cfg = ((updated.get("steps") or {}).get("RETREAT") or {})
+        self.assertNotIn("confidence", retreat_cfg.get("success_gates") or {})
+        locked = (retreat_cfg.get("locked_success_gates_by_mode") or {}).get("aruco") or {}
+        self.assertNotIn("confidence", locked)
 
 
 if __name__ == "__main__":
