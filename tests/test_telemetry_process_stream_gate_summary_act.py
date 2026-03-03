@@ -85,7 +85,32 @@ class TestTelemetryProcessStreamGateSummaryAct(unittest.TestCase):
         )
         text = _line_text(line)
         self.assertIn("yAxis_offset_abs=-2.7+/-1.5", text)
-        self.assertIn("(11.9 raw=-2.0)", text)
+        self.assertIn("(11.9 Δ+14.6 raw=-2.0)", text)
+
+    def test_stream_success_gate_line_shows_delta_for_numeric_non_dist_metrics(self):
+        line_x = telemetry_process._stream_success_gate_line(
+            "ALIGN_BRICK",
+            {
+                "metric": "xAxis_offset_abs",
+                "stats": {"target": -3.5, "tol": 1.5},
+                "value": -5.0,
+            },
+        )
+        text_x = _line_text(line_x)
+        self.assertIn("xAxis_offset_abs=-3.5+/-1.5", text_x)
+        self.assertIn("(-5.0 Δ-1.5)", text_x)
+
+        line_conf = telemetry_process._stream_success_gate_line(
+            "BRICK_LOCK",
+            {
+                "metric": "confidence",
+                "stats": {"min": 50.0},
+                "value": 97.4,
+            },
+        )
+        text_conf = _line_text(line_conf)
+        self.assertIn("confidence>=50.0", text_conf)
+        self.assertIn("(97.4 Δ+47.4)", text_conf)
 
     def test_action_sent_display_text_uses_logical_command_even_with_wire_remap(self):
         text = telemetry_process.action_sent_display_text(

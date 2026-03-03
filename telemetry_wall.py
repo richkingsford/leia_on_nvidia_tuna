@@ -121,6 +121,17 @@ def _step_requires_wall_origin(world, obj_name):
     return "ALIGN" in obj_name and "WALL" in obj_name
 
 
+def wall_origin_requirement_note(world, step):
+    obj_name = _step_name(step)
+    cfg = _wall_step_config(world, obj_name)
+    for key in ("requires_wall_origin", "require_wall_origin", "needs_wall_origin"):
+        if key in cfg:
+            if not bool(cfg.get(key)):
+                return "wall origin requirement disabled by wall model"
+            return "wall origin requirement enabled by wall model"
+    return None
+
+
 def _wall_origin_distance(a, b):
     if not a or not b:
         return None

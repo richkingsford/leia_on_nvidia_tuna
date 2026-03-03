@@ -127,6 +127,7 @@ class ArucoBrickVision:
         self.floor_lift_mm = 0.0
         self.floor_lift_quality = 0.0
         self.floor_lift_ok = False
+        self.floor_lift_age_frames = 999999
 
     def _build_aruco_params(self, loose: bool) -> cv2.aruco.DetectorParameters:
         params = cv2.aruco.DetectorParameters()
@@ -629,6 +630,10 @@ class ArucoBrickVision:
         return roi, bounds
 
     def _update_tiny_roi_lift(self, gray: np.ndarray, pose: BrickPose):
+        try:
+            self.floor_lift_age_frames = max(0, int(self.floor_lift_age_frames)) + 1
+        except Exception:
+            self.floor_lift_age_frames = 1
         if not bool(self.tiny_roi_lift_enabled):
             self.floor_lift_quality = 0.0
             self.floor_lift_ok = False
@@ -661,6 +666,8 @@ class ArucoBrickVision:
             return
 
         if (int(self._tiny_roi_frame_idx) % int(self.tiny_roi_lift_interval)) != 0:
+            self.floor_lift_quality = max(0.0, float(self.floor_lift_quality) * 0.92)
+            self.floor_lift_ok = bool(self.floor_lift_quality >= float(self.tiny_roi_lift_quality_min))
             return
 
         prev = self._tiny_roi_prev
@@ -736,6 +743,7 @@ class ArucoBrickVision:
         quality = max(0.0, min(1.0, float(feature_score * coherence_score)))
         self.floor_lift_quality = float(quality)
         self.floor_lift_ok = bool(quality >= float(self.tiny_roi_lift_quality_min))
+        self.floor_lift_age_frames = 0
 
         if bool(pose.found) and float(pose.confidence) >= 60.0:
             try:

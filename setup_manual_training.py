@@ -138,9 +138,9 @@ DEMOS_DIR = demos_dir_for_mode()
 PROCESS_MODEL_FILE = Path(__file__).resolve().parent / "world_model_process.json"
 DEMO_STEPS = step_sequence()
 try:
-    AUTO_CONTINUE_WAIT_S = float(_MANUAL_CONFIG.get("auto_continue_wait_s", 3.0))
+    AUTO_CONTINUE_WAIT_S = float(_MANUAL_CONFIG.get("auto_continue_wait_s", 5.0))
 except (TypeError, ValueError):
-    AUTO_CONTINUE_WAIT_S = 3.0
+    AUTO_CONTINUE_WAIT_S = 5.0
 AUTO_CONTINUE_WAIT_S = max(0.0, float(AUTO_CONTINUE_WAIT_S))
 
 
@@ -1857,6 +1857,7 @@ def trash_current_session(app_state):
 def run_auto_step(app_state, obj_enum):
     step_key = normalize_step_label(obj_enum.value)
     _set_stream_state_success_gate_step(app_state, step_key)
+    print("\n" * 5, end="")
     log_line(f"[AUTO] Attempting {step_key}...")
     mini_x_axis_ran = False
 
@@ -2184,6 +2185,14 @@ def run_auto_step(app_state, obj_enum):
                 obj_enum,
             )
         reason_text = reason.replace("_", " ") if isinstance(reason, str) else "success criteria met"
+        handoff_target = None
+        if isinstance(reason, str):
+            handoff_prefix = "post-ground-reset handoff to "
+            reason_norm = str(reason).strip()
+            if reason_norm.startswith(handoff_prefix):
+                handoff_target = normalize_step_label(reason_norm[len(handoff_prefix):].strip())
+        if handoff_target:
+            log_line(f"[AUTO HANDOFF] {step_key} -> {handoff_target}")
         log_line(f"[AUTO] {step_key} complete — {reason_text}.")
         if auto_continue_plan:
             next_obj, wait_s = auto_continue_plan

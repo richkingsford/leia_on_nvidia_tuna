@@ -176,6 +176,10 @@ AUTO_DEMO_SPEED_STEPS = {
     "FIND_BRICK",
     "FIND_WALL2",
 }
+TOPMOST_GROUND_UP_LEVEL2_STEPS = {
+    "FIND_TOPMOST_BRICK",
+    "FIND_TOPMOST_BRICK_WALL",
+}
 FIND_BRICK_TURN_MOVE_MAX_SCORE = 2
 FIND_BRICK_TURN_CHECK_MAX_SCORE = 1
 MIN_MM_TOL = 1.5
@@ -218,6 +222,11 @@ def _frames_from_seconds(seconds, fallback_frames):
     if sec is None:
         return max(0, int(fallback_frames))
     return max(0, int(round(sec * max(1, int(STREAM_FPS)))))
+
+
+def _step_allows_topmost_ground_up_level2(step):
+    step_key = normalize_step_label(step)
+    return bool(step_key in TOPMOST_GROUND_UP_LEVEL2_STEPS)
 
 
 def default_speed_for_cmd(cmd, score=DEFAULT_SPEED_SCORE):
@@ -2547,7 +2556,7 @@ def print_gatecheck_progress_line(world, step=None, *, log=True, force=False):
         return
     world._last_gatecheck_progress_sig = sig
     print(format_headline(text, COLOR_WHITE))
-    if mode == "lite" and phase == "start":
+    if mode == "lite":
         detail = _result_lite_gate_detail(world, step_key)
         if isinstance(detail, dict):
             detail_line = detail.get("colored") or detail.get("plain")
@@ -2620,8 +2629,83 @@ def _gatecheck_next_action_text(cmd, speed_score=None, reason=None):
             return f"continuing with next act {act_text} ({reason_text})"
         return f"continuing with next act {act_text}"
     if reason_text:
-        return f"no known next act ({reason_text})"
-    return "no known next act"
+        return f"continuing with adjustment acts ({reason_text})"
+    return "continuing with adjustment acts"
+
+
+def _align_brick_lite_fail_fallback_action(world, step):
+    step_key_local = normalize_step_label(step)
+    if step_key_local not in {
+        "ALIGN_BRICK",
+        "POSITION_BRICK",
+        "BRICK_LOCK",
+        "BRICK_LOCK_WALL",
+    }:
+        return None
+    process_rules = getattr(world, "process_rules", None) or {}
+    step_cfg = process_rules.get(step_key_local, {}) if isinstance(process_rules, dict) else {}
+    success_gates = step_cfg.get("success_gates") if isinstance(step_cfg, dict) else {}
+    if not isinstance(success_gates, dict) or not success_gates:
+        return None
+
+    measurement, _lite_meta = _lite_gate_measurement_for_step(world, step_key_local)
+    source = measurement if isinstance(measurement, dict) else (getattr(world, "brick", None) or {})
+
+    best = None
+    for metric, stats in success_gates.items():
+        metric_key = str(metric or "").strip()
+        if metric_key not in ("dist", "xAxis_offset_abs"):
+            continue
+        value = gate_utils.metric_value_from_measurement(source, metric_key)
+        if value is None:
+            continue
+        direction = metric_direction(metric_key, step_key_local, process_rules=process_rules)
+        if _gate_entry_matches(metric_key, value, stats, direction):
+            continue
+        distance = _gate_distance_to_success(metric_key, value, stats, direction)
+        try:
+            distance_val = float(distance if distance is not None else 0.0)
+        except (TypeError, ValueError):
+            distance_val = 0.0
+        try:
+            value_num = float(value)
+        except (TypeError, ValueError):
+            continue
+        target = stats.get("target") if isinstance(stats, dict) else None
+        try:
+            target_num = float(target) if target is not None else 0.0
+        except (TypeError, ValueError):
+            target_num = 0.0
+        candidate = {
+            "metric": metric_key,
+            "distance": max(0.0, distance_val),
+            "value": value_num,
+            "target": target_num,
+        }
+        if best is None or candidate["distance"] > float(best.get("distance", 0.0)):
+            best = candidate
+
+    if not isinstance(best, dict):
+        return None
+
+    metric_key = str(best.get("metric") or "")
+    value_num = float(best.get("value", 0.0))
+    target_num = float(best.get("target", 0.0))
+    if metric_key == "dist":
+        cmd_local = "b" if value_num < target_num else "f"
+        score_local = 5
+        reason_local = "lite_fail_fallback_dist"
+    else:
+        cmd_local = "r" if value_num < target_num else "l"
+        score_local = 5
+        reason_local = "lite_fail_fallback_x_axis"
+    speed_local = telemetry_robot_module.manual_speed_for_cmd(cmd_local, score_local)
+    return {
+        "cmd": cmd_local,
+        "speed": float(speed_local or 0.0),
+        "score": int(score_local),
+        "reason": reason_local,
+    }
 
 
 def _log_gatecheck_next_action(step, phase, cmd, speed_score=None, reason=None, *, log=True):
@@ -2632,6 +2716,444 @@ def _log_gatecheck_next_action(step, phase, cmd, speed_score=None, reason=None, 
     text = _gatecheck_next_action_text(cmd, speed_score=speed_score, reason=reason)
     color = COLOR_WHITE if str(cmd or "").strip() else COLOR_YELLOW
     print(format_headline(f"[GATECHECK-NEXT] {step_key} {phase_key}: {text}", color))
+
+
+def _run_ground_up_level2_exception(
+    world,
+    vision,
+    step,
+    *,
+    robot=None,
+    observer=None,
+    confirm_callback=None,
+    align_silent=False,
+):
+    step_key = normalize_step_label(step)
+    if not _step_allows_topmost_ground_up_level2(step_key):
+        return {"enabled": False, "handled": False}
+    step_cfg = {}
+    if isinstance(getattr(world, "process_rules", None), dict):
+        step_cfg = world.process_rules.get(step_key, {}) or {}
+    if not isinstance(step_cfg, dict):
+        return {"enabled": False, "handled": False}
+
+    topmost_cfg = step_cfg.get("topmost_crosshair_exception")
+    if not isinstance(topmost_cfg, dict):
+        return {"enabled": False, "handled": False}
+    if not bool(topmost_cfg.get("enabled")):
+        return {"enabled": False, "handled": False}
+    if not bool(topmost_cfg.get("ground_up_level2_enabled")):
+        return {"enabled": False, "handled": False}
+
+    reminder_msg = str(topmost_cfg.get("operator_log_reminder") or "").strip()
+    ground_cmd = str(topmost_cfg.get("ground_reset_command") or "d").strip().lower()
+    if ground_cmd not in ("d", "u"):
+        ground_cmd = "d"
+    ground_score = max(
+        int(telemetry_robot_module.SPEED_SCORE_MIN),
+        min(int(MAX_SPEED_SCORE), int(_as_int(topmost_cfg.get("ground_reset_score"), 100))),
+    )
+    ground_max_acts = max(1, int(_as_int(topmost_cfg.get("ground_reset_max_acts"), 12)))
+    ground_min_acts = max(0, int(_as_int(topmost_cfg.get("ground_reset_min_acts"), 0)))
+    ground_min_acts = min(int(ground_min_acts), int(ground_max_acts))
+    ground_y_max = float(_as_float(topmost_cfg.get("ground_level_y_axis_max"), 50.0))
+
+    mast_cmd = str(topmost_cfg.get("mast_up_command") or "u").strip().lower()
+    if mast_cmd not in ("u", "d"):
+        mast_cmd = "u"
+    mast_score = max(
+        int(telemetry_robot_module.SPEED_SCORE_MIN),
+        min(int(MAX_SPEED_SCORE), int(_as_int(topmost_cfg.get("mast_up_score"), 100))),
+    )
+    mast_max_acts = max(1, int(_as_int(topmost_cfg.get("mast_up_max_acts"), 3)))
+    require_true_before_false = bool(topmost_cfg.get("require_true_before_false", True))
+    false_confirm_frames = max(1, int(_as_int(topmost_cfg.get("false_confirm_frames"), 1)))
+    min_true_observations = max(1, int(_as_int(topmost_cfg.get("min_true_observations"), 1)))
+    false_up_acts_required = max(1, int(_as_int(topmost_cfg.get("false_up_acts_required"), 3)))
+    post_ground_reset_handoff_cfg = topmost_cfg.get("post_ground_reset_handoff")
+    if not isinstance(post_ground_reset_handoff_cfg, dict):
+        post_ground_reset_handoff_cfg = {}
+    post_ground_reset_handoff_enabled = bool(post_ground_reset_handoff_cfg.get("enabled"))
+    post_ground_reset_handoff_step = normalize_step_label(post_ground_reset_handoff_cfg.get("step"))
+    if not post_ground_reset_handoff_step:
+        if step_key == "FIND_TOPMOST_BRICK":
+            post_ground_reset_handoff_step = "BRICK_LOCK"
+        elif step_key == "FIND_TOPMOST_BRICK_WALL":
+            post_ground_reset_handoff_step = "BRICK_LOCK_WALL"
+    post_success_desc_cfg = topmost_cfg.get("post_success_descend")
+    if not isinstance(post_success_desc_cfg, dict):
+        post_success_desc_cfg = {}
+    post_desc_enabled = bool(post_success_desc_cfg.get("enabled", True))
+    post_desc_cmd = str(post_success_desc_cfg.get("command") or "d").strip().lower()
+    if post_desc_cmd not in ("d", "u"):
+        post_desc_cmd = "d"
+    post_desc_score = max(
+        int(telemetry_robot_module.SPEED_SCORE_MIN),
+        min(int(MAX_SPEED_SCORE), int(_as_int(post_success_desc_cfg.get("score"), 100))),
+    )
+    post_desc_completion_mode = str(post_success_desc_cfg.get("completion_mode") or "true_streak").strip().lower()
+    if post_desc_completion_mode not in ("true_streak", "true_then_false_streak"):
+        post_desc_completion_mode = "true_streak"
+    post_desc_true_required = max(1, int(_as_int(post_success_desc_cfg.get("true_down_acts_required"), 4)))
+    post_desc_false_after_true_required = max(
+        1,
+        int(_as_int(post_success_desc_cfg.get("false_after_true_down_acts_required"), 2)),
+    )
+    if post_desc_enabled:
+        post_desc_max_acts = max(
+            int(post_desc_true_required),
+            int(_as_int(post_success_desc_cfg.get("max_acts"), _as_int(post_success_desc_cfg.get("acts"), 16))),
+        )
+    else:
+        post_desc_max_acts = 0
+
+    success_tracker = new_success_tracker(step, world.process_rules)
+
+    def _update_and_read_crosshair():
+        update_world_from_vision(world, vision, log=not align_silent)
+        if observer:
+            observer("frame", world, vision, None, None, None)
+        brick_local = getattr(world, "brick", {}) or {}
+        raw = brick_local.get("inCrosshairs")
+        if raw is None:
+            raw = brick_local.get("in_crosshairs")
+        crosshair_val = None if raw is None else bool(raw)
+        y_axis_local = brick_local.get("y_axis")
+        if y_axis_local is None:
+            y_axis_local = brick_local.get("offset_y")
+        return crosshair_val, _as_float(y_axis_local, None)
+
+    if not align_silent:
+        reminder = reminder_msg or "Exception active: ground-level reset + mast-up 100% + level2 crosshair confirmation."
+        print(format_headline(f"[{step_key} EXCEPTION] {reminder}", COLOR_MAGENTA_BRIGHT))
+        print(
+            format_headline(
+                f"[{step_key} EXCEPTION] Phase 1 (first): ground reset {str(ground_cmd).upper()} {int(ground_score)}% until ground gate passes (y_axis<={float(ground_y_max):.1f}) and min acts {int(ground_min_acts)}.",
+                COLOR_MAGENTA_BRIGHT,
+            )
+        )
+
+    ground_speed = telemetry_robot_module.manual_speed_for_cmd(ground_cmd, ground_score)
+    ground_reached = False
+    ground_pulses_sent = 0
+    for idx in range(1, int(ground_max_acts) + 1):
+        crosshair_now, y_now = _update_and_read_crosshair()
+        if (
+            y_now is not None
+            and float(y_now) <= float(ground_y_max)
+            and int(ground_pulses_sent) >= int(ground_min_acts)
+        ):
+            ground_reached = True
+            break
+        if confirm_callback and not confirm_callback(world, vision):
+            return {"enabled": True, "handled": True, "success": False, "reason": "confirm cancelled"}
+        if observer:
+            observer("analysis", world, vision, ground_cmd, ground_speed, "ground_up_level2_ground_reset")
+        send_robot_command(
+            robot,
+            world,
+            step,
+            ground_cmd,
+            ground_speed,
+            speed_score=ground_score,
+            auto_mode=True,
+        )
+        ground_pulses_sent = int(ground_pulses_sent) + 1
+        post_act_analysis(world, vision, step=step, log=not align_silent, include_pause=False)
+        if observer:
+            observer("action", world, vision, ground_cmd, ground_speed, "ground_up_level2_ground_reset")
+        if not align_silent:
+            print(
+                format_headline(
+                    f"[{step_key} EXCEPTION] Ground reset pulse {int(ground_pulses_sent)}/{int(ground_max_acts)}.",
+                    COLOR_MAGENTA_BRIGHT,
+                )
+            )
+        time.sleep(CONTROL_DT)
+
+    if not ground_reached:
+        _cross, y_now = _update_and_read_crosshair()
+        if (
+            y_now is not None
+            and float(y_now) <= float(ground_y_max)
+            and int(ground_pulses_sent) >= int(ground_min_acts)
+        ):
+            ground_reached = True
+    if not ground_reached:
+        if robot:
+            robot.stop()
+        return {
+            "enabled": True,
+            "handled": True,
+            "success": False,
+            "reason": (
+                f"ground reset not reached (need y_axis<={float(ground_y_max):.2f} and min acts {int(ground_min_acts)}; "
+                f"sent={int(ground_pulses_sent)}/{int(ground_max_acts)})"
+            ),
+        }
+
+    start_after_ground = wait_for_start_gates(
+        world,
+        vision,
+        step,
+        robot=robot,
+        cmd=None,
+        speed=None,
+        log=not align_silent,
+        observer=observer,
+        allow_success=False,
+        force_require_start_gates=True,
+    )
+    if start_after_ground != "start":
+        if robot:
+            robot.stop()
+        return {
+            "enabled": True,
+            "handled": True,
+            "success": False,
+            "reason": f"start gates not met after ground reset ({str(start_after_ground)})",
+        }
+    if not align_silent:
+        print(
+            format_headline(
+                f"[{step_key} EXCEPTION] Start gates confirmed after ground reset; entering mast-up phase.",
+                COLOR_MAGENTA_BRIGHT,
+            )
+        )
+
+    if post_ground_reset_handoff_enabled and post_ground_reset_handoff_step:
+        if robot:
+            robot.stop()
+        if not align_silent:
+            print(
+                format_headline(
+                    f"[{step_key} EXCEPTION] Post-ground-reset phase-2 cheat: injecting {post_ground_reset_handoff_step} behavior inside {step_key}, then continuing {step_key} phases.",
+                    COLOR_MAGENTA_BRIGHT,
+                )
+            )
+
+    mast_speed = telemetry_robot_module.manual_speed_for_cmd(mast_cmd, mast_score)
+    true_obs_count = 0
+    saw_true = False
+    false_streak = 0
+    false_after_true_up_acts = 0
+    mast_pulses_sent = 0
+    last_crosshair = None
+    last_success_hit = False
+    no_streak_needed = max(int(false_confirm_frames), int(false_up_acts_required))
+    for idx in range(1, int(mast_max_acts) + 1):
+        mast_pulses_sent = int(idx)
+        if confirm_callback and not confirm_callback(world, vision):
+            return {"enabled": True, "handled": True, "success": False, "reason": "confirm cancelled"}
+        if observer:
+            observer("analysis", world, vision, mast_cmd, mast_speed, "ground_up_level2_mast_up")
+        send_robot_command(
+            robot,
+            world,
+            step,
+            mast_cmd,
+            mast_speed,
+            speed_score=mast_score,
+            auto_mode=True,
+        )
+        post_act_analysis(world, vision, step=step, log=not align_silent, include_pause=False)
+        success_hit = run_full_gatecheck_after_act(
+            world,
+            vision,
+            step,
+            success_tracker,
+            phase="ground_up_level2",
+            log=not align_silent,
+            observer=observer,
+        )
+        crosshair_now, _y_now = _update_and_read_crosshair()
+        last_crosshair = crosshair_now
+        last_success_hit = bool(success_hit)
+        if crosshair_now is True:
+            true_obs_count = int(true_obs_count) + 1
+            saw_true = True
+            false_streak = 0
+            false_after_true_up_acts = 0
+        elif crosshair_now is False:
+            false_streak = int(false_streak) + 1
+            if (not require_true_before_false) or bool(saw_true):
+                false_after_true_up_acts = int(false_after_true_up_acts) + 1
+            else:
+                false_after_true_up_acts = 0
+        else:
+            # Preserve streaks across occasional unknown (`n/a`) frames.
+            pass
+        # Transition rule:
+        # - Success gate being true does not bypass the after-true NO streak requirement.
+        # - Level2 must satisfy the same crosshair semantics used in logs:
+        #   raw NO streak + (optional) YES precondition + NO-after-YES streak.
+        level2_ok = bool(
+            int(false_streak) >= int(false_confirm_frames)
+            and ((not require_true_before_false) or int(true_obs_count) >= int(min_true_observations))
+            and int(false_after_true_up_acts) >= int(false_up_acts_required)
+        )
+        if observer:
+            observer("action", world, vision, mast_cmd, mast_speed, "ground_up_level2_mast_up")
+        if not align_silent:
+            c_text = "WAIT" if crosshair_now is None else ("YES" if crosshair_now else "NO")
+            print(
+                format_headline(
+                    f"[{step_key} EXCEPTION] Mast pulse {int(idx)}/{int(mast_max_acts)}: "
+                    f"inCrosshairs={c_text}, "
+                    f"false-up-streak={int(false_streak)}/{int(no_streak_needed)}, "
+                    f"false-up-after-true-streak={int(false_after_true_up_acts)}/{int(false_up_acts_required)}, "
+                    f"success={('YES' if success_hit else 'NO')}, level2={('YES' if level2_ok else 'NO')}.",
+                    COLOR_MAGENTA_BRIGHT,
+                )
+            )
+        time.sleep(CONTROL_DT)
+        if level2_ok:
+            if not align_silent:
+                if post_desc_max_acts > 0 and bool(success_hit):
+                    print(
+                        format_headline(
+                            f"[{step_key} EXCEPTION] Transition: success=YES and inCrosshairs=NO confirmed for {int(no_streak_needed)} acts; entering descend phase.",
+                            COLOR_MAGENTA_BRIGHT,
+                        )
+                    )
+                elif post_desc_max_acts > 0:
+                    print(
+                        format_headline(
+                            f"[{step_key} EXCEPTION] Transition: level2 confirmed; entering descend phase.",
+                            COLOR_MAGENTA_BRIGHT,
+                        )
+                    )
+                else:
+                    print(
+                        format_headline(
+                            f"[{step_key} EXCEPTION] Transition: success criteria met (brick_above=FALSE + inCrosshairs=NO for {int(no_streak_needed)} acts); completing step.",
+                            COLOR_MAGENTA_BRIGHT,
+                        )
+                    )
+            if post_desc_max_acts > 0:
+                post_desc_speed = telemetry_robot_module.manual_speed_for_cmd(post_desc_cmd, post_desc_score)
+                if not align_silent:
+                    if post_desc_completion_mode == "true_then_false_streak":
+                        descend_goal_text = (
+                            f"inCrosshairs=YES then NO for {int(post_desc_false_after_true_required)} "
+                            f"down-acts in a row"
+                        )
+                    else:
+                        descend_goal_text = (
+                            f"inCrosshairs=YES for {int(post_desc_true_required)} down-acts in a row"
+                        )
+                    print(
+                        format_headline(
+                            f"[{step_key} EXCEPTION] Post-success descend: {str(post_desc_cmd).upper()} {int(post_desc_score)}% until {descend_goal_text} (max {int(post_desc_max_acts)}).",
+                            COLOR_MAGENTA_BRIGHT,
+                        )
+                    )
+                true_down_streak = 0
+                saw_true_descend = False
+                false_after_true_streak = 0
+                for desc_idx in range(1, int(post_desc_max_acts) + 1):
+                    if confirm_callback and not confirm_callback(world, vision):
+                        return {"enabled": True, "handled": True, "success": False, "reason": "confirm cancelled"}
+                    if observer:
+                        observer("analysis", world, vision, post_desc_cmd, post_desc_speed, "ground_up_level2_post_success_descend")
+                    send_robot_command(
+                        robot,
+                        world,
+                        step,
+                        post_desc_cmd,
+                        post_desc_speed,
+                        speed_score=post_desc_score,
+                        auto_mode=True,
+                    )
+                    post_act_analysis(world, vision, step=step, log=not align_silent, include_pause=False)
+                    crosshair_down, _y_down = _update_and_read_crosshair()
+                    if crosshair_down is True:
+                        true_down_streak = int(true_down_streak) + 1
+                        saw_true_descend = True
+                        false_after_true_streak = 0
+                    elif crosshair_down is False:
+                        true_down_streak = 0
+                        if bool(saw_true_descend):
+                            false_after_true_streak = int(false_after_true_streak) + 1
+                        else:
+                            false_after_true_streak = 0
+                    # `None` keeps the existing streak (do not punish n/a frames).
+                    if observer:
+                        observer("action", world, vision, post_desc_cmd, post_desc_speed, "ground_up_level2_post_success_descend")
+                    if not align_silent:
+                        down_text = "WAIT" if crosshair_down is None else ("YES" if crosshair_down else "NO")
+                        if post_desc_completion_mode == "true_then_false_streak":
+                            progress_text = (
+                                f"seen-true={('YES' if bool(saw_true_descend) else 'NO')}, "
+                                f"false-after-true-streak={int(false_after_true_streak)}/{int(post_desc_false_after_true_required)}"
+                            )
+                        else:
+                            progress_text = (
+                                f"true-down-streak={int(true_down_streak)}/{int(post_desc_true_required)}"
+                            )
+                        print(
+                            format_headline(
+                                f"[{step_key} EXCEPTION] Post-success pulse {int(desc_idx)}/{int(post_desc_max_acts)}: inCrosshairs={down_text}, {progress_text}.",
+                                COLOR_MAGENTA_BRIGHT,
+                            )
+                        )
+                    time.sleep(CONTROL_DT)
+                    if post_desc_completion_mode == "true_then_false_streak":
+                        if bool(saw_true_descend) and int(false_after_true_streak) >= int(post_desc_false_after_true_required):
+                            break
+                    elif int(true_down_streak) >= int(post_desc_true_required):
+                        break
+                post_desc_done = False
+                if post_desc_completion_mode == "true_then_false_streak":
+                    post_desc_done = bool(saw_true_descend) and (
+                        int(false_after_true_streak) >= int(post_desc_false_after_true_required)
+                    )
+                else:
+                    post_desc_done = int(true_down_streak) >= int(post_desc_true_required)
+                if not bool(post_desc_done):
+                    if robot:
+                        robot.stop()
+                    if post_desc_completion_mode == "true_then_false_streak":
+                        post_desc_fail_reason = (
+                            f"post-success descend could not confirm inCrosshairs=YES then NO for "
+                            f"{int(post_desc_false_after_true_required)} down-acts in a row"
+                        )
+                    else:
+                        post_desc_fail_reason = (
+                            f"post-success descend could not confirm inCrosshairs=YES for "
+                            f"{int(post_desc_true_required)} down-acts in a row"
+                        )
+                    return {
+                        "enabled": True,
+                        "handled": True,
+                        "success": False,
+                        "reason": post_desc_fail_reason,
+                    }
+            if robot:
+                robot.stop()
+            if not align_silent:
+                print(format_headline(f"[SUCCESS] {step_key} criteria met 🎉", COLOR_GREEN))
+                print_gate_summary_line(world, success_tracker)
+                print_success_events(world, step)
+            return {"enabled": True, "handled": True, "success": True, "reason": "success gate + level2"}
+
+    if robot:
+        robot.stop()
+    last_crosshair_text = "WAIT" if last_crosshair is None else ("YES" if bool(last_crosshair) else "NO")
+    return {
+        "enabled": True,
+        "handled": True,
+        "success": False,
+        "reason": (
+            "level2 gatecheck not satisfied within mast-up limit "
+            f"({int(mast_pulses_sent)}/{int(mast_max_acts)} pulses; "
+            f"last_inCrosshairs={last_crosshair_text}; "
+            f"last_success={('YES' if bool(last_success_hit) else 'NO')}; "
+            f"true_obs={int(true_obs_count)}; "
+            f"false_streak={int(false_streak)}/{int(no_streak_needed)}; "
+            f"false_after_true={int(false_after_true_up_acts)}/{int(false_up_acts_required)})"
+        ),
+    }
 
 
 def pause_after_fail(robot):
@@ -5554,7 +6076,7 @@ def _gate_entry_matches(metric, value, stats, direction):
             target_num = None
             tol_num = None
         if target_num is not None and tol_num is not None:
-            if metric in ("xAxis_offset_abs", "yAxis_offset_abs"):
+            if metric in ("xAxis_offset_abs", "yAxis_offset_abs", "dist"):
                 return abs(numeric - target_num) <= tol_num
             ok = next_module._target_tol_ok(numeric, stats, direction)
             if ok is not None:
@@ -5595,16 +6117,50 @@ def _stream_success_gate_line(step, entry, *, process_rules=None):
             current = f"{current} recent_confident_visible=true"
     else:
         current = _fmt_gate_value(value) if value is not None else "n/a"
-        target = stats.get("target") if isinstance(stats, dict) else None
-        if metric == "dist":
-            delta_text = None
+        delta_text = None
+        if value is not None and not isinstance(value, bool) and isinstance(stats, dict):
             try:
-                if value is not None and target is not None:
-                    delta_text = f"{(float(value) - float(target)):+.1f}"
+                value_num = float(value)
             except (TypeError, ValueError):
-                delta_text = None
-            if delta_text is not None:
-                current = f"{_fmt_gate_value(value)} Δ{delta_text}"
+                value_num = None
+            if value_num is not None:
+                delta_num = None
+                target = stats.get("target")
+                min_val = stats.get("min")
+                max_val = stats.get("max")
+                if target is not None and not isinstance(target, bool):
+                    try:
+                        delta_num = float(value_num) - float(target)
+                    except (TypeError, ValueError):
+                        delta_num = None
+                elif min_val is not None and max_val is None and not isinstance(min_val, bool):
+                    try:
+                        delta_num = float(value_num) - float(min_val)
+                    except (TypeError, ValueError):
+                        delta_num = None
+                elif max_val is not None and min_val is None and not isinstance(max_val, bool):
+                    try:
+                        delta_num = float(value_num) - float(max_val)
+                    except (TypeError, ValueError):
+                        delta_num = None
+                elif min_val is not None and max_val is not None and not isinstance(min_val, bool) and not isinstance(max_val, bool):
+                    try:
+                        min_num = float(min_val)
+                        max_num = float(max_val)
+                    except (TypeError, ValueError):
+                        min_num = None
+                        max_num = None
+                    if min_num is not None and max_num is not None:
+                        if float(value_num) < float(min_num):
+                            delta_num = float(value_num) - float(min_num)
+                        elif float(value_num) > float(max_num):
+                            delta_num = float(value_num) - float(max_num)
+                        else:
+                            delta_num = 0.0
+                if delta_num is not None:
+                    delta_text = f"{float(delta_num):+.1f}"
+        if delta_text is not None:
+            current = f"{_fmt_gate_value(value)} Δ{delta_text}"
         try:
             if value is not None and raw_value is not None:
                 if abs(float(raw_value) - float(value)) >= 0.05:
@@ -6339,6 +6895,32 @@ def observe_success_gatecheck(
         instant_success_ok = bool(success_ok and bool(extra_ok))
     _update_success_gate_metric_tallies(world, step, tracker, phase=phase)
     effective_success_ok = bool(success_ok and bool(extra_ok))
+    mode_now = str(getattr(world, "_gatecheck_mode", "traditional") or "traditional").strip().lower()
+
+    # Single-lite rule: once a lite failure has been observed for the current
+    # step/phase/action state, do not keep re-running lite checks until the
+    # motion state changes (new action timestamp) or lite passes.
+    action_time = getattr(world, "_last_action_time", None)
+    try:
+        action_time_key = float(action_time) if action_time is not None else 0.0
+    except (TypeError, ValueError):
+        action_time_key = 0.0
+    lite_latch_key = (
+        normalize_step_label(step) or str(step),
+        str(phase or "run"),
+        action_time_key,
+    )
+    latched_key = getattr(world, "_gatecheck_lite_fail_latch_key", None)
+    if mode_now == "lite" and not bool(effective_success_ok) and latched_key == lite_latch_key:
+        return {
+            "success_ok": bool(success_ok),
+            "instant_success_ok": bool(instant_success_ok),
+            "effective_success_ok": False,
+            "success_met": False,
+            "hold_for_confirm": False,
+            "confidence": confidence,
+        }
+
     gate_utils.record_success_gate_entry(world, step, effective_success_ok)
     if log:
         log_confidence(world, confidence, step)
@@ -6350,6 +6932,10 @@ def observe_success_gatecheck(
         phase=phase,
         log=log,
     )
+    if mode_now == "lite" and not bool(effective_success_ok) and not bool(success_met):
+        world._gatecheck_lite_fail_latch_key = lite_latch_key
+    else:
+        world._gatecheck_lite_fail_latch_key = None
     hold_for_confirm = False
     if tracker is not None:
         visible_only = next_module.success_gates_visible_only(world.process_rules or {}, step)
@@ -6361,7 +6947,6 @@ def observe_success_gatecheck(
         hold_for_confirm = True
     # Single-lite rule: in lite mode, a non-pass should immediately return
     # control to correction planning rather than parking in confirmation hold.
-    mode_now = str(getattr(world, "_gatecheck_mode", "traditional") or "traditional").strip().lower()
     if mode_now == "lite" and not bool(success_met):
         hold_for_confirm = False
     return {
@@ -6603,15 +7188,26 @@ def _format_start_gate_status_details(world, step):
     if not isinstance(cfg, dict):
         return None
     start_gates = cfg.get("start_gates") if isinstance(cfg.get("start_gates"), dict) else {}
+    wall_note = None
+    try:
+        wall_note = telemetry_wall.wall_origin_requirement_note(world, step_key)
+    except Exception:
+        wall_note = None
     detail_text = _format_start_gate_timeout_details(world, start_gates)
     if detail_text:
+        if wall_note:
+            return f"start gates: {detail_text}; {wall_note}"
         return f"start gates: {detail_text}"
     try:
         start_desc, _ = format_gate_lines(cfg)
     except Exception:
         start_desc = None
     if start_desc and start_desc != "none":
+        if wall_note:
+            return f"start gates: {start_desc}; {wall_note}"
         return f"start gates: {start_desc}"
+    if wall_note:
+        return wall_note
     return None
 
 
@@ -6646,6 +7242,7 @@ def wait_for_start_gates(
     log=True,
     observer=None,
     allow_success=True,
+    force_require_start_gates=False,
 ):
     step_key = normalize_step_label(step)
     # Reset turn-history state at step start so the first autonomous L/R act
@@ -6656,7 +7253,7 @@ def wait_for_start_gates(
             robot._last_turn_cmd = None
         except Exception:
             pass
-    if not step_requires_start_gates(step_key, getattr(world, "process_rules", None)):
+    if (not force_require_start_gates) and (not step_requires_start_gates(step_key, getattr(world, "process_rules", None))):
         # Start gates are skipped for find/exit steps, but still run a short
         # success precheck so auto never moves before evaluating current gates.
         if world is not None and vision is not None:
@@ -6755,14 +7352,6 @@ def wait_for_start_gates(
                 # fails, leave start-hold immediately and continue with normal
                 # adjustment acts in the step loop instead of re-checking lite
                 # in place until timeout.
-                if log:
-                    _log_gatecheck_next_action(
-                        step,
-                        "start",
-                        cmd,
-                        speed_score=None,
-                        reason="lite precheck failed; proceeding to adjustment acts",
-                    )
                 if robot:
                     robot.stop()
                 return "start"
@@ -7238,6 +7827,7 @@ def run_alignment_segment(
                         f"{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}] "
                         f"{render_line}{COLOR_RESET}"
                     )
+
                 # Gap-switch result observation already emitted above in canonical form.
                 comparison_message = None
                 comparison_message_colored = None
@@ -7300,6 +7890,36 @@ def run_alignment_segment(
     step_rules = {}
     if isinstance(getattr(world, "process_rules", None), dict):
         step_rules = world.process_rules.get(step_key, {}) or {}
+    operator_exception_reminder = str(step_rules.get("operator_exception_reminder") or "").strip() if isinstance(step_rules, dict) else ""
+    startup_action_cfg = step_rules.get("startup_action_exception") if isinstance(step_rules, dict) else {}
+    if not isinstance(startup_action_cfg, dict):
+        startup_action_cfg = {}
+    startup_action_enabled = bool(startup_action_cfg.get("enabled"))
+    startup_action_cmd = str(startup_action_cfg.get("command") or "").strip().lower()
+    if startup_action_cmd not in ("f", "b", "l", "r", "u", "d"):
+        startup_action_cmd = ""
+    startup_action_acts = max(1, int(_as_int(startup_action_cfg.get("acts"), 1)))
+    startup_action_score = None
+    startup_score_hotkey = str(startup_action_cfg.get("score_from_hotkey") or "").strip().lower()
+    if startup_score_hotkey:
+        hotkey_rows = getattr(telemetry_robot_module, "HOTKEY_SPEED_SCORES", {})
+        hotkey_row = hotkey_rows.get(startup_score_hotkey) if isinstance(hotkey_rows, dict) else None
+        if isinstance(hotkey_row, dict):
+            score_val = _as_int(hotkey_row.get("score"), None)
+            if score_val is not None:
+                startup_action_score = int(score_val)
+    if startup_action_score is None:
+        startup_action_score = int(
+            _as_int(
+                startup_action_cfg.get("score"),
+                int(telemetry_robot_module.SPEED_SCORE_MIN),
+            )
+        )
+    startup_action_score = max(
+        int(telemetry_robot_module.SPEED_SCORE_MIN),
+        min(int(MAX_SPEED_SCORE), int(startup_action_score)),
+    )
+    startup_action_active = bool(startup_action_enabled and startup_action_cmd)
     success_gate_cfg = step_rules.get("success_gates") if isinstance(step_rules, dict) else {}
     success_gate_keys = {
         str(key) for key in (success_gate_cfg or {}).keys() if key is not None
@@ -7559,6 +8179,21 @@ def run_alignment_segment(
     if start_status != "start":
         pause_after_fail(robot)
         return False, _start_gate_failure_reason_from_wait_status(start_status)
+
+    ground_up_exc = _run_ground_up_level2_exception(
+        world,
+        vision,
+        step,
+        robot=robot,
+        observer=observer,
+        confirm_callback=confirm_callback,
+        align_silent=align_silent,
+    )
+    if bool((ground_up_exc or {}).get("enabled")) and bool((ground_up_exc or {}).get("handled")):
+        if bool((ground_up_exc or {}).get("success")):
+            return True, str((ground_up_exc or {}).get("reason") or "success gate + level2")
+        pause_after_fail(robot)
+        return False, str((ground_up_exc or {}).get("reason") or "ground-up level2 failed")
 
     if next_module.success_gates_visible_only(world.process_rules or {}, step):
         world._visible_speed_cycle = 0
@@ -8767,6 +9402,57 @@ def run_alignment_segment(
             f"run {str(progress_mast_cmd).upper()} {int(progress_mast_score)}% x{int(progress_mast_acts)}."
         )
         print(format_headline(f"[{step_key} EXCEPTION] {reminder_msg}", COLOR_MAGENTA_BRIGHT))
+    if operator_exception_reminder and not align_silent:
+        print(format_headline(f"[{step_key} EXCEPTION] {operator_exception_reminder}", COLOR_MAGENTA_BRIGHT))
+    if startup_action_active:
+        startup_action_speed = telemetry_robot_module.manual_speed_for_cmd(
+            startup_action_cmd,
+            startup_action_score,
+        )
+        if not align_silent:
+            print(
+                format_headline(
+                    f"[{step_key} EXCEPTION] Executing startup action {str(startup_action_cmd).upper()} {int(startup_action_score)}% x{int(startup_action_acts)}.",
+                    COLOR_MAGENTA_BRIGHT,
+                )
+            )
+        for idx in range(1, int(startup_action_acts) + 1):
+            if confirm_callback and not confirm_callback(world, vision):
+                return False, "confirm cancelled"
+            action_tag = "startup_action_exception"
+            if observer:
+                observer("analysis", world, vision, startup_action_cmd, startup_action_speed, action_tag)
+            action_meta_local = send_robot_command(
+                robot,
+                world,
+                step,
+                startup_action_cmd,
+                startup_action_speed,
+                speed_score=startup_action_score,
+                auto_mode=True,
+            )
+            recent_align_acts.append({"cmd": str(startup_action_cmd), "score": int(startup_action_score)})
+            if isinstance(action_meta_local, dict):
+                last_align_action = {
+                    "cmd": str(startup_action_cmd),
+                    "cmd_sent": action_meta_local.get("cmd_sent"),
+                    "score": int(startup_action_score),
+                    "pwm": action_meta_local.get("pwm"),
+                    "power": action_meta_local.get("power"),
+                    "duration_ms": action_meta_local.get("duration_ms"),
+                }
+            else:
+                last_align_action = {"cmd": str(startup_action_cmd), "score": int(startup_action_score)}
+            if observer:
+                observer("action", world, vision, startup_action_cmd, startup_action_speed, action_tag)
+            if not align_silent:
+                print(
+                    format_headline(
+                        f"[{step_key} EXCEPTION] Pulse {int(idx)}/{int(startup_action_acts)} complete.",
+                        COLOR_MAGENTA_BRIGHT,
+                    )
+                )
+            time.sleep(CONTROL_DT)
 
     while True:
         loop_id += 1
@@ -8909,6 +9595,13 @@ def run_alignment_segment(
                 cmd_reason = demo_fallback.get("reason") or "demo stack lift"
                 speed_score = demo_fallback.get("speed_score")
                 duration_override_ms = demo_fallback.get("duration_override_ms")
+        if cmd is None:
+            lite_fallback = _align_brick_lite_fail_fallback_action(world, step)
+            if isinstance(lite_fallback, dict):
+                cmd = lite_fallback.get("cmd")
+                speed = float(lite_fallback.get("speed") or 0.0)
+                cmd_reason = str(lite_fallback.get("reason") or "align")
+                speed_score = lite_fallback.get("score")
         # If planner reports no actionable command, immediately run gatecheck
         # confirmation (lite precheck + full tracker) instead of idling.
         if cmd is None:
@@ -8976,11 +9669,27 @@ def run_alignment_segment(
                             "align",
                             cmd,
                             speed_score=speed_score,
-                            reason="single lite precheck failed; resuming adjustment planning",
+                            reason="single lite gatecheck failed; resuming adjustment planning",
                             log=True,
                         )
                 time.sleep(CONTROL_DT)
                 continue
+            lite_fallback = _align_brick_lite_fail_fallback_action(world, step)
+            if isinstance(lite_fallback, dict):
+                cmd = lite_fallback.get("cmd")
+                speed = float(lite_fallback.get("speed") or 0.0)
+                speed_score = lite_fallback.get("score")
+                cmd_reason = str(lite_fallback.get("reason") or "align")
+                no_action_lite_failed_reason = None
+                if not align_silent:
+                    _log_gatecheck_next_action(
+                        step,
+                        "align",
+                        cmd,
+                        speed_score=speed_score,
+                        reason="single lite gatecheck failed; applying fallback adjustment act",
+                        log=True,
+                    )
         else:
             no_action_lite_failed_reason = None
         cmd, speed, speed_score, cmd_reason = _apply_turn_only_demo_policy(
@@ -9631,7 +10340,13 @@ def replay_segment(
     if prefer_demo_speed and demo_actions:
         loop_demo_acts = True
     steps = raw_steps if loop_demo_acts else smooth_motion_steps(raw_steps)
-    if step_uses_alignment_control(step, world.process_rules):
+    topmost_cfg = cfg.get("topmost_crosshair_exception") if isinstance(cfg, dict) else {}
+    if not isinstance(topmost_cfg, dict):
+        topmost_cfg = {}
+    force_replay_for_ground_up_level2 = bool(_step_allows_topmost_ground_up_level2(step_key)) and bool(
+        topmost_cfg.get("enabled")
+    ) and bool(topmost_cfg.get("ground_up_level2_enabled"))
+    if step_uses_alignment_control(step, world.process_rules) and not force_replay_for_ground_up_level2:
         return run_alignment_segment(
             segment,
             step,
@@ -9755,25 +10470,126 @@ def replay_segment(
             phase="move",
         )
         start_speed = default_speed_for_cmd(default_step.cmd, start_score)
-    start_status = wait_for_start_gates(
-        world,
-        vision,
-        step_key,
-        robot=robot,
-        cmd=default_step.cmd,
-        speed=start_speed,
-        allow_success=success_checks_enabled,
-    )
-    if start_status == "success":
+    if force_replay_for_ground_up_level2:
+        update_world_from_vision(world, vision, log=not align_silent)
+        if observer:
+            observer("frame", world, vision, None, None, None)
+        if not align_silent:
+            print(
+                format_headline(
+                    f"[{step_key} EXCEPTION] bypassing start-gate hold; entering ground-up mast workflow.",
+                    COLOR_MAGENTA_BRIGHT,
+                )
+            )
+        start_status = "start"
+    else:
+        start_status = wait_for_start_gates(
+            world,
+            vision,
+            step_key,
+            robot=robot,
+            cmd=default_step.cmd,
+            speed=start_speed,
+            allow_success=success_checks_enabled,
+        )
+    startup_action_ran = False
+    startup_action_cfg = {}
+    if isinstance(getattr(world, "process_rules", None), dict):
+        step_cfg_local = world.process_rules.get(step_key, {}) or {}
+        if isinstance(step_cfg_local, dict):
+            startup_action_cfg = step_cfg_local.get("startup_action_exception") or {}
+            if not isinstance(startup_action_cfg, dict):
+                startup_action_cfg = {}
+            operator_exception_reminder = str(step_cfg_local.get("operator_exception_reminder") or "").strip()
+            startup_enabled = bool(startup_action_cfg.get("enabled"))
+            startup_cmd = str(startup_action_cfg.get("command") or "").strip().lower()
+            if startup_cmd not in ("f", "b", "l", "r", "u", "d"):
+                startup_cmd = ""
+            startup_acts = max(1, int(_as_int(startup_action_cfg.get("acts"), 1)))
+            startup_score = None
+            score_hotkey = str(startup_action_cfg.get("score_from_hotkey") or "").strip().lower()
+            if score_hotkey:
+                hotkey_rows = getattr(telemetry_robot_module, "HOTKEY_SPEED_SCORES", {})
+                hotkey_row = hotkey_rows.get(score_hotkey) if isinstance(hotkey_rows, dict) else None
+                if isinstance(hotkey_row, dict):
+                    score_val = _as_int(hotkey_row.get("score"), None)
+                    if score_val is not None:
+                        startup_score = int(score_val)
+            if startup_score is None:
+                startup_score = int(
+                    _as_int(startup_action_cfg.get("score"), int(telemetry_robot_module.SPEED_SCORE_MIN))
+                )
+            startup_score = max(
+                int(telemetry_robot_module.SPEED_SCORE_MIN),
+                min(int(MAX_SPEED_SCORE), int(startup_score)),
+            )
+            if startup_enabled and startup_cmd and start_status in {"start", "success"}:
+                startup_action_ran = True
+                startup_speed = telemetry_robot_module.manual_speed_for_cmd(startup_cmd, startup_score)
+                if operator_exception_reminder and not align_silent:
+                    print(format_headline(f"[{step_key} EXCEPTION] {operator_exception_reminder}", COLOR_MAGENTA_BRIGHT))
+                if not align_silent:
+                    print(
+                        format_headline(
+                            f"[{step_key} EXCEPTION] Executing startup action {str(startup_cmd).upper()} {int(startup_score)}% x{int(startup_acts)}.",
+                            COLOR_MAGENTA_BRIGHT,
+                        )
+                    )
+                for idx in range(1, int(startup_acts) + 1):
+                    if confirm_callback and not confirm_callback(world, vision):
+                        if robot:
+                            robot.stop()
+                        return False, "confirm cancelled"
+                    action_tag = "startup_action_exception"
+                    if observer:
+                        observer("analysis", world, vision, startup_cmd, startup_speed, action_tag)
+                    send_robot_command(
+                        robot,
+                        world,
+                        step_key,
+                        startup_cmd,
+                        startup_speed,
+                        speed_score=startup_score,
+                        auto_mode=True,
+                    )
+                    if observer:
+                        observer("action", world, vision, startup_cmd, startup_speed, action_tag)
+                    post_act_analysis(world, vision, step=step_key, log=not align_silent)
+                    if not align_silent:
+                        print(
+                            format_headline(
+                                f"[{step_key} EXCEPTION] Pulse {int(idx)}/{int(startup_acts)} complete.",
+                                COLOR_MAGENTA_BRIGHT,
+                            )
+                        )
+                    time.sleep(CONTROL_DT)
+    if start_status == "success" and not startup_action_ran:
         if robot:
             robot.stop()
         print(format_headline(f"[SUCCESS] {step_key} criteria met 🎉", COLOR_GREEN))
         print_gate_summary_line(world)
         print_success_events(world, step_key)
         return True, "success gate"
+    if start_status == "success" and startup_action_ran:
+        start_status = "start"
     if start_status != "start":
         pause_after_fail(robot)
         return False, _start_gate_failure_reason_from_wait_status(start_status)
+
+    ground_up_exc = _run_ground_up_level2_exception(
+        world,
+        vision,
+        step_key,
+        robot=robot,
+        observer=observer,
+        confirm_callback=confirm_callback,
+        align_silent=align_silent,
+    )
+    if bool((ground_up_exc or {}).get("enabled")) and bool((ground_up_exc or {}).get("handled")):
+        if bool((ground_up_exc or {}).get("success")):
+            return True, str((ground_up_exc or {}).get("reason") or "success gate + level2")
+        pause_after_fail(robot)
+        return False, str((ground_up_exc or {}).get("reason") or "ground-up level2 failed")
 
     allow_early_exit = True
 

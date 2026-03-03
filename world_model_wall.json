@@ -27,6 +27,9 @@
                 "visible"
             ]
         },
+        "POSITION_BRICK": {
+            "requires_wall_origin": false
+        },
         "RETREAT": {
             "requires_wall_origin": false
         }

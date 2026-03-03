@@ -1583,7 +1583,22 @@ def update_lift_from_vision(
     except (TypeError, ValueError):
         floor_mm = None
 
-    if floor_mm is not None and floor_mm >= 0.0 and floor_quality >= 0.20:
+    floor_roi_plausible = bool(
+        floor_mm is not None
+        and floor_mm >= 0.0
+        and floor_quality >= 0.20
+    )
+    if floor_roi_plausible:
+        # Guard against sticky near-zero ROI readings that can freeze livestream
+        # lift telemetry while mast commands are moving the robot.
+        try:
+            current_lift = float(getattr(world, "lift_height", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            current_lift = 0.0
+        if floor_mm <= 1.0 and current_lift >= 20.0 and floor_quality < 0.95:
+            floor_roi_plausible = False
+
+    if floor_roi_plausible:
         # Tiny ROI estimator gives an absolute-ish lift-from-floor proxy.
         # Blend it conservatively into dead-reckoned lift to avoid jumps.
         alpha = 0.20 if floor_quality >= 0.60 else 0.10

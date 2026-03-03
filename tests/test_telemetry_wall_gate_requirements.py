@@ -56,6 +56,25 @@ class TestTelemetryWallGateRequirements(unittest.TestCase):
         self.assertTrue(failure_check.ok)
         self.assertTrue(success_check.ok)
 
+    def test_position_brick_can_disable_wall_origin_requirement_in_wall_model(self):
+        world = _DummyWorld(wall_steps={"POSITION_BRICK": {"requires_wall_origin": False}})
+        start_check = telemetry_wall.evaluate_start_gates(world, "POSITION_BRICK", self.envelope)
+        failure_check = telemetry_wall.evaluate_failure_gates(world, "POSITION_BRICK", self.envelope)
+        success_check = telemetry_wall.evaluate_success_gates(world, "POSITION_BRICK", self.envelope)
+        self.assertTrue(start_check.ok)
+        self.assertTrue(failure_check.ok)
+        self.assertTrue(success_check.ok)
+
+    def test_wall_origin_requirement_note_reports_disabled_override(self):
+        world = _DummyWorld(wall_steps={"POSITION_BRICK": {"requires_wall_origin": False}})
+        note = telemetry_wall.wall_origin_requirement_note(world, "POSITION_BRICK")
+        self.assertEqual(note, "wall origin requirement disabled by wall model")
+
+    def test_wall_origin_requirement_note_reports_none_when_not_overridden(self):
+        world = _DummyWorld()
+        note = telemetry_wall.wall_origin_requirement_note(world, "POSITION_BRICK")
+        self.assertIsNone(note)
+
 
 if __name__ == "__main__":
     unittest.main()

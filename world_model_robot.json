@@ -270,12 +270,12 @@
     "1": 0.065
   },
   "speed_score_seconds_turn_meta": {
-    "mini_x_axis_last_run_epoch_s": 1772330255.187,
-    "mini_x_axis_last_run_iso_utc": "2026-03-01T01:57:35Z",
+    "mini_x_axis_last_run_epoch_s": 1772477446.737,
+    "mini_x_axis_last_run_iso_utc": "2026-03-02T18:50:46Z",
     "mini_x_axis_last_run_step": "ALIGN_BRICK",
     "mini_x_axis_last_run_ok": true,
     "mini_x_axis_last_run_confident": false,
-    "mini_x_axis_last_run_seconds": 65.64,
+    "mini_x_axis_last_run_seconds": 16.225,
     "mini_x_axis_min_interval_hours": 12.0,
     "mini_x_axis_tiny_profile_pct": 0.01,
     "mini_x_axis_tiny_profile_last_updated_epoch_s": 1772477434.78,

@@ -64,6 +64,61 @@ class TestTelemetryProcessStartGateSkipFind(unittest.TestCase):
         self.assertEqual(robot.stop_calls, 0)
         self.assertIsNone(robot._last_turn_cmd)
 
+    def test_wait_for_start_gates_force_require_does_not_skip_find_step(self):
+        class _DummyWorld:
+            def __init__(self):
+                self.process_rules = {}
+                self.wall_envelope = {}
+
+        class _DummyRobot:
+            def __init__(self):
+                self.stop_calls = 0
+                self._last_turn_cmd = "l"
+
+            def stop(self):
+                self.stop_calls += 1
+
+        class _GateResult:
+            def __init__(self, ok=False, reasons=None):
+                self.ok = bool(ok)
+                self.reasons = list(reasons or [])
+
+        world = _DummyWorld()
+        robot = _DummyRobot()
+        vision = object()
+
+        with patch.object(telemetry_process, "START_GATE_TIMEOUT_S", 0.03):
+            with patch.object(telemetry_process, "CONTROL_DT", 0.0):
+                with patch.object(telemetry_process, "update_world_from_vision", return_value=None):
+                    with patch.object(
+                        telemetry_process.telemetry_brick,
+                        "evaluate_start_gates",
+                        return_value=_GateResult(False, ["brick"]),
+                    ):
+                        with patch.object(
+                            telemetry_process.telemetry_wall,
+                            "evaluate_start_gates",
+                            return_value=_GateResult(False, ["wall"]),
+                        ):
+                            with patch.object(
+                                telemetry_process.telemetry_robot_module,
+                                "evaluate_start_gates",
+                                return_value=_GateResult(False, ["robot"]),
+                            ):
+                                status = telemetry_process.wait_for_start_gates(
+                                    world,
+                                    vision,
+                                    "FIND_WALL2",
+                                    robot=robot,
+                                    log=False,
+                                    allow_success=False,
+                                    force_require_start_gates=True,
+                                )
+
+        self.assertNotEqual(status, "start")
+        self.assertGreater(robot.stop_calls, 0)
+        self.assertIsNone(robot._last_turn_cmd)
+
     def test_non_find_steps_still_require_start_gates(self):
         self.assertTrue(telemetry_process.step_requires_start_gates("ALIGN_BRICK", {}))
 

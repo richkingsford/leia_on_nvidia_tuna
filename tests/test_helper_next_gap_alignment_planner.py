@@ -515,6 +515,46 @@ class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
         self.assertEqual(plan.get("cmd"), "f", plan)
         self.assertTrue(bool(plan.get("rotation_override")), plan)
 
+    def test_gap_planner_seat_brick2_keeps_y_axis_low_priority_until_other_gaps_ready(self):
+        process_rules = {
+            "SEAT_BRICK2": {
+                "align_policy": {
+                    "y_axis_edge_force_enabled": False,
+                    "y_axis_close_bottom_bias_enabled": False,
+                },
+                "success_gates": {
+                    "visible": {"min": True},
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 1.5},
+                    "yAxis_offset_abs": {"target": 0.0, "tol": 1.5},
+                    "dist": {"target": 48.0, "tol": 4.0},
+                },
+            }
+        }
+        orig = helper_next.compute_alignment_decision
+        try:
+            helper_next.compute_alignment_decision = lambda **kwargs: {
+                "cmd": "u",
+                "worst_metric": "yAxis_offset_abs",
+                "speed_score": 3,
+            }
+            plan = helper_next.select_alignment_next_act(
+                process_rules=process_rules,
+                learned_rules={},
+                step="SEAT_BRICK2",
+                x_axis_mm=6.0,
+                y_axis_mm=8.0,
+                dist_mm=60.0,
+                visible=True,
+                angle_deg=0.0,
+                duration_s=0.05,
+            )
+        finally:
+            helper_next.compute_alignment_decision = orig
+
+        self.assertEqual(plan.get("planner"), "gap", plan)
+        self.assertIn(plan.get("correction_type"), ("x_axis", "distance"), plan)
+        self.assertNotEqual(plan.get("correction_type"), "y_axis", plan)
+
     def test_gap_planner_holds_when_all_gaps_are_within_gates(self):
         process_rules = {
             "ALIGN_BRICK": {

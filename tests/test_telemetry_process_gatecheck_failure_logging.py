@@ -50,7 +50,7 @@ class TestTelemetryProcessGatecheckFailureLogging(unittest.TestCase):
             speed_score=None,
             reason="replay has no command to continue",
         )
-        self.assertIn("no known next act", text)
+        self.assertIn("continuing with adjustment acts", text)
         self.assertIn("replay has no command to continue", text)
 
     def test_gatecheck_failure_detail_includes_failed_metric_state(self):

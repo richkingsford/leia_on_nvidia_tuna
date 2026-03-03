@@ -84,7 +84,7 @@
             }
         },
         "FIND_TOPMOST_BRICK": {
-            "controller": "align",
+            "controller": "replay",
             "start_gates": {
                 "visible": {
                     "min": true
@@ -104,15 +104,32 @@
             },
             "topmost_crosshair_exception": {
                 "enabled": true,
-                "operator_log_reminder": "Exception active: raised inCrosshairs center; post-success descent false->true->false.",
+                "ground_up_level2_enabled": true,
+                "operator_log_reminder": "Exception active: mast-only stack-height detection (ground reset to ~50mm, then mast UP 100% with level2 inCrosshairs confirmation).",
+                "ground_reset_command": "d",
+                "ground_reset_score": 100,
+                "ground_reset_min_acts": 5,
+                "ground_reset_max_acts": 12,
+                "ground_level_y_axis_max": 10.0,
+                "mast_up_command": "u",
+                "mast_up_score": 100,
+                "mast_up_max_acts": 32,
+                "require_true_before_false": true,
+                "min_true_observations": 1,
+                "false_up_acts_required": 6,
+                "false_confirm_frames": 1,
+                "post_ground_reset_handoff": {
+                    "enabled": true,
+                    "step": "BRICK_LOCK"
+                },
                 "post_success_descend": {
+                    "enabled": true,
                     "command": "d",
-                    "seek_true_score": 1,
-                    "seek_true_max_acts": 16,
-                    "seek_false_score": 1,
-                    "seek_false_max_acts": 16,
-                    "auto_continue_delay_s": 3.0,
-                    "post_continue_blank_lines": 4
+                    "score": 100,
+                    "completion_mode": "true_then_false_streak",
+                    "false_after_true_down_acts_required": 2,
+                    "true_down_acts_required": 3,
+                    "max_acts": 32
                 }
             },
             "success_gates": {
@@ -128,19 +145,27 @@
         "BRICK_LOCK": {
             "controller": "align",
             "align_policy": {
-                "dist_priority_cheat_enabled": true,
-                "dist_priority_cheat_min_ratio": 0.0,
-                "dist_priority_cheat_min_outside_mm": 0.0
+                "hold_when_not_visible": true,
+                "x_axis_tol_far_scale": 6.0,
+                "focus_prioritization_enabled": true,
+                "focus_x_first_dist_gap_gt_mm": 50.0,
+                "focus_x_first_x_gap_gt_mm": 2.0,
+                "focus_dist_first_dist_gap_gt_mm": 150.0,
+                "focus_dist_first_x_gap_lt_mm": 5.0,
+                "dist_score_mode": "dist_error_bands",
+                "turn_score_mode": "x_axis_one_shot_curve",
+                "slow_fast_mm_scale": 1.0,
+                "auto_speed_hard_cap_exempt": true
             },
             "lock_success_gates": true,
             "locked_success_gates_by_mode": {
                 "aruco": {
                     "xAxis_offset_abs": {
-                        "target": -3.12,
+                        "target": -3.86,
                         "tol": 1.4
                     },
                     "dist": {
-                        "target": 100.58,
+                        "target": 115.49,
                         "tol": 1.5
                     },
                     "confidence": {
@@ -160,11 +185,11 @@
             },
             "success_gates": {
                 "xAxis_offset_abs": {
-                    "target": -3.12,
+                    "target": -3.86,
                     "tol": 1.4
                 },
                 "dist": {
-                    "target": 100.58,
+                    "target": 115.49,
                     "tol": 1.5
                 },
                 "confidence": {
@@ -209,7 +234,7 @@
                     "tol": 1.5
                 },
                 "dist": {
-                    "target": 165.0,
+                    "target": 122.0,
                     "tol": 1.5
                 }
             }
@@ -252,6 +277,20 @@
             }
         },
         "FIND_WALL2": {
+            "operator_exception_reminder": "Exception active: startup hard-left scan x7.",
+            "startup_action_exception": {
+                "enabled": true,
+                "command": "l",
+                "score": 100,
+                "acts": 7
+            },
+            "prefer_demo_speed": false,
+            "visible_only_speed_tiers": {
+                "enabled": true,
+                "normal": 2,
+                "standard": 6,
+                "fast": 25
+            },
             "height_intelligence": {
                 "enabled": true,
                 "source": "wall_height",
@@ -294,7 +333,7 @@
             }
         },
         "FIND_TOPMOST_BRICK_WALL": {
-            "controller": "align",
+            "controller": "replay",
             "start_gates": {
                 "visible": {
                     "min": true
@@ -314,15 +353,30 @@
             },
             "topmost_crosshair_exception": {
                 "enabled": true,
-                "operator_log_reminder": "Exception active: raised inCrosshairs center; post-success descent false->true->false.",
+                "ground_up_level2_enabled": true,
+                "operator_log_reminder": "Exception active: mast-only stack-height detection (ground reset to ~50mm, then mast UP 100% with level2 inCrosshairs confirmation).",
+                "ground_reset_command": "d",
+                "ground_reset_score": 100,
+                "ground_reset_min_acts": 5,
+                "ground_reset_max_acts": 12,
+                "ground_level_y_axis_max": 10.0,
+                "mast_up_command": "u",
+                "mast_up_score": 100,
+                "mast_up_max_acts": 16,
+                "require_true_before_false": true,
+                "min_true_observations": 1,
+                "false_up_acts_required": 6,
+                "false_confirm_frames": 1,
+                "post_ground_reset_handoff": {
+                    "enabled": true,
+                    "step": "BRICK_LOCK_WALL"
+                },
                 "post_success_descend": {
+                    "enabled": false,
                     "command": "d",
-                    "seek_true_score": 1,
-                    "seek_true_max_acts": 16,
-                    "seek_false_score": 1,
-                    "seek_false_max_acts": 16,
-                    "auto_continue_delay_s": 3.0,
-                    "post_continue_blank_lines": 4
+                    "score": 100,
+                    "true_down_acts_required": 3,
+                    "max_acts": 0
                 }
             },
             "success_gates": {
@@ -338,9 +392,17 @@
         "BRICK_LOCK_WALL": {
             "controller": "align",
             "align_policy": {
-                "dist_priority_cheat_enabled": true,
-                "dist_priority_cheat_min_ratio": 0.0,
-                "dist_priority_cheat_min_outside_mm": 0.0
+                "hold_when_not_visible": true,
+                "x_axis_tol_far_scale": 6.0,
+                "focus_prioritization_enabled": true,
+                "focus_x_first_dist_gap_gt_mm": 50.0,
+                "focus_x_first_x_gap_gt_mm": 2.0,
+                "focus_dist_first_dist_gap_gt_mm": 150.0,
+                "focus_dist_first_x_gap_lt_mm": 5.0,
+                "dist_score_mode": "dist_error_bands",
+                "turn_score_mode": "x_axis_one_shot_curve",
+                "slow_fast_mm_scale": 1.0,
+                "auto_speed_hard_cap_exempt": true
             },
             "lock_success_gates": true,
             "locked_success_gates_by_mode": {
@@ -350,7 +412,7 @@
                         "tol": 1.4
                     },
                     "dist": {
-                        "target": 94.62,
+                        "target": 120.0,
                         "tol": 4.34
                     },
                     "confidence": {
@@ -378,7 +440,7 @@
                     "tol": 1.4
                 },
                 "dist": {
-                    "target": 94.62,
+                    "target": 120.0,
                     "tol": 4.34
                 },
                 "confidence": {
@@ -412,15 +474,15 @@
                     "min": true
                 },
                 "xAxis_offset_abs": {
-                    "target": -2.26,
+                    "target": -4.74,
                     "tol": 1.4
                 },
                 "yAxis_offset_abs": {
-                    "target": -0.07,
+                    "target": 7.74,
                     "tol": 1.5
                 },
                 "dist": {
-                    "target": 165.0,
+                    "target": 111.45,
                     "tol": 1.5
                 },
                 "brick_above": {
@@ -440,6 +502,21 @@
         "SEAT_BRICK2": {
             "lock_start_gates": true,
             "lock_success_gates": true,
+            "align_policy": {
+                "hold_when_not_visible": true,
+                "x_axis_tol_far_scale": 6.0,
+                "focus_prioritization_enabled": true,
+                "focus_x_first_dist_gap_gt_mm": 50.0,
+                "focus_x_first_x_gap_gt_mm": 2.0,
+                "focus_dist_first_dist_gap_gt_mm": 150.0,
+                "focus_dist_first_x_gap_lt_mm": 5.0,
+                "y_axis_edge_force_enabled": false,
+                "y_axis_close_bottom_bias_enabled": false,
+                "dist_score_mode": "dist_error_bands",
+                "turn_score_mode": "x_axis_one_shot_curve",
+                "slow_fast_mm_scale": 1.0,
+                "auto_speed_hard_cap_exempt": true
+            },
             "start_gates": {
                 "visible": {
                     "min": true

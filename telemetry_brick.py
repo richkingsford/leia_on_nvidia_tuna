@@ -1304,7 +1304,12 @@ def _success_gate_eval(world, step, learned_rules, process_rules=None, visibilit
             dist_val = brick.get("dist", 0.0)
             entry["value"] = dist_val
             entry["raw_value"] = metric_value(raw_brick, metric)
-            ok = _target_tol_ok(dist_val, stats, direction)
+            target = stats.get("target") if isinstance(stats, dict) else None
+            tol = stats.get("tol") if isinstance(stats, dict) else None
+            if target is not None and tol is not None:
+                ok = abs(dist_val - target) <= tol
+            else:
+                ok = _target_tol_ok(dist_val, stats, direction)
             if ok is False:
                 reasons.append("dist gate")
             elif ok is None and dist_val > stats.get("max", 0.0):
