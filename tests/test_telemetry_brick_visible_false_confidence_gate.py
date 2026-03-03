@@ -132,6 +132,22 @@ class TestTelemetryBrickVisibleFalseConfidenceGate(unittest.TestCase):
         self.assertFalse(check.ok)
         self.assertIn("visible gate", check.reasons)
 
+    def test_find_brick_visible_only_gate_does_not_use_hidden_brick_below_failure(self):
+        world = _DummyWorld()
+        world.brick["visible"] = True
+        world.brick["confidence"] = 88.0
+        world.brick["brickBelow"] = True
+        process_rules = {"FIND_BRICK": {"success_gates": {"visible": {"min": True}}}}
+
+        check = telemetry_brick.evaluate_success_gates(
+            world,
+            "FIND_BRICK",
+            learned_rules={},
+            process_rules=process_rules,
+        )
+
+        self.assertTrue(check.ok, msg=check.reason_str())
+
 
 if __name__ == "__main__":
     unittest.main()

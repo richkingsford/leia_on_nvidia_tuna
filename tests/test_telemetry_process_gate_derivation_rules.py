@@ -536,18 +536,18 @@ class TestTelemetryProcessGateDerivationRules(unittest.TestCase):
             cfg = ((updated.get("steps") or {}).get("SEAT_BRICK2") or {})
             self.assertEqual(((cfg.get("success_gates") or {}).get("dist") or {}).get("target"), 55.5)
 
-    def test_inject_aruco_confidence_gate_defaults_to_50(self):
+    def test_inject_aruco_confidence_gate_strips_confidence(self):
         gates = {"visible": {"min": True}}
         telemetry_process._inject_aruco_confidence_gate(gates)
-        self.assertEqual(((gates.get("confidence") or {}).get("min")), 50.0)
+        self.assertNotIn("confidence", gates)
 
-    def test_inject_aruco_confidence_gate_keeps_higher_existing_min(self):
+    def test_inject_aruco_confidence_gate_removes_existing_confidence(self):
         gates = {
             "visible": {"min": True},
             "confidence": {"min": 72.0},
         }
         telemetry_process._inject_aruco_confidence_gate(gates)
-        self.assertEqual(((gates.get("confidence") or {}).get("min")), 72.0)
+        self.assertNotIn("confidence", gates)
 
     def test_inject_aruco_confidence_gate_removed_for_visible_false_success(self):
         gates = {
@@ -557,7 +557,7 @@ class TestTelemetryProcessGateDerivationRules(unittest.TestCase):
         telemetry_process._inject_aruco_confidence_gate(gates)
         self.assertNotIn("confidence", gates)
 
-    def test_apply_aruco_confidence_policy_respects_step_opt_out(self):
+    def test_apply_aruco_confidence_policy_removes_confidence_unconditionally(self):
         model = {
             "steps": {
                 "RETREAT": {

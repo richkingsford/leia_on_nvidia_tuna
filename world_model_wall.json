@@ -24,7 +24,9 @@
         },
         "FIND_WALL2": {
             "success_metrics": [
-                "visible"
+                "visible",
+                "xAxis_offset_abs",
+                "yAxis_offset_abs"
             ]
         },
         "POSITION_BRICK": {

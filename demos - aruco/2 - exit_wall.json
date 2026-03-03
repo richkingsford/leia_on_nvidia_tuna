@@ -1,0 +1,378 @@
+[
+  {
+    "type": "keyframe",
+    "timestamp": 1769649152.327,
+    "marker": "SUCCESS_START",
+    "step": "EXIT_WALL"
+  },
+  {
+    "type": "state",
+    "timestamp": 1769649152.65,
+    "run_id": "run_20260128_180850",
+    "attempt_id": 1,
+    "robot_pose": {
+      "x": 9.69,
+      "y": 0.02,
+      "theta": 1.17,
+      "height_mm": 0.0
+    },
+    "wall": {
+      "origin": {
+        "x": 131.18,
+        "y": -18.23,
+        "theta": 0.0
+      },
+      "angle_deg": 0.0,
+      "valid": true
+    },
+    "brick": {
+      "visible": true,
+      "dist": 127.73,
+      "angle": -1.917,
+      "offset_x": -16.09,
+      "x_axis": -16.09,
+      "held": false,
+      "brickAbove": false,
+      "brickBelow": false
+    },
+    "lift_height": 2.1
+  },
+  {
+    "type": "state",
+    "timestamp": 1769649153.242,
+    "run_id": "run_20260128_180850",
+    "attempt_id": 1,
+    "robot_pose": {
+      "x": 9.69,
+      "y": 0.02,
+      "theta": 1.17,
+      "height_mm": 0.0
+    },
+    "wall": {
+      "origin": {
+        "x": 131.18,
+        "y": -18.23,
+        "theta": 0.0
+      },
+      "angle_deg": 0.0,
+      "valid": true
+    },
+    "brick": {
+      "visible": true,
+      "dist": 127.72,
+      "angle": -2.454,
+      "offset_x": -16.11,
+      "x_axis": -16.11,
+      "held": false,
+      "brickAbove": false,
+      "brickBelow": false
+    },
+    "lift_height": 2.1
+  },
+  {
+    "type": "action",
+    "timestamp": 1769649153.801,
+    "command": "right_turn",
+    "speedScore": 50
+  },
+  {
+    "type": "state",
+    "timestamp": 1769649153.803,
+    "run_id": "run_20260128_180850",
+    "attempt_id": 1,
+    "robot_pose": {
+      "x": 11.45,
+      "y": 0.05,
+      "theta": 0.39,
+      "height_mm": 0.0
+    },
+    "wall": {
+      "origin": {
+        "x": 131.18,
+        "y": -18.23,
+        "theta": 0.0
+      },
+      "angle_deg": 0.0,
+      "valid": true
+    },
+    "brick": {
+      "visible": false,
+      "dist": null,
+      "angle": null,
+      "offset_x": null,
+      "x_axis": null,
+      "held": false,
+      "brickAbove": false,
+      "brickBelow": false
+    },
+    "lift_height": 2.1
+  },
+  {
+    "type": "action",
+    "timestamp": 1769649154.392,
+    "command": "right_turn",
+    "speedScore": 50
+  },
+  {
+    "type": "state",
+    "timestamp": 1769649154.394,
+    "run_id": "run_20260128_180850",
+    "attempt_id": 1,
+    "robot_pose": {
+      "x": 13.22,
+      "y": 0.07,
+      "theta": -0.39,
+      "height_mm": 0.0
+    },
+    "wall": {
+      "origin": {
+        "x": 131.18,
+        "y": -18.23,
+        "theta": 0.0
+      },
+      "angle_deg": 0.0,
+      "valid": true
+    },
+    "brick": {
+      "visible": false,
+      "dist": null,
+      "angle": null,
+      "offset_x": null,
+      "x_axis": null,
+      "held": false,
+      "brickAbove": false,
+      "brickBelow": false
+    },
+    "lift_height": 2.1
+  },
+  {
+    "type": "state",
+    "timestamp": 1769649155.008,
+    "run_id": "run_20260128_180850",
+    "attempt_id": 1,
+    "robot_pose": {
+      "x": 13.22,
+      "y": 0.07,
+      "theta": -0.39,
+      "height_mm": 0.0
+    },
+    "wall": {
+      "origin": {
+        "x": 131.18,
+        "y": -18.23,
+        "theta": 0.0
+      },
+      "angle_deg": 0.0,
+      "valid": true
+    },
+    "brick": {
+      "visible": false,
+      "dist": null,
+      "angle": null,
+      "offset_x": null,
+      "x_axis": null,
+      "held": false,
+      "brickAbove": false,
+      "brickBelow": false
+    },
+    "lift_height": 2.1
+  },
+  {
+    "type": "state",
+    "timestamp": 1769649155.609,
+    "run_id": "run_20260128_180850",
+    "attempt_id": 1,
+    "robot_pose": {
+      "x": 13.22,
+      "y": 0.07,
+      "theta": -0.39,
+      "height_mm": 0.0
+    },
+    "wall": {
+      "origin": {
+        "x": 131.18,
+        "y": -18.23,
+        "theta": 0.0
+      },
+      "angle_deg": 0.0,
+      "valid": true
+    },
+    "brick": {
+      "visible": false,
+      "dist": null,
+      "angle": null,
+      "offset_x": null,
+      "x_axis": null,
+      "held": false,
+      "brickAbove": false,
+      "brickBelow": false
+    },
+    "lift_height": 2.1
+  },
+  {
+    "type": "state",
+    "timestamp": 1769649156.208,
+    "run_id": "run_20260128_180850",
+    "attempt_id": 1,
+    "robot_pose": {
+      "x": 13.22,
+      "y": 0.07,
+      "theta": -0.39,
+      "height_mm": 0.0
+    },
+    "wall": {
+      "origin": {
+        "x": 131.18,
+        "y": -18.23,
+        "theta": 0.0
+      },
+      "angle_deg": 0.0,
+      "valid": true
+    },
+    "brick": {
+      "visible": false,
+      "dist": null,
+      "angle": null,
+      "offset_x": null,
+      "x_axis": null,
+      "held": false,
+      "brickAbove": false,
+      "brickBelow": false
+    },
+    "lift_height": 2.1
+  },
+  {
+    "type": "state",
+    "timestamp": 1769649156.807,
+    "run_id": "run_20260128_180850",
+    "attempt_id": 1,
+    "robot_pose": {
+      "x": 13.22,
+      "y": 0.07,
+      "theta": -0.39,
+      "height_mm": 0.0
+    },
+    "wall": {
+      "origin": {
+        "x": 131.18,
+        "y": -18.23,
+        "theta": 0.0
+      },
+      "angle_deg": 0.0,
+      "valid": true
+    },
+    "brick": {
+      "visible": false,
+      "dist": null,
+      "angle": null,
+      "offset_x": null,
+      "x_axis": null,
+      "held": false,
+      "brickAbove": false,
+      "brickBelow": false
+    },
+    "lift_height": 2.1
+  },
+  {
+    "type": "state",
+    "timestamp": 1769649157.409,
+    "run_id": "run_20260128_180850",
+    "attempt_id": 1,
+    "robot_pose": {
+      "x": 13.22,
+      "y": 0.07,
+      "theta": -0.39,
+      "height_mm": 0.0
+    },
+    "wall": {
+      "origin": {
+        "x": 131.18,
+        "y": -18.23,
+        "theta": 0.0
+      },
+      "angle_deg": 0.0,
+      "valid": true
+    },
+    "brick": {
+      "visible": false,
+      "dist": null,
+      "angle": null,
+      "offset_x": null,
+      "x_axis": null,
+      "held": false,
+      "brickAbove": false,
+      "brickBelow": false
+    },
+    "lift_height": 2.1
+  },
+  {
+    "type": "state",
+    "timestamp": 1769649158.008,
+    "run_id": "run_20260128_180850",
+    "attempt_id": 1,
+    "robot_pose": {
+      "x": 13.22,
+      "y": 0.07,
+      "theta": -0.39,
+      "height_mm": 0.0
+    },
+    "wall": {
+      "origin": {
+        "x": 131.18,
+        "y": -18.23,
+        "theta": 0.0
+      },
+      "angle_deg": 0.0,
+      "valid": true
+    },
+    "brick": {
+      "visible": false,
+      "dist": null,
+      "angle": null,
+      "offset_x": null,
+      "x_axis": null,
+      "held": false,
+      "brickAbove": false,
+      "brickBelow": false
+    },
+    "lift_height": 2.1
+  },
+  {
+    "type": "state",
+    "timestamp": 1769649158.608,
+    "run_id": "run_20260128_180850",
+    "attempt_id": 1,
+    "robot_pose": {
+      "x": 13.22,
+      "y": 0.07,
+      "theta": -0.39,
+      "height_mm": 0.0
+    },
+    "wall": {
+      "origin": {
+        "x": 131.18,
+        "y": -18.23,
+        "theta": 0.0
+      },
+      "angle_deg": 0.0,
+      "valid": true
+    },
+    "brick": {
+      "visible": false,
+      "dist": null,
+      "angle": null,
+      "offset_x": null,
+      "x_axis": null,
+      "held": false,
+      "brickAbove": false,
+      "brickBelow": false
+    },
+    "lift_height": 2.1
+  },
+  {
+    "type": "keyframe",
+    "timestamp": 1769649158.951,
+    "marker": "SUCCESS_END",
+    "step": "EXIT_WALL"
+  }
+]

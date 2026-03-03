@@ -1,3 +1,4 @@
+import builtins
 import sys
 import unittest
 from pathlib import Path
@@ -10,13 +11,17 @@ import telemetry_process
 
 class _DummyWorld:
     def __init__(self):
+        self.learned_rules = {}
+        self._frame_id = 0
         self.process_rules = {
             "FIND_TOPMOST_BRICK_WALL": {
                 "topmost_crosshair_exception": {
                     "enabled": True,
                     "ground_up_level2_enabled": True,
+                    "ground_reset_enabled": True,
                     "ground_reset_command": "d",
                     "ground_reset_score": 100,
+                    "ground_reset_min_acts": 0,
                     "ground_reset_max_acts": 12,
                     "ground_level_y_axis_max": 50.0,
                     "mast_up_command": "u",
@@ -27,16 +32,15 @@ class _DummyWorld:
                     "false_up_acts_required": 3,
                     "false_confirm_frames": 1,
                     "post_success_descend": {
-                        "command": "d",
-                        "score": 100,
-                        "true_down_acts_required": 3,
-                        "max_acts": 16,
+                        "enabled": False,
                     },
                 }
             }
         }
         self.brick = {
             "inCrosshairs": None,
+            "brickAbove": False,
+            "confidence": 99.0,
             "y_axis": 40.0,
             "offset_y": 40.0,
         }
@@ -77,62 +81,12 @@ class TestGroundUpLevel2Transition(unittest.TestCase):
         self.assertFalse(bool(result.get("enabled")))
         self.assertFalse(bool(result.get("handled")))
 
-    def test_success_yes_and_no_streak_transitions_to_descend(self):
+    def test_wall_path_still_succeeds_with_level2_and_no_descend(self):
         world = _DummyWorld()
         robot = _DummyRobot()
 
-        # First update is ground check (already grounded), then mast-up reads YES once
-        # followed by NO x3, then post-success descend reads YES x3.
         sequence = [
-            (None, 40.0),
-            (True, 120.0),
-            (False, 120.0),
-            (False, 120.0),
-            (False, 120.0),
-            (True, 110.0),
-            (True, 110.0),
-            (True, 110.0),
-        ]
-
-        def _fake_update_world_from_vision(world_obj, vision_obj, log=True):
-            _ = (vision_obj, log)
-            if sequence:
-                crosshair, y_val = sequence.pop(0)
-            else:
-                crosshair, y_val = (True, 110.0)
-            world_obj.brick["inCrosshairs"] = crosshair
-            world_obj.brick["y_axis"] = y_val
-            world_obj.brick["offset_y"] = y_val
-
-        with patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world_from_vision), \
-             patch.object(telemetry_process, "wait_for_start_gates", return_value="start"), \
-             patch.object(telemetry_process, "send_robot_command", return_value={}), \
-             patch.object(telemetry_process, "post_act_analysis", return_value=None), \
-             patch.object(telemetry_process, "run_full_gatecheck_after_act", return_value=True), \
-             patch.object(telemetry_process.time, "sleep", return_value=None):
-            result = telemetry_process._run_ground_up_level2_exception(
-                world,
-                vision=object(),
-                step="FIND_TOPMOST_BRICK_WALL",
-                robot=robot,
-                observer=None,
-                confirm_callback=None,
-                align_silent=True,
-            )
-
-        self.assertTrue(bool(result.get("enabled")))
-        self.assertTrue(bool(result.get("handled")))
-        self.assertTrue(bool(result.get("success")))
-        self.assertEqual(str(result.get("reason")), "success gate + level2")
-        self.assertGreaterEqual(robot.stop_calls, 1)
-
-    def test_success_yes_and_no_streak_completes_immediately_when_descend_disabled(self):
-        world = _DummyWorld()
-        world.process_rules["FIND_TOPMOST_BRICK_WALL"]["topmost_crosshair_exception"]["post_success_descend"]["enabled"] = False
-        robot = _DummyRobot()
-
-        sequence = [
-            (None, 40.0),
+            (None, 40.0),  # ground check already satisfied
             (True, 120.0),
             (False, 120.0),
             (False, 120.0),
@@ -142,11 +96,14 @@ class TestGroundUpLevel2Transition(unittest.TestCase):
 
         def _fake_update_world_from_vision(world_obj, vision_obj, log=True):
             _ = (vision_obj, log)
+            world_obj._frame_id = int(getattr(world_obj, "_frame_id", 0) or 0) + 1
             if sequence:
                 crosshair, y_val = sequence.pop(0)
             else:
                 crosshair, y_val = (False, 120.0)
             world_obj.brick["inCrosshairs"] = crosshair
+            world_obj.brick["brickAbove"] = False
+            world_obj.brick["confidence"] = 99.0
             world_obj.brick["y_axis"] = y_val
             world_obj.brick["offset_y"] = y_val
 
@@ -175,60 +132,490 @@ class TestGroundUpLevel2Transition(unittest.TestCase):
         self.assertEqual(str(result.get("reason")), "success gate + level2")
         self.assertEqual(sent_cmds.count("d"), 0)
         self.assertEqual(sent_cmds.count("u"), 4)
+        self.assertGreaterEqual(robot.stop_calls, 1)
 
-    def test_find_topmost_brick_descend_requires_true_then_two_false_down_acts(self):
+    def test_find_topmost_brick_requires_mast_confidence_and_success_gate(self):
+        world = _DummyWorld()
+        world.process_rules = {
+            "FIND_TOPMOST_BRICK": {
+                "success_gates": {
+                    "brick_above": {"target": False, "tol": 0.0},
+                    "inCrosshairs": {"target": False, "tol": 0.0},
+                },
+                "topmost_crosshair_exception": {
+                    "enabled": True,
+                    "ground_up_level2_enabled": True,
+                    "ground_reset_enabled": False,
+                    "mast_up_command": "u",
+                    "mast_up_score": 100,
+                    "mast_up_max_acts": 8,
+                    "require_true_before_false": True,
+                    "min_true_observations": 1,
+                    "false_up_acts_required": 4,
+                    "false_confirm_frames": 4,
+                }
+            }
+        }
+        robot = _DummyRobot()
+
+        # One YES then NO x4 establishes confidence. Success gate only turns true on pulse 5.
+        sequence = [
+            (True, 120.0),
+            (False, 120.0),
+            (False, 120.0),
+            (False, 120.0),
+            (False, 120.0),
+        ]
+        sent_cmds = []
+
+        def _fake_update_world_from_vision(world_obj, vision_obj, log=True):
+            _ = (vision_obj, log)
+            world_obj._frame_id = int(getattr(world_obj, "_frame_id", 0) or 0) + 1
+            if sequence:
+                crosshair, y_val = sequence.pop(0)
+            else:
+                crosshair, y_val = (False, 120.0)
+            world_obj.brick["inCrosshairs"] = crosshair
+            world_obj.brick["brickAbove"] = False
+            world_obj.brick["confidence"] = 99.0
+            world_obj.brick["y_axis"] = y_val
+            world_obj.brick["offset_y"] = y_val
+
+        def _fake_send_robot_command(*args, **kwargs):
+            _ = kwargs
+            sent_cmds.append(str(args[3]))
+            return {}
+
+        with patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world_from_vision), \
+             patch.object(telemetry_process, "send_robot_command", side_effect=_fake_send_robot_command), \
+             patch.object(telemetry_process, "post_act_analysis", return_value=None), \
+             patch.object(telemetry_process, "run_full_gatecheck_after_act", side_effect=[False, False, False, False, True]), \
+             patch.object(telemetry_process.time, "sleep", return_value=None):
+            result = telemetry_process._run_ground_up_level2_exception(
+                world,
+                vision=object(),
+                step="FIND_TOPMOST_BRICK",
+                robot=robot,
+                observer=None,
+                confirm_callback=None,
+                align_silent=True,
+            )
+
+        self.assertTrue(bool(result.get("success")))
+        self.assertEqual(str(result.get("reason")), "success gate + level2")
+        self.assertEqual(sent_cmds.count("u"), 5)
+        self.assertEqual(sent_cmds.count("d"), 0)
+        self.assertGreaterEqual(robot.stop_calls, 1)
+
+    def test_find_topmost_brick_fails_if_no_consecutive_confident_no_observations(self):
         world = _DummyWorld()
         world.process_rules = {
             "FIND_TOPMOST_BRICK": {
                 "topmost_crosshair_exception": {
                     "enabled": True,
                     "ground_up_level2_enabled": True,
-                    "ground_reset_command": "d",
-                    "ground_reset_score": 100,
-                    "ground_reset_max_acts": 12,
-                    "ground_level_y_axis_max": 50.0,
+                    "ground_reset_enabled": False,
                     "mast_up_command": "u",
                     "mast_up_score": 100,
-                    "mast_up_max_acts": 16,
-                    "require_true_before_false": True,
-                    "min_true_observations": 1,
-                    "false_up_acts_required": 3,
-                    "false_confirm_frames": 1,
-                    "post_success_descend": {
-                        "enabled": True,
-                        "command": "d",
-                        "score": 100,
-                        "completion_mode": "true_then_false_streak",
-                        "false_after_true_down_acts_required": 2,
-                        "true_down_acts_required": 3,
-                        "max_acts": 16,
-                    },
+                    "mast_up_max_acts": 5,
+                    "require_true_before_false": False,
+                    "false_up_acts_required": 2,
+                    "false_confirm_frames": 2,
                 }
             }
         }
         robot = _DummyRobot()
 
-        # Ground check (already grounded), mast-up YES once then NO x3 to hit level2,
-        # then descend sees YES then NO x2 and succeeds.
+        sequence = [
+            (True, 120.0),
+            (True, 120.0),
+            (True, 120.0),
+            (True, 120.0),
+            (True, 120.0),
+        ]
+
+        def _fake_update_world_from_vision(world_obj, vision_obj, log=True):
+            _ = (vision_obj, log)
+            world_obj._frame_id = int(getattr(world_obj, "_frame_id", 0) or 0) + 1
+            if sequence:
+                crosshair, y_val = sequence.pop(0)
+            else:
+                crosshair, y_val = (True, 120.0)
+            world_obj.brick["inCrosshairs"] = crosshair
+            world_obj.brick["brickAbove"] = False
+            world_obj.brick["confidence"] = 99.0
+            world_obj.brick["y_axis"] = y_val
+            world_obj.brick["offset_y"] = y_val
+
+        with patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world_from_vision), \
+             patch.object(telemetry_process, "send_robot_command", return_value={}), \
+             patch.object(telemetry_process, "post_act_analysis", return_value=None), \
+             patch.object(telemetry_process, "run_full_gatecheck_after_act", return_value=False), \
+             patch.object(telemetry_process.time, "sleep", return_value=None):
+            result = telemetry_process._run_ground_up_level2_exception(
+                world,
+                vision=object(),
+                step="FIND_TOPMOST_BRICK",
+                robot=robot,
+                observer=None,
+                confirm_callback=None,
+                align_silent=True,
+            )
+
+        self.assertFalse(bool(result.get("success")))
+        self.assertIn("no-streak condition not satisfied", str(result.get("reason")))
+        self.assertGreaterEqual(robot.stop_calls, 1)
+
+    def test_find_topmost_brick_no_streak_waits_for_brick_above_false(self):
+        world = _DummyWorld()
+        world.process_rules = {
+            "FIND_TOPMOST_BRICK": {
+                "success_gates": {
+                    "brick_above": {"target": False, "tol": 0.0},
+                    "inCrosshairs": {"target": False, "tol": 0.0},
+                },
+                "topmost_crosshair_exception": {
+                    "enabled": True,
+                    "ground_up_level2_enabled": True,
+                    "ground_reset_enabled": False,
+                    "mast_up_command": "u",
+                    "mast_up_score": 100,
+                    "mast_up_max_acts": 6,
+                    "false_up_acts_required": 3,
+                    "consecutive_no_required": 3,
+                    "level2_use_full_gatecheck": False,
+                }
+            }
+        }
+        robot = _DummyRobot()
+        sent_cmds = []
+        sequence = [
+            {"in_crosshairs": False, "brick_above": True, "y_axis": 120.0},
+            {"in_crosshairs": False, "brick_above": True, "y_axis": 120.0},
+            {"in_crosshairs": False, "brick_above": False, "y_axis": 120.0},
+            {"in_crosshairs": False, "brick_above": False, "y_axis": 120.0},
+            {"in_crosshairs": False, "brick_above": False, "y_axis": 120.0},
+        ]
+
+        def _fake_update_world_from_vision(world_obj, vision_obj, log=True):
+            _ = (vision_obj, log)
+            world_obj._frame_id = int(getattr(world_obj, "_frame_id", 0) or 0) + 1
+            sample = sequence.pop(0) if sequence else {"in_crosshairs": False, "brick_above": False, "y_axis": 120.0}
+            world_obj.brick["inCrosshairs"] = sample["in_crosshairs"]
+            world_obj.brick["brickAbove"] = sample["brick_above"]
+            world_obj.brick["confidence"] = 99.0
+            world_obj.brick["y_axis"] = sample["y_axis"]
+            world_obj.brick["offset_y"] = sample["y_axis"]
+
+        def _fake_send_robot_command(*args, **kwargs):
+            _ = kwargs
+            sent_cmds.append(str(args[3]))
+            return {}
+
+        with patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world_from_vision), \
+             patch.object(telemetry_process, "send_robot_command", side_effect=_fake_send_robot_command), \
+             patch.object(telemetry_process, "post_act_analysis", return_value=None), \
+             patch.object(telemetry_process, "run_full_gatecheck_after_act", return_value=False) as mock_gatecheck, \
+             patch.object(telemetry_process.time, "sleep", return_value=None):
+            result = telemetry_process._run_ground_up_level2_exception(
+                world,
+                vision=object(),
+                step="FIND_TOPMOST_BRICK",
+                robot=robot,
+                observer=None,
+                confirm_callback=None,
+                align_silent=True,
+            )
+
+        self.assertTrue(bool(result.get("success")))
+        self.assertEqual(str(result.get("reason")), "success gate + level2")
+        self.assertEqual(sent_cmds.count("u"), 5)
+
+    def test_find_topmost_brick_no_streak_ignores_brick_above_when_not_gated(self):
+        world = _DummyWorld()
+        world.lift_height = 0.0
+        world.process_rules = {
+            "FIND_TOPMOST_BRICK": {
+                "success_gates": {
+                    "inCrosshairs": {"target": False, "tol": 0.0},
+                },
+                "topmost_crosshair_exception": {
+                    "enabled": True,
+                    "ground_up_level2_enabled": True,
+                    "ground_reset_enabled": False,
+                    "mast_up_command": "u",
+                    "mast_up_score": 100,
+                    "mast_up_max_acts": 6,
+                    "false_up_acts_required": 3,
+                    "consecutive_no_required": 3,
+                    "level2_use_full_gatecheck": False,
+                }
+            }
+        }
+        robot = _DummyRobot()
+        sent_cmds = []
+
+        def _fake_update_world_from_vision(world_obj, vision_obj, log=True):
+            _ = (vision_obj, log)
+            world_obj._frame_id = int(getattr(world_obj, "_frame_id", 0) or 0) + 1
+            world_obj.brick["inCrosshairs"] = False
+            world_obj.brick["brickAbove"] = True
+            world_obj.brick["confidence"] = 99.0
+            world_obj.brick["y_axis"] = 120.0
+            world_obj.brick["offset_y"] = 120.0
+            world_obj.lift_height = float(getattr(world_obj, "lift_height", 0.0) or 0.0) + 1.0
+
+        def _fake_send_robot_command(*args, **kwargs):
+            _ = kwargs
+            sent_cmds.append(str(args[3]))
+            return {}
+
+        with patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world_from_vision), \
+             patch.object(telemetry_process, "send_robot_command", side_effect=_fake_send_robot_command), \
+             patch.object(telemetry_process, "post_act_analysis", return_value=None), \
+             patch.object(telemetry_process, "run_full_gatecheck_after_act", return_value=False) as mock_gatecheck, \
+             patch.object(telemetry_process.time, "sleep", return_value=None):
+            result = telemetry_process._run_ground_up_level2_exception(
+                world,
+                vision=object(),
+                step="FIND_TOPMOST_BRICK",
+                robot=robot,
+                observer=None,
+                confirm_callback=None,
+                align_silent=True,
+            )
+
+        self.assertTrue(bool(result.get("success")))
+        self.assertEqual(str(result.get("reason")), "success gate + level2")
+        self.assertEqual(sent_cmds.count("u"), 3)
+        self.assertEqual(mock_gatecheck.call_count, 0)
+
+    def test_find_topmost_brick_level2_requires_strict_consecutive_pass_cycles(self):
+        world = _DummyWorld()
+        world.process_rules = {
+            "FIND_TOPMOST_BRICK": {
+                "success_gates": {
+                    "inCrosshairs": {"target": False, "tol": 0.0},
+                },
+                "topmost_crosshair_exception": {
+                    "enabled": True,
+                    "ground_up_level2_enabled": True,
+                    "ground_reset_enabled": False,
+                    "mast_up_command": "u",
+                    "mast_up_score": 100,
+                    "mast_up_max_acts": 6,
+                    "false_up_acts_required": 5,
+                    "consecutive_no_required": 5,
+                    "level2_use_full_gatecheck": False,
+                }
+            }
+        }
+        robot = _DummyRobot()
+        sent_cmds = []
+        # Four PASS cycles, one FAIL, then one PASS. Strict consecutive rule
+        # should reset after the FAIL, so this must not succeed.
+        sequence = [False, False, False, False, True, False]
+
+        def _fake_update_world_from_vision(world_obj, vision_obj, log=True):
+            _ = (vision_obj, log)
+            world_obj._frame_id = int(getattr(world_obj, "_frame_id", 0) or 0) + 1
+            sample = sequence.pop(0) if sequence else False
+            world_obj.brick["inCrosshairs"] = sample
+            world_obj.brick["brickAbove"] = False
+            world_obj.brick["confidence"] = 99.0
+            world_obj.brick["y_axis"] = 120.0
+            world_obj.brick["offset_y"] = 120.0
+
+        def _fake_send_robot_command(*args, **kwargs):
+            _ = kwargs
+            sent_cmds.append(str(args[3]))
+            return {}
+
+        with patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world_from_vision), \
+             patch.object(telemetry_process, "send_robot_command", side_effect=_fake_send_robot_command), \
+             patch.object(telemetry_process, "post_act_analysis", return_value=None), \
+             patch.object(telemetry_process, "run_full_gatecheck_after_act", return_value=False), \
+             patch.object(telemetry_process.time, "sleep", return_value=None):
+            result = telemetry_process._run_ground_up_level2_exception(
+                world,
+                vision=object(),
+                step="FIND_TOPMOST_BRICK",
+                robot=robot,
+                observer=None,
+                confirm_callback=None,
+                align_silent=True,
+            )
+
+        self.assertFalse(bool(result.get("success")))
+        self.assertIn("no-streak condition not satisfied", str(result.get("reason")))
+        self.assertEqual(sent_cmds.count("u"), 6)
+
+    def test_find_topmost_brick_level2_log_counter_resets_and_first_pass_is_one(self):
+        world = _DummyWorld()
+        world.process_rules = {
+            "FIND_TOPMOST_BRICK": {
+                "success_gates": {
+                    "inCrosshairs": {"target": False, "tol": 0.0},
+                },
+                "topmost_crosshair_exception": {
+                    "enabled": True,
+                    "ground_up_level2_enabled": True,
+                    "ground_reset_enabled": False,
+                    "mast_up_command": "u",
+                    "mast_up_score": 100,
+                    "mast_up_max_acts": 8,
+                    "false_up_acts_required": 5,
+                    "consecutive_no_required": 5,
+                    "level2_use_full_gatecheck": False,
+                },
+            }
+        }
+        robot = _DummyRobot()
+        print_lines = []
+
+        # False=PASS for inCrosshairs target=false, True=FAIL.
+        # Expect streak logs: 1/5 PASS, 2/5 PASS, 0/5 FAIL, then 1..5 PASS.
+        sequence = [False, False, True, False, False, False, False, False]
+
+        def _fake_update_world_from_vision(world_obj, vision_obj, log=True):
+            _ = (vision_obj, log)
+            world_obj._frame_id = int(getattr(world_obj, "_frame_id", 0) or 0) + 1
+            sample = sequence.pop(0) if sequence else False
+            world_obj.brick["inCrosshairs"] = sample
+            world_obj.brick["confidence"] = 99.0
+            world_obj.brick["y_axis"] = 120.0
+            world_obj.brick["offset_y"] = 120.0
+
+        with patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world_from_vision), \
+             patch.object(telemetry_process, "send_robot_command", return_value={}), \
+             patch.object(telemetry_process, "post_act_analysis", return_value=None), \
+             patch.object(telemetry_process, "run_full_gatecheck_after_act", return_value=False), \
+             patch.object(telemetry_process.time, "sleep", return_value=None), \
+             patch.object(
+                 builtins,
+                 "print",
+                 side_effect=lambda *args, **kwargs: print_lines.append(" ".join(str(arg) for arg in args)),
+             ):
+            result = telemetry_process._run_ground_up_level2_exception(
+                world,
+                vision=object(),
+                step="FIND_TOPMOST_BRICK",
+                robot=robot,
+                observer=None,
+                confirm_callback=None,
+                align_silent=False,
+            )
+
+        self.assertTrue(bool(result.get("success")))
+        self.assertEqual(str(result.get("reason")), "success gate + level2")
+
+        cycle_lines = [line for line in print_lines if "level2 success gate check=" in line]
+        self.assertEqual(len(cycle_lines), 8)
+        self.assertIn("level2 success gate check=1/5", cycle_lines[0])
+        self.assertIn(f"({telemetry_process.COLOR_GREEN}PASS{telemetry_process.COLOR_RESET})", cycle_lines[0])
+        self.assertIn("level2 success gate check=2/5", cycle_lines[1])
+        self.assertIn("level2 success gate check=0/5", cycle_lines[2])
+        self.assertIn(f"({telemetry_process.COLOR_RED}FAIL{telemetry_process.COLOR_RESET})", cycle_lines[2])
+        self.assertIn("level2 success gate check=1/5", cycle_lines[3])
+        self.assertIn("level2 success gate check=2/5", cycle_lines[4])
+        self.assertIn("level2 success gate check=3/5", cycle_lines[5])
+        self.assertIn("level2 success gate check=4/5", cycle_lines[6])
+        self.assertIn("level2 success gate check=5/5", cycle_lines[7])
+
+    def test_find_topmost_brick_does_not_count_stale_observations(self):
+        world = _DummyWorld()
+        world.process_rules = {
+            "FIND_TOPMOST_BRICK": {
+                "topmost_crosshair_exception": {
+                    "enabled": True,
+                    "ground_up_level2_enabled": True,
+                    "ground_reset_enabled": False,
+                    "mast_up_command": "u",
+                    "mast_up_score": 100,
+                    "mast_up_max_acts": 4,
+                    "false_up_acts_required": 3,
+                    "consecutive_no_required": 3,
+                }
+            }
+        }
+        robot = _DummyRobot()
+
+        def _fake_update_world_from_vision(world_obj, vision_obj, log=True):
+            _ = (world_obj, vision_obj, log)
+            # Intentionally do not increment frame_id: all observations are stale.
+            world_obj.brick["inCrosshairs"] = False
+            world_obj.brick["brickAbove"] = False
+            world_obj.brick["confidence"] = 99.0
+            world_obj.brick["y_axis"] = 120.0
+            world_obj.brick["offset_y"] = 120.0
+
+        with patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world_from_vision), \
+             patch.object(telemetry_process, "send_robot_command", return_value={}), \
+             patch.object(telemetry_process, "post_act_analysis", return_value=None), \
+             patch.object(telemetry_process, "run_full_gatecheck_after_act", return_value=False), \
+             patch.object(telemetry_process.time, "sleep", return_value=None):
+            result = telemetry_process._run_ground_up_level2_exception(
+                world,
+                vision=object(),
+                step="FIND_TOPMOST_BRICK",
+                robot=robot,
+                observer=None,
+                confirm_callback=None,
+                align_silent=True,
+            )
+
+        self.assertFalse(bool(result.get("success")))
+        self.assertIn("last_obs_fresh=NO", str(result.get("reason")))
+
+    def test_handoff_defaults_disabled_without_explicit_enabled_true(self):
+        world = _DummyWorld()
+        world.learned_rules = {}
+        world.process_rules = {
+            "FIND_TOPMOST_BRICK": {
+                "topmost_crosshair_exception": {
+                    "enabled": True,
+                    "ground_up_level2_enabled": True,
+                    "ground_reset_enabled": True,
+                    "ground_reset_command": "d",
+                    "ground_reset_score": 100,
+                    "ground_reset_min_acts": 0,
+                    "ground_reset_max_acts": 1,
+                    "ground_level_y_axis_max": 50.0,
+                    "mast_up_command": "u",
+                    "mast_up_score": 100,
+                    "mast_up_max_acts": 2,
+                    "require_true_before_false": False,
+                    "false_up_acts_required": 1,
+                    "false_confirm_frames": 1,
+                    "post_ground_reset_handoff": {
+                        "step": "BRICK_LOCK",
+                        "acts": 1,
+                    },
+                }
+            },
+            "BRICK_LOCK": {
+                "success_gates": {
+                    "visible": {"min": True}
+                }
+            },
+        }
+        robot = _DummyRobot()
         sequence = [
             (None, 40.0),
-            (True, 120.0),
             (False, 120.0),
-            (False, 120.0),
-            (False, 120.0),
-            (True, 110.0),
-            (False, 110.0),
-            (False, 110.0),
         ]
         sent_cmds = []
 
         def _fake_update_world_from_vision(world_obj, vision_obj, log=True):
             _ = (vision_obj, log)
+            world_obj._frame_id = int(getattr(world_obj, "_frame_id", 0) or 0) + 1
             if sequence:
                 crosshair, y_val = sequence.pop(0)
             else:
-                crosshair, y_val = (False, 110.0)
+                crosshair, y_val = (False, 120.0)
             world_obj.brick["inCrosshairs"] = crosshair
+            world_obj.brick["brickAbove"] = False
+            world_obj.brick["confidence"] = 99.0
             world_obj.brick["y_axis"] = y_val
             world_obj.brick["offset_y"] = y_val
 
@@ -242,6 +629,7 @@ class TestGroundUpLevel2Transition(unittest.TestCase):
              patch.object(telemetry_process, "send_robot_command", side_effect=_fake_send_robot_command), \
              patch.object(telemetry_process, "post_act_analysis", return_value=None), \
              patch.object(telemetry_process, "run_full_gatecheck_after_act", return_value=True), \
+             patch.object(telemetry_process.next_module, "select_alignment_next_act") as mock_select, \
              patch.object(telemetry_process.time, "sleep", return_value=None):
             result = telemetry_process._run_ground_up_level2_exception(
                 world,
@@ -253,88 +641,10 @@ class TestGroundUpLevel2Transition(unittest.TestCase):
                 align_silent=True,
             )
 
-        self.assertTrue(bool(result.get("enabled")))
-        self.assertTrue(bool(result.get("handled")))
         self.assertTrue(bool(result.get("success")))
-        self.assertEqual(str(result.get("reason")), "success gate + level2")
-        self.assertEqual(sent_cmds.count("u"), 4)
-        self.assertEqual(sent_cmds.count("d"), 3)
-
-    def test_post_ground_reset_handoff_is_phase_bridge_not_terminal_success(self):
-        world = _DummyWorld()
-        world.process_rules = {
-            "FIND_TOPMOST_BRICK": {
-                "topmost_crosshair_exception": {
-                    "enabled": True,
-                    "ground_up_level2_enabled": True,
-                    "ground_reset_command": "d",
-                    "ground_reset_score": 100,
-                    "ground_reset_min_acts": 2,
-                    "ground_reset_max_acts": 12,
-                    "ground_level_y_axis_max": 50.0,
-                    "mast_up_command": "u",
-                    "mast_up_score": 100,
-                    "mast_up_max_acts": 2,
-                    "require_true_before_false": False,
-                    "false_up_acts_required": 1,
-                    "false_confirm_frames": 1,
-                    "post_ground_reset_handoff": {
-                        "enabled": True,
-                        "step": "BRICK_LOCK",
-                    },
-                    "post_success_descend": {
-                        "enabled": False,
-                    },
-                }
-            }
-        }
-        robot = _DummyRobot()
-
-        # Ground check sees we're already grounded, but min acts still applies.
-        # Handoff is an in-step phase bridge only; mast-up still runs and drives success.
-        sequence = [
-            (None, 40.0),
-            (False, 120.0),
-        ]
-        sent_cmds = []
-
-        def _fake_update_world_from_vision(world_obj, vision_obj, log=True):
-            _ = (vision_obj, log)
-            if sequence:
-                crosshair, y_val = sequence.pop(0)
-            else:
-                crosshair, y_val = (False, 40.0)
-            world_obj.brick["inCrosshairs"] = crosshair
-            world_obj.brick["y_axis"] = y_val
-            world_obj.brick["offset_y"] = y_val
-
-        def _fake_send_robot_command(*args, **kwargs):
-            _ = kwargs
-            sent_cmds.append(str(args[3]))
-            return {}
-
-        with patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world_from_vision), \
-             patch.object(telemetry_process, "wait_for_start_gates", return_value="start"), \
-             patch.object(telemetry_process, "send_robot_command", side_effect=_fake_send_robot_command), \
-             patch.object(telemetry_process, "post_act_analysis", return_value=None), \
-               patch.object(telemetry_process, "run_full_gatecheck_after_act", return_value=True), \
-             patch.object(telemetry_process.time, "sleep", return_value=None):
-            result = telemetry_process._run_ground_up_level2_exception(
-                world,
-                vision=object(),
-                step="FIND_TOPMOST_BRICK",
-                robot=robot,
-                observer=None,
-                confirm_callback=None,
-                align_silent=True,
-            )
-
-        self.assertTrue(bool(result.get("enabled")))
-        self.assertTrue(bool(result.get("handled")))
-        self.assertTrue(bool(result.get("success")))
-        self.assertEqual(str(result.get("reason")), "success gate + level2")
-        self.assertEqual(sent_cmds.count("d"), 2)
-        self.assertEqual(sent_cmds.count("u"), 1)
+        self.assertEqual(sent_cmds.count("l"), 0)
+        self.assertEqual(sent_cmds.count("r"), 0)
+        self.assertEqual(mock_select.call_count, 0)
 
 
 if __name__ == "__main__":

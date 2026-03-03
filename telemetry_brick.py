@@ -58,7 +58,7 @@ STEP_ALIASES = {
 METRICS_BY_STEP = {
     "FIND_WALL": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "EXIT_WALL": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
-    "FIND_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
+    "FIND_BRICK": ("angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "visible"),
     "APPROACH_VECTOR_BRICK_SUPPLY": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "FIND_TOPMOST_BRICK": ("yAxis_offset_abs", "dist", "brick_above", "brick_below", "visible"),
     "FIND_TOPMOST_BRICK_WALL": ("yAxis_offset_abs", "dist", "brick_above", "brick_below", "visible"),
@@ -68,7 +68,7 @@ METRICS_BY_STEP = {
     "SEAT_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "SEAT_BRICK2": ("angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "visible"),
     "ELEVATE_BRICK": ("visible",),
-    "FIND_WALL2": ("visible",),
+    "FIND_WALL2": ("angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "visible"),
     "APPROACH_VECTOR_WALL": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "POSITION_BRICK": ("angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "brick_above", "visible"),
     "RETREAT": ("visible", "dist"),
@@ -1241,10 +1241,6 @@ def _success_gate_eval(world, step, learned_rules, process_rules=None, visibilit
 
     reasons = []
     entries = []
-
-    # FIND_BRICK: Ensure we're finding a loose brick, not one already on the wall
-    if obj_name == "FIND_BRICK" and brick.get("brickBelow"):
-        reasons.append("brick already stacked")
 
     for metric, stats in success_metrics.items():
         direction = metric_direction_for_step(metric, obj_name, process_rules=process_rules)

@@ -87,6 +87,49 @@ class TestTelemetryProcessGatecheckFailureLogging(unittest.TestCase):
         self.assertFalse(bool(result.get("hold_for_confirm")))
         hold_mock.assert_not_called()
 
+    def test_lite_gate_detail_traditional_mode_uses_current_sample(self):
+        world = _DummyWorld()
+        world.process_rules = {
+            "EXIT_WALL": {
+                "success_gates": {
+                    "visible": {"min": True},
+                }
+            }
+        }
+        world._gatecheck_status = {
+            "mode": "traditional",
+            "checks": 26,
+            "truth_ok": False,
+            "lite_required": 1,
+            "lite_collected": 1,
+        }
+        world._gatecheck_mode = "traditional"
+        world._gatecheck_lite_required = 1
+        world._gatecheck_lite_collected = 1
+        world._gatecheck_lite_passed = True
+
+        world.brick["visible"] = False
+        world._smoothed_frame_history = [
+            {
+                "frame_id": 1,
+                "visible": True,
+                "dist": world.brick.get("dist"),
+                "angle": world.brick.get("angle"),
+                "x_axis": world.brick.get("x_axis"),
+                "offset_x": world.brick.get("offset_x"),
+                "y_axis": 0.0,
+                "offset_y": 0.0,
+                "confidence": world.brick.get("confidence"),
+            }
+        ]
+
+        detail = telemetry_process._auto_diag_lite_gate_detail(world, "EXIT_WALL")
+        self.assertIsInstance(detail, dict)
+        plain = str(detail.get("plain") or "")
+        self.assertIn("mode=traditional (lite passed)", plain)
+        self.assertIn("sample=wait", plain)
+        self.assertIn("visible (!= Expected true & saw false)", plain)
+
 
 if __name__ == "__main__":
     unittest.main()

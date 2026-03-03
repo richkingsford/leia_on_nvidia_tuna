@@ -1651,7 +1651,10 @@ def select_alignment_next_act(
     and falls back to the generic analytics planner for angle-only / visible-only
     align steps.
     """
-    if step_uses_gap_alignment_planner(process_rules, step):
+    # Gap-planner steps still need a search phase while target visibility is false.
+    # Switch to micro-gap corrections only once visibility is confirmed.
+    use_gap_planner = bool(step_uses_gap_alignment_planner(process_rules, step) and bool(visible))
+    if use_gap_planner:
         plan = select_align_brick_next_act(
             process_rules=process_rules,
             learned_rules=learned_rules,

@@ -59,6 +59,7 @@ from telemetry_process import (
     build_motion_sequence,
     consume_auto_step_action_stats,
     compute_stream_gate_summary,
+    format_success_gate_requirements,
     height_intel_step_begin_line,
     merge_motion_steps,
     nominal_actions_from_events,
@@ -2012,7 +2013,10 @@ def run_auto_step(app_state, obj_enum):
 
     quiet_align = False
     max_full_gatecheck_restarts = 3
-    log_line(f"[AUTO] {step_key} demo={seg_type} success gates: {success_desc}")
+    success_req = format_success_gate_requirements(app_state.world, step_key)
+    if success_req == "none":
+        success_req = success_desc
+    log_line(f"[AUTO] {step_key} demo={seg_type} success gates: {success_req}")
 
     if app_state.robot:
         app_state.robot.stop()
@@ -4560,7 +4564,6 @@ if __name__ == "__main__":
         update_process_model_from_demos(
             logs,
             PROCESS_MODEL_FILE,
-            force_rederive_success_gates=True,
         )
 
     state = AppState(vision_mode=vision_mode)
@@ -4572,7 +4575,6 @@ if __name__ == "__main__":
     refresh_world_model_from_demos(
         state,
         force=True,
-        force_rederive_success_gates=True,
     )
     log_align_curve_lookup_table()
     

@@ -94,6 +94,30 @@ class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
         self.assertEqual(plan.get("correction_type"), "x_axis", plan)
         self.assertIn(plan.get("cmd"), ("l", "r"), plan)
 
+    def test_gap_planner_step_uses_generic_planner_while_invisible(self):
+        process_rules = {
+            "FIND_WALL2": {
+                "success_gates": {
+                    "visible": {"min": True},
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 6.0},
+                    "yAxis_offset_abs": {"target": 0.0, "tol": 6.0},
+                }
+            }
+        }
+        self.assertTrue(helper_next.step_uses_gap_alignment_planner(process_rules, "FIND_WALL2"))
+        plan = helper_next.select_alignment_next_act(
+            process_rules=process_rules,
+            learned_rules={},
+            step="FIND_WALL2",
+            x_axis_mm=-40.0,
+            y_axis_mm=20.0,
+            dist_mm=170.0,
+            visible=False,
+            angle_deg=0.0,
+            duration_s=0.05,
+        )
+        self.assertEqual(plan.get("planner"), "generic", plan)
+
     def test_gap_planner_blocks_y_axis_until_other_gaps_are_near_perfect(self):
         process_rules = {
             "ALIGN_BRICK": {
