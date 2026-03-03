@@ -158,7 +158,15 @@
                 "dist_score_mode": "dist_error_bands",
                 "turn_score_mode": "x_axis_one_shot_curve",
                 "slow_fast_mm_scale": 1.0,
-                "auto_speed_hard_cap_exempt": true
+                "auto_speed_hard_cap_exempt": true,
+                "target_lock_enabled": true,
+                "target_lock_center_prefer_enabled": true,
+                "target_lock_stack_signature_guard_enabled": false,
+                "target_lock_confirm_frames": 2,
+                "target_lock_hold_bad_frames": 2,
+                "target_lock_acquire_timeout_s": 0.35,
+                "target_lock_center_x_worse_margin_mm": 1.5,
+                "target_lock_center_y_worse_margin_mm": 2.0
             },
             "lock_success_gates": true,
             "locked_success_gates_by_mode": {
@@ -193,8 +201,17 @@
                     "tol": 1.5
                 }
             },
-            "post_success_descend": {
+            "pre_align_descend": {
                 "enabled": true,
+                "command": "d",
+                "score": 100,
+                "completion_mode": "true_then_false_streak",
+                "false_after_true_down_acts_required": 2,
+                "true_down_acts_required": 3,
+                "max_acts": 32
+            },
+            "post_success_descend": {
+                "enabled": false,
                 "command": "d",
                 "score": 100,
                 "completion_mode": "true_then_false_streak",
@@ -220,7 +237,15 @@
                 "dist_score_mode": "dist_error_bands",
                 "turn_score_mode": "x_axis_one_shot_curve",
                 "slow_fast_mm_scale": 1.0,
-                "auto_speed_hard_cap_exempt": true
+                "auto_speed_hard_cap_exempt": true,
+                "target_lock_enabled": true,
+                "target_lock_center_prefer_enabled": true,
+                "target_lock_stack_signature_guard_enabled": false,
+                "target_lock_confirm_frames": 2,
+                "target_lock_hold_bad_frames": 2,
+                "target_lock_acquire_timeout_s": 0.35,
+                "target_lock_center_x_worse_margin_mm": 1.5,
+                "target_lock_center_y_worse_margin_mm": 2.0
             },
             "start_gates": {
                 "visible": {
@@ -232,15 +257,15 @@
                     "min": true
                 },
                 "xAxis_offset_abs": {
-                    "target": -2.26,
+                    "target": -4.74,
                     "tol": 1.4
                 },
                 "yAxis_offset_abs": {
-                    "target": -0.07,
+                    "target": 3.26,
                     "tol": 1.5
                 },
                 "dist": {
-                    "target": 122.0,
+                    "target": 105.63,
                     "tol": 1.5
                 }
             }
@@ -284,6 +309,13 @@
         },
         "FIND_WALL2": {
             "controller": "align",
+            "scan_direction": "l",
+            "search_visible_false_speed_cycle": {
+                "enabled": true,
+                "high_score": 20,
+                "low_score": 5,
+                "start_with_high": true
+            },
             "operator_exception_reminder": "Exception active: startup hard-left scan x9.",
             "startup_action_exception": {
                 "enabled": true,
@@ -419,7 +451,15 @@
                 "dist_score_mode": "dist_error_bands",
                 "turn_score_mode": "x_axis_one_shot_curve",
                 "slow_fast_mm_scale": 1.0,
-                "auto_speed_hard_cap_exempt": true
+                "auto_speed_hard_cap_exempt": true,
+                "target_lock_enabled": true,
+                "target_lock_center_prefer_enabled": true,
+                "target_lock_stack_signature_guard_enabled": false,
+                "target_lock_confirm_frames": 2,
+                "target_lock_hold_bad_frames": 2,
+                "target_lock_acquire_timeout_s": 0.35,
+                "target_lock_center_x_worse_margin_mm": 1.5,
+                "target_lock_center_y_worse_margin_mm": 2.0
             },
             "lock_success_gates": true,
             "locked_success_gates_by_mode": {
@@ -478,7 +518,15 @@
                 "dist_score_mode": "dist_error_bands",
                 "turn_score_mode": "x_axis_one_shot_curve",
                 "slow_fast_mm_scale": 1.0,
-                "auto_speed_hard_cap_exempt": true
+                "auto_speed_hard_cap_exempt": true,
+                "target_lock_enabled": true,
+                "target_lock_center_prefer_enabled": true,
+                "target_lock_stack_signature_guard_enabled": false,
+                "target_lock_confirm_frames": 2,
+                "target_lock_hold_bad_frames": 2,
+                "target_lock_acquire_timeout_s": 0.35,
+                "target_lock_center_x_worse_margin_mm": 1.5,
+                "target_lock_center_y_worse_margin_mm": 2.0
             },
             "success_gates": {
                 "visible": {
@@ -523,7 +571,15 @@
                 "dist_score_mode": "dist_error_bands",
                 "turn_score_mode": "x_axis_one_shot_curve",
                 "slow_fast_mm_scale": 1.0,
-                "auto_speed_hard_cap_exempt": true
+                "auto_speed_hard_cap_exempt": true,
+                "target_lock_enabled": true,
+                "target_lock_center_prefer_enabled": true,
+                "target_lock_stack_signature_guard_enabled": false,
+                "target_lock_confirm_frames": 2,
+                "target_lock_hold_bad_frames": 2,
+                "target_lock_acquire_timeout_s": 0.35,
+                "target_lock_center_x_worse_margin_mm": 1.5,
+                "target_lock_center_y_worse_margin_mm": 2.0
             },
             "start_gates": {
                 "visible": {

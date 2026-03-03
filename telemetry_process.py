@@ -8403,35 +8403,37 @@ def run_alignment_segment(
     step_rules = {}
     if isinstance(getattr(world, "process_rules", None), dict):
         step_rules = world.process_rules.get(step_key, {}) or {}
-    find_brick_search_cfg = step_rules.get("search_visible_false_speed_cycle") if isinstance(step_rules, dict) else {}
-    if not isinstance(find_brick_search_cfg, dict):
-        find_brick_search_cfg = {}
-    find_brick_search_cycle_enabled = bool(
-        find_brick_search_cfg.get("enabled", normalize_step_label(step) == "FIND_BRICK")
+    visible_search_cfg = step_rules.get("search_visible_false_speed_cycle") if isinstance(step_rules, dict) else {}
+    if not isinstance(visible_search_cfg, dict):
+        visible_search_cfg = {}
+    # Backward-compatible default keeps FIND_BRICK behavior unchanged while
+    # allowing other steps (for example FIND_WALL2) to opt in via JSON.
+    visible_search_cycle_enabled = bool(
+        visible_search_cfg.get("enabled", normalize_step_label(step) == "FIND_BRICK")
     )
-    find_brick_search_high_score = max(
+    visible_search_high_score = max(
         int(telemetry_robot_module.SPEED_SCORE_MIN),
         min(
             int(MAX_SPEED_SCORE),
-            int(_as_int(find_brick_search_cfg.get("high_score"), 20)),
+            int(_as_int(visible_search_cfg.get("high_score"), 20)),
         ),
     )
-    find_brick_search_low_score = max(
+    visible_search_low_score = max(
         int(telemetry_robot_module.SPEED_SCORE_MIN),
         min(
             int(MAX_SPEED_SCORE),
-            int(_as_int(find_brick_search_cfg.get("low_score"), 5)),
+            int(_as_int(visible_search_cfg.get("low_score"), 5)),
         ),
     )
-    find_brick_search_next_high = bool(find_brick_search_cfg.get("start_with_high", True))
+    visible_search_next_high = bool(visible_search_cfg.get("start_with_high", True))
 
-    def _next_find_brick_search_score():
-        nonlocal find_brick_search_next_high
-        if not bool(find_brick_search_cycle_enabled):
+    def _next_visible_search_score():
+        nonlocal visible_search_next_high
+        if not bool(visible_search_cycle_enabled):
             score_local = int(getattr(telemetry_robot_module, "SPEED_SCORE_MIN", 1))
         else:
-            score_local = int(find_brick_search_high_score) if bool(find_brick_search_next_high) else int(find_brick_search_low_score)
-            find_brick_search_next_high = not bool(find_brick_search_next_high)
+            score_local = int(visible_search_high_score) if bool(visible_search_next_high) else int(visible_search_low_score)
+            visible_search_next_high = not bool(visible_search_next_high)
         try:
             return int(telemetry_robot_module.normalize_speed_score(score_local))
         except Exception:
@@ -8594,7 +8596,34 @@ def run_alignment_segment(
         )
     else:
         step_post_desc_max_acts = 0
+    step_pre_desc_cfg = step_rules.get("pre_align_descend") if isinstance(step_rules, dict) else {}
+    if not isinstance(step_pre_desc_cfg, dict):
+        step_pre_desc_cfg = {}
+    step_pre_desc_enabled = bool(step_pre_desc_cfg.get("enabled", False))
+    step_pre_desc_cmd = str(step_pre_desc_cfg.get("command") or "d").strip().lower()
+    if step_pre_desc_cmd not in ("d", "u"):
+        step_pre_desc_cmd = "d"
+    step_pre_desc_score = max(
+        int(telemetry_robot_module.SPEED_SCORE_MIN),
+        min(int(MAX_SPEED_SCORE), int(_as_int(step_pre_desc_cfg.get("score"), 100))),
+    )
+    step_pre_desc_completion_mode = str(step_pre_desc_cfg.get("completion_mode") or "true_streak").strip().lower()
+    if step_pre_desc_completion_mode not in ("true_streak", "true_then_false_streak"):
+        step_pre_desc_completion_mode = "true_streak"
+    step_pre_desc_true_required = max(1, int(_as_int(step_pre_desc_cfg.get("true_down_acts_required"), 3)))
+    step_pre_desc_false_after_true_required = max(
+        1,
+        int(_as_int(step_pre_desc_cfg.get("false_after_true_down_acts_required"), 2)),
+    )
+    if step_pre_desc_enabled:
+        step_pre_desc_max_acts = max(
+            1,
+            int(_as_int(step_pre_desc_cfg.get("max_acts"), _as_int(step_pre_desc_cfg.get("acts"), 16))),
+        )
+    else:
+        step_pre_desc_max_acts = 0
     step_post_desc_run_once = False
+    step_pre_desc_run_once = False
     stack_gate_keys = {"brick_above", "brick_below", "brickAbove", "brickBelow"}
     demo_stack_lift_actions = []
     for action in nominal_actions_from_events(segment.get("events") or []):
@@ -8729,7 +8758,50 @@ def run_alignment_segment(
     step_supports_gap_micro_planner = bool(
         next_module.step_uses_gap_alignment_planner(world.process_rules or {}, step)
     )
-    align_gate_step_key = "ALIGN_BRICK"
+    align_policy_cfg = step_rules.get("align_policy") if isinstance(step_rules, dict) else {}
+    if not isinstance(align_policy_cfg, dict):
+        align_policy_cfg = {}
+    step_success_gates_cfg = step_rules.get("success_gates") if isinstance(step_rules, dict) else {}
+    if not isinstance(step_success_gates_cfg, dict):
+        step_success_gates_cfg = {}
+    has_xy_target_lock_gate = bool(
+        any(
+            str(k) in {"xAxis_offset_abs", "yAxis_offset_abs", "xAxis_offset", "yAxis_offset"}
+            for k in step_success_gates_cfg.keys()
+        )
+    )
+    align_target_lock_enabled = bool(
+        step_supports_gap_micro_planner
+        and has_xy_target_lock_gate
+        and bool(align_policy_cfg.get("target_lock_enabled", True))
+    )
+    align_target_lock_center_prefer_enabled = bool(
+        align_policy_cfg.get("target_lock_center_prefer_enabled", True)
+    )
+    align_target_lock_stack_signature_guard_enabled = bool(
+        align_policy_cfg.get("target_lock_stack_signature_guard_enabled", False)
+    )
+    align_target_lock_confirm_frames = max(
+        1,
+        int(_as_int(align_policy_cfg.get("target_lock_confirm_frames"), 2)),
+    )
+    align_target_lock_hold_bad_frames = max(
+        1,
+        int(_as_int(align_policy_cfg.get("target_lock_hold_bad_frames"), 2)),
+    )
+    align_target_lock_acquire_timeout_s = max(
+        float(CONTROL_DT),
+        float(_as_float(align_policy_cfg.get("target_lock_acquire_timeout_s"), 0.35)),
+    )
+    align_target_lock_center_x_worse_margin_mm = max(
+        0.0,
+        float(_as_float(align_policy_cfg.get("target_lock_center_x_worse_margin_mm"), 1.5)),
+    )
+    align_target_lock_center_y_worse_margin_mm = max(
+        0.0,
+        float(_as_float(align_policy_cfg.get("target_lock_center_y_worse_margin_mm"), 2.0)),
+    )
+    align_gate_step_key = step
     skip_settle_pause = step_key in FAST_POST_ACT_GATECHECK_STEPS
     # ALIGN_BRICK demos are often state-only, so derived scan speed can fall back to 50%.
     # Use explicit score-1 turn speed so start-gate scan matches "1%" tuning from world_model_robot.
@@ -8861,7 +8933,119 @@ def run_alignment_segment(
             )
         return {"enabled": True, "success": True, "reason": "post-success descend pass"}
 
+    def _run_step_pre_align_descend():
+        nonlocal step_pre_desc_run_once
+        if not bool(step_pre_desc_enabled) or int(step_pre_desc_max_acts) <= 0:
+            return {"enabled": False, "success": True, "reason": "disabled"}
+        if bool(step_pre_desc_run_once):
+            return {"enabled": True, "success": True, "reason": "already completed"}
+        step_pre_desc_run_once = True
+        pre_desc_speed = telemetry_robot_module.manual_speed_for_cmd(step_pre_desc_cmd, step_pre_desc_score)
+        if not align_silent:
+            if step_pre_desc_completion_mode == "true_then_false_streak":
+                goal_text = (
+                    f"inCrosshairs=YES then NO x{int(step_pre_desc_false_after_true_required)}"
+                )
+            else:
+                goal_text = f"inCrosshairs=YES x{int(step_pre_desc_true_required)}"
+            print(
+                format_headline(
+                    (
+                        f"[EXCEPTION] [{step_key}] Pre-align descend start: "
+                        f"{str(step_pre_desc_cmd).upper()} {int(step_pre_desc_score)}%, "
+                        f"goal={goal_text}, max={int(step_pre_desc_max_acts)}."
+                    ),
+                    COLOR_MAGENTA_BRIGHT,
+                )
+            )
+        true_down_streak = 0
+        saw_true = False
+        false_after_true_streak = 0
+        done = False
+        for idx in range(1, int(step_pre_desc_max_acts) + 1):
+            if confirm_callback and not confirm_callback(world, vision):
+                return {"enabled": True, "success": False, "reason": "confirm cancelled"}
+            if observer:
+                observer("analysis", world, vision, step_pre_desc_cmd, pre_desc_speed, "pre_align_descend")
+            send_robot_command(
+                robot,
+                world,
+                step,
+                step_pre_desc_cmd,
+                pre_desc_speed,
+                speed_score=step_pre_desc_score,
+                auto_mode=True,
+            )
+            post_act_analysis(world, vision, step=step, log=not align_silent, include_pause=False)
+            update_world_from_vision(world, vision, log=not align_silent)
+            if observer:
+                observer("frame", world, vision, None, None, None)
+                observer("action", world, vision, step_pre_desc_cmd, pre_desc_speed, "pre_align_descend")
+            crosshair_now = _read_post_desc_crosshair()
+            if crosshair_now is True:
+                true_down_streak = int(true_down_streak) + 1
+                saw_true = True
+                false_after_true_streak = 0
+            elif crosshair_now is False:
+                true_down_streak = 0
+                if bool(saw_true):
+                    false_after_true_streak = int(false_after_true_streak) + 1
+            gate_done = False
+            if step_pre_desc_completion_mode == "true_then_false_streak":
+                gate_done = bool(saw_true) and int(false_after_true_streak) >= int(step_pre_desc_false_after_true_required)
+                progress_text = (
+                    f"seen-true={('YES' if bool(saw_true) else 'NO')}, "
+                    f"false-after-true={int(false_after_true_streak)}/{int(step_pre_desc_false_after_true_required)}"
+                )
+            else:
+                gate_done = int(true_down_streak) >= int(step_pre_desc_true_required)
+                progress_text = f"true-streak={int(true_down_streak)}/{int(step_pre_desc_true_required)}"
+            if not align_silent:
+                crosshair_text = "WAIT" if crosshair_now is None else ("YES" if crosshair_now else "NO")
+                gate_word = f"{COLOR_GREEN}PASS{COLOR_RESET}" if bool(gate_done) else f"{COLOR_RED}FAIL{COLOR_RESET}"
+                print(
+                    format_headline(
+                        (
+                            f"[EXCEPTION] [{step_key}] Pre-align descend pulse "
+                            f"{int(idx)}/{int(step_pre_desc_max_acts)}: "
+                            f"inCrosshairs={crosshair_text}, {progress_text}, gate={gate_word}."
+                        ),
+                        COLOR_MAGENTA_BRIGHT,
+                    )
+                )
+            if gate_done:
+                done = True
+                break
+            time.sleep(CONTROL_DT)
+        if not bool(done):
+            if step_pre_desc_completion_mode == "true_then_false_streak":
+                fail_reason = (
+                    f"pre-align descend could not confirm inCrosshairs=YES then NO x{int(step_pre_desc_false_after_true_required)}"
+                )
+            else:
+                fail_reason = f"pre-align descend could not confirm inCrosshairs=YES x{int(step_pre_desc_true_required)}"
+            if not align_silent:
+                print(
+                    format_headline(
+                        f"[EXCEPTION] [{step_key}] Pre-align descend complete: gate={COLOR_RED}FAIL{COLOR_RESET}.",
+                        COLOR_MAGENTA_BRIGHT,
+                    )
+                )
+            return {"enabled": True, "success": False, "reason": fail_reason}
+        if not align_silent:
+            print(
+                format_headline(
+                    f"[EXCEPTION] [{step_key}] Pre-align descend complete: gate={COLOR_GREEN}PASS{COLOR_RESET}.",
+                    COLOR_MAGENTA_BRIGHT,
+                )
+            )
+        return {"enabled": True, "success": True, "reason": "pre-align descend pass"}
+
     def _complete_alignment_success(reason_text, tracker=None):
+        # Stop immediately when we declare success so no queued/lingering
+        # micro-pulse can fire after a passing gatecheck.
+        if robot:
+            robot.stop()
         post_desc_result = _run_step_post_success_descend()
         if bool((post_desc_result or {}).get("enabled")) and not bool((post_desc_result or {}).get("success")):
             if robot:
@@ -8891,11 +9075,18 @@ def run_alignment_segment(
     if start_status == "success":
         if is_find_topmost_step:
             start_status = "start"
+        elif bool(step_pre_desc_enabled):
+            start_status = "start"
         else:
             return _complete_alignment_success("success gate")
     if start_status != "start":
         pause_after_fail(robot)
         return False, _start_gate_failure_reason_from_wait_status(start_status)
+
+    pre_desc_result = _run_step_pre_align_descend()
+    if bool((pre_desc_result or {}).get("enabled")) and not bool((pre_desc_result or {}).get("success")):
+        pause_after_fail(robot)
+        return False, str((pre_desc_result or {}).get("reason") or "pre-align descend failed")
 
     ground_up_exc = _run_ground_up_level2_exception(
         world,
@@ -8939,8 +9130,9 @@ def run_alignment_segment(
     unchanged_speed_bump_state = None
     recent_align_acts = collections.deque(maxlen=32)
     align_target_lock = None
-    align_target_lock_required = False
+    align_target_lock_required = bool(align_target_lock_enabled)
     align_target_lock_bootstrap_done = False
+    align_target_lock_soft_bypass_active = False
     loop_id = 0
     last_no_action_gatecheck_reason = None
     last_no_action_gatecheck_log_loop = 0
@@ -9137,7 +9329,7 @@ def run_alignment_segment(
 
     def _recover_visibility(source="unknown", reason=None, reverse_max_acts=None):
         source_key = str(source or "").strip().lower()
-        if step_key in {"ALIGN_BRICK", "FIND_TOPMOST_BRICK", "FIND_TOPMOST_BRICK_WALL"}:
+        if bool(align_target_lock_enabled):
             # Recovery moves the robot, so any existing target lock anchor is stale.
             _clear_align_brick_target_lock(clear_required=False)
         if not align_silent:
@@ -9272,14 +9464,21 @@ def run_alignment_segment(
                 return None
 
         visible = bool(brick.get("visible"))
+        raw_crosshair = brick.get("inCrosshairs")
+        if raw_crosshair is None:
+            raw_crosshair = brick.get("in_crosshairs")
+        in_crosshairs_now = None if raw_crosshair is None else bool(raw_crosshair)
         return {
             "visible": visible,
+            "in_crosshairs": in_crosshairs_now,
             "above": (brick.get("brickAbove") if visible else None),
             "below": (brick.get("brickBelow") if visible else None),
             "x": _num(brick.get("x_axis", brick.get("offset_x"))),
             "y": _num(brick.get("y_axis", brick.get("offset_y"))),
             "dist": _num(brick.get("dist")),
+            "x_target": _num((local_gate or {}).get("x_target")),
             "y_target": _num((local_gate or {}).get("y_target")),
+            "y_required": bool((local_gate or {}).get("y_required")),
             "y_tol": abs(_num((local_gate or {}).get("y_tol")) or 0.0),
             "x_tol": abs(_num((local_gate or {}).get("x_tol")) or 0.0),
             "dist_tol": abs(_num((local_gate or {}).get("dist_tol")) or 0.0),
@@ -9295,13 +9494,20 @@ def run_alignment_segment(
         below_now = frame.get("below")
         topmost_like = bool((above_now is False) and (below_now is True))
         stack_uncertain = bool((above_now is None) or (below_now is None))
+        if not bool(align_target_lock_stack_signature_guard_enabled):
+            topmost_like = False
+            stack_uncertain = False
 
+        x_now = frame.get("x")
+        x_target = frame.get("x_target")
         y_now = frame.get("y")
         y_target = frame.get("y_target")
+        y_required = bool(frame.get("y_required"))
+        in_crosshairs_now = bool(frame.get("in_crosshairs") is True)
         y_tol = abs(float(frame.get("y_tol") or 0.0))
-        if y_now is None:
+        if y_now is None and bool(y_required) and not bool(in_crosshairs_now):
             return False, "missing_y"
-        if y_target is not None:
+        if bool(y_required) and y_target is not None and not bool(in_crosshairs_now):
             y_band_scale = 1.8 if guard_mode else 1.4
             y_band = max(float(y_tol) * float(y_band_scale), 1.8)
             if abs(float(y_now) - float(y_target)) > float(y_band):
@@ -9315,7 +9521,6 @@ def run_alignment_segment(
             ax = anchor.get("anchor_x")
             ay = anchor.get("anchor_y")
             ad = anchor.get("anchor_dist")
-            x_now = frame.get("x")
             d_now = frame.get("dist")
             x_jump_limit = max(abs(float(frame.get("x_tol") or 0.0)) * 3.0, 4.0)
             y_jump_limit = max(float(y_tol) * (2.0 if guard_mode else 1.6), 2.5)
@@ -9329,6 +9534,36 @@ def run_alignment_segment(
                     return False, "dist_jump"
             except (TypeError, ValueError):
                 return False, "jump_parse"
+            if bool(align_target_lock_center_prefer_enabled) and not bool(in_crosshairs_now):
+                try:
+                    anchor_x_err = anchor.get("anchor_center_x_err")
+                    if anchor_x_err is None and ax is not None and x_target is not None:
+                        anchor_x_err = abs(float(ax) - float(x_target))
+                    x_err_now = None if (x_now is None or x_target is None) else abs(float(x_now) - float(x_target))
+                    if (
+                        anchor_x_err is not None
+                        and x_err_now is not None
+                        and x_now is not None
+                        and ax is not None
+                        and float(x_err_now) > (float(anchor_x_err) + float(align_target_lock_center_x_worse_margin_mm))
+                        and abs(float(x_now) - float(ax)) > max(float(align_target_lock_center_x_worse_margin_mm), 1.0)
+                    ):
+                        return False, "x_center_worse"
+                    anchor_y_err = anchor.get("anchor_center_y_err")
+                    if anchor_y_err is None and ay is not None and y_target is not None:
+                        anchor_y_err = abs(float(ay) - float(y_target))
+                    y_err_now = None if (y_now is None or y_target is None) else abs(float(y_now) - float(y_target))
+                    if (
+                        anchor_y_err is not None
+                        and y_err_now is not None
+                        and y_now is not None
+                        and ay is not None
+                        and float(y_err_now) > (float(anchor_y_err) + float(align_target_lock_center_y_worse_margin_mm))
+                        and abs(float(y_now) - float(ay)) > max(float(align_target_lock_center_y_worse_margin_mm), 1.0)
+                    ):
+                        return False, "y_center_worse"
+                except (TypeError, ValueError):
+                    return False, "center_parse"
 
         if stack_uncertain and not isinstance(anchor, dict) and y_target is None:
             return False, "stack_uncertain"
@@ -9356,6 +9591,30 @@ def run_alignment_segment(
                 anchor[dst_key] = current_val
                 continue
             anchor[dst_key] = (0.7 * prev_val) + (0.3 * current_val)
+        x_target = frame.get("x_target") if isinstance(frame, dict) else None
+        y_target = frame.get("y_target") if isinstance(frame, dict) else None
+        try:
+            x_target = float(x_target) if x_target is not None else None
+        except (TypeError, ValueError):
+            x_target = None
+        try:
+            y_target = float(y_target) if y_target is not None else None
+        except (TypeError, ValueError):
+            y_target = None
+        if x_target is not None:
+            anchor["x_target"] = float(x_target)
+        if y_target is not None:
+            anchor["y_target"] = float(y_target)
+        try:
+            if anchor.get("anchor_x") is not None and x_target is not None:
+                anchor["anchor_center_x_err"] = abs(float(anchor.get("anchor_x")) - float(x_target))
+        except (TypeError, ValueError):
+            pass
+        try:
+            if anchor.get("anchor_y") is not None and y_target is not None:
+                anchor["anchor_center_y_err"] = abs(float(anchor.get("anchor_y")) - float(y_target))
+        except (TypeError, ValueError):
+            pass
         anchor["updated_ts"] = time.time()
         return anchor
 
@@ -9363,10 +9622,14 @@ def run_alignment_segment(
         try:
             if isinstance(align_target_lock, dict):
                 world._align_brick_target_lock = {
-                    "kind": str(align_target_lock.get("kind") or "second_uppermost"),
+                    "kind": str(align_target_lock.get("kind") or "center_focus"),
                     "anchor_x": align_target_lock.get("anchor_x"),
                     "anchor_y": align_target_lock.get("anchor_y"),
                     "anchor_dist": align_target_lock.get("anchor_dist"),
+                    "x_target": align_target_lock.get("x_target"),
+                    "y_target": align_target_lock.get("y_target"),
+                    "anchor_center_x_err": align_target_lock.get("anchor_center_x_err"),
+                    "anchor_center_y_err": align_target_lock.get("anchor_center_y_err"),
                     "bad_streak": int(align_target_lock.get("bad_streak", 0) or 0),
                     "hold_bad_frames": int(align_target_lock.get("hold_bad_frames", 2) or 2),
                     "acquired_ts": align_target_lock.get("acquired_ts"),
@@ -9379,48 +9642,58 @@ def run_alignment_segment(
 
     def _restore_align_brick_target_lock_from_world():
         nonlocal align_target_lock, align_target_lock_required
-        if not is_align_brick_step:
+        if not bool(align_target_lock_enabled):
             return
         raw = getattr(world, "_align_brick_target_lock", None)
         if not isinstance(raw, dict):
             return
         align_target_lock = {
-            "kind": str(raw.get("kind") or "second_uppermost"),
+            "kind": str(raw.get("kind") or "center_focus"),
             "anchor_x": raw.get("anchor_x"),
             "anchor_y": raw.get("anchor_y"),
             "anchor_dist": raw.get("anchor_dist"),
+            "x_target": raw.get("x_target"),
+            "y_target": raw.get("y_target"),
+            "anchor_center_x_err": raw.get("anchor_center_x_err"),
+            "anchor_center_y_err": raw.get("anchor_center_y_err"),
             "bad_streak": 0,
-            "hold_bad_frames": int(raw.get("hold_bad_frames", 2) or 2),
+            "hold_bad_frames": int(raw.get("hold_bad_frames", align_target_lock_hold_bad_frames) or align_target_lock_hold_bad_frames),
             "last_reason": str(raw.get("last_reason") or "restored"),
             "acquired_ts": raw.get("acquired_ts") or time.time(),
             "updated_ts": time.time(),
         }
-        align_target_lock_required = True
+        align_target_lock_required = bool(align_target_lock_enabled)
         _publish_align_brick_target_lock_state()
 
     def _acquire_second_uppermost_target_lock(*, source="align_top_step_down", timeout_s=None, confirm_frames=None):
         nonlocal align_target_lock, align_target_lock_required
-        if not (is_align_brick_step or is_find_topmost_step):
+        if not bool(align_target_lock_enabled):
             return True, "ready"
 
         try:
-            confirm_needed = max(2, int(confirm_frames if confirm_frames is not None else 3))
+            confirm_needed = max(
+                1,
+                int(confirm_frames if confirm_frames is not None else align_target_lock_confirm_frames),
+            )
         except (TypeError, ValueError):
-            confirm_needed = 3
+            confirm_needed = int(max(1, align_target_lock_confirm_frames))
         try:
-            timeout_local = float(timeout_s) if timeout_s is not None else max(float(CONTROL_DT) * float(confirm_needed + 4), 1.2)
+            timeout_local = (
+                float(timeout_s)
+                if timeout_s is not None
+                else max(float(CONTROL_DT) * float(confirm_needed + 1), float(align_target_lock_acquire_timeout_s))
+            )
         except (TypeError, ValueError):
-            timeout_local = max(float(CONTROL_DT) * float(confirm_needed + 4), 1.2)
+            timeout_local = max(float(CONTROL_DT), float(align_target_lock_acquire_timeout_s))
         deadline = time.time() + max(float(CONTROL_DT), float(timeout_local))
         good_streak = 0
         candidate_anchor = None
-        last_status_line = None
-        source_key = str(source or "align_top_step_down").strip().lower()
+        source_key = str(source or "align_target_lock").strip().lower()
 
         while time.time() < deadline:
             if robot:
                 robot.stop()
-            record_hold_display(world, step, "align_lock: acquire 2nd uppermost")
+            record_hold_display(world, step, "align_lock: acquire center-focus")
             update_world_from_vision(world, vision, log=not align_silent)
             if observer:
                 observer("frame", world, vision, None, None, None)
@@ -9439,33 +9712,57 @@ def run_alignment_segment(
                 candidate_anchor = _align_brick_target_lock_anchor_update(candidate_anchor, frame)
             else:
                 good_streak = 0
-                if reason_key in {"topmost_signature", "stack_uncertain", "not_second_uppermost"}:
-                    candidate_anchor = None
+                candidate_anchor = None
+                if not align_silent:
+                    print(
+                        format_headline(
+                            f"[ALIGN_LOCK] acquire wait ({source_key}): {str(reason_key)}",
+                            COLOR_WHITE,
+                        )
+                    )
 
             if ok_frame and good_streak >= confirm_needed:
                 align_target_lock = {
-                    "kind": "second_uppermost",
+                    "kind": "center_focus",
                     "anchor_x": candidate_anchor.get("anchor_x") if isinstance(candidate_anchor, dict) else None,
                     "anchor_y": candidate_anchor.get("anchor_y") if isinstance(candidate_anchor, dict) else None,
                     "anchor_dist": candidate_anchor.get("anchor_dist") if isinstance(candidate_anchor, dict) else None,
+                    "x_target": candidate_anchor.get("x_target") if isinstance(candidate_anchor, dict) else None,
+                    "y_target": candidate_anchor.get("y_target") if isinstance(candidate_anchor, dict) else None,
+                    "anchor_center_x_err": (
+                        candidate_anchor.get("anchor_center_x_err") if isinstance(candidate_anchor, dict) else None
+                    ),
+                    "anchor_center_y_err": (
+                        candidate_anchor.get("anchor_center_y_err") if isinstance(candidate_anchor, dict) else None
+                    ),
                     "bad_streak": 0,
-                    "hold_bad_frames": 2,
+                    "hold_bad_frames": int(align_target_lock_hold_bad_frames),
                     "last_reason": "ok",
                     "acquired_ts": time.time(),
                     "updated_ts": time.time(),
                 }
-                align_target_lock_required = True
+                align_target_lock_required = bool(align_target_lock_enabled)
                 _publish_align_brick_target_lock_state()
+                if not align_silent:
+                    print(
+                        format_headline(
+                            (
+                                f"[ALIGN_LOCK] acquired center-focus lock: "
+                                f"x={align_target_lock.get('anchor_x')}, y={align_target_lock.get('anchor_y')}."
+                            ),
+                            COLOR_WHITE,
+                        )
+                    )
                 return True, "ready"
 
             time.sleep(CONTROL_DT)
 
         _clear_align_brick_target_lock(clear_required=False)
-        return False, "2nd uppermost target lock not confirmed"
+        return False, "center-focus target lock not confirmed"
 
     def _guard_second_uppermost_target_lock():
         nonlocal align_target_lock
-        if not is_align_brick_step:
+        if not bool(align_target_lock_enabled):
             return "skip"
         if not align_target_lock_required:
             return "skip"
@@ -10224,25 +10521,13 @@ def run_alignment_segment(
                 gap_micro_armed = True
         else:
             not_visible_streak = int(not_visible_streak) + 1
+            align_target_lock_soft_bypass_active = False
         obs_note = getattr(world, "_last_obs_note", None)
         if obs_note:
             world._last_obs_note = None
         # pause1 removed per request
         if observer:
             observer("frame", world, vision, None, None, None)
-        if step_norm == "ALIGN_BRICK" and bool(align_target_lock_required):
-            if not isinstance(align_target_lock, dict) and visible_now:
-                lock_ok, lock_status = _acquire_second_uppermost_target_lock(
-                    source="align_loop_bootstrap",
-                    timeout_s=max(float(CONTROL_DT) * 8.0, 0.8),
-                    confirm_frames=2,
-                )
-                if not lock_ok:
-                    return False, str(lock_status or "2nd uppermost target lock not confirmed")
-                continue
-            if isinstance(align_target_lock, dict) and not bool(align_target_lock_bootstrap_done):
-                align_target_lock_bootstrap_done = True
-                align_target_lock_required = False
         gate_obs = None
         gate_obs = observe_success_gatecheck(
             world,
@@ -10261,6 +10546,56 @@ def run_alignment_segment(
                 observer("action", world, vision, None, 0.0, "gate confirm hold")
             time.sleep(CONTROL_DT)
             continue
+        if bool(align_target_lock_enabled) and not bool(align_target_lock_soft_bypass_active) and bool(gap_micro_armed):
+            if visible_now and not isinstance(align_target_lock, dict):
+                lock_ok, lock_status = _acquire_second_uppermost_target_lock(
+                    source="align_loop_bootstrap",
+                    timeout_s=float(align_target_lock_acquire_timeout_s),
+                    confirm_frames=int(align_target_lock_confirm_frames),
+                )
+                if not lock_ok:
+                    brick_local = getattr(world, "brick", {}) or {}
+                    raw_crosshair_now = brick_local.get("inCrosshairs")
+                    if raw_crosshair_now is None:
+                        raw_crosshair_now = brick_local.get("in_crosshairs")
+                    in_crosshairs_now = bool(raw_crosshair_now is True)
+                    if in_crosshairs_now:
+                        align_target_lock_soft_bypass_active = True
+                        if not align_silent:
+                            print(
+                                format_headline(
+                                    "[ALIGN_LOCK] bypass: inCrosshairs=YES; proceeding with micro adjustments.",
+                                    COLOR_WHITE,
+                                )
+                            )
+                    else:
+                        if robot:
+                            robot.stop()
+                        if not align_silent:
+                            print(
+                                format_headline(
+                                    f"[ALIGN_LOCK] waiting for center-focus lock: {str(lock_status)}",
+                                    COLOR_WHITE,
+                                )
+                            )
+                        time.sleep(CONTROL_DT)
+                        continue
+                align_target_lock_bootstrap_done = True
+            if isinstance(align_target_lock, dict):
+                guard_status = _guard_second_uppermost_target_lock()
+                if guard_status == "hold":
+                    time.sleep(CONTROL_DT)
+                    continue
+                if guard_status == "lost":
+                    if not align_silent:
+                        print(
+                            format_headline(
+                                "[ALIGN_LOCK] lost center-focus lock; reacquiring.",
+                                COLOR_ORANGE_BRIGHT,
+                            )
+                        )
+                    time.sleep(CONTROL_DT)
+                    continue
 
         exception_ran, exception_status = _maybe_run_progress_mast_exception()
         if exception_status == "confirm cancelled":
@@ -10313,18 +10648,18 @@ def run_alignment_segment(
 
         duration_override_ms = None
         brick = getattr(world, "brick", {}) or {}
-        find_brick_search_mode = bool(
-            step_key == "FIND_BRICK"
+        visible_search_mode = bool(
+            visible_search_cycle_enabled
             and not bool(brick.get("visible"))
             and scan_cmd in ("l", "r")
         )
-        if find_brick_search_mode:
+        if visible_search_mode:
             act_plan = {
                 "planner": "search",
                 "cmd": str(scan_cmd),
                 "speed": 0.0,
                 "score": None,
-                "reason": "find_brick_search_visible_false",
+                "reason": f"{str(step_key or 'STEP').lower()}_search_visible_false",
             }
         else:
             act_plan = next_module.select_alignment_next_act(
@@ -10347,8 +10682,8 @@ def run_alignment_segment(
         speed = act_plan.get("speed") or 0.0
         cmd_reason = act_plan.get("reason") or "align"
         speed_score = act_plan.get("score")
-        if find_brick_search_mode and cmd in ("l", "r"):
-            speed_score = _next_find_brick_search_score()
+        if visible_search_mode and cmd in ("l", "r"):
+            speed_score = _next_visible_search_score()
             speed_score = _apply_find_brick_turn_speed_policy(
                 step_key,
                 cmd,
@@ -10381,12 +10716,11 @@ def run_alignment_segment(
                 speed = float(lite_fallback.get("speed") or 0.0)
                 cmd_reason = str(lite_fallback.get("reason") or "align")
                 speed_score = lite_fallback.get("score")
-        # FIND_BRICK visibility-search fallback: if planner has no actionable act
-        # while brick is not visible, keep scanning using the configured scan
-        # direction until the target reappears.
+        # Visibility-search fallback: if planner has no actionable act while
+        # target is not visible, keep scanning in configured direction.
         if (
             cmd is None
-            and step_key == "FIND_BRICK"
+            and visible_search_cycle_enabled
             and not bool((getattr(world, "brick", None) or {}).get("visible"))
             and scan_cmd in ("l", "r")
         ):
@@ -10409,7 +10743,7 @@ def run_alignment_segment(
             cmd = str(scan_cmd)
             speed_score = int(scan_score)
             speed = float(telemetry_robot_module.manual_speed_for_cmd(cmd, speed_score))
-            cmd_reason = "find_brick_scan_visible_false"
+            cmd_reason = f"{str(step_key or 'STEP').lower()}_scan_visible_false"
         # If planner reports no actionable command, immediately run gatecheck
         # confirmation (lite precheck + full tracker) instead of idling.
         if cmd is None:
@@ -10596,6 +10930,29 @@ def run_alignment_segment(
             if bool((pre_action_obs or {}).get("hold_for_confirm")):
                 time.sleep(CONTROL_DT)
                 continue
+            # Hard no-wiggle edge guard: re-observe immediately before sending
+            # motion and skip the act if gate confirmation is already passing or
+            # in hold-for-confirm state.
+            edge_status = getattr(world, "_gatecheck_status", None)
+            if isinstance(edge_status, dict) and bool(edge_status.get("truth_ok", False)):
+                return _complete_alignment_success("success gate", tracker=success_tracker)
+            update_world_from_vision(world, vision, log=not align_silent)
+            if observer:
+                observer("frame", world, vision, None, None, None)
+            edge_obs = observe_success_gatecheck(
+                world,
+                step,
+                success_tracker,
+                phase="align",
+                log=False,
+            )
+            if bool((edge_obs or {}).get("success_met")):
+                return _complete_alignment_success("success gate", tracker=success_tracker)
+            if bool((edge_obs or {}).get("hold_for_confirm")):
+                if robot:
+                    robot.stop()
+                time.sleep(CONTROL_DT)
+                continue
             action_meta = send_robot_command(
                 robot,
                 world,
@@ -10605,6 +10962,7 @@ def run_alignment_segment(
                 speed_score=speed_score,
                 auto_mode=True,
                 duration_override_ms=duration_override_ms,
+                ease_in_out_enabled=False,
             )
             cmd_sent = cmd
             score_effective = speed_score
@@ -10668,7 +11026,8 @@ def run_alignment_segment(
                     return False, "lost_vision_stale_observation"
             if not align_silent:
                 align_action_idx = int(align_action_idx) + 1
-                if str(cmd_reason or "").strip().lower() == "find_brick_search_visible_false":
+                cmd_reason_key = str(cmd_reason or "").strip().lower()
+                if cmd_reason_key.endswith("_search_visible_false") or cmd_reason_key.endswith("_scan_visible_false"):
                     visible_word = f"{COLOR_RED}NO{COLOR_RESET}"
                     scan_text = action_display_text(cmd, score_effective)
                     print(
@@ -11014,6 +11373,7 @@ def run_alignment_segment(
                 speed_score=speed_score,
                 auto_mode=True,
                 duration_override_ms=duration_override_ms,
+                ease_in_out_enabled=False,
             )
             cmd_sent = cmd
             score_effective = speed_score

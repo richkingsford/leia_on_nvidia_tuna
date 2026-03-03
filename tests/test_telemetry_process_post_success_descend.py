@@ -18,14 +18,22 @@ class _DummyRobot:
 
 
 class _DummyWorld:
-    def __init__(self, *, max_acts=4):
+    def __init__(self, *, max_acts=4, post_enabled=True, pre_enabled=False):
         self.process_rules = {
             "BRICK_LOCK": {
                 "success_gates": {
                     "visible": {"min": True},
                 },
+                "pre_align_descend": {
+                    "enabled": bool(pre_enabled),
+                    "command": "d",
+                    "score": 100,
+                    "completion_mode": "true_then_false_streak",
+                    "false_after_true_down_acts_required": 2,
+                    "max_acts": int(max_acts),
+                },
                 "post_success_descend": {
-                    "enabled": True,
+                    "enabled": bool(post_enabled),
                     "command": "d",
                     "score": 100,
                     "completion_mode": "true_then_false_streak",
@@ -56,6 +64,69 @@ class _DummyWorld:
 
 
 class TestTelemetryProcessPostSuccessDescend(unittest.TestCase):
+    def test_brick_lock_runs_pre_align_descend_before_alignment(self):
+        world = _DummyWorld(max_acts=4, pre_enabled=True, post_enabled=False)
+        robot = _DummyRobot()
+        send_cmds = []
+        print_lines = []
+
+        # Pre-align descend phase should see YES, NO, NO and then handoff to align.
+        crosshair_sequence = [True, False, False]
+
+        def _fake_update_world_from_vision(world_obj, _vision_obj, log=True):
+            _ = log
+            if crosshair_sequence:
+                world_obj.brick["inCrosshairs"] = crosshair_sequence.pop(0)
+            world_obj._frame_id = int(getattr(world_obj, "_frame_id", 0) or 0) + 1
+
+        def _fake_send_robot_command(_robot, _world, _step, cmd, *_args, **_kwargs):
+            send_cmds.append(str(cmd))
+            return {
+                "cmd_sent": str(cmd),
+                "score_effective": 100,
+                "power": 0.0,
+                "pwm": 0,
+                "duration_ms": 10,
+            }
+
+        with patch.object(telemetry_process, "wait_for_start_gates", return_value="start"), \
+             patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world_from_vision), \
+             patch.object(
+                 telemetry_process,
+                 "observe_success_gatecheck",
+                 return_value={"success_met": True, "hold_for_confirm": False},
+             ), \
+             patch.object(telemetry_process, "send_robot_command", side_effect=_fake_send_robot_command), \
+             patch.object(telemetry_process, "post_act_analysis", return_value=None), \
+             patch.object(telemetry_process.telemetry_brick, "success_gate_bounds", return_value={}), \
+             patch.object(telemetry_process.time, "sleep", return_value=None), \
+             patch.object(
+                 builtins,
+                 "print",
+                 side_effect=lambda *args, **kwargs: print_lines.append(" ".join(str(arg) for arg in args)),
+             ):
+            ok, reason = telemetry_process.run_alignment_segment(
+                segment={"events": []},
+                step="BRICK_LOCK",
+                robot=robot,
+                vision=object(),
+                world=world,
+                steps=[],
+                raw_steps=[],
+                observer=None,
+                analysis_pause_s=0.0,
+                confirm_callback=None,
+                align_silent=False,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(reason, "success gate")
+        self.assertEqual(send_cmds, ["d", "d", "d"])
+        self.assertGreaterEqual(robot.stop_calls, 1)
+        self.assertTrue(
+            any("[EXCEPTION] [BRICK_LOCK] Pre-align descend pulse" in line for line in print_lines)
+        )
+
     def test_brick_lock_runs_post_success_descend_and_logs_clean_gate_words(self):
         world = _DummyWorld(max_acts=4)
         robot = _DummyRobot()
