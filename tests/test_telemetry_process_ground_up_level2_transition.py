@@ -567,6 +567,77 @@ class TestGroundUpLevel2Transition(unittest.TestCase):
         self.assertFalse(bool(result.get("success")))
         self.assertIn("last_obs_fresh=NO", str(result.get("reason")))
 
+    def test_find_topmost_brick_level2_fail_fast_on_skipped_observation(self):
+        world = _DummyWorld()
+        world.process_rules = {
+            "FIND_TOPMOST_BRICK": {
+                "success_gates": {
+                    "inCrosshairs": {"target": False, "tol": 0.0},
+                },
+                "topmost_crosshair_exception": {
+                    "enabled": True,
+                    "ground_up_level2_enabled": True,
+                    "ground_reset_enabled": False,
+                    "mast_up_command": "u",
+                    "mast_up_score": 100,
+                    "mast_up_max_acts": 6,
+                    "false_up_acts_required": 3,
+                    "consecutive_no_required": 3,
+                    "false_confirm_frames": 3,
+                    "level2_use_full_gatecheck": False,
+                    "observation_confidence_min": 50.0,
+                    "level2_fail_on_skipped_observation": True,
+                },
+            }
+        }
+        robot = _DummyRobot()
+        sent_cmds = []
+        sequence = [
+            {"in_crosshairs": False, "confidence": 95.0},
+            {"in_crosshairs": False, "confidence": 95.0},
+            {"in_crosshairs": False, "confidence": 95.0},
+            {"in_crosshairs": False, "confidence": 0.0},
+            {"in_crosshairs": False, "confidence": 0.0},
+            {"in_crosshairs": False, "confidence": 0.0},
+        ]
+
+        def _fake_update_world_from_vision(world_obj, vision_obj, log=True):
+            _ = (vision_obj, log)
+            world_obj._frame_id = int(getattr(world_obj, "_frame_id", 0) or 0) + 1
+            sample = sequence.pop(0) if sequence else {"in_crosshairs": False, "confidence": 0.0}
+            world_obj.brick["inCrosshairs"] = sample["in_crosshairs"]
+            world_obj.brick["visible"] = True
+            world_obj.brick["brickAbove"] = False
+            world_obj.brick["confidence"] = sample["confidence"]
+            world_obj.brick["y_axis"] = 120.0
+            world_obj.brick["offset_y"] = 120.0
+
+        def _fake_send_robot_command(*args, **kwargs):
+            _ = kwargs
+            sent_cmds.append(str(args[3]))
+            return {}
+
+        with patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world_from_vision), \
+             patch.object(telemetry_process, "send_robot_command", side_effect=_fake_send_robot_command), \
+             patch.object(telemetry_process, "post_act_analysis", return_value=None), \
+             patch.object(telemetry_process, "run_full_gatecheck_after_act", return_value=False), \
+             patch.object(telemetry_process.time, "sleep", return_value=None):
+            result = telemetry_process._run_ground_up_level2_exception(
+                world,
+                vision=object(),
+                step="FIND_TOPMOST_BRICK",
+                robot=robot,
+                observer=None,
+                confirm_callback=None,
+                align_silent=True,
+            )
+
+        self.assertFalse(bool(result.get("success")))
+        self.assertIn("level2 observation skipped", str(result.get("reason")))
+        self.assertIn("conf=0.0% < 50.0%", str(result.get("reason")))
+        self.assertGreaterEqual(sent_cmds.count("u"), 1)
+        self.assertGreaterEqual(robot.stop_calls, 1)
+
     def test_handoff_defaults_disabled_without_explicit_enabled_true(self):
         world = _DummyWorld()
         world.learned_rules = {}

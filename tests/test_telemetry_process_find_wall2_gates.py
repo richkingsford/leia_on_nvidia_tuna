@@ -23,7 +23,7 @@ class TestTelemetryProcessFindWall2Gates(unittest.TestCase):
         }
         step_rules = {
             "FIND_WALL2": {
-                "alignment_metrics": ["visible", "xAxis_offset_abs", "yAxis_offset_abs"],
+                "alignment_metrics": ["visible", "xAxis_offset_abs", "y_axis"],
             }
         }
         gates = telemetry_process.derive_success_gates(
@@ -36,7 +36,17 @@ class TestTelemetryProcessFindWall2Gates(unittest.TestCase):
         visible_gate = derived.get("visible") or {}
         self.assertIs(visible_gate.get("min"), True)
         self.assertIn("xAxis_offset_abs", derived)
-        self.assertIn("yAxis_offset_abs", derived)
+        self.assertIn("y_axis", derived)
+        self.assertNotIn("yAxis_offset_abs", derived)
+
+    def test_find_wall2_success_metrics_prefer_y_axis_alias(self):
+        filtered = telemetry_process.success_gate_metrics_for_step(
+            ["visible", "xAxis_offset_abs", "yAxis_offset_abs", "dist"],
+            "FIND_WALL2",
+            step_rules={},
+        )
+        self.assertIn("y_axis", filtered)
+        self.assertNotIn("yAxis_offset_abs", filtered)
 
     def test_process_model_find_brick_includes_x_and_y_success_gates(self):
         model = telemetry_process.load_process_model()
@@ -57,6 +67,15 @@ class TestTelemetryProcessFindWall2Gates(unittest.TestCase):
         self.assertIn("inCrosshairs", gates)
         self.assertNotIn("brick_above", gates)
         self.assertNotIn("brick_below", gates)
+
+    def test_process_model_find_wall2_includes_y_axis_success_gate(self):
+        model = telemetry_process.load_process_model()
+        steps = (model or {}).get("steps") if isinstance(model, dict) else {}
+        step_cfg = (steps or {}).get("FIND_WALL2") if isinstance(steps, dict) else {}
+        gates = (step_cfg or {}).get("success_gates") if isinstance(step_cfg, dict) else {}
+        self.assertIsInstance(gates, dict)
+        self.assertIn("y_axis", gates)
+        self.assertNotIn("yAxis_offset_abs", gates)
 
 
 if __name__ == "__main__":

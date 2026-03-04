@@ -101,9 +101,9 @@ PROCESS_SUCCESS_METRICS_BY_STEP = {
     "BRICK_LOCK_WALL": ("xAxis_offset_abs", "yAxis_offset_abs", "dist"),
     "ALIGN_BRICK": ("visible", "xAxis_offset_abs", "yAxis_offset_abs", "dist"),
     "SEAT_BRICK": ("visible", "dist"),
-    "SEAT_BRICK2": ("visible", "dist"),
+    "SEAT_BRICK2": ("visible", "dist", "x_axis", "y_axis"),
     "ELEVATE_BRICK": ("visible",),
-    "FIND_WALL2": ("visible", "xAxis_offset_abs", "yAxis_offset_abs"),
+    "FIND_WALL2": ("visible", "xAxis_offset_abs", "y_axis"),
     "APPROACH_VECTOR_WALL": ("visible", "angle_abs", "xAxis_offset_abs", "yAxis_offset_abs"),
     "POSITION_BRICK": ("visible", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "brick_above"),
     "RETREAT": ("visible", "dist"),
@@ -136,6 +136,7 @@ ALIGN_BRICK_TOPMOST_TIMEOUT_S = 30.0
 ALIGN_BRICK_TOPMOST_GATECHECK_MAX_TRIES = 6
 ALIGN_BRICK_SECOND_UPPERMOST_DESCENT_HOTKEY = "l"
 ALIGN_BRICK_SECOND_UPPERMOST_DESCENT_PULSES = 3
+POST_ACTION_OBSERVE_DELAY_S = 0.5
 
 MM_METRICS = {
     "xAxis_offset_abs",
@@ -186,6 +187,7 @@ TOPMOST_GROUND_UP_LEVEL2_STEPS = {
     "FIND_TOPMOST_BRICK",
     "FIND_TOPMOST_BRICK_WALL",
 }
+_STEP_NUMBER_BY_LABEL_CACHE = None
 FIND_BRICK_TURN_MOVE_MAX_SCORE = 2
 FIND_BRICK_TURN_CHECK_MAX_SCORE = 1
 MIN_MM_TOL = 1.5
@@ -233,6 +235,29 @@ def _frames_from_seconds(seconds, fallback_frames):
 def _step_allows_topmost_ground_up_level2(step):
     step_key = normalize_step_label(step)
     return bool(step_key in TOPMOST_GROUND_UP_LEVEL2_STEPS)
+
+
+def _step_number_for_label(step):
+    global _STEP_NUMBER_BY_LABEL_CACHE
+    step_key = normalize_step_label(step)
+    if not step_key:
+        return None
+    cache = _STEP_NUMBER_BY_LABEL_CACHE
+    if not isinstance(cache, dict):
+        cache = {}
+        try:
+            sequence = telemetry_robot_module.step_sequence()
+        except Exception:
+            sequence = []
+        for idx, item in enumerate(sequence, start=1):
+            item_key = normalize_step_label(getattr(item, "value", item))
+            if item_key and item_key not in cache:
+                cache[item_key] = int(idx)
+        _STEP_NUMBER_BY_LABEL_CACHE = cache
+    try:
+        return int(cache.get(step_key))
+    except (TypeError, ValueError):
+        return None
 
 
 def default_speed_for_cmd(cmd, score=DEFAULT_SPEED_SCORE):
@@ -2688,6 +2713,30 @@ def success_visible_target(world, step):
     return None
 
 
+def _apply_post_action_observe_delay(world):
+    # Global observe-after-act guardrail: require a fixed settle delay after any
+    # sent motion command before we sample fresh vision again.
+    if world is None:
+        return
+    cmd = str(getattr(world, "_last_action_cmd", "") or "").strip().lower()
+    if cmd not in {"f", "b", "l", "r", "u", "d"}:
+        return
+    sent_time = _as_float(getattr(world, "_last_action_time", None), None)
+    if sent_time is None:
+        return
+    delay_s = _as_float(
+        getattr(world, "_post_action_observe_delay_s", POST_ACTION_OBSERVE_DELAY_S),
+        POST_ACTION_OBSERVE_DELAY_S,
+    )
+    delay_s = max(0.0, float(delay_s))
+    if delay_s <= 0.0:
+        return
+    elapsed = float(time.time()) - float(sent_time)
+    remaining = float(delay_s) - float(elapsed)
+    if remaining > 0.0:
+        time.sleep(float(remaining))
+
+
 
 
 def step_elapsed_s(world):
@@ -3237,7 +3286,21 @@ def _run_ground_up_level2_exception(
             )
         ),
     )
+    level2_reset_on_skipped_observation = bool(
+        topmost_cfg.get("level2_reset_on_skipped_observation", True)
+    )
     level2_use_full_gatecheck = bool(topmost_cfg.get("level2_use_full_gatecheck", True))
+    level2_false_confirm_frames = max(
+        1,
+        int(_as_int(topmost_cfg.get("false_confirm_frames"), 1)),
+    )
+    level2_confirm_frames = 1 if bool(level2_use_full_gatecheck) else int(level2_false_confirm_frames)
+    level2_require_visible_for_confirm = bool(
+        topmost_cfg.get("level2_require_visible_for_confirm", True)
+    )
+    level2_fail_on_skipped_observation = bool(
+        topmost_cfg.get("level2_fail_on_skipped_observation", False)
+    )
     observation_confidence_min = _as_float(
         topmost_cfg.get("observation_confidence_min"),
         ARUCO_GATE_MIN_CONFIDENCE,
@@ -3366,6 +3429,81 @@ def _run_ground_up_level2_exception(
             crosshair_obs.get("crosshair_raw"),
             crosshair_obs.get("crosshair_calc"),
             bool(crosshair_obs.get("crosshair_mismatch", False)),
+        )
+
+    def _crosshair_samples_consistent(samples, *, require_non_wait=True):
+        if not isinstance(samples, (list, tuple)) or not samples:
+            return False
+        first = samples[0]
+        if require_non_wait and first is None:
+            return False
+        return all(value == first for value in samples)
+
+    def _crosshair_sample_text(samples):
+        if not isinstance(samples, (list, tuple)):
+            return ""
+        parts = []
+        for value in samples:
+            parts.append("WAIT" if value is None else ("YES" if bool(value) else "NO"))
+        return ",".join(parts)
+
+    def _observe_level2_crosshair_confident(*, confirm_frames=1):
+        required = max(1, int(confirm_frames or 1))
+        samples = []
+        latest_snapshot = None
+        for idx in range(required):
+            if idx > 0:
+                wait_for_frame_settle(world, vision, 1, log=not align_silent)
+            latest_snapshot = _update_and_read_crosshair()
+            samples.append(latest_snapshot[0] if isinstance(latest_snapshot, tuple) else None)
+
+        if not isinstance(latest_snapshot, tuple):
+            latest_snapshot = (
+                None,
+                None,
+                False,
+                False,
+                None,
+                None,
+                None,
+                int(getattr(world, "_frame_id", 0) or 0),
+                None,
+                None,
+                False,
+            )
+        (
+            _crosshair_latest,
+            _y_now,
+            visible_now,
+            obs_confident,
+            obs_confidence,
+            brick_above_now,
+            brick_below_now,
+            frame_id_now,
+            raw_crosshair_now,
+            calc_crosshair_now,
+            crosshair_mismatch_now,
+        ) = latest_snapshot
+
+        if required <= 1:
+            crosshair_now = samples[0] if samples else None
+            samples_consistent = bool(crosshair_now is not None)
+        else:
+            samples_consistent = _crosshair_samples_consistent(samples, require_non_wait=True)
+            crosshair_now = samples[0] if bool(samples_consistent) else None
+        return (
+            crosshair_now,
+            tuple(samples),
+            bool(samples_consistent),
+            bool(visible_now),
+            bool(obs_confident),
+            obs_confidence,
+            brick_above_now,
+            brick_below_now,
+            int(frame_id_now),
+            raw_crosshair_now,
+            calc_crosshair_now,
+            bool(crosshair_mismatch_now),
         )
 
     if not align_silent:
@@ -3779,7 +3917,8 @@ def _run_ground_up_level2_exception(
             success_hit = False
         (
             crosshair_now,
-            _y_now,
+            crosshair_samples,
+            crosshair_samples_consistent,
             visible_now,
             obs_confident,
             obs_confidence,
@@ -3789,7 +3928,7 @@ def _run_ground_up_level2_exception(
             raw_crosshair_now,
             calc_crosshair_now,
             crosshair_mismatch_now,
-        ) = _update_and_read_crosshair()
+        ) = _observe_level2_crosshair_confident(confirm_frames=level2_confirm_frames)
         last_crosshair = crosshair_now
         last_brick_above = brick_above_now
         last_brick_below = brick_below_now
@@ -3798,8 +3937,9 @@ def _run_ground_up_level2_exception(
         last_obs_confidence = obs_confidence
         fresh_after_mast = int(frame_id_now) > int(pre_frame_id)
         last_obs_fresh = bool(fresh_after_mast)
+        visible_ok_for_level2 = bool(visible_now) or (not bool(level2_require_visible_for_confirm))
         base_usable = (
-            bool(visible_now)
+            bool(visible_ok_for_level2)
             and bool(obs_confident)
             and bool(fresh_after_mast)
             and (crosshair_now is not None)
@@ -3816,20 +3956,72 @@ def _run_ground_up_level2_exception(
                 stack_known = False
             elif bool(brick_below_now):
                 stack_clear = False
+        skip_reason = None
+        if not bool(fresh_after_mast):
+            skip_reason = "stale frame"
+        elif bool(level2_require_visible_for_confirm) and not bool(visible_now):
+            skip_reason = "visible=NO"
+        elif not bool(obs_confident):
+            if obs_confidence is None:
+                skip_reason = "low confidence"
+            else:
+                skip_reason = (
+                    f"conf={float(obs_confidence):.1f}% < "
+                    f"{float(observation_confidence_min or 0.0):.1f}%"
+                )
+        elif require_brick_above_false and brick_above_now is None:
+            skip_reason = "brickAbove=WAIT"
+        elif require_brick_below_false and brick_below_now is None:
+            skip_reason = "brickBelow=WAIT"
+        elif require_brick_above_false and bool(brick_above_now):
+            skip_reason = "brickAbove=YES"
+        elif require_brick_below_false and bool(brick_below_now):
+            skip_reason = "brickBelow=YES"
+        elif crosshair_now is None:
+            if int(level2_confirm_frames) > 1 and not bool(crosshair_samples_consistent):
+                skip_reason = "inCrosshairs=UNSTABLE"
+            else:
+                skip_reason = "inCrosshairs=WAIT"
         usable_for_gate = bool(base_usable and stack_known)
         stack_gate_armed = bool(stack_clear) if bool(require_stack_false_gate) else True
         used_observation = bool(usable_for_gate) and bool(stack_gate_armed)
+        if (not bool(used_observation)) and bool(level2_fail_on_skipped_observation):
+            fail_reason = (
+                f"level2 observation skipped at cycle {int(idx)}/{int(mast_max_acts)}: "
+                f"{str(skip_reason or 'unqualified observation')}"
+            )
+            if not align_silent:
+                print(
+                    format_headline(
+                        "[ERROR]",
+                        COLOR_RED,
+                        f" [{step_key}] {fail_reason}; fail-fast policy enabled.",
+                    )
+                )
+            if robot:
+                robot.stop()
+            return {"enabled": True, "handled": True, "success": False, "reason": fail_reason}
         condition_hit = bool(
             used_observation
             and (crosshair_now is False)
         )
-        # Level2 requires strictly consecutive PASS cycles. Any cycle that does
-        # not produce a passing confirm result resets the streak.
+        # Level2 streak policy:
+        # - PASS cycle increments.
+        # - Contradicting usable observation resets.
+        # - Skipped observation can hold or reset based on step config.
         prev_confident_no_streak = int(confident_no_streak)
         if bool(condition_hit):
             confident_no_streak = int(confident_no_streak) + 1
-        else:
+            streak_update_state = "counted"
+        elif bool(used_observation):
             confident_no_streak = 0
+            streak_update_state = "reset"
+        elif bool(level2_reset_on_skipped_observation):
+            confident_no_streak = 0
+            streak_update_state = "reset_skip"
+        else:
+            confident_no_streak = int(confident_no_streak)
+            streak_update_state = "hold"
         level2_ok = int(confident_no_streak) >= int(no_streak_required)
         if observer:
             observer("action", world, vision, mast_cmd, mast_speed, "ground_up_level2_mast_up")
@@ -3844,45 +4036,47 @@ def _run_ground_up_level2_exception(
             else:
                 bb_text = "YES" if bool(brick_below_now) else "NO"
             # `cycle_condition` is per-cycle truth only.
-            cond_word = f"{COLOR_GREEN}PASS{COLOR_RESET}" if bool(condition_hit) else f"{COLOR_RED}FAIL{COLOR_RESET}"
-            # Keep PASS/FAIL token for backward-compatible operator parsing and
-            # tests, but emit explicit streak progress state separately.
-            streak_word = f"{COLOR_GREEN}PASS{COLOR_RESET}" if bool(condition_hit) else f"{COLOR_RED}FAIL{COLOR_RESET}"
+            if bool(condition_hit):
+                cond_word = f"{COLOR_GREEN}PASS{COLOR_RESET}"
+                streak_word = f"{COLOR_GREEN}PASS{COLOR_RESET}"
+            elif bool(used_observation):
+                cond_word = f"{COLOR_RED}FAIL{COLOR_RESET}"
+                streak_word = f"{COLOR_RED}FAIL{COLOR_RESET}"
+            else:
+                if bool(level2_reset_on_skipped_observation):
+                    cond_word = f"{COLOR_RED}FAIL{COLOR_RESET}"
+                    streak_word = f"{COLOR_RED}FAIL{COLOR_RESET}"
+                else:
+                    cond_word = f"{COLOR_ORANGE_BRIGHT}SKIP{COLOR_RESET}"
+                    streak_word = f"{COLOR_ORANGE_BRIGHT}SKIP{COLOR_RESET}"
             if bool(level2_ok):
                 progress_word = f"{COLOR_GREEN}COMPLETE{COLOR_RESET}"
             elif bool(condition_hit):
                 progress_word = f"{COLOR_ORANGE_BRIGHT}COUNTED{COLOR_RESET}"
-            elif int(prev_confident_no_streak) > 0:
+            elif streak_update_state in {"reset", "reset_skip"} and int(prev_confident_no_streak) > 0:
                 progress_word = f"{COLOR_RED}RESET{COLOR_RESET}"
+            elif streak_update_state == "hold" and int(prev_confident_no_streak) > 0:
+                progress_word = f"{COLOR_ORANGE_BRIGHT}HOLD{COLOR_RESET}"
             else:
                 progress_word = f"{COLOR_WHITE}WAIT{COLOR_RESET}"
             armed_word = f"{COLOR_GREEN}YES{COLOR_RESET}" if bool(stack_gate_armed) else f"{COLOR_RED}NO{COLOR_RESET}"
-            if not bool(fresh_after_mast):
-                obs_text = "SKIP(stale frame)"
-            elif not bool(visible_now):
-                obs_text = "SKIP(visible=NO)"
-            elif not bool(obs_confident):
-                if obs_confidence is None:
-                    obs_text = "SKIP(low confidence)"
+            if skip_reason is not None:
+                if bool(level2_reset_on_skipped_observation):
+                    obs_text = f"FAIL({str(skip_reason)})"
                 else:
-                    obs_text = (
-                        f"SKIP(conf={float(obs_confidence):.1f}% < "
-                        f"{float(observation_confidence_min or 0.0):.1f}%)"
-                    )
-            elif require_brick_above_false and brick_above_now is None:
-                obs_text = "SKIP(brickAbove=WAIT)"
-            elif require_brick_below_false and brick_below_now is None:
-                obs_text = "SKIP(brickBelow=WAIT)"
-            elif require_brick_above_false and bool(brick_above_now):
-                obs_text = "SKIP(brickAbove=YES)"
-            elif require_brick_below_false and bool(brick_below_now):
-                obs_text = "SKIP(brickBelow=YES)"
-            elif crosshair_now is None:
-                obs_text = "SKIP(inCrosshairs=WAIT)"
+                    obs_text = f"SKIP({str(skip_reason)})"
             else:
-                obs_text = "USED"
+                if (not bool(visible_now)) and (not bool(level2_require_visible_for_confirm)):
+                    obs_text = "USED(visible=NO allowed)"
+                else:
+                    obs_text = "USED"
             raw_crosshair_text = "WAIT" if raw_crosshair_now is None else ("YES" if bool(raw_crosshair_now) else "NO")
             calc_crosshair_text = "WAIT" if calc_crosshair_now is None else ("YES" if bool(calc_crosshair_now) else "NO")
+            crosshair_samples_note = ""
+            if int(level2_confirm_frames) > 1:
+                crosshair_samples_note = (
+                    f"obs{int(level2_confirm_frames)}=[{_crosshair_sample_text(crosshair_samples)}], "
+                )
             mismatch_text = (
                 f"crosshair-src(raw={raw_crosshair_text}, calc={calc_crosshair_text}), "
                 if bool(crosshair_mismatch_now)
@@ -3893,7 +4087,9 @@ def _run_ground_up_level2_exception(
                 prev_mast_lift_mm = float(lift_now_mm)
             print(
                 format_headline(
-                    f"[EXCEPTION] [{step_key}] Cycle {int(idx)}/{int(mast_max_acts)}: "
+                    "[EXCEPTION]",
+                    COLOR_MAGENTA_BRIGHT,
+                    f" {exc_runtime_color}[{step_key}] Cycle {int(idx)}/{int(mast_max_acts)}: "
                     f"observe(pre)=inCrosshairs={pre_crosshair_text}, "
                     f"brickAbove={pre_above_text}, "
                     + (
@@ -3904,6 +4100,7 @@ def _run_ground_up_level2_exception(
                     + f"conf={pre_conf_text}, frame={int(pre_obs_frame_id)} "
                     + f"-> act={COLOR_ORANGE_BRIGHT}{('MAST_UP' if str(mast_cmd) == 'u' else 'MAST_DOWN' if str(mast_cmd) == 'd' else str(mast_cmd).upper())} {int(mast_score)}%{exc_runtime_color} "
                     + f"-> confirm: inCrosshairs={c_text}, "
+                    + f"{crosshair_samples_note}"
                     + f"brickAbove={b_text}, "
                     + (
                         f"brickBelow={bb_text}, "
@@ -3926,9 +4123,8 @@ def _run_ground_up_level2_exception(
                             if bool(level2_use_full_gatecheck)
                             else ""
                         )
-                        + f"{lift_text}."
+                        + f"{lift_text}.{COLOR_RESET}"
                     ),
-                    exc_runtime_color,
                 )
             )
         time.sleep(CONTROL_DT)
@@ -3938,8 +4134,10 @@ def _run_ground_up_level2_exception(
             if not align_silent:
                 print(
                     format_headline(
+                        "[EXCEPTION]",
+                        COLOR_MAGENTA_BRIGHT,
                         (
-                            f"[EXCEPTION] [{step_key}] Transition: "
+                            f" {exc_runtime_color}[{step_key}] Transition: "
                             f"inCrosshairs=NO observed for {int(no_streak_required)} "
                             f"consecutive confident mast-up observations"
                             + (
@@ -3957,9 +4155,8 @@ def _run_ground_up_level2_exception(
                                     )
                                 )
                             )
-                            + "; completing step."
+                            + f"; completing step.{COLOR_RESET}"
                         ),
-                        exc_runtime_color,
                     )
                 )
                 print(format_headline(f"[SUCCESS] {step_key} criteria met", COLOR_GREEN))
@@ -4148,6 +4345,14 @@ def step_requires_start_gates(step, process_rules=None):
 
 
 def success_gate_metrics_for_step(metrics, step, step_rules=None):
+    def _metric_alias_group(metric_name):
+        metric_key = str(metric_name or "").strip()
+        if metric_key in {"xAxis_offset_abs", "xAxis_offset", "x_axis"}:
+            return "x_axis"
+        if metric_key in {"yAxis_offset_abs", "yAxis_offset", "y_axis"}:
+            return "y_axis"
+        return metric_key
+
     obj_key = normalize_step_label(step)
     rules = (step_rules or {}).get(obj_key, {})
     metrics_out = list(metrics or [])
@@ -4157,10 +4362,27 @@ def success_gate_metrics_for_step(metrics, step, step_rules=None):
     allowed = PROCESS_SUCCESS_METRICS_BY_STEP.get(obj_key)
     if not isinstance(allowed, (list, tuple)):
         allowed = rules.get("success_metrics")
-    if isinstance(allowed, list):
-        metrics_out = [metric for metric in metrics_out if metric in allowed]
-    elif isinstance(allowed, tuple):
-        metrics_out = [metric for metric in metrics_out if metric in allowed]
+    if isinstance(allowed, (list, tuple)):
+        allowed_metrics = [str(metric).strip() for metric in allowed if str(metric).strip()]
+        allowed_groups = {_metric_alias_group(metric) for metric in allowed_metrics}
+        preferred_metric_by_group = {}
+        for metric in allowed_metrics:
+            group = _metric_alias_group(metric)
+            if group not in preferred_metric_by_group:
+                preferred_metric_by_group[group] = metric
+        filtered = []
+        seen = set()
+        for metric in metrics_out:
+            metric_key = str(metric).strip()
+            group = _metric_alias_group(metric_key)
+            if group not in allowed_groups:
+                continue
+            preferred_metric = preferred_metric_by_group.get(group, metric_key)
+            if preferred_metric in seen:
+                continue
+            filtered.append(preferred_metric)
+            seen.add(preferred_metric)
+        metrics_out = filtered
     if obj_key in SUCCESS_GATE_EXCLUDE_ANGLE_STEPS:
         metrics_out = [metric for metric in metrics_out if metric != "angle_abs"]
     return metrics_out
@@ -4557,6 +4779,54 @@ def _merge_existing_tolerance_overrides(derived_gates, existing_gates):
     return merged
 
 
+def _success_gate_metric_alias_keys(metric):
+    metric_key = str(metric or "").strip()
+    if metric_key in {"x_axis", "xAxis_offset_abs", "xAxis_offset"}:
+        return ("x_axis", "xAxis_offset_abs", "xAxis_offset")
+    if metric_key in {"y_axis", "yAxis_offset_abs", "yAxis_offset"}:
+        return ("y_axis", "yAxis_offset_abs", "yAxis_offset")
+    return (metric_key,)
+
+
+def _apply_success_gate_tolerance_additions(derived_gates, step_cfg):
+    if not isinstance(derived_gates, dict):
+        return derived_gates
+    if not isinstance(step_cfg, dict):
+        return derived_gates
+    tol_add_cfg = step_cfg.get("success_gate_tol_add")
+    if not isinstance(tol_add_cfg, dict) or not tol_add_cfg:
+        return derived_gates
+
+    adjusted = _clone_gate_config(derived_gates)
+    for metric_name, tol_add in tol_add_cfg.items():
+        try:
+            tol_add_num = float(tol_add)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(tol_add_num) or abs(float(tol_add_num)) <= 0.0:
+            continue
+
+        stats_key = None
+        for alias_key in _success_gate_metric_alias_keys(metric_name):
+            if isinstance(adjusted.get(alias_key), dict):
+                stats_key = alias_key
+                break
+        if not stats_key:
+            continue
+
+        stats = adjusted.get(stats_key)
+        if not isinstance(stats, dict):
+            continue
+        try:
+            tol_base = abs(float(stats.get("tol")))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(tol_base):
+            continue
+        stats["tol"] = round_value(max(0.0, float(tol_base) + float(tol_add_num)))
+    return adjusted
+
+
 def _normalize_locked_success_gates_by_mode(raw):
     if not isinstance(raw, dict):
         return {}
@@ -4731,6 +5001,8 @@ def update_process_model_from_demos(
                     derived_success,
                     active_locked_existing,
                 )
+        if isinstance(derived_success, dict):
+            derived_success = _apply_success_gate_tolerance_additions(derived_success, cfg)
         if locked_success_by_mode:
             active_locked = locked_success_by_mode.get(active_gate_mode)
             if isinstance(derived_success, dict):
@@ -5040,6 +5312,7 @@ def _record_smoothed_frame_snapshot(world):
 
 
 def update_world_from_vision(world, vision, log=True):
+    _apply_post_action_observe_delay(world)
     now = time.time()
     sec = int(now)
     ms = int((now - sec) * 1000)
@@ -8743,11 +9016,17 @@ def run_alignment_segment(
 
         trial_num = int(getattr(world, "loop_id", 0) or 0)
         active_step_label = normalize_step_label(step) or str(step or "ALIGN").strip().upper()
+        step_number = _step_number_for_label(active_step_label)
+        if step_number is not None:
+            step_prefix = f"{COLOR_WHITE}[step#{int(step_number)}]{COLOR_RESET} "
+        else:
+            step_prefix = ""
         if active_step_label == "ALIGN_BRICK":
             phase_base = "ALIGN"
         else:
             phase_base = f"{active_step_label}_ALIGN"
         phase_label = f"{phase_base}_SETTLE" if bool(settle) else phase_base
+        line_prefix = f"{step_prefix}{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}]"
 
         def _print_result_lite_gate_line():
             detail = _result_lite_gate_detail(world, step)
@@ -8757,7 +9036,7 @@ def run_alignment_segment(
             if not line_text:
                 return
             print(
-                f"{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}] "
+                f"{line_prefix} "
                 f"{line_text}{COLOR_RESET}"
             )
 
@@ -8765,13 +9044,13 @@ def run_alignment_segment(
             if result_observation_message:
                 result_render = result_observation_message_colored or result_observation_message
                 print(
-                    f"{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}] "
+                    f"{line_prefix} "
                     f"{result_render}{COLOR_RESET}"
                 )
                 _print_result_lite_gate_line()
             switch_render = switch_message_colored or switch_message
             print(
-                f"{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}] "
+                f"{line_prefix} "
                 f"{switch_render}{COLOR_RESET}"
             )
             snapshot_plain_lines = switch_snapshot_lines if isinstance(switch_snapshot_lines, list) else []
@@ -8788,7 +9067,7 @@ def run_alignment_segment(
                         else plain_line
                     )
                     print(
-                        f"{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}] "
+                        f"{line_prefix} "
                         f"{render_line}{COLOR_RESET}"
                     )
 
@@ -8797,14 +9076,14 @@ def run_alignment_segment(
                 comparison_message_colored = None
         cmd_log = str(cmd).strip().lower()
         print(
-            f"{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}]{COLOR_RESET} "
+            f"{line_prefix}{COLOR_RESET} "
             f"{metric_name}={metric_text} → "
             f"{COLOR_ORANGE_BRIGHT}{cmd_log} {int(score_display)}%{COLOR_RESET}{motor_details}"
         )
         if comparison_message:
             comparison_render = comparison_message_colored or comparison_message
             print(
-                f"{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}] "
+                f"{line_prefix} "
                 f"{comparison_render}{COLOR_RESET}"
             )
             _print_result_lite_gate_line()
@@ -8890,6 +9169,21 @@ def run_alignment_segment(
         ),
     )
     visible_search_next_high = bool(visible_search_cfg.get("start_with_high", True))
+    visible_search_cmd_score_overrides = {}
+    visible_search_cmd_scores_cfg = visible_search_cfg.get("command_scores")
+    if isinstance(visible_search_cmd_scores_cfg, dict):
+        for raw_cmd, raw_score in visible_search_cmd_scores_cfg.items():
+            cmd_local = str(raw_cmd or "").strip().lower()
+            if cmd_local not in ("f", "b", "l", "r", "u", "d"):
+                continue
+            score_local = _as_int(raw_score, None)
+            if score_local is None:
+                continue
+            score_local = max(
+                int(telemetry_robot_module.SPEED_SCORE_MIN),
+                min(int(MAX_SPEED_SCORE), int(score_local)),
+            )
+            visible_search_cmd_score_overrides[cmd_local] = int(score_local)
     visible_search_cmd_cycle_seed = []
     visible_search_cmds_cfg = visible_search_cfg.get("commands")
     if isinstance(visible_search_cmds_cfg, list):
@@ -8904,9 +9198,13 @@ def run_alignment_segment(
         int(_as_int(visible_search_cfg.get("phase1_visible_confirm_frames"), 1)),
     )
 
-    def _next_visible_search_score():
+    def _next_visible_search_score(cmd=None):
         nonlocal visible_search_next_high
-        if not bool(visible_search_cycle_enabled):
+        cmd_key = str(cmd or "").strip().lower()
+        score_override = visible_search_cmd_score_overrides.get(cmd_key)
+        if score_override is not None:
+            score_local = int(score_override)
+        elif not bool(visible_search_cycle_enabled):
             score_local = int(getattr(telemetry_robot_module, "SPEED_SCORE_MIN", 1))
         else:
             score_local = int(visible_search_high_score) if bool(visible_search_next_high) else int(visible_search_low_score)
@@ -8994,6 +9292,90 @@ def run_alignment_segment(
         if isinstance(dist_gate_cfg, dict):
             progress_mast_target_dist = _as_float(dist_gate_cfg.get("target"), None)
     progress_mast_active = bool(progress_mast_enabled and progress_mast_target_dist is not None)
+    near_dist_vis_cfg = step_rules.get("near_dist_visibility_mast_exception") if isinstance(step_rules, dict) else {}
+    if not isinstance(near_dist_vis_cfg, dict):
+        near_dist_vis_cfg = {}
+    near_dist_vis_enabled = bool(near_dist_vis_cfg.get("enabled"))
+    near_dist_vis_reminder = str(near_dist_vis_cfg.get("operator_log_reminder") or "").strip()
+    near_dist_vis_cmd = str(near_dist_vis_cfg.get("command") or "d").strip().lower()
+    if near_dist_vis_cmd not in ("d", "u"):
+        near_dist_vis_cmd = "d"
+    near_dist_vis_score = _as_int(
+        near_dist_vis_cfg.get("score"),
+        int(telemetry_robot_module.SPEED_SCORE_MIN),
+    )
+    near_dist_vis_score = max(
+        int(telemetry_robot_module.SPEED_SCORE_MIN),
+        min(int(MAX_SPEED_SCORE), int(near_dist_vis_score)),
+    )
+    near_dist_vis_max_attempts = max(1, int(_as_int(near_dist_vis_cfg.get("max_attempts"), 2)))
+    near_dist_vis_ratio_max = max(
+        0.0,
+        min(1.0, float(_as_float(near_dist_vis_cfg.get("near_gate_ratio_max"), 0.2))),
+    )
+    near_dist_vis_observe_s = max(
+        float(CONTROL_DT),
+        float(_as_float(near_dist_vis_cfg.get("observe_s"), 0.35)),
+    )
+    near_dist_vis_target_dist = _as_float(near_dist_vis_cfg.get("dist_target"), None)
+    near_dist_vis_tol = _as_float(near_dist_vis_cfg.get("dist_tol"), None)
+    if isinstance(success_gate_cfg, dict):
+        dist_gate_cfg_local = success_gate_cfg.get("dist")
+        if isinstance(dist_gate_cfg_local, dict):
+            if near_dist_vis_target_dist is None:
+                near_dist_vis_target_dist = _as_float(dist_gate_cfg_local.get("target"), None)
+            if near_dist_vis_tol is None:
+                near_dist_vis_tol = _as_float(dist_gate_cfg_local.get("tol"), None)
+    near_dist_vis_tol = abs(float(near_dist_vis_tol or 0.0))
+    near_dist_vis_gap_mm_max = float(near_dist_vis_tol) * float(near_dist_vis_ratio_max)
+    near_dist_vis_active = bool(
+        near_dist_vis_enabled
+        and near_dist_vis_target_dist is not None
+        and near_dist_vis_gap_mm_max > 0.0
+        and near_dist_vis_max_attempts > 0
+    )
+    forward_stall_cfg = (
+        step_rules.get("forward_dist_stall_mast_exception")
+        if isinstance(step_rules, dict)
+        else {}
+    )
+    if not isinstance(forward_stall_cfg, dict):
+        forward_stall_cfg = {}
+    forward_stall_enabled = bool(forward_stall_cfg.get("enabled"))
+    forward_stall_reminder = str(forward_stall_cfg.get("operator_log_reminder") or "").strip()
+    forward_stall_forward_cmd = str(forward_stall_cfg.get("forward_command") or "f").strip().lower()
+    if forward_stall_forward_cmd not in ("f", "b"):
+        forward_stall_forward_cmd = "f"
+    forward_stall_trigger_acts = max(
+        1,
+        int(_as_int(forward_stall_cfg.get("forward_acts_without_improvement"), 7)),
+    )
+    forward_stall_min_improvement_mm = max(
+        0.0,
+        float(_as_float(forward_stall_cfg.get("min_dist_improvement_mm"), 1.0)),
+    )
+    forward_stall_cmd = str(forward_stall_cfg.get("command") or "u").strip().lower()
+    if forward_stall_cmd not in ("u", "d"):
+        forward_stall_cmd = "u"
+    forward_stall_score = _as_int(
+        forward_stall_cfg.get("score"),
+        int(telemetry_robot_module.SPEED_SCORE_MIN),
+    )
+    forward_stall_score = max(
+        int(telemetry_robot_module.SPEED_SCORE_MIN),
+        min(int(MAX_SPEED_SCORE), int(forward_stall_score)),
+    )
+    forward_stall_acts = max(1, int(_as_int(forward_stall_cfg.get("acts"), 2)))
+    forward_stall_dist_target = _as_float(forward_stall_cfg.get("dist_target"), None)
+    if forward_stall_dist_target is None and isinstance(success_gate_cfg, dict):
+        dist_gate_cfg_local = success_gate_cfg.get("dist")
+        if isinstance(dist_gate_cfg_local, dict):
+            forward_stall_dist_target = _as_float(dist_gate_cfg_local.get("target"), None)
+    forward_stall_active = bool(
+        forward_stall_enabled
+        and forward_stall_dist_target is not None
+        and forward_stall_acts > 0
+    )
     crosshair_gate_cfg = None
     if isinstance(success_gate_cfg, dict):
         crosshair_gate_cfg = success_gate_cfg.get("inCrosshairs")
@@ -9105,6 +9487,17 @@ def run_alignment_segment(
             int(_as_int(step_pre_desc_cfg.get("score_after_seen_true"), int(step_pre_desc_score))),
         ),
     )
+    step_pre_desc_score_when_visible_raw = step_pre_desc_cfg.get("score_when_visible")
+    if step_pre_desc_score_when_visible_raw is None:
+        step_pre_desc_score_when_visible = None
+    else:
+        step_pre_desc_score_when_visible = max(
+            int(telemetry_robot_module.SPEED_SCORE_MIN),
+            min(
+                int(MAX_SPEED_SCORE),
+                int(_as_int(step_pre_desc_score_when_visible_raw, int(step_pre_desc_score))),
+            ),
+        )
     step_pre_desc_confirm_frames = max(
         1,
         int(_as_int(step_pre_desc_cfg.get("confirm_frames"), 3)),
@@ -9139,8 +9532,27 @@ def run_alignment_segment(
         )
     else:
         step_pre_desc_max_acts = 0
+    step_post_mast_cfg = step_rules.get("post_success_mast_exception") if isinstance(step_rules, dict) else {}
+    if not isinstance(step_post_mast_cfg, dict):
+        step_post_mast_cfg = {}
+    step_post_mast_enabled = bool(step_post_mast_cfg.get("enabled", False))
+    step_post_mast_reminder = str(step_post_mast_cfg.get("operator_log_reminder") or "").strip()
+    step_post_mast_cmd = str(step_post_mast_cfg.get("command") or "u").strip().lower()
+    if step_post_mast_cmd not in ("u", "d"):
+        step_post_mast_cmd = "u"
+    step_post_mast_score = max(
+        int(telemetry_robot_module.SPEED_SCORE_MIN),
+        min(int(MAX_SPEED_SCORE), int(_as_int(step_post_mast_cfg.get("score"), 50))),
+    )
+    step_post_mast_acts = max(1, int(_as_int(step_post_mast_cfg.get("acts"), 3)))
+    step_post_mast_pause_s = max(
+        0.0,
+        float(_as_float(step_post_mast_cfg.get("pause_s"), 0.0)),
+    )
+    step_post_mast_observe_between_acts = bool(step_post_mast_cfg.get("observe_between_acts", False))
     step_post_desc_run_once = False
     step_pre_desc_run_once = False
+    step_post_mast_run_once = False
     stack_gate_keys = {"brick_above", "brick_below", "brickAbove", "brickBelow"}
     demo_stack_lift_actions = []
     for action in nominal_actions_from_events(segment.get("events") or []):
@@ -9358,6 +9770,25 @@ def run_alignment_segment(
         0.0,
         float(_as_float(align_policy_cfg.get("target_lock_center_y_worse_margin_mm"), 2.0)),
     )
+    raw_micro_adjust_crosshair_guard_cmds = align_policy_cfg.get(
+        "micro_adjust_crosshair_guard_block_cmds"
+    )
+    if isinstance(raw_micro_adjust_crosshair_guard_cmds, (list, tuple, set)):
+        micro_adjust_crosshair_guard_cmds = tuple(
+            cmd
+            for cmd in (
+                str(item or "").strip().lower()
+                for item in raw_micro_adjust_crosshair_guard_cmds
+            )
+            if cmd in {"u", "d"}
+        )
+    else:
+        micro_adjust_crosshair_guard_cmds = ("d",)
+    micro_adjust_crosshair_guard_enabled = bool(
+        step_supports_gap_micro_planner
+        and bool(align_policy_cfg.get("micro_adjust_crosshair_guard_enabled", False))
+        and bool(micro_adjust_crosshair_guard_cmds)
+    )
     align_gate_step_key = step
     skip_settle_pause = step_key in FAST_POST_ACT_GATECHECK_STEPS
     # ALIGN_BRICK demos are often state-only, so derived scan speed can fall back to 50%.
@@ -9381,6 +9812,41 @@ def run_alignment_segment(
         if raw is None:
             raw = brick_local.get("in_crosshairs")
         return None if raw is None else bool(raw)
+
+    def _apply_micro_adjust_crosshair_guard(
+        cmd,
+        speed,
+        speed_score,
+        cmd_reason,
+        *,
+        planner_name=None,
+        phase_label="align",
+    ):
+        if not bool(micro_adjust_crosshair_guard_enabled):
+            return cmd, speed, speed_score, cmd_reason
+        if str(planner_name or "").strip().lower() != "gap":
+            return cmd, speed, speed_score, cmd_reason
+        cmd_key = str(cmd or "").strip().lower()
+        if cmd_key not in micro_adjust_crosshair_guard_cmds:
+            return cmd, speed, speed_score, cmd_reason
+        brick_local = getattr(world, "brick", {}) or {}
+        if not bool(brick_local.get("visible")):
+            return cmd, speed, speed_score, cmd_reason
+        crosshair_now = _read_post_desc_crosshair()
+        if crosshair_now is not True:
+            return cmd, speed, speed_score, cmd_reason
+        if not align_silent:
+            print(
+                format_headline(
+                    (
+                        f"[GUARD] {step_key} {str(phase_label)}: "
+                        f"blocked {str(cmd_key).upper()} while inCrosshairs=YES; "
+                        "holding for re-observation."
+                    ),
+                    COLOR_ORANGE_BRIGHT,
+                )
+            )
+        return None, 0.0, None, f"micro_adjust_crosshair_guard_hold_{cmd_key}"
 
     def _format_exception_prefix_text():
         # Keep operator semantics consistent while styling only the exception token.
@@ -9660,6 +10126,9 @@ def run_alignment_segment(
                 gate_done = int(true_down_streak) >= int(step_pre_desc_true_required)
                 progress_text = f"true-streak={int(true_down_streak)}/{int(step_pre_desc_true_required)}"
             pulse_score = int(step_pre_desc_score_after_seen_true) if bool(saw_true) else int(step_pre_desc_score)
+            visible_now = bool((getattr(world, "brick", {}) or {}).get("visible"))
+            if (step_pre_desc_score_when_visible is not None) and bool(visible_now):
+                pulse_score = min(int(pulse_score), int(step_pre_desc_score_when_visible))
             pulse_speed = telemetry_robot_module.manual_speed_for_cmd(step_pre_desc_cmd, pulse_score)
             if not align_silent:
                 crosshair_text = "WAIT" if crosshair_now is None else ("YES" if crosshair_now else "NO")
@@ -9715,11 +10184,87 @@ def run_alignment_segment(
             )
         return {"enabled": True, "success": True, "reason": "pre-align descend pass"}
 
+    def _run_step_post_success_mast_exception():
+        nonlocal step_post_mast_run_once
+        if not bool(step_post_mast_enabled) or int(step_post_mast_acts) <= 0:
+            return {"enabled": False, "success": True, "reason": "disabled"}
+        if bool(step_post_mast_run_once):
+            return {"enabled": True, "success": True, "reason": "already completed"}
+        step_post_mast_run_once = True
+        step_post_mast_speed = telemetry_robot_module.manual_speed_for_cmd(
+            step_post_mast_cmd,
+            step_post_mast_score,
+        )
+        if not align_silent:
+            if step_post_mast_reminder:
+                _print_exception_line(f"[{step_key}] {step_post_mast_reminder}")
+            _print_exception_line(
+                (
+                    f"[{step_key}] Post-success mast pulse start: "
+                    f"{str(step_post_mast_cmd).upper()} {int(step_post_mast_score)}% "
+                    f"x{int(step_post_mast_acts)} (observe_between_acts="
+                    f"{'YES' if bool(step_post_mast_observe_between_acts) else 'NO'})."
+                )
+            )
+        for idx in range(1, int(step_post_mast_acts) + 1):
+            if confirm_callback and not confirm_callback(world, vision):
+                return {"enabled": True, "success": False, "reason": "confirm cancelled"}
+            if observer:
+                observer(
+                    "analysis",
+                    world,
+                    vision,
+                    step_post_mast_cmd,
+                    step_post_mast_speed,
+                    "post_success_mast_exception",
+                )
+            send_robot_command(
+                robot,
+                world,
+                step,
+                step_post_mast_cmd,
+                step_post_mast_speed,
+                speed_score=step_post_mast_score,
+                auto_mode=True,
+            )
+            if bool(step_post_mast_observe_between_acts):
+                post_act_analysis(world, vision, step=step, log=not align_silent, include_pause=False)
+                update_world_from_vision(world, vision, log=not align_silent)
+            if observer:
+                observer(
+                    "action",
+                    world,
+                    vision,
+                    step_post_mast_cmd,
+                    step_post_mast_speed,
+                    "post_success_mast_exception",
+                )
+            if not align_silent:
+                _print_exception_line(
+                    (
+                        f"[{step_key}] Post-success mast pulse "
+                        f"{int(idx)}/{int(step_post_mast_acts)}: "
+                        f"{str(step_post_mast_cmd).upper()} {int(step_post_mast_score)}%."
+                    )
+                )
+            if step_post_mast_pause_s > 0.0:
+                time.sleep(float(step_post_mast_pause_s))
+        if not align_silent:
+            _print_exception_line(
+                f"[{step_key}] Post-success mast pulse complete."
+            )
+        return {"enabled": True, "success": True, "reason": "post-success mast pulse complete"}
+
     def _complete_alignment_success(reason_text, tracker=None):
         # Stop immediately when we declare success so no queued/lingering
         # micro-pulse can fire after a passing gatecheck.
         if robot:
             robot.stop()
+        post_mast_result = _run_step_post_success_mast_exception()
+        if bool((post_mast_result or {}).get("enabled")) and not bool((post_mast_result or {}).get("success")):
+            if robot:
+                robot.stop()
+            return False, str((post_mast_result or {}).get("reason") or "post-success mast pulse failed")
         post_desc_result = _run_step_post_success_descend()
         if bool((post_desc_result or {}).get("enabled")) and not bool((post_desc_result or {}).get("success")):
             if robot:
@@ -9841,6 +10386,23 @@ def run_alignment_segment(
     no_action_lite_failed_reason = None
     progress_mast_start_dist = None
     progress_mast_triggered = False
+    near_dist_vis_attempts = 0
+    near_dist_vis_reminder_logged = False
+    last_visible_dist_mm = None
+    forward_stall_count = 0
+    forward_stall_start_dist_err = None
+    forward_stall_best_dist_err = None
+    forward_stall_reminder_logged = False
+
+    def _correction_type_for_cmd_value(cmd_value):
+        cmd_key = str(cmd_value or "").strip().lower()
+        if cmd_key in ("f", "b"):
+            return "distance"
+        if cmd_key in ("l", "r"):
+            return "x_axis"
+        if cmd_key in ("u", "d"):
+            return "y_axis"
+        return None
 
     def _post_recovery_disqualify_types():
         available_types = []
@@ -9853,10 +10415,14 @@ def run_alignment_segment(
                 available_types.append("distance")
         if not available_types:
             available_types = ["x_axis", "y_axis", "distance"]
-        max_disqualify = max(0, len(set(available_types)) - 1)
+        max_disqualify = max(1, len(set(available_types)) - 1)
         keep_cap = min(2, max_disqualify)
         picked = []
-        primary = str(last_align_gap_correction_type or "").strip().lower()
+        primary = None
+        if isinstance(last_align_action, dict):
+            primary = _correction_type_for_cmd_value(last_align_action.get("cmd"))
+        if primary is None:
+            primary = str(last_align_gap_correction_type or "").strip().lower()
         if primary in available_types:
             picked.append(primary)
         for corr in reversed(list(recent_gap_correction_types)):
@@ -9937,6 +10503,168 @@ def run_alignment_segment(
             except (TypeError, ValueError):
                 pass
         return ", ".join(parts)
+
+    def _forward_stall_dist_err_from_local_gate(local_gate):
+        if not isinstance(local_gate, dict):
+            return None
+        dist_now = _as_float(local_gate.get("dist"), None)
+        dist_target_now = _as_float(local_gate.get("dist_target"), None)
+        if dist_target_now is None:
+            dist_target_now = _as_float(forward_stall_dist_target, None)
+        if dist_now is None or dist_target_now is None:
+            return None
+        try:
+            dist_err_mm = abs(float(dist_now) - float(dist_target_now))
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(dist_err_mm):
+            return None
+        return float(dist_err_mm)
+
+    def _reset_forward_stall_tracking(*, clear_reminder=False):
+        nonlocal forward_stall_count
+        nonlocal forward_stall_start_dist_err
+        nonlocal forward_stall_best_dist_err
+        nonlocal forward_stall_reminder_logged
+        forward_stall_count = 0
+        forward_stall_start_dist_err = None
+        forward_stall_best_dist_err = None
+        if clear_reminder:
+            forward_stall_reminder_logged = False
+
+    def _record_forward_stall_progress(*, cmd_value, dist_err_before_action, is_search_action=False):
+        nonlocal forward_stall_count
+        nonlocal forward_stall_start_dist_err
+        nonlocal forward_stall_best_dist_err
+        nonlocal forward_stall_reminder_logged
+        if not bool(forward_stall_active):
+            return
+        cmd_key = str(cmd_value or "").strip().lower()
+        if bool(is_search_action) or cmd_key != str(forward_stall_forward_cmd):
+            _reset_forward_stall_tracking(clear_reminder=True)
+            return
+        dist_err_num = _as_float(dist_err_before_action, None)
+        if dist_err_num is None:
+            _reset_forward_stall_tracking(clear_reminder=True)
+            return
+        dist_err_num = abs(float(dist_err_num))
+        if (
+            int(forward_stall_count) <= 0
+            or forward_stall_start_dist_err is None
+            or forward_stall_best_dist_err is None
+        ):
+            forward_stall_count = 1
+            forward_stall_start_dist_err = float(dist_err_num)
+            forward_stall_best_dist_err = float(dist_err_num)
+            return
+        forward_stall_count = int(forward_stall_count) + 1
+        forward_stall_best_dist_err = min(float(forward_stall_best_dist_err), float(dist_err_num))
+        improvement_mm = max(0.0, float(forward_stall_start_dist_err) - float(forward_stall_best_dist_err))
+        if float(improvement_mm) > float(forward_stall_min_improvement_mm):
+            # Meaningful forward progress observed; restart a fresh streak from
+            # the current best distance error so future stalls can still trigger.
+            forward_stall_start_dist_err = float(forward_stall_best_dist_err)
+            forward_stall_count = 1
+            forward_stall_reminder_logged = False
+
+    def _forward_stall_should_trigger(*, cmd_value, is_search_action=False):
+        if not bool(forward_stall_active):
+            return False, None
+        cmd_key = str(cmd_value or "").strip().lower()
+        if bool(is_search_action) or cmd_key != str(forward_stall_forward_cmd):
+            return False, None
+        if int(forward_stall_count) < int(forward_stall_trigger_acts):
+            return False, None
+        if forward_stall_start_dist_err is None or forward_stall_best_dist_err is None:
+            return False, None
+        improvement_mm = max(0.0, float(forward_stall_start_dist_err) - float(forward_stall_best_dist_err))
+        return bool(float(improvement_mm) <= float(forward_stall_min_improvement_mm)), float(improvement_mm)
+
+    def _run_forward_stall_mast_exception(*, improvement_mm):
+        nonlocal last_align_action
+        nonlocal forward_stall_reminder_logged
+        if not bool(forward_stall_active):
+            return "skipped"
+        if not align_silent and forward_stall_reminder and not bool(forward_stall_reminder_logged):
+            print(
+                format_headline(
+                    f"[{step_key} EXCEPTION] {forward_stall_reminder}",
+                    COLOR_MAGENTA_BRIGHT,
+                )
+            )
+            forward_stall_reminder_logged = True
+        if not align_silent:
+            print(
+                format_headline(
+                    (
+                        f"[{step_key} EXCEPTION] Forward dist stall detected: "
+                        f"{int(forward_stall_count)}/{int(forward_stall_trigger_acts)} "
+                        f"{str(forward_stall_forward_cmd).upper()} acts, dist improvement "
+                        f"{float(improvement_mm or 0.0):.2f}mm "
+                        f"(need > {float(forward_stall_min_improvement_mm):.2f}mm); executing "
+                        f"{str(forward_stall_cmd).upper()} {int(forward_stall_score)}% x{int(forward_stall_acts)}."
+                    ),
+                    COLOR_MAGENTA_BRIGHT,
+                )
+            )
+        for idx in range(1, int(forward_stall_acts) + 1):
+            if confirm_callback and not confirm_callback(world, vision):
+                return "confirm cancelled"
+            cmd_local = str(forward_stall_cmd)
+            score_local = int(forward_stall_score)
+            speed_local = telemetry_robot_module.manual_speed_for_cmd(cmd_local, score_local)
+            action_tag = "forward_dist_stall_mast_exception"
+            if observer:
+                observer("analysis", world, vision, cmd_local, speed_local, action_tag)
+            action_meta_local = send_robot_command(
+                robot,
+                world,
+                step,
+                cmd_local,
+                speed_local,
+                speed_score=score_local,
+                auto_mode=True,
+            )
+            recent_align_acts.append({"cmd": str(cmd_local), "score": int(score_local)})
+            if isinstance(action_meta_local, dict):
+                last_align_action = {
+                    "cmd": str(cmd_local),
+                    "cmd_sent": action_meta_local.get("cmd_sent"),
+                    "score": int(score_local),
+                    "pwm": action_meta_local.get("pwm"),
+                    "power": action_meta_local.get("power"),
+                    "duration_ms": action_meta_local.get("duration_ms"),
+                }
+            else:
+                last_align_action = {"cmd": str(cmd_local), "score": int(score_local)}
+            if confirm_callback and robot:
+                robot.stop()
+            post_act_analysis(
+                world,
+                vision,
+                step=step,
+                log=not align_silent,
+                include_pause=False,
+            )
+            if observer:
+                observer("action", world, vision, cmd_local, speed_local, action_tag)
+            if not align_silent:
+                print(
+                    format_headline(
+                        f"[{step_key} EXCEPTION] Pulse {int(idx)}/{int(forward_stall_acts)} complete.",
+                        COLOR_MAGENTA_BRIGHT,
+                    )
+                )
+            time.sleep(CONTROL_DT)
+        if not align_silent:
+            print(
+                format_headline(
+                    f"[{step_key} EXCEPTION] Completed {str(forward_stall_cmd).upper()} {int(forward_stall_score)}% x{int(forward_stall_acts)}; resuming dist_err.",
+                    COLOR_MAGENTA_BRIGHT,
+                )
+            )
+        _reset_forward_stall_tracking(clear_reminder=True)
+        return "ran"
 
     def _maybe_run_progress_mast_exception():
         nonlocal progress_mast_start_dist, progress_mast_triggered, last_align_action
@@ -10083,6 +10811,135 @@ def run_alignment_segment(
                 )
             )
         return True, None
+
+    def _near_dist_vis_gap_status():
+        target = _as_float(near_dist_vis_target_dist, None)
+        if target is None:
+            return None
+        candidate = _as_float(last_visible_dist_mm, None)
+        if candidate is None or candidate <= 0.0:
+            local_gate = _align_local_gate_status_single_source(world, step)
+            candidate = _as_float((local_gate or {}).get("dist"), None)
+        if candidate is None:
+            return None
+        try:
+            candidate = float(candidate)
+            target = float(target)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(candidate) or not math.isfinite(target):
+            return None
+        return {
+            "dist": float(candidate),
+            "gap_mm": abs(float(candidate) - float(target)),
+        }
+
+    def _maybe_run_near_dist_visibility_mast_exception():
+        nonlocal near_dist_vis_attempts
+        nonlocal near_dist_vis_reminder_logged
+        nonlocal last_align_action
+        nonlocal last_visible_dist_mm
+        if not bool(near_dist_vis_active):
+            return "skipped"
+        if int(near_dist_vis_attempts) >= int(near_dist_vis_max_attempts):
+            return "skipped"
+        gap_status = _near_dist_vis_gap_status()
+        if not isinstance(gap_status, dict):
+            return "skipped"
+        gap_mm = _as_float(gap_status.get("gap_mm"), None)
+        dist_now = _as_float(gap_status.get("dist"), None)
+        if gap_mm is None or dist_now is None:
+            return "skipped"
+        if float(gap_mm) > float(near_dist_vis_gap_mm_max):
+            return "skipped"
+
+        attempt_idx = int(near_dist_vis_attempts) + 1
+        if not align_silent and near_dist_vis_reminder and not bool(near_dist_vis_reminder_logged):
+            print(
+                format_headline(
+                    f"[{step_key} EXCEPTION] {near_dist_vis_reminder}",
+                    COLOR_MAGENTA_BRIGHT,
+                )
+            )
+            near_dist_vis_reminder_logged = True
+        if not align_silent:
+            print(
+                format_headline(
+                    (
+                        f"[{step_key} EXCEPTION] Near-target visibility rescue {int(attempt_idx)}/{int(near_dist_vis_max_attempts)}: "
+                        f"visible=NO, dist={float(dist_now):.2f}mm, gap={float(gap_mm):.2f}mm "
+                        f"(threshold <= {float(near_dist_vis_gap_mm_max):.2f}mm = "
+                        f"{float(near_dist_vis_ratio_max) * 100.0:.0f}% of tol {float(near_dist_vis_tol):.2f}mm); "
+                        f"executing {str(near_dist_vis_cmd).upper()} {int(near_dist_vis_score)}%."
+                    ),
+                    COLOR_MAGENTA_BRIGHT,
+                )
+            )
+
+        if confirm_callback and not confirm_callback(world, vision):
+            return "confirm cancelled"
+
+        cmd_local = str(near_dist_vis_cmd)
+        score_local = int(near_dist_vis_score)
+        speed_local = telemetry_robot_module.manual_speed_for_cmd(cmd_local, score_local)
+        action_tag = "near_dist_visibility_mast_exception"
+        if observer:
+            observer("analysis", world, vision, cmd_local, speed_local, action_tag)
+        action_meta_local = send_robot_command(
+            robot,
+            world,
+            step,
+            cmd_local,
+            speed_local,
+            speed_score=score_local,
+            auto_mode=True,
+        )
+        near_dist_vis_attempts = int(attempt_idx)
+        recent_align_acts.append({"cmd": str(cmd_local), "score": int(score_local)})
+        if isinstance(action_meta_local, dict):
+            last_align_action = {
+                "cmd": str(cmd_local),
+                "cmd_sent": action_meta_local.get("cmd_sent"),
+                "score": int(score_local),
+                "pwm": action_meta_local.get("pwm"),
+                "power": action_meta_local.get("power"),
+                "duration_ms": action_meta_local.get("duration_ms"),
+            }
+        else:
+            last_align_action = {"cmd": str(cmd_local), "score": int(score_local)}
+        if observer:
+            observer("action", world, vision, cmd_local, speed_local, action_tag)
+
+        if _observe_visible(float(near_dist_vis_observe_s)):
+            update_world_from_vision(world, vision, log=not align_silent)
+            restored_dist = _as_float((getattr(world, "brick", {}) or {}).get("dist"), None)
+            if restored_dist is not None:
+                last_visible_dist_mm = float(restored_dist)
+            near_dist_vis_attempts = 0
+            near_dist_vis_reminder_logged = False
+            if not align_silent:
+                print(
+                    format_headline(
+                        (
+                            f"[{step_key} EXCEPTION] Near-target visibility rescue recovered visibility "
+                            f"after {str(cmd_local).upper()} {int(score_local)}%."
+                        ),
+                        COLOR_MAGENTA_BRIGHT,
+                    )
+                )
+            return "recovered"
+
+        if not align_silent:
+            print(
+                format_headline(
+                    (
+                        f"[{step_key} EXCEPTION] Near-target visibility rescue "
+                        f"{int(attempt_idx)}/{int(near_dist_vis_max_attempts)} did not recover visibility."
+                    ),
+                    COLOR_MAGENTA_BRIGHT,
+                )
+            )
+        return "attempted"
 
     def _recover_visibility(source="unknown", reason=None, reverse_max_acts=None):
         source_key = str(source or "").strip().lower()
@@ -11295,6 +12152,11 @@ def run_alignment_segment(
         if visible_now:
             not_visible_streak = 0
             last_visible_ts = time.time()
+            near_dist_vis_attempts = 0
+            near_dist_vis_reminder_logged = False
+            dist_visible_now = _as_float((getattr(world, "brick", {}) or {}).get("dist"), None)
+            if dist_visible_now is not None:
+                last_visible_dist_mm = float(dist_visible_now)
             if step_supports_gap_micro_planner:
                 gap_micro_armed = True
         else:
@@ -11358,6 +12220,29 @@ def run_alignment_segment(
                 and float(lost_for_s) >= float(ALIGN_RECOVERY_LOST_VISIBLE_MIN_S)
             )
             if not confident_loss:
+                time.sleep(CONTROL_DT)
+                continue
+            near_dist_vis_status = _maybe_run_near_dist_visibility_mast_exception()
+            if near_dist_vis_status == "confirm cancelled":
+                return False, "confirm cancelled"
+            if near_dist_vis_status == "recovered":
+                stale_pre_obs_streak = 0
+                stale_frame_streak = 0
+                not_visible_streak = 0
+                last_visible_ts = time.time()
+                _set_post_recovery_disqualify_types(source="near_dist_visibility_mast")
+                prev_log_correction_type = None
+                prev_log_x_err = None
+                prev_log_y_err = None
+                prev_log_dist = None
+                force_gap_switch_after_recovery = True
+                gap_planner_state.pop("gap_rotation", None)
+                last_align_signature = None
+                continue
+            if (
+                near_dist_vis_status == "attempted"
+                and int(near_dist_vis_attempts) < int(near_dist_vis_max_attempts)
+            ):
                 time.sleep(CONTROL_DT)
                 continue
             reason = (
@@ -11468,7 +12353,7 @@ def run_alignment_segment(
         cmd_reason = act_plan.get("reason") or "align"
         speed_score = act_plan.get("score")
         if visible_search_mode and cmd in ("f", "b", "l", "r", "u", "d"):
-            speed_score = _next_visible_search_score()
+            speed_score = _next_visible_search_score(cmd)
             speed_score = _apply_find_brick_turn_speed_policy(
                 step_key,
                 cmd,
@@ -11480,6 +12365,32 @@ def run_alignment_segment(
             speed = float(telemetry_robot_module.manual_speed_for_cmd(cmd, speed_score))
         planned_corr_type = str(act_plan.get("correction_type") or "").strip().lower() or None
         active_disqualify_types = _active_disqualified_gap_types()
+        if (
+            use_micro_align_gap_planner
+            and active_disqualify_types
+            and planned_corr_type
+            and planned_corr_type in active_disqualify_types
+        ):
+            if not align_silent:
+                disq_text = ", ".join(sorted(active_disqualify_types))
+                print(
+                    format_headline(
+                        (
+                            f"[RECOVERY] planner picked disqualified gap type '{planned_corr_type}' "
+                            f"(disqualified: {disq_text}); holding one loop before re-plan."
+                        ),
+                        COLOR_ORANGE_BRIGHT,
+                    )
+                )
+            cmd = None
+            speed = 0.0
+            speed_score = None
+            cmd_reason = f"recovery_disqualify_hold_{planned_corr_type}"
+            # Consume one-shot recovery disqualify immediately after enforcing
+            # the hold so the next loop can re-plan from fresh observations.
+            skip_align_gap_correction_type_once = None
+            planned_corr_type = None
+            active_disqualify_types = set()
         if (
             use_micro_align_gap_planner
             and active_disqualify_types
@@ -11547,6 +12458,14 @@ def run_alignment_segment(
                 speed_score = int(scan_score)
                 speed = float(telemetry_robot_module.manual_speed_for_cmd(cmd, speed_score))
                 cmd_reason = f"{str(step_key or 'STEP').lower()}_scan_visible_false"
+        cmd, speed, speed_score, cmd_reason = _apply_micro_adjust_crosshair_guard(
+            cmd,
+            speed,
+            speed_score,
+            cmd_reason,
+            planner_name=planner_name,
+            phase_label="align",
+        )
         # If planner reports no actionable command, immediately run gatecheck
         # confirmation (lite precheck + full tracker) instead of idling.
         if cmd is None:
@@ -11668,6 +12587,19 @@ def run_alignment_segment(
                 world,
                 step,
             )
+            dist_err_before_action = _forward_stall_dist_err_from_local_gate(local_gate_before_action)
+            forward_stall_triggered, forward_stall_improvement_mm = _forward_stall_should_trigger(
+                cmd_value=cmd,
+                is_search_action=is_search_action,
+            )
+            if bool(forward_stall_triggered):
+                forward_stall_status = _run_forward_stall_mast_exception(
+                    improvement_mm=forward_stall_improvement_mm,
+                )
+                if str(forward_stall_status) == "confirm cancelled":
+                    return False, "confirm cancelled"
+                time.sleep(CONTROL_DT)
+                continue
             if not bool(is_search_action):
                 unknown_metric = _unknown_metric_for_planned_action(
                     cmd=cmd,
@@ -11694,6 +12626,11 @@ def run_alignment_segment(
                         )
                     if observer:
                         observer("action", world, vision, None, 0.0, f"missing_{str(unknown_metric)}")
+                    _record_forward_stall_progress(
+                        cmd_value=None,
+                        dist_err_before_action=None,
+                        is_search_action=True,
+                    )
                     time.sleep(CONTROL_DT)
                     continue
             correction_type_for_stats = _align_correction_type_for_cmd(
@@ -12061,6 +12998,11 @@ def run_alignment_segment(
                 )
             if success_hit:
                 return _complete_alignment_success("success gate", tracker=success_tracker)
+            _record_forward_stall_progress(
+                cmd_value=cmd,
+                dist_err_before_action=dist_err_before_action,
+                is_search_action=is_search_action,
+            )
             if (not skip_settle_pause) and (not bool(is_search_action)):
                 post_act_settle_pause(world, vision)
             post_frame_id = getattr(world, "_frame_id", 0)
@@ -12099,6 +13041,11 @@ def run_alignment_segment(
             else:
                 stale_frame_streak = 0
         else:
+            _record_forward_stall_progress(
+                cmd_value=None,
+                dist_err_before_action=None,
+                is_search_action=True,
+            )
             if robot:
                 robot.stop()
         if observer:
@@ -12187,6 +13134,30 @@ def run_alignment_segment(
             use_micro_align_gap_planner
             and active_disqualify_types
             and planned_corr_type
+            and planned_corr_type in active_disqualify_types
+        ):
+            if not align_silent:
+                disq_text = ", ".join(sorted(active_disqualify_types))
+                print(
+                    format_headline(
+                        (
+                            f"[RECOVERY] planner picked disqualified gap type '{planned_corr_type}' "
+                            f"(disqualified: {disq_text}); holding one settle loop before re-plan."
+                        ),
+                        COLOR_ORANGE_BRIGHT,
+                    )
+                )
+            cmd = None
+            speed = 0.0
+            speed_score = None
+            cmd_reason = f"recovery_disqualify_hold_{planned_corr_type}"
+            skip_align_gap_correction_type_once = None
+            planned_corr_type = None
+            active_disqualify_types = set()
+        if (
+            use_micro_align_gap_planner
+            and active_disqualify_types
+            and planned_corr_type
             and planned_corr_type not in active_disqualify_types
         ):
             skip_align_gap_correction_type_once = None
@@ -12198,6 +13169,14 @@ def run_alignment_segment(
                 cmd_reason = demo_fallback.get("reason") or "demo stack lift"
                 speed_score = demo_fallback.get("speed_score")
                 duration_override_ms = demo_fallback.get("duration_override_ms")
+        cmd, speed, speed_score, cmd_reason = _apply_micro_adjust_crosshair_guard(
+            cmd,
+            speed,
+            speed_score,
+            cmd_reason,
+            planner_name=planner_name,
+            phase_label="settle",
+        )
         cmd, speed, speed_score, cmd_reason = _apply_turn_only_demo_policy(
             cmd,
             speed,

@@ -55,6 +55,7 @@ from telemetry_robot import (
     quantize_speed,
 )
 from telemetry_process import (
+    _result_lite_gate_detail,
     apply_height_snapshot_from_step,
     build_motion_sequence,
     consume_auto_step_action_stats,
@@ -2108,6 +2109,18 @@ def run_auto_step(app_state, obj_enum):
             f"(checks={checks})"
         )
 
+    def _success_gate_snapshot_detail_text():
+        try:
+            detail = _result_lite_gate_detail(app_state.world, step_key)
+        except Exception:
+            return None
+        if not isinstance(detail, dict):
+            return None
+        text = detail.get("colored") or detail.get("plain")
+        if not text:
+            return None
+        return str(text)
+
     def _log_full_gatecheck_final(outcome, *, reason=None, attempt_num=None):
         if nominal_only:
             if int(attempt_num or 1) == 1:
@@ -2134,6 +2147,9 @@ def run_auto_step(app_state, obj_enum):
             return
         if "start gates not met" in reason_norm_local:
             log_line(f"[GATECHECK] {step_key} final: SKIPPED{attempt_suffix} (start gates not met)")
+            success_detail = _success_gate_snapshot_detail_text()
+            if success_detail:
+                log_line(f"[GATECHECK-DETAIL] {step_key} final: {success_detail}")
             return
         if reason:
             log_line(f"[GATECHECK] {step_key} final: FAIL{attempt_suffix} (reason={reason})")

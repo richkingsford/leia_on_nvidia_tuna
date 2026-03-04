@@ -58,9 +58,18 @@
             "scan_direction": "r",
             "search_visible_false_speed_cycle": {
                 "enabled": true,
-                "high_score": 20,
-                "low_score": 5,
-                "start_with_high": true
+                "high_score": 40,
+                "low_score": 20,
+                "start_with_high": true,
+                "commands": [
+                    "r",
+                    "r",
+                    "r",
+                    "b"
+                ],
+                "command_scores": {
+                    "b": 5
+                }
             },
             "align_policy": {
                 "y_axis_edge_force_enabled": true,
@@ -155,6 +164,9 @@
                 "false_up_acts_required": 5,
                 "false_confirm_frames": 3,
                 "consecutive_no_required": 5,
+                "level2_require_visible_for_confirm": false,
+                "level2_fail_on_skipped_observation": false,
+                "level2_reset_on_skipped_observation": true,
                 "level2_use_full_gatecheck": false,
                 "observation_confidence_min": 50.0
             },
@@ -232,7 +244,7 @@
                 "require_consistent_observation": true,
                 "consistent_observation_max_checks": 100,
                 "completion_mode": "true_then_false_streak",
-                "false_after_true_down_acts_required": 2,
+                "false_after_true_down_acts_required": 3,
                 "true_down_acts_required": 3,
                 "max_acts": 32
             },
@@ -409,7 +421,7 @@
                     "target": -52.54,
                     "tol": 6.0
                 },
-                "yAxis_offset_abs": {
+                "y_axis": {
                     "target": 40.39,
                     "tol": 6.0
                 }
@@ -465,9 +477,9 @@
                 "mast_up_command": "u",
                 "mast_up_score": 100,
                 "mast_up_max_acts": 32,
-                "false_up_acts_required": 2,
+                "false_up_acts_required": 5,
                 "false_confirm_frames": 3,
-                "consecutive_no_required": 2,
+                "consecutive_no_required": 5,
                 "level2_use_full_gatecheck": false,
                 "observation_confidence_min": 50.0
             },
@@ -480,6 +492,7 @@
         },
         "BRICK_LOCK_WALL": {
             "controller": "align",
+            "require_start_gates": false,
             "align_policy": {
                 "hold_when_not_visible": true,
                 "x_axis_tol_far_scale": 6.0,
@@ -499,7 +512,11 @@
                 "target_lock_hold_bad_frames": 2,
                 "target_lock_acquire_timeout_s": 0.35,
                 "target_lock_center_x_worse_margin_mm": 1.5,
-                "target_lock_center_y_worse_margin_mm": 2.0
+                "target_lock_center_y_worse_margin_mm": 2.0,
+                "micro_adjust_crosshair_guard_enabled": true,
+                "micro_adjust_crosshair_guard_block_cmds": [
+                    "d"
+                ]
             },
             "lock_success_gates": true,
             "locked_success_gates_by_mode": {
@@ -546,6 +563,28 @@
                     "tol": 4.34
                 }
             },
+            "pre_align_descend": {
+                "enabled": true,
+                "command": "d",
+                "score": 100,
+                "score_when_visible": 1,
+                "score_after_seen_true": 1,
+                "confirm_frames": 3,
+                "require_consistent_observation": true,
+                "consistent_observation_max_checks": 100,
+                "completion_mode": "true_streak",
+                "true_down_acts_required": 1,
+                "max_acts": 32
+            },
+            "post_success_mast_exception": {
+                "enabled": true,
+                "operator_log_reminder": "Exception active: after BRICK_LOCK_WALL gate pass, run U 50% x3 with no observations.",
+                "command": "u",
+                "score": 50,
+                "acts": 3,
+                "observe_between_acts": false,
+                "pause_s": 0.0
+            },
             "start_gates": {
                 "visible": {
                     "min": true
@@ -591,10 +630,6 @@
                 "dist": {
                     "target": 111.45,
                     "tol": 1.5
-                },
-                "brick_above": {
-                    "target": false,
-                    "tol": 0.0
                 }
             },
             "start_gates": {
@@ -604,6 +639,7 @@
             }
         },
         "SEAT_BRICK2": {
+            "lock_start_gates": true,
             "start_gates": {
                 "visible": {
                     "min": true
@@ -618,9 +654,39 @@
                 "acts": 2,
                 "min_start_to_target_gap_mm": 1.0
             },
+            "near_dist_visibility_mast_exception": {
+                "enabled": true,
+                "operator_log_reminder": "Exception active: near-dist visibility rescue (D 1% up to 2 tries) before normal recovery.",
+                "command": "d",
+                "score": 1,
+                "max_attempts": 2,
+                "near_gate_ratio_max": 0.2,
+                "observe_s": 0.35
+            },
+            "forward_dist_stall_mast_exception": {
+                "enabled": true,
+                "operator_log_reminder": "Hack exception active: if forward dist stalls for 7 acts, run U 1% x2 then continue dist_err.",
+                "forward_command": "f",
+                "forward_acts_without_improvement": 7,
+                "min_dist_improvement_mm": 1.0,
+                "command": "u",
+                "score": 1,
+                "acts": 2
+            },
+            "success_gate_tol_add": {
+                "y_axis": 1.0
+            },
             "success_gates": {
                 "visible": {
                     "min": true
+                },
+                "x_axis": {
+                    "target": -3.5,
+                    "tol": 1.5
+                },
+                "y_axis": {
+                    "target": -1.0,
+                    "tol": 2.5
                 },
                 "dist": {
                     "target": 48.0,

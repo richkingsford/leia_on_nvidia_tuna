@@ -133,6 +133,10 @@ ALIGN_POLICY_DEFAULTS = {
     "gap_rotation_y_hold_last_mm": 3.0,
     "gap_rotation_force_recovery_switch": True,
     "gap_rotation_tech_debt_logging": False,
+    # Soft anti-fixation guard for gap micro-adjustment loops. If the same
+    # gap type is chosen for too many consecutive cycles and another gap is
+    # still outside gate, force a switch to the alternate gap type.
+    "gap_focus_max_cycles_before_switch": 10,
 }
 
 
@@ -1918,6 +1922,88 @@ def select_align_brick_next_act(
                 )
             ]
 
+    gap_focus_cycle_switch = False
+    gap_focus_cycle_only_one_remaining = False
+    gap_focus_cycle_count = 0
+    try:
+        gap_focus_cycle_cap = int(
+            round(
+                float(
+                    _coerce_float(
+                        align_policy.get("gap_focus_max_cycles_before_switch"),
+                        10,
+                    )
+                    or 0.0
+                )
+            )
+        )
+    except (TypeError, ValueError):
+        gap_focus_cycle_cap = 10
+    if gap_focus_cycle_cap < 1:
+        gap_focus_cycle_cap = 0
+
+    if not isinstance(planner_state, dict):
+        planner_state = {}
+    gap_focus_state = planner_state.get("gap_focus_cycle_guard")
+    if not isinstance(gap_focus_state, dict):
+        gap_focus_state = {}
+        planner_state["gap_focus_cycle_guard"] = gap_focus_state
+
+    chosen_type = str(chosen.get("correction_type") or "").strip().lower()
+    chosen_cmd = str(chosen.get("cmd") or "").strip().lower()
+    active_type_set = {"x_axis", "y_axis", "distance"}
+    valid_chosen_type = chosen_type in active_type_set and chosen_cmd in {"f", "b", "l", "r", "u", "d"}
+    if valid_chosen_type:
+        prev_focus_type = str(gap_focus_state.get("active_type") or "").strip().lower()
+        try:
+            prev_focus_count = int(round(float(gap_focus_state.get("count") or 0)))
+        except (TypeError, ValueError):
+            prev_focus_count = 0
+        if prev_focus_type == chosen_type:
+            gap_focus_cycle_count = max(0, int(prev_focus_count)) + 1
+        else:
+            gap_focus_cycle_count = 1
+
+        if gap_focus_cycle_cap > 0 and gap_focus_cycle_count > int(gap_focus_cycle_cap):
+            excluded_for_switch = set(avoid_corr_set)
+            excluded_for_switch.add(chosen_type)
+            alt = _best_alternative(
+                excluded_for_switch,
+                include_recovery_fallback=False,
+                require_outside_gate=True,
+                enforce_y_near_ready=True,
+            )
+            if alt is None:
+                alt = _best_alternative(
+                    excluded_for_switch,
+                    include_recovery_fallback=False,
+                    require_outside_gate=True,
+                    enforce_y_near_ready=False,
+                )
+            if alt is not None:
+                prev_type_for_override = chosen_type
+                chosen = dict(alt)
+                chosen["reason"] = "gap_focus_cycle_switch"
+                chosen_type = str(chosen.get("correction_type") or "").strip().lower()
+                chosen_cmd = str(chosen.get("cmd") or "").strip().lower()
+                valid_chosen_type = chosen_type in active_type_set and chosen_cmd in {"f", "b", "l", "r", "u", "d"}
+                gap_focus_cycle_switch = True
+                gap_focus_cycle_count = 1 if valid_chosen_type else 0
+                if valid_chosen_type and prev_type_for_override != chosen_type:
+                    rotation_override = True
+            else:
+                gap_focus_cycle_only_one_remaining = True
+
+        if valid_chosen_type:
+            gap_focus_state["active_type"] = str(chosen_type)
+            gap_focus_state["count"] = int(max(1, gap_focus_cycle_count))
+        else:
+            gap_focus_state["active_type"] = None
+            gap_focus_state["count"] = 0
+    else:
+        gap_focus_state["active_type"] = None
+        gap_focus_state["count"] = 0
+
     correction_type = chosen.get("correction_type")
     score_float = chosen.get("score_float")
     try:
@@ -1958,6 +2044,10 @@ def select_align_brick_next_act(
         ),
         "gap_rotation_y_hold_active": bool(gap_rotation_y_hold_active),
         "gap_rotation_non_repeat_override": bool(gap_rotation_non_repeat_override),
+        "gap_focus_cycle_cap": (None if gap_focus_cycle_cap <= 0 else int(gap_focus_cycle_cap)),
+        "gap_focus_cycle_count": int(max(0, gap_focus_cycle_count)),
+        "gap_focus_cycle_switch": bool(gap_focus_cycle_switch),
+        "gap_focus_cycle_only_one_remaining": bool(gap_focus_cycle_only_one_remaining),
         "exception_tech_debt_notes": (
             list(gap_rotation_tech_debt_notes) if isinstance(gap_rotation_tech_debt_notes, list) else []
         ),
