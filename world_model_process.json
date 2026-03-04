@@ -47,6 +47,23 @@
                 "standard": 6,
                 "fast": 25
             },
+            "search_turn_followup_exception": {
+                "enabled": true,
+                "operator_log_reminder": "Exception hack: after each turn while searching for the brick stack, pulse BACK 20%.",
+                "trigger_cmds": [
+                    "l",
+                    "r"
+                ],
+                "command": "b",
+                "score": 20,
+                "acts": 1,
+                "phases": [
+                    "demo",
+                    "replay",
+                    "settle",
+                    "tail"
+                ]
+            },
             "success_gates": {
                 "visible": {
                     "min": false
@@ -306,7 +323,7 @@
                     "tol": 1.4
                 },
                 "yAxis_offset_abs": {
-                    "target": 3.26,
+                    "target": 2.5,
                     "tol": 1.5
                 },
                 "dist": {
@@ -316,6 +333,7 @@
             }
         },
         "SEAT_BRICK": {
+            "lock_start_gates": true,
             "start_gates": {
                 "visible": {
                     "min": true
@@ -353,7 +371,7 @@
             }
         },
         "FIND_WALL2": {
-            "controller": "align",
+            "controller": "replay",
             "align_policy": {
                 "target_lock_enabled": false
             },
@@ -416,14 +434,6 @@
             "success_gates": {
                 "visible": {
                     "min": true
-                },
-                "xAxis_offset_abs": {
-                    "target": -52.54,
-                    "tol": 6.0
-                },
-                "y_axis": {
-                    "target": 40.39,
-                    "tol": 6.0
                 }
             }
         },
@@ -613,7 +623,10 @@
                 "target_lock_hold_bad_frames": 2,
                 "target_lock_acquire_timeout_s": 0.35,
                 "target_lock_center_x_worse_margin_mm": 1.5,
-                "target_lock_center_y_worse_margin_mm": 2.0
+                "target_lock_center_y_worse_margin_mm": 2.0,
+                "micro_adjust_focus_guard_enabled": true,
+                "micro_adjust_focus_guard_confirm_frames": 3,
+                "micro_adjust_focus_guard_reverse_max_acts": 1
             },
             "success_gates": {
                 "visible": {
@@ -647,21 +660,21 @@
             },
             "progress_mast_exception": {
                 "enabled": true,
-                "operator_log_reminder": "Exception active: at 25% dist progress, lower mast D 1% x2, then continue.",
-                "trigger_progress_fraction": 0.25,
+                "operator_log_reminder": "Exception active: at 60% dist progress, lower mast D 1% x1, then continue.",
+                "trigger_progress_fraction": 0.6,
                 "command": "d",
                 "score": 1,
-                "acts": 2,
-                "min_start_to_target_gap_mm": 1.0
+                "acts": 1,
+                "min_start_to_target_gap_mm": 4.0
             },
             "near_dist_visibility_mast_exception": {
                 "enabled": true,
-                "operator_log_reminder": "Exception active: near-dist visibility rescue (D 1% up to 2 tries) before normal recovery.",
+                "operator_log_reminder": "Exception active: near-dist visibility rescue (D 1% up to 1 try) before normal recovery.",
                 "command": "d",
                 "score": 1,
-                "max_attempts": 2,
-                "near_gate_ratio_max": 0.2,
-                "observe_s": 0.35
+                "max_attempts": 1,
+                "near_gate_ratio_max": 0.1,
+                "observe_s": 0.45
             },
             "forward_dist_stall_mast_exception": {
                 "enabled": true,
@@ -673,8 +686,27 @@
                 "score": 1,
                 "acts": 2
             },
+            "y_axis_hold_offset_exception": {
+                "enabled": true,
+                "operator_log_reminder": "Exception active: keep y-axis hold at +7mm above final target until end-gate approach.",
+                "hold_offset_mm": 7.0,
+                "release_when_metrics_within_tol": [
+                    "x_axis",
+                    "dist"
+                ],
+                "release_confirm_frames": 2
+            },
             "success_gate_tol_add": {
                 "y_axis": 1.0
+            },
+            "post_success_mast_exception": {
+                "enabled": true,
+                "operator_log_reminder": "Exception active: step tail mast-down settle (D 10% x10) with no observations.",
+                "command": "d",
+                "score": 10,
+                "acts": 10,
+                "observe_between_acts": false,
+                "pause_s": 0.0
             },
             "success_gates": {
                 "visible": {
@@ -685,7 +717,7 @@
                     "tol": 1.5
                 },
                 "y_axis": {
-                    "target": -1.0,
+                    "target": 1.0,
                     "tol": 2.5
                 },
                 "dist": {

@@ -192,6 +192,12 @@ def start_stream_server(
         state["lock"] = threading.Lock()
     if "show_center_line" not in state:
         state["show_center_line"] = True
+    if "step_success_seq" not in state:
+        state["step_success_seq"] = 0
+    if "step_success_step" not in state:
+        state["step_success_step"] = None
+    if "step_success_at" not in state:
+        state["step_success_at"] = 0.0
 
     if cyan_profile_options is None:
         cyan_profile_options = markerless_profile_options

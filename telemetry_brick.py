@@ -1149,6 +1149,18 @@ def evaluate_start_gates(world, step, learned_rules, process_rules=None):
             max_samples=BRICK_SMOOTH_FRAMES,
         )
     confidence = brick.get("confidence", 0.0) or 0.0
+    step_cfg = (process_rules or {}).get(obj_name, {})
+    if not isinstance(step_cfg, dict):
+        step_cfg = {}
+    start_metrics = step_cfg.get("start_gates") or {}
+    if not isinstance(start_metrics, dict):
+        start_metrics = {}
+    has_explicit_start_gates = bool(start_metrics)
+    # Legacy scoop corridor checks are only a fallback when no explicit start
+    # gates are configured for the step (or when explicitly re-enabled).
+    scoop_corridor_start_gate_enabled = bool(
+        step_cfg.get("scoop_corridor_start_gate_enabled", not has_explicit_start_gates)
+    )
 
     if obj_name in ("ALIGN_BRICK", "SEAT_BRICK", "SEAT_BRICK2", "POSITION_BRICK"):
         if not visible:
@@ -1156,7 +1168,12 @@ def evaluate_start_gates(world, step, learned_rules, process_rules=None):
         elif confidence < START_GATE_MIN_CONFIDENCE:
             reasons.append(f"confidence<{START_GATE_MIN_CONFIDENCE:.0f}")
 
-    if obj_name in SCOOP_LIKE_STEPS and visible and confidence >= START_GATE_MIN_CONFIDENCE:
+    if (
+        obj_name in SCOOP_LIKE_STEPS
+        and bool(scoop_corridor_start_gate_enabled)
+        and visible
+        and confidence >= START_GATE_MIN_CONFIDENCE
+    ):
         dist = brick.get("dist")
         angle = abs(brick.get("angle", 0.0))
         offset = abs(brick.get("offset_x", 0.0))
@@ -1189,7 +1206,6 @@ def evaluate_start_gates(world, step, learned_rules, process_rules=None):
         if max_offset is not None and offset > max_offset:
             reasons.append(f"offset>{max_offset:.1f}mm")
 
-    start_metrics = (process_rules or {}).get(obj_name, {}).get("start_gates") or {}
     if start_metrics:
         for metric, stats in start_metrics.items():
             if metric in VISIBILITY_REQUIRED_METRICS and not visible:

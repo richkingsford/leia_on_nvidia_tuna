@@ -2,6 +2,7 @@
 """Autobuild orchestration using telemetry-backed logic."""
 import argparse
 import threading
+import time
 from pathlib import Path
 
 from helper_streaming import start_stream_server
@@ -38,6 +39,30 @@ from telemetry_process import (
 
 
 def run_autobuild(session_name=None, stream=True):
+    def _emit_stream_step_success_event(stream_state, step):
+        if not isinstance(stream_state, dict):
+            return
+        step_key = normalize_step_label(step) or str(step or "").strip()
+        if not step_key:
+            return
+        lock = stream_state.get("lock")
+
+        def _apply():
+            raw_seq = stream_state.get("step_success_seq", 0)
+            try:
+                next_seq = int(raw_seq) + 1
+            except (TypeError, ValueError):
+                next_seq = 1
+            stream_state["step_success_seq"] = int(max(1, next_seq))
+            stream_state["step_success_step"] = str(step_key)
+            stream_state["step_success_at"] = float(time.time())
+
+        if lock is None:
+            _apply()
+            return
+        with lock:
+            _apply()
+
     logs = load_demo_logs(DEMO_DIR, session_name)
     update_process_model_from_demos(logs, PROCESS_MODEL_FILE)
     refresh_autobuild_config(PROCESS_MODEL_FILE)
@@ -76,8 +101,15 @@ def run_autobuild(session_name=None, stream=True):
         )
 
     stream_server = None
+    stream_state = None
     if stream:
-        stream_state = {"frame": None, "lock": threading.Lock()}
+        stream_state = {
+            "frame": None,
+            "lock": threading.Lock(),
+            "step_success_seq": 0,
+            "step_success_step": None,
+            "step_success_at": 0.0,
+        }
         world._stream_state = stream_state
         try:
             stream_server, url = start_stream_server(
@@ -129,6 +161,7 @@ def run_autobuild(session_name=None, stream=True):
                 print(f"  success gates: {success_desc}")
                 ok, reason = replay_segment(segment, normalized, robot, vision, world)
                 if ok:
+                    _emit_stream_step_success_event(stream_state, normalized)
                     break
                 attempts += 1
                 last_reason = reason or "unknown"

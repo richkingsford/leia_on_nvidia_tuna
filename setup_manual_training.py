@@ -2227,8 +2227,13 @@ def run_auto_step(app_state, obj_enum):
         if auto_demo_logging_started:
             _end_auto_demo_logging(app_state, obj_enum)
     if ok:
-        apply_height_snapshot_from_step(app_state.world, step_key, log=True)
+        # Emit celebration event first so optional post-success bookkeeping
+        # cannot suppress gong playback on stream clients.
         _emit_stream_step_success_event(app_state, step_key)
+        try:
+            apply_height_snapshot_from_step(app_state.world, step_key, log=True)
+        except Exception as exc:
+            log_line(f"[HEIGHT INTEL] {step_key} snapshot skipped ({exc}).")
         auto_continue_plan = None
         with app_state.lock:
             app_state.last_auto_completed_step = obj_enum
@@ -3117,8 +3122,11 @@ def end_attempt(app_state, complete_step=True):
     should_close = False
 
     if attempt_type == "SUCCESS":
-        apply_height_snapshot_from_step(app_state.world, obj_label, log=True)
         _emit_stream_step_success_event(app_state, obj_label)
+        try:
+            apply_height_snapshot_from_step(app_state.world, obj_label, log=True)
+        except Exception as exc:
+            log_line(f"[HEIGHT INTEL] {obj_label} snapshot skipped ({exc}).")
         if complete_step:
             app_state.step_open = False
             app_state.open_step = None

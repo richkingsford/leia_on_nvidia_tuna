@@ -9550,6 +9550,54 @@ def run_alignment_segment(
         float(_as_float(step_post_mast_cfg.get("pause_s"), 0.0)),
     )
     step_post_mast_observe_between_acts = bool(step_post_mast_cfg.get("observe_between_acts", False))
+    y_axis_hold_cfg = step_rules.get("y_axis_hold_offset_exception") if isinstance(step_rules, dict) else {}
+    if not isinstance(y_axis_hold_cfg, dict):
+        y_axis_hold_cfg = {}
+
+    def _success_gate_stats_alias_local(*metric_keys):
+        if not isinstance(success_gate_cfg, dict):
+            return {}
+        for metric_key in metric_keys:
+            stats = success_gate_cfg.get(metric_key)
+            if isinstance(stats, dict):
+                return stats
+        return {}
+
+    y_axis_success_stats = _success_gate_stats_alias_local("y_axis", "yAxis_offset_abs", "yAxis_offset")
+    y_axis_success_target = _as_float(y_axis_success_stats.get("target"), None)
+    y_axis_success_tol = abs(float(_as_float(y_axis_success_stats.get("tol"), 0.0) or 0.0))
+    y_axis_hold_enabled = bool(y_axis_hold_cfg.get("enabled", False))
+    y_axis_hold_reminder = str(y_axis_hold_cfg.get("operator_log_reminder") or "").strip()
+    y_axis_hold_offset_mm = max(0.0, float(_as_float(y_axis_hold_cfg.get("hold_offset_mm"), 0.0)))
+    y_axis_hold_release_confirm_frames = max(
+        1,
+        int(_as_int(y_axis_hold_cfg.get("release_confirm_frames"), 2)),
+    )
+    y_axis_hold_release_metrics_raw = y_axis_hold_cfg.get("release_when_metrics_within_tol")
+    if isinstance(y_axis_hold_release_metrics_raw, (list, tuple, set)):
+        y_axis_hold_release_metrics = []
+        for metric_raw in y_axis_hold_release_metrics_raw:
+            metric_key = str(metric_raw or "").strip().lower()
+            if metric_key in {"x_axis", "dist", "distance", "y_axis"} and metric_key not in y_axis_hold_release_metrics:
+                if metric_key == "distance":
+                    metric_key = "dist"
+                y_axis_hold_release_metrics.append(metric_key)
+    else:
+        y_axis_hold_release_metrics = ["x_axis", "dist"]
+    if not y_axis_hold_release_metrics:
+        y_axis_hold_release_metrics = ["x_axis", "dist"]
+    y_axis_hold_active = bool(
+        y_axis_hold_enabled
+        and y_axis_success_target is not None
+        and y_axis_hold_offset_mm > 0.0
+    )
+    y_axis_hold_target = (
+        float(y_axis_success_target) + float(y_axis_hold_offset_mm)
+        if y_axis_hold_active
+        else None
+    )
+    y_axis_hold_release_streak = 0
+    y_axis_hold_start_logged = False
     step_post_desc_run_once = False
     step_pre_desc_run_once = False
     step_post_mast_run_once = False
@@ -9789,6 +9837,18 @@ def run_alignment_segment(
         and bool(align_policy_cfg.get("micro_adjust_crosshair_guard_enabled", False))
         and bool(micro_adjust_crosshair_guard_cmds)
     )
+    micro_adjust_focus_guard_enabled = bool(
+        step_supports_gap_micro_planner
+        and bool(align_policy_cfg.get("micro_adjust_focus_guard_enabled", False))
+    )
+    micro_adjust_focus_guard_confirm_frames = max(
+        1,
+        int(_as_int(align_policy_cfg.get("micro_adjust_focus_guard_confirm_frames"), 3)),
+    )
+    micro_adjust_focus_guard_reverse_max_acts = max(
+        1,
+        int(_as_int(align_policy_cfg.get("micro_adjust_focus_guard_reverse_max_acts"), 1)),
+    )
     align_gate_step_key = step
     skip_settle_pause = step_key in FAST_POST_ACT_GATECHECK_STEPS
     # ALIGN_BRICK demos are often state-only, so derived scan speed can fall back to 50%.
@@ -9871,6 +9931,63 @@ def run_alignment_segment(
             return
         print(f"{COLOR_WHITE}{_format_exception_prefix_text()} {body_text}{COLOR_RESET}")
 
+    def _y_axis_hold_release_ready(local_gate_status):
+        if not isinstance(local_gate_status, dict):
+            return False
+        if not bool(local_gate_status.get("visible")):
+            return False
+        for metric_key in y_axis_hold_release_metrics:
+            key = str(metric_key or "").strip().lower()
+            if key == "x_axis":
+                if bool(local_gate_status.get("x_required")) and not bool(local_gate_status.get("x_within_tol")):
+                    return False
+            elif key == "dist":
+                if bool(local_gate_status.get("dist_required")) and not bool(local_gate_status.get("dist_within_tol")):
+                    return False
+            elif key == "y_axis":
+                if bool(local_gate_status.get("y_required")) and not bool(local_gate_status.get("y_within_tol")):
+                    return False
+        return True
+
+    def _planner_y_axis_with_hold(raw_y_axis, *, phase_label):
+        nonlocal y_axis_hold_active
+        nonlocal y_axis_hold_release_streak
+        nonlocal y_axis_hold_start_logged
+        y_axis_num = _as_float(raw_y_axis, None)
+        if not bool(y_axis_hold_active):
+            return y_axis_num
+        if not bool(y_axis_hold_start_logged):
+            release_text = ", ".join(str(metric).upper() for metric in y_axis_hold_release_metrics) or "X_AXIS, DIST"
+            if y_axis_hold_reminder:
+                _print_exception_line(f"[{step_key}] {y_axis_hold_reminder}")
+            _print_exception_line(
+                (
+                    f"[{step_key}] Y-axis hold active ({str(phase_label)}): keeping +{float(y_axis_hold_offset_mm):.1f}mm "
+                    f"above success target (gate={float(y_axis_success_target):.2f}mm, hold={float(y_axis_hold_target):.2f}mm, "
+                    f"tol={float(y_axis_success_tol):.2f}mm) until {release_text} are in-gate for "
+                    f"{int(y_axis_hold_release_confirm_frames)} observation(s)."
+                )
+            )
+            y_axis_hold_start_logged = True
+
+        local_gate_status = _align_local_gate_status_single_source(world, step)
+        if _y_axis_hold_release_ready(local_gate_status):
+            y_axis_hold_release_streak = int(y_axis_hold_release_streak) + 1
+        else:
+            y_axis_hold_release_streak = 0
+        if int(y_axis_hold_release_streak) >= int(y_axis_hold_release_confirm_frames):
+            y_axis_hold_active = False
+            _print_exception_line(
+                (
+                    f"[{step_key}] Y-axis hold released ({str(phase_label)}): end gates reached; "
+                    f"resuming final descent to success target {float(y_axis_success_target):.2f}mm."
+                )
+            )
+            return y_axis_num
+        if y_axis_num is None:
+            return None
+        return float(y_axis_num) - float(y_axis_hold_offset_mm)
+
     def _observe_descend_crosshair_confident(*, confirm_frames=1):
         # Observe several fresh frames after each pulse and use majority truth.
         required = max(1, int(confirm_frames or 1))
@@ -9910,6 +10027,220 @@ def run_alignment_segment(
         for value in samples:
             parts.append("WAIT" if value is None else ("YES" if value else "NO"))
         return ",".join(parts)
+
+    def _crosshair_state_text(value):
+        if value is None:
+            return "WAIT"
+        return "YES" if bool(value) else "NO"
+
+    def _maybe_run_micro_adjust_focus_guard(*, phase_label="align"):
+        nonlocal micro_adjust_focus_latched_true
+        nonlocal last_micro_adjust_act
+        nonlocal stale_pre_obs_streak, stale_frame_streak, not_visible_streak
+        nonlocal last_visible_ts, prev_log_correction_type, prev_log_x_err, prev_log_y_err, prev_log_dist
+        nonlocal force_gap_switch_after_recovery, last_align_signature
+
+        if not bool(micro_adjust_focus_guard_enabled):
+            return "disabled"
+        if not bool(step_supports_gap_micro_planner) or not bool(gap_micro_armed):
+            micro_adjust_focus_latched_true = False
+            return "inactive"
+
+        brick_local = getattr(world, "brick", {}) or {}
+        if not bool(brick_local.get("visible")):
+            micro_adjust_focus_latched_true = False
+            return "inactive"
+
+        crosshair_now = _read_post_desc_crosshair()
+        if crosshair_now is True:
+            micro_adjust_focus_latched_true = True
+            return "steady"
+        if crosshair_now is None:
+            return "wait"
+        if not bool(micro_adjust_focus_latched_true):
+            return "steady"
+
+        confirm_frames = int(micro_adjust_focus_guard_confirm_frames)
+        crosshair_confirmed = crosshair_now
+        crosshair_samples = (crosshair_now,)
+        if int(confirm_frames) > 1:
+            crosshair_confirmed, crosshair_samples = _observe_descend_crosshair_confident(
+                confirm_frames=confirm_frames,
+            )
+        if crosshair_confirmed is True:
+            micro_adjust_focus_latched_true = True
+            return "steady"
+
+        sample_text = _crosshair_sample_text(crosshair_samples)
+        if crosshair_confirmed is None:
+            if not align_silent:
+                _print_exception_line(
+                    (
+                        f"[{step_key}] Micro-adjust focus guard: inCrosshairs dropped after focus lock, "
+                        f"but observation is unstable (obs{int(confirm_frames)}=[{sample_text}]); "
+                        "holding for re-observation."
+                    )
+                )
+            if robot:
+                robot.stop()
+            if observer:
+                observer("action", world, vision, None, 0.0, "micro_adjust_focus_guard_hold")
+            return "hold"
+
+        if not align_silent:
+            recent_cmd_text = "none"
+            if isinstance(last_micro_adjust_act, dict):
+                recent_cmd = str(last_micro_adjust_act.get("cmd") or "").strip().upper()
+                recent_score = last_micro_adjust_act.get("score")
+                if recent_cmd:
+                    try:
+                        recent_cmd_text = f"{recent_cmd} {int(round(float(recent_score)))}%"
+                    except (TypeError, ValueError):
+                        recent_cmd_text = recent_cmd
+            _print_exception_line(
+                (
+                    f"[{step_key}] Micro-adjust focus guard: inCrosshairs latched YES then dropped to NO "
+                    f"(obs{int(confirm_frames)}=[{sample_text}]); triggering immediate recovery."
+                )
+            )
+            _print_exception_line(
+                (
+                    f"[{step_key}] Micro-adjust focus guard context: "
+                    f"phase={str(phase_label)}, last-gap-act={recent_cmd_text}, "
+                    f"last-recovery-act={_format_last_align_action_for_recovery()}."
+                )
+            )
+        reverse_sample_text = ""
+        reverse_cmd_text = ""
+        reverse_cmd = None
+        reverse_score = None
+        if isinstance(last_micro_adjust_act, dict):
+            reverse_cmd = _inverse_cmd(last_micro_adjust_act.get("cmd"))
+            reverse_score = last_micro_adjust_act.get("score")
+            try:
+                reverse_score = int(round(float(reverse_score))) if reverse_score is not None else None
+            except (TypeError, ValueError):
+                reverse_score = None
+            if reverse_score is None:
+                reverse_score = int(getattr(telemetry_robot_module, "SPEED_SCORE_MIN", 1))
+            reverse_score = max(
+                int(getattr(telemetry_robot_module, "SPEED_SCORE_MIN", 1)),
+                min(int(MAX_SPEED_SCORE), int(reverse_score)),
+            )
+        if reverse_cmd in {"f", "b", "l", "r", "u", "d"}:
+            reverse_speed = telemetry_robot_module.manual_speed_for_cmd(reverse_cmd, reverse_score)
+            reverse_cmd_text = f"{str(reverse_cmd).upper()} {int(reverse_score)}%"
+            if not align_silent:
+                _print_exception_line(
+                    (
+                        f"[{step_key}] Micro-adjust focus guard: immediate reverse pulse "
+                        f"{reverse_cmd_text} before generic recovery."
+                    )
+                )
+            if confirm_callback and not confirm_callback(world, vision):
+                return "confirm cancelled"
+            if observer:
+                observer(
+                    "analysis",
+                    world,
+                    vision,
+                    reverse_cmd,
+                    reverse_speed,
+                    "micro_adjust_focus_guard_reverse",
+                )
+            reverse_action_meta = send_robot_command(
+                robot,
+                world,
+                step,
+                reverse_cmd,
+                reverse_speed,
+                speed_score=reverse_score,
+                auto_mode=True,
+            )
+            if isinstance(reverse_action_meta, dict):
+                reverse_score_eff = reverse_action_meta.get("score_effective")
+                if reverse_score_eff is not None:
+                    try:
+                        reverse_score = int(round(float(reverse_score_eff)))
+                    except (TypeError, ValueError):
+                        pass
+            if observer:
+                observer(
+                    "action",
+                    world,
+                    vision,
+                    reverse_cmd,
+                    reverse_speed,
+                    "micro_adjust_focus_guard_reverse",
+                )
+            crosshair_after_reverse, reverse_samples = _observe_descend_crosshair_confident(
+                confirm_frames=confirm_frames,
+            )
+            reverse_sample_text = _crosshair_sample_text(reverse_samples)
+            if crosshair_after_reverse is True:
+                micro_adjust_focus_latched_true = True
+                last_micro_adjust_act = {
+                    "cmd": str(reverse_cmd),
+                    "score": int(reverse_score),
+                }
+                if not align_silent:
+                    _print_exception_line(
+                        (
+                            f"[{step_key}] Micro-adjust focus guard recovered via immediate reverse "
+                            f"{reverse_cmd_text}; obs{int(confirm_frames)}=[{reverse_sample_text}]."
+                        )
+                    )
+                return "recovered"
+            if not align_silent:
+                _print_exception_line(
+                    (
+                        f"[{step_key}] Micro-adjust focus guard reverse did not restore focus: "
+                        f"obs{int(confirm_frames)}=[{reverse_sample_text}]."
+                    )
+                )
+
+        reason = (
+            f"inCrosshairs dropped YES->NO during {str(phase_label)} micro-adjust "
+            f"(obs{int(confirm_frames)}=[{sample_text}])"
+        )
+        if _recover_visibility(
+            source=f"{str(phase_label)}_focus_guard",
+            reason=reason,
+            reverse_max_acts=int(micro_adjust_focus_guard_reverse_max_acts),
+        ):
+            stale_pre_obs_streak = 0
+            stale_frame_streak = 0
+            not_visible_streak = 0
+            last_visible_ts = time.time()
+            _set_post_recovery_disqualify_types(source="micro_adjust_focus_guard")
+            prev_log_correction_type = None
+            prev_log_x_err = None
+            prev_log_y_err = None
+            prev_log_dist = None
+            force_gap_switch_after_recovery = True
+            gap_planner_state.pop("gap_rotation", None)
+            last_align_signature = None
+            update_world_from_vision(world, vision, log=not align_silent)
+            crosshair_after = _read_post_desc_crosshair()
+            micro_adjust_focus_latched_true = bool(crosshair_after is True)
+            if not align_silent:
+                _print_exception_line(
+                    (
+                        f"[{step_key}] Micro-adjust focus guard recovery result: "
+                        f"inCrosshairs={_crosshair_state_text(crosshair_after)}; "
+                        "continuing with fresh re-plan."
+                    )
+                )
+            return "recovered"
+
+        if not align_silent:
+            _print_exception_line(
+                (
+                    f"[{step_key}] Micro-adjust focus guard recovery failed after confirmed focus loss; "
+                    "stopping to avoid target-marker switching."
+                )
+            )
+        return "failed"
 
     def _run_step_post_success_descend():
         nonlocal step_post_desc_run_once
@@ -10393,6 +10724,8 @@ def run_alignment_segment(
     forward_stall_start_dist_err = None
     forward_stall_best_dist_err = None
     forward_stall_reminder_logged = False
+    micro_adjust_focus_latched_true = False
+    last_micro_adjust_act = None
 
     def _correction_type_for_cmd_value(cmd_value):
         cmd_key = str(cmd_value or "").strip().lower()
@@ -12212,6 +12545,15 @@ def run_alignment_segment(
             return False, "confirm cancelled"
         if exception_ran:
             continue
+        focus_guard_status = _maybe_run_micro_adjust_focus_guard(phase_label="align")
+        if focus_guard_status == "confirm cancelled":
+            return False, "confirm cancelled"
+        if focus_guard_status == "failed":
+            pause_after_fail(robot)
+            return False, "micro-adjust focus guard recovery failed"
+        if focus_guard_status in {"hold", "recovered"}:
+            time.sleep(CONTROL_DT)
+            continue
 
         if step_supports_gap_micro_planner and gap_micro_armed and not visible_now:
             lost_for_s = max(0.0, float(time.time()) - float(last_visible_ts))
@@ -12330,12 +12672,16 @@ def run_alignment_segment(
                 "reason": str(search_reason),
             }
         else:
+            y_axis_for_plan = _planner_y_axis_with_hold(
+                brick.get("y_axis", brick.get("offset_y")),
+                phase_label="align",
+            )
             act_plan = next_module.select_alignment_next_act(
                 process_rules=world.process_rules or {},
                 learned_rules=world.learned_rules or {},
                 step=step,
                 x_axis_mm=brick.get("x_axis", brick.get("offset_x")),
-                y_axis_mm=brick.get("y_axis", brick.get("offset_y")),
+                y_axis_mm=y_axis_for_plan,
                 dist_mm=brick.get("dist"),
                 visible=bool(brick.get("visible")),
                 angle_deg=brick.get("angle", 0.0),
@@ -12924,7 +13270,7 @@ def run_alignment_segment(
                 world.update_from_motion(evt)
             if next_module.success_gates_visible_only(world.process_rules or {}, step):
                 world._visible_speed_cycle = int(getattr(world, "_visible_speed_cycle", 0)) + 1
-            if use_micro_align_gap_planner and cmd in ("f", "b", "l", "r"):
+            if use_micro_align_gap_planner and cmd in ("f", "b", "l", "r", "u", "d"):
                 try:
                     hist_score = int(round(float(score_effective))) if score_effective is not None else None
                 except (TypeError, ValueError):
@@ -12935,20 +13281,22 @@ def run_alignment_segment(
                     except (TypeError, ValueError):
                         hist_score = int(DEFAULT_SPEED_SCORE)
                 hist_cmd = str(cmd).strip().lower()
-                if hist_cmd not in ("f", "b", "l", "r"):
+                if hist_cmd not in ("f", "b", "l", "r", "u", "d"):
                     hist_cmd = str(cmd).strip().lower()
-                recent_align_acts.append({"cmd": str(hist_cmd), "score": int(hist_score)})
-                if isinstance(action_meta, dict):
-                    last_align_action = {
-                        "cmd": str(cmd),
-                        "cmd_sent": action_meta.get("cmd_sent"),
-                        "score": hist_score,
-                        "pwm": action_meta.get("pwm"),
-                        "power": action_meta.get("power"),
-                        "duration_ms": action_meta.get("duration_ms"),
-                    }
-                else:
-                    last_align_action = {"cmd": str(cmd), "score": hist_score}
+                last_micro_adjust_act = {"cmd": str(hist_cmd), "score": int(hist_score)}
+                if hist_cmd in ("f", "b", "l", "r"):
+                    recent_align_acts.append({"cmd": str(hist_cmd), "score": int(hist_score)})
+                    if isinstance(action_meta, dict):
+                        last_align_action = {
+                            "cmd": str(cmd),
+                            "cmd_sent": action_meta.get("cmd_sent"),
+                            "score": hist_score,
+                            "pwm": action_meta.get("pwm"),
+                            "power": action_meta.get("power"),
+                            "duration_ms": action_meta.get("duration_ms"),
+                        }
+                    else:
+                        last_align_action = {"cmd": str(cmd), "score": hist_score}
             if confirm_callback and robot:
                 robot.stop()
             last_action_frame = None
@@ -13102,16 +13450,29 @@ def run_alignment_segment(
                 observer("action", world, vision, None, 0.0, "gate confirm hold")
             time.sleep(CONTROL_DT)
             continue
+        focus_guard_status = _maybe_run_micro_adjust_focus_guard(phase_label="settle")
+        if focus_guard_status == "confirm cancelled":
+            return False, "confirm cancelled"
+        if focus_guard_status == "failed":
+            pause_after_fail(robot)
+            return False, "micro-adjust focus guard recovery failed"
+        if focus_guard_status in {"hold", "recovered"}:
+            time.sleep(CONTROL_DT)
+            continue
 
         step_norm = normalize_step_label(step)
         duration_override_ms = None
         brick = getattr(world, "brick", {}) or {}
+        y_axis_for_plan = _planner_y_axis_with_hold(
+            brick.get("y_axis", brick.get("offset_y")),
+            phase_label="settle",
+        )
         act_plan = next_module.select_alignment_next_act(
             process_rules=world.process_rules or {},
             learned_rules=world.learned_rules or {},
             step=step,
             x_axis_mm=brick.get("x_axis", brick.get("offset_x")),
-            y_axis_mm=brick.get("y_axis", brick.get("offset_y")),
+            y_axis_mm=y_axis_for_plan,
             dist_mm=brick.get("dist"),
             visible=bool(brick.get("visible")),
             angle_deg=brick.get("angle", 0.0),
@@ -13430,6 +13791,137 @@ def replay_segment(
     cfg = {}
     if isinstance(getattr(world, "process_rules", None), dict):
         cfg = world.process_rules.get(step_key, {}) or {}
+    turn_followup_cfg = cfg.get("search_turn_followup_exception") if isinstance(cfg, dict) else {}
+    if not isinstance(turn_followup_cfg, dict):
+        turn_followup_cfg = {}
+    turn_followup_enabled = bool(turn_followup_cfg.get("enabled"))
+    turn_followup_cmd = str(turn_followup_cfg.get("command") or "b").strip().lower()
+    if turn_followup_cmd not in ("f", "b", "l", "r", "u", "d"):
+        turn_followup_cmd = "b"
+    turn_followup_score = int(
+        _as_int(turn_followup_cfg.get("score"), int(getattr(telemetry_robot_module, "SPEED_SCORE_MIN", 1)))
+    )
+    turn_followup_score = max(
+        int(getattr(telemetry_robot_module, "SPEED_SCORE_MIN", 1)),
+        min(int(MAX_SPEED_SCORE), int(turn_followup_score)),
+    )
+    turn_followup_acts = max(1, int(_as_int(turn_followup_cfg.get("acts"), 1)))
+    turn_followup_trigger_cmds = set()
+    raw_turn_followup_trigger_cmds = turn_followup_cfg.get("trigger_cmds")
+    if isinstance(raw_turn_followup_trigger_cmds, list):
+        for raw_cmd in raw_turn_followup_trigger_cmds:
+            cmd_local = str(raw_cmd or "").strip().lower()
+            if cmd_local in ("f", "b", "l", "r", "u", "d"):
+                turn_followup_trigger_cmds.add(cmd_local)
+    if not turn_followup_trigger_cmds:
+        turn_followup_trigger_cmds = {"l", "r"}
+    turn_followup_phases = set()
+    raw_turn_followup_phases = turn_followup_cfg.get("phases")
+    if isinstance(raw_turn_followup_phases, list):
+        for raw_phase in raw_turn_followup_phases:
+            phase_local = str(raw_phase or "").strip().lower()
+            if phase_local:
+                turn_followup_phases.add(phase_local)
+    turn_followup_reminder = str(turn_followup_cfg.get("operator_log_reminder") or "").strip()
+    turn_followup_reminder_printed = False
+
+    def _maybe_run_search_turn_followup_exception(trigger_cmd, *, phase_label, trigger_score=None):
+        nonlocal turn_followup_reminder_printed
+        if not bool(turn_followup_enabled):
+            return {"ran": False, "success": True, "reason": "disabled"}
+        trigger_cmd_local = str(trigger_cmd or "").strip().lower()
+        if trigger_cmd_local not in turn_followup_trigger_cmds:
+            return {"ran": False, "success": True, "reason": "not_trigger_cmd"}
+        phase_key = str(phase_label or "").strip().lower()
+        if turn_followup_phases and phase_key not in turn_followup_phases:
+            return {"ran": False, "success": True, "reason": "phase_filtered"}
+        if turn_followup_reminder and (not turn_followup_reminder_printed) and (not align_silent):
+            print(format_headline(f"[EXCEPTION] [{step_key}] {turn_followup_reminder}", COLOR_MAGENTA_BRIGHT))
+            turn_followup_reminder_printed = True
+        if not align_silent:
+            trigger_text = str(trigger_cmd_local).upper()
+            if trigger_score is not None:
+                try:
+                    trigger_text = f"{trigger_text} {int(round(float(trigger_score)))}%"
+                except (TypeError, ValueError):
+                    pass
+            print(
+                format_headline(
+                    (
+                        f"[EXCEPTION] [{step_key}] Search-turn follow-up ({phase_key or 'replay'}): "
+                        f"{str(turn_followup_cmd).upper()} {int(turn_followup_score)}% x{int(turn_followup_acts)} "
+                        f"after {trigger_text}."
+                    ),
+                    COLOR_MAGENTA_BRIGHT,
+                )
+            )
+        follow_speed = telemetry_robot_module.manual_speed_for_cmd(turn_followup_cmd, turn_followup_score)
+        last_meta = None
+        for idx in range(1, int(turn_followup_acts) + 1):
+            if confirm_callback and not confirm_callback(world, vision):
+                if robot:
+                    robot.stop()
+                return {"ran": True, "success": False, "reason": "confirm cancelled"}
+            if observer:
+                observer(
+                    "analysis",
+                    world,
+                    vision,
+                    turn_followup_cmd,
+                    follow_speed,
+                    "search_turn_followup_exception",
+                )
+            last_meta = send_robot_command(
+                robot,
+                world,
+                step_key,
+                turn_followup_cmd,
+                follow_speed,
+                speed_score=turn_followup_score,
+                auto_mode=True,
+            )
+            if observer:
+                observer(
+                    "action",
+                    world,
+                    vision,
+                    turn_followup_cmd,
+                    follow_speed,
+                    "search_turn_followup_exception",
+                )
+            try:
+                follow_active_speed = float((last_meta or {}).get("power", follow_speed) or 0.0)
+            except (TypeError, ValueError, AttributeError):
+                follow_active_speed = float(follow_speed or 0.0)
+            try:
+                follow_duration_ms = int(
+                    (last_meta or {}).get("duration_model_ms")
+                    or (last_meta or {}).get("duration_ms")
+                    or int(CONTROL_DT * 1000)
+                )
+            except Exception:
+                follow_duration_ms = int(CONTROL_DT * 1000)
+            world.update_from_motion(
+                MotionEvent(
+                    cmd_to_motion_type(turn_followup_cmd),
+                    int(max(0.0, min(1.0, float(follow_active_speed))) * 255),
+                    int(max(1, follow_duration_ms)),
+                )
+            )
+            if not align_silent:
+                print(
+                    format_headline(
+                        (
+                            f"[EXCEPTION] [{step_key}] Search-turn follow-up pulse "
+                            f"{int(idx)}/{int(turn_followup_acts)}: "
+                            f"{str(turn_followup_cmd).upper()} {int(turn_followup_score)}%."
+                        ),
+                        COLOR_MAGENTA_BRIGHT,
+                    )
+                )
+            time.sleep(CONTROL_DT)
+        return {"ran": True, "success": True, "reason": "ok", "action_meta": last_meta}
+
     loop_demo_acts = bool(isinstance(cfg, dict) and cfg.get("loop_demo_acts"))
     max_speed_score = None
     if isinstance(cfg, dict) and cfg.get("max_speed_score") is not None:
@@ -13554,6 +14046,15 @@ def replay_segment(
                         int(action_duration_s * 1000),
                     )
                     world.update_from_motion(evt)
+                    follow_result = _maybe_run_search_turn_followup_exception(
+                        cmd,
+                        phase_label="nominal",
+                        trigger_score=score_effective,
+                    )
+                    if bool((follow_result or {}).get("ran")) and not bool((follow_result or {}).get("success")):
+                        return False, str(
+                            (follow_result or {}).get("reason") or "search-turn follow-up failed"
+                        )
                     if observer:
                         observer("action", world, vision, cmd, speed, "nominal replay")
                     time.sleep(action_duration_s)
@@ -13838,6 +14339,15 @@ def replay_segment(
                     int(action_duration_s * 1000),
                 )
                 world.update_from_motion(evt)
+                follow_result = _maybe_run_search_turn_followup_exception(
+                    cmd_exec,
+                    phase_label="demo",
+                    trigger_score=score_effective,
+                )
+                if bool((follow_result or {}).get("ran")) and not bool((follow_result or {}).get("success")):
+                    return False, str(
+                        (follow_result or {}).get("reason") or "search-turn follow-up failed"
+                    )
                 if observer:
                     observer("action", world, vision, cmd_exec, active_speed, "demo replay")
                 time.sleep(action_duration_s)
@@ -14046,6 +14556,15 @@ def replay_segment(
                         int(CONTROL_DT * 1000),
                     )
                     world.update_from_motion(evt)
+                    follow_result = _maybe_run_search_turn_followup_exception(
+                        cmd_exec,
+                        phase_label="replay",
+                        trigger_score=score_effective,
+                    )
+                    if bool((follow_result or {}).get("ran")) and not bool((follow_result or {}).get("success")):
+                        return False, str(
+                            (follow_result or {}).get("reason") or "search-turn follow-up failed"
+                        )
                     if visible_only_tiering_enabled:
                         world._visible_speed_cycle = int(getattr(world, "_visible_speed_cycle", 0) or 0) + 1
                     if observer:
@@ -14255,6 +14774,15 @@ def replay_segment(
                 int(CONTROL_DT * 1000),
             )
             world.update_from_motion(evt)
+            follow_result = _maybe_run_search_turn_followup_exception(
+                cmd_exec,
+                phase_label="settle",
+                trigger_score=score_effective,
+            )
+            if bool((follow_result or {}).get("ran")) and not bool((follow_result or {}).get("success")):
+                return False, str(
+                    (follow_result or {}).get("reason") or "search-turn follow-up failed"
+                )
             if visible_only_tiering_enabled:
                 world._visible_speed_cycle = int(getattr(world, "_visible_speed_cycle", 0) or 0) + 1
             if observer:
@@ -14436,6 +14964,15 @@ def replay_segment(
                     int(CONTROL_DT * 1000),
                 )
                 world.update_from_motion(evt)
+                follow_result = _maybe_run_search_turn_followup_exception(
+                    cmd_exec,
+                    phase_label="tail",
+                    trigger_score=score_effective,
+                )
+                if bool((follow_result or {}).get("ran")) and not bool((follow_result or {}).get("success")):
+                    return False, str(
+                        (follow_result or {}).get("reason") or "search-turn follow-up failed"
+                    )
                 if visible_only_tiering_enabled:
                     world._visible_speed_cycle = int(getattr(world, "_visible_speed_cycle", 0) or 0) + 1
                 if observer:
