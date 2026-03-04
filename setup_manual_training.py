@@ -2020,11 +2020,26 @@ def run_auto_step(app_state, obj_enum):
         log_line(_pre_start_status_msg)
 
     quiet_align = False
-    max_full_gatecheck_restarts = 3
+    max_full_gatecheck_attempts_default = 4
+    try:
+        max_full_gatecheck_attempts_default = int(
+            (_MANUAL_CONFIG or {}).get("auto_full_gatecheck_max_attempts", max_full_gatecheck_attempts_default)
+        )
+    except (TypeError, ValueError, AttributeError):
+        max_full_gatecheck_attempts_default = 4
+    try:
+        max_full_gatecheck_attempts = int(
+            (cfg or {}).get("full_gatecheck_max_attempts", max_full_gatecheck_attempts_default)
+        )
+    except (TypeError, ValueError, AttributeError):
+        max_full_gatecheck_attempts = int(max_full_gatecheck_attempts_default)
+    max_full_gatecheck_attempts = max(1, int(max_full_gatecheck_attempts))
+    max_full_gatecheck_restarts = max(0, int(max_full_gatecheck_attempts) - 1)
     success_req = format_success_gate_requirements(app_state.world, step_key)
     if success_req == "none":
         success_req = success_desc
     log_line(f"[AUTO] {step_key} demo={seg_type} success gates: {success_req}")
+    log_line(f"[AUTO] {step_key} full gatecheck attempts allowed: {int(max_full_gatecheck_attempts)}.")
 
     if app_state.robot:
         app_state.robot.stop()
@@ -2125,8 +2140,17 @@ def run_auto_step(app_state, obj_enum):
         else:
             log_line(f"[GATECHECK] {step_key} final: FAIL{attempt_suffix}")
 
-    def _is_full_gatecheck_failure_reason(reason):
-        return "success gate not reached" in str(reason or "").strip().lower()
+    def _is_retryable_full_gatecheck_failure(reason):
+        reason_norm = str(reason or "").strip().lower()
+        if not reason_norm:
+            return True
+        if "cancelled by user" in reason_norm or "confirm cancelled" in reason_norm:
+            return False
+        if "start gates not met" in reason_norm:
+            return False
+        if "missing speedscore" in reason_norm or "invalid speedscore" in reason_norm:
+            return False
+        return True
 
     prior_suppress_skip_start_log = bool(getattr(app_state.world, "_suppress_start_gate_skip_log", False))
     app_state.world._suppress_start_gate_skip_log = True
@@ -2167,14 +2191,14 @@ def run_auto_step(app_state, obj_enum):
 
             _log_full_gatecheck_final("FAIL", reason=reason, attempt_num=attempt_num)
             if (
-                _is_full_gatecheck_failure_reason(reason)
+                _is_retryable_full_gatecheck_failure(reason)
                 and full_gatecheck_restarts_used < int(max_full_gatecheck_restarts)
                 and not (bool(getattr(app_state, "auto_cancel_event", None)) and app_state.auto_cancel_event.is_set())
             ):
                 full_gatecheck_restarts_used += 1
                 log_line(
                     f"[AUTO] {step_key} full gatecheck failed; restarting "
-                    f"({int(full_gatecheck_restarts_used)}/{int(max_full_gatecheck_restarts)})."
+                    f"(attempt {int(attempt_num) + 1}/{int(max_full_gatecheck_attempts)})."
                 )
                 continue
             break

@@ -941,6 +941,68 @@ def score_power_pwm_for_cmd(cmd):
     return SCORE_POWER_PWM_DRIVE if isinstance(SCORE_POWER_PWM_DRIVE, dict) else SCORE_POWER_PWM_TURN
 
 
+def _hotkey_speed_row_for_cmd_score(cmd, score):
+    cmd_key = str(cmd or "").strip().lower()
+    if cmd_key not in ("u", "d"):
+        return None
+    rows = HOTKEY_SPEED_SCORES if isinstance(HOTKEY_SPEED_SCORES, dict) else {}
+    if not rows:
+        return None
+    score_key = normalize_speed_score(score)
+    for row in rows.values():
+        if not isinstance(row, dict):
+            continue
+        row_cmd = str(row.get("cmd") or "").strip().lower()
+        if row_cmd != cmd_key:
+            continue
+        try:
+            row_score = normalize_speed_score(row.get("score"))
+        except Exception:
+            continue
+        if int(row_score) == int(score_key):
+            return row
+    return None
+
+
+def _hotkey_speed_override_for_cmd_score(cmd, score):
+    row = _hotkey_speed_row_for_cmd_score(cmd, score)
+    if not isinstance(row, dict):
+        return None
+
+    pwm = None
+    pwm_raw = row.get("pwm")
+    try:
+        pwm = clamp_pwm(int(round(float(pwm_raw))))
+    except (TypeError, ValueError):
+        pwm = None
+    if pwm is None or int(pwm) <= 0:
+        power_raw = row.get("power")
+        try:
+            power_raw = float(power_raw)
+        except (TypeError, ValueError):
+            power_raw = None
+        if power_raw is not None:
+            pwm_from_power = _power_to_pwm(power_raw)
+            if pwm_from_power is not None:
+                pwm = clamp_pwm(int(pwm_from_power))
+    if pwm is None or int(pwm) <= 0:
+        return None
+
+    power = _pwm_to_power(pwm)
+    if power is None:
+        power = 0.0
+
+    duration_ms = None
+    duration_raw = row.get("duration_ms")
+    try:
+        duration_ms = max(1, int(round(float(duration_raw))))
+    except (TypeError, ValueError):
+        duration_ms = None
+    if duration_ms is None:
+        duration_ms = _duration_ms_for_score(cmd, score)
+    return float(power), int(pwm), int(duration_ms)
+
+
 def baseline_pwm_floor_for_cmd(cmd):
     cmd = str(cmd) if cmd is not None else ""
     if cmd == "l":
@@ -1022,6 +1084,10 @@ def _duration_ms_for_score(cmd, score):
 
 def speed_power_pwm_for_cmd(cmd, score):
     score = normalize_speed_score(score)
+    hotkey_override = _hotkey_speed_override_for_cmd_score(cmd, score)
+    if isinstance(hotkey_override, tuple) and len(hotkey_override) == 3:
+        power, pwm, duration_ms = hotkey_override
+        return float(power), int(pwm), int(score), int(duration_ms)
     score_map = score_power_pwm_for_cmd(cmd)
     exact_entry = score_map.get(score) if isinstance(score_map, dict) else None
     pwm = None

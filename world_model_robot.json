@@ -54,15 +54,15 @@
     "o": {
       "cmd": "u",
       "score": 1,
-      "pwm": 120,
-      "power": 0.3,
+      "pwm": 40,
+      "power": 0.2,
       "duration_ms": 250
     },
     "k": {
       "cmd": "d",
       "score": 1,
-      "pwm": 120,
-      "power": 0.3,
+      "pwm": 40,
+      "power": 0.2,
       "duration_ms": 250
     },
     "u": {

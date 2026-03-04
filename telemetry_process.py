@@ -86,6 +86,7 @@ FAST_POST_ACT_GATECHECK_STEPS = {
     "BRICK_LOCK",
     "BRICK_LOCK_WALL",
     "SEAT_BRICK",
+    "SEAT_BRICK2",
     "EXIT_WALL",
 }
 
@@ -100,7 +101,7 @@ PROCESS_SUCCESS_METRICS_BY_STEP = {
     "BRICK_LOCK_WALL": ("xAxis_offset_abs", "yAxis_offset_abs", "dist"),
     "ALIGN_BRICK": ("visible", "xAxis_offset_abs", "yAxis_offset_abs", "dist"),
     "SEAT_BRICK": ("visible", "dist"),
-    "SEAT_BRICK2": ("visible", "xAxis_offset_abs", "yAxis_offset_abs", "dist"),
+    "SEAT_BRICK2": ("visible", "dist"),
     "ELEVATE_BRICK": ("visible",),
     "FIND_WALL2": ("visible", "xAxis_offset_abs", "yAxis_offset_abs"),
     "APPROACH_VECTOR_WALL": ("visible", "angle_abs", "xAxis_offset_abs", "yAxis_offset_abs"),
@@ -3824,6 +3825,7 @@ def _run_ground_up_level2_exception(
         )
         # Level2 requires strictly consecutive PASS cycles. Any cycle that does
         # not produce a passing confirm result resets the streak.
+        prev_confident_no_streak = int(confident_no_streak)
         if bool(condition_hit):
             confident_no_streak = int(confident_no_streak) + 1
         else:
@@ -3841,11 +3843,19 @@ def _run_ground_up_level2_exception(
                 bb_text = "WAIT"
             else:
                 bb_text = "YES" if bool(brick_below_now) else "NO"
+            # `cycle_condition` is per-cycle truth only.
             cond_word = f"{COLOR_GREEN}PASS{COLOR_RESET}" if bool(condition_hit) else f"{COLOR_RED}FAIL{COLOR_RESET}"
-            # `level2 success gate check` reflects whether this cycle counted
-            # toward the consecutive requirement, not whether the overall
-            # threshold is finished yet.
+            # Keep PASS/FAIL token for backward-compatible operator parsing and
+            # tests, but emit explicit streak progress state separately.
             streak_word = f"{COLOR_GREEN}PASS{COLOR_RESET}" if bool(condition_hit) else f"{COLOR_RED}FAIL{COLOR_RESET}"
+            if bool(level2_ok):
+                progress_word = f"{COLOR_GREEN}COMPLETE{COLOR_RESET}"
+            elif bool(condition_hit):
+                progress_word = f"{COLOR_ORANGE_BRIGHT}COUNTED{COLOR_RESET}"
+            elif int(prev_confident_no_streak) > 0:
+                progress_word = f"{COLOR_RED}RESET{COLOR_RESET}"
+            else:
+                progress_word = f"{COLOR_WHITE}WAIT{COLOR_RESET}"
             armed_word = f"{COLOR_GREEN}YES{COLOR_RESET}" if bool(stack_gate_armed) else f"{COLOR_RED}NO{COLOR_RESET}"
             if not bool(fresh_after_mast):
                 obs_text = "SKIP(stale frame)"
@@ -3908,8 +3918,9 @@ def _run_ground_up_level2_exception(
                     + (
                         f"{mismatch_text}"
                         f"observation={obs_text}, "
-                        f"condition={cond_word}, "
+                        f"cycle_condition={cond_word}, "
                         f"level2 success gate check={int(confident_no_streak)}/{int(no_streak_required)} ({streak_word}), "
+                        f"streak_state={progress_word}, "
                         + (
                             f"gatecheck={('PASS' if bool(success_hit) else 'FAIL')}, "
                             if bool(level2_use_full_gatecheck)
@@ -4003,7 +4014,8 @@ def _run_ground_up_level2_exception(
                 if bool(level2_use_full_gatecheck)
                 else ""
             )
-            + f"no_streak={int(confident_no_streak)}/{int(no_streak_required)})"
+            + f"no_streak={int(confident_no_streak)}/{int(no_streak_required)}; "
+            + "requires consecutive PASS cycles)"
         ),
     }
 
@@ -9086,6 +9098,32 @@ def run_alignment_segment(
         int(telemetry_robot_module.SPEED_SCORE_MIN),
         min(int(MAX_SPEED_SCORE), int(_as_int(step_pre_desc_cfg.get("score"), 100))),
     )
+    step_pre_desc_score_after_seen_true = max(
+        int(telemetry_robot_module.SPEED_SCORE_MIN),
+        min(
+            int(MAX_SPEED_SCORE),
+            int(_as_int(step_pre_desc_cfg.get("score_after_seen_true"), int(step_pre_desc_score))),
+        ),
+    )
+    step_pre_desc_confirm_frames = max(
+        1,
+        int(_as_int(step_pre_desc_cfg.get("confirm_frames"), 3)),
+    )
+    step_pre_desc_require_consistent_observation = bool(
+        step_pre_desc_cfg.get("require_consistent_observation", False)
+    )
+    step_pre_desc_consistent_observation_max_checks = max(
+        int(step_pre_desc_confirm_frames),
+        int(
+            _as_int(
+                step_pre_desc_cfg.get("consistent_observation_max_checks"),
+                max(12, int(step_pre_desc_confirm_frames) * 12),
+            )
+        ),
+    )
+    step_pre_desc_consistent_observation_require_non_wait = bool(
+        step_pre_desc_cfg.get("consistent_observation_require_non_wait", True)
+    )
     step_pre_desc_completion_mode = str(step_pre_desc_cfg.get("completion_mode") or "true_streak").strip().lower()
     if step_pre_desc_completion_mode not in ("true_streak", "true_then_false_streak"):
         step_pre_desc_completion_mode = "true_streak"
@@ -9344,6 +9382,69 @@ def run_alignment_segment(
             raw = brick_local.get("in_crosshairs")
         return None if raw is None else bool(raw)
 
+    def _format_exception_prefix_text():
+        # Keep operator semantics consistent while styling only the exception token.
+        return f"[{COLOR_MAGENTA_BRIGHT}exception{COLOR_WHITE}]"
+
+    def _highlight_seen_true_text(saw_true):
+        if bool(saw_true):
+            return f"seen-true={COLOR_GREEN}YES{COLOR_WHITE}"
+        return "seen-true=NO"
+
+    def _highlight_false_after_true_text(count, required):
+        count_int = int(count)
+        required_int = int(required)
+        if count_int > 0:
+            count_text = f"{COLOR_GREEN}{count_int}{COLOR_WHITE}"
+        else:
+            count_text = str(count_int)
+        return f"false-after-true={count_text}/{required_int}"
+
+    def _print_exception_line(body_text):
+        if align_silent:
+            return
+        print(f"{COLOR_WHITE}{_format_exception_prefix_text()} {body_text}{COLOR_RESET}")
+
+    def _observe_descend_crosshair_confident(*, confirm_frames=1):
+        # Observe several fresh frames after each pulse and use majority truth.
+        required = max(1, int(confirm_frames or 1))
+        threshold = max(1, int((required // 2) + 1))
+        samples = []
+        if robot:
+            robot.stop()
+        post_act_analysis(world, vision, step=step, log=not align_silent, include_pause=False)
+        if observer:
+            observer("frame", world, vision, None, None, None)
+        samples.append(_read_post_desc_crosshair())
+        for _ in range(1, required):
+            wait_for_frame_settle(world, vision, 1, log=not align_silent)
+            if observer:
+                observer("frame", world, vision, None, None, None)
+            samples.append(_read_post_desc_crosshair())
+        yes_hits = int(sum(1 for v in samples if v is True))
+        no_hits = int(sum(1 for v in samples if v is False))
+        if yes_hits >= threshold and yes_hits > no_hits:
+            return True, tuple(samples)
+        if no_hits >= threshold and no_hits > yes_hits:
+            return False, tuple(samples)
+        return None, tuple(samples)
+
+    def _crosshair_samples_consistent(samples, *, require_non_wait=True):
+        if not isinstance(samples, (list, tuple)) or not samples:
+            return False
+        first = samples[0]
+        if require_non_wait and first is None:
+            return False
+        return all(value == first for value in samples)
+
+    def _crosshair_sample_text(samples):
+        if not isinstance(samples, (list, tuple)):
+            return ""
+        parts = []
+        for value in samples:
+            parts.append("WAIT" if value is None else ("YES" if value else "NO"))
+        return ",".join(parts)
+
     def _run_step_post_success_descend():
         nonlocal step_post_desc_run_once
         if not bool(step_post_desc_enabled) or int(step_post_desc_max_acts) <= 0:
@@ -9459,7 +9560,6 @@ def run_alignment_segment(
         if bool(step_pre_desc_run_once):
             return {"enabled": True, "success": True, "reason": "already completed"}
         step_pre_desc_run_once = True
-        pre_desc_speed = telemetry_robot_module.manual_speed_for_cmd(step_pre_desc_cmd, step_pre_desc_score)
         if not align_silent:
             if step_pre_desc_completion_mode == "true_then_false_streak":
                 goal_text = (
@@ -9467,44 +9567,84 @@ def run_alignment_segment(
                 )
             else:
                 goal_text = f"inCrosshairs=YES x{int(step_pre_desc_true_required)}"
-            print(
-                format_headline(
-                    (
-                        f"[EXCEPTION] [{step_key}] Pre-align descend start: "
-                        f"{str(step_pre_desc_cmd).upper()} {int(step_pre_desc_score)}%, "
-                        f"goal={goal_text}, max={int(step_pre_desc_max_acts)}."
-                    ),
-                    COLOR_MAGENTA_BRIGHT,
+            speed_note = ""
+            if int(step_pre_desc_score_after_seen_true) != int(step_pre_desc_score):
+                speed_note = (
+                    f", after-seen-true={int(step_pre_desc_score_after_seen_true)}%"
+                )
+            if int(step_pre_desc_confirm_frames) > 1:
+                speed_note += f", confirm={int(step_pre_desc_confirm_frames)} frames"
+            if bool(step_pre_desc_require_consistent_observation):
+                speed_note += (
+                    f", consistent-observe=YES(max={int(step_pre_desc_consistent_observation_max_checks)})"
+                )
+            _print_exception_line(
+                (
+                    f"[{step_key}] Pre-align descend start: "
+                    f"{str(step_pre_desc_cmd).upper()} {int(step_pre_desc_score)}%, "
+                    f"goal={goal_text}, max={int(step_pre_desc_max_acts)}{speed_note}."
                 )
             )
         true_down_streak = 0
         saw_true = False
         false_after_true_streak = 0
+        seen_true_downshift_logged = False
         done = False
         for idx in range(1, int(step_pre_desc_max_acts) + 1):
-            if confirm_callback and not confirm_callback(world, vision):
-                return {"enabled": True, "success": False, "reason": "confirm cancelled"}
-            if observer:
-                observer("analysis", world, vision, step_pre_desc_cmd, pre_desc_speed, "pre_align_descend")
-            send_robot_command(
-                robot,
-                world,
-                step,
-                step_pre_desc_cmd,
-                pre_desc_speed,
-                speed_score=step_pre_desc_score,
-                auto_mode=True,
+            crosshair_now, crosshair_samples = _observe_descend_crosshair_confident(
+                confirm_frames=step_pre_desc_confirm_frames,
             )
-            post_act_analysis(world, vision, step=step, log=not align_silent, include_pause=False)
-            update_world_from_vision(world, vision, log=not align_silent)
-            if observer:
-                observer("frame", world, vision, None, None, None)
-                observer("action", world, vision, step_pre_desc_cmd, pre_desc_speed, "pre_align_descend")
-            crosshair_now = _read_post_desc_crosshair()
+            observation_checks = 1
+            if bool(step_pre_desc_require_consistent_observation):
+                while not _crosshair_samples_consistent(
+                    crosshair_samples,
+                    require_non_wait=bool(step_pre_desc_consistent_observation_require_non_wait),
+                ):
+                    if int(observation_checks) >= int(step_pre_desc_consistent_observation_max_checks):
+                        fail_reason = (
+                            f"pre-align descend could not obtain consistent inCrosshairs observation "
+                            f"(obs{int(step_pre_desc_confirm_frames)}=[{_crosshair_sample_text(crosshair_samples)}], "
+                            f"checks={int(observation_checks)}/{int(step_pre_desc_consistent_observation_max_checks)})"
+                        )
+                        if not align_silent:
+                            _print_exception_line(
+                                f"[{step_key}] Pre-align descend observe hold timeout: {fail_reason}."
+                            )
+                        return {"enabled": True, "success": False, "reason": fail_reason}
+                    if not align_silent:
+                        _print_exception_line(
+                            (
+                                f"[{step_key}] Pre-align descend observe hold: "
+                                f"obs{int(step_pre_desc_confirm_frames)}=[{_crosshair_sample_text(crosshair_samples)}] "
+                                f"(check {int(observation_checks)}/{int(step_pre_desc_consistent_observation_max_checks)}); "
+                                "re-observing before act."
+                            )
+                        )
+                    if observer:
+                        observer("action", world, vision, None, 0.0, "pre_align_descend_wait_consistent_observation")
+                    time.sleep(CONTROL_DT)
+                    crosshair_now, crosshair_samples = _observe_descend_crosshair_confident(
+                        confirm_frames=step_pre_desc_confirm_frames,
+                    )
+                    observation_checks = int(observation_checks) + 1
+            saw_true_before = bool(saw_true)
             if crosshair_now is True:
                 true_down_streak = int(true_down_streak) + 1
                 saw_true = True
                 false_after_true_streak = 0
+                if (
+                    (not bool(saw_true_before))
+                    and int(step_pre_desc_score_after_seen_true) != int(step_pre_desc_score)
+                    and (not bool(seen_true_downshift_logged))
+                ):
+                    _print_exception_line(
+                        (
+                            f"[{step_key}] Pre-align descend: seen-true latched; "
+                            f"reducing {str(step_pre_desc_cmd).upper()} speed to "
+                            f"{int(step_pre_desc_score_after_seen_true)}% for remaining pulses."
+                        )
+                    )
+                    seen_true_downshift_logged = True
             elif crosshair_now is False:
                 true_down_streak = 0
                 if bool(saw_true):
@@ -9513,28 +9653,49 @@ def run_alignment_segment(
             if step_pre_desc_completion_mode == "true_then_false_streak":
                 gate_done = bool(saw_true) and int(false_after_true_streak) >= int(step_pre_desc_false_after_true_required)
                 progress_text = (
-                    f"seen-true={('YES' if bool(saw_true) else 'NO')}, "
-                    f"false-after-true={int(false_after_true_streak)}/{int(step_pre_desc_false_after_true_required)}"
+                    f"{_highlight_seen_true_text(saw_true)}, "
+                    f"{_highlight_false_after_true_text(false_after_true_streak, step_pre_desc_false_after_true_required)}"
                 )
             else:
                 gate_done = int(true_down_streak) >= int(step_pre_desc_true_required)
                 progress_text = f"true-streak={int(true_down_streak)}/{int(step_pre_desc_true_required)}"
+            pulse_score = int(step_pre_desc_score_after_seen_true) if bool(saw_true) else int(step_pre_desc_score)
+            pulse_speed = telemetry_robot_module.manual_speed_for_cmd(step_pre_desc_cmd, pulse_score)
             if not align_silent:
                 crosshair_text = "WAIT" if crosshair_now is None else ("YES" if crosshair_now else "NO")
-                gate_word = f"{COLOR_GREEN}PASS{COLOR_RESET}" if bool(gate_done) else f"{COLOR_RED}FAIL{COLOR_RESET}"
-                print(
-                    format_headline(
-                        (
-                            f"[EXCEPTION] [{step_key}] Pre-align descend pulse "
-                            f"{int(idx)}/{int(step_pre_desc_max_acts)}: "
-                            f"inCrosshairs={crosshair_text}, {progress_text}, gate={gate_word}."
-                        ),
-                        COLOR_MAGENTA_BRIGHT,
+                gate_word = "PASS" if bool(gate_done) else "FAIL"
+                samples_note = ""
+                if int(step_pre_desc_confirm_frames) > 1:
+                    samples_note = (
+                        f", obs{int(step_pre_desc_confirm_frames)}=[{_crosshair_sample_text(crosshair_samples)}]"
+                    )
+                next_action = "STOP" if bool(gate_done) else f"{str(step_pre_desc_cmd).upper()} {int(pulse_score)}%"
+                _print_exception_line(
+                    (
+                        f"[{step_key}] Pre-align descend pulse "
+                        f"{int(idx)}/{int(step_pre_desc_max_acts)}: "
+                        f"speed={int(pulse_score)}%, inCrosshairs={crosshair_text}{samples_note}, "
+                        f"{progress_text}, gate={gate_word}, next={next_action}, obs-checks={int(observation_checks)}."
                     )
                 )
             if gate_done:
                 done = True
                 break
+            if confirm_callback and not confirm_callback(world, vision):
+                return {"enabled": True, "success": False, "reason": "confirm cancelled"}
+            if observer:
+                observer("analysis", world, vision, step_pre_desc_cmd, pulse_speed, "pre_align_descend")
+            send_robot_command(
+                robot,
+                world,
+                step,
+                step_pre_desc_cmd,
+                pulse_speed,
+                speed_score=pulse_score,
+                auto_mode=True,
+            )
+            if observer:
+                observer("action", world, vision, step_pre_desc_cmd, pulse_speed, "pre_align_descend")
             time.sleep(CONTROL_DT)
         if not bool(done):
             if step_pre_desc_completion_mode == "true_then_false_streak":
@@ -9544,19 +9705,13 @@ def run_alignment_segment(
             else:
                 fail_reason = f"pre-align descend could not confirm inCrosshairs=YES x{int(step_pre_desc_true_required)}"
             if not align_silent:
-                print(
-                    format_headline(
-                        f"[EXCEPTION] [{step_key}] Pre-align descend complete: gate={COLOR_RED}FAIL{COLOR_RESET}.",
-                        COLOR_MAGENTA_BRIGHT,
-                    )
+                _print_exception_line(
+                    f"[{step_key}] Pre-align descend complete: gate=FAIL."
                 )
             return {"enabled": True, "success": False, "reason": fail_reason}
         if not align_silent:
-            print(
-                format_headline(
-                    f"[EXCEPTION] [{step_key}] Pre-align descend complete: gate={COLOR_GREEN}PASS{COLOR_RESET}.",
-                    COLOR_MAGENTA_BRIGHT,
-                )
+            _print_exception_line(
+                f"[{step_key}] Pre-align descend complete: gate=PASS."
             )
         return {"enabled": True, "success": True, "reason": "pre-align descend pass"}
 

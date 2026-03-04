@@ -66,7 +66,7 @@ METRICS_BY_STEP = {
     "BRICK_LOCK_WALL": ("xAxis_offset_abs", "dist", "brick_above", "brick_below", "visible"),
     "ALIGN_BRICK": ("xAxis_offset_abs", "yAxis_offset_abs", "dist", "visible"),
     "SEAT_BRICK": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
-    "SEAT_BRICK2": ("angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "visible"),
+    "SEAT_BRICK2": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "ELEVATE_BRICK": ("visible",),
     "FIND_WALL2": ("angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "visible"),
     "APPROACH_VECTOR_WALL": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
