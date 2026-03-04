@@ -21,6 +21,18 @@
                 "score": 1,
                 "cooldown_s": 0.6
             },
+            "start_ground_reset_exception": {
+                "enabled": true,
+                "operator_log_reminder": "Exception active: startup ground reset using tiny_roi_floor lift estimate.",
+                "command": "d",
+                "score": 100,
+                "min_acts": 2,
+                "max_acts": 12,
+                "ground_level_lift_mm_goal": 50.0,
+                "require_tiny_roi_floor": true,
+                "fail_on_unconfirmed": false,
+                "run_after_startup_action": true
+            },
             "success_gates": {
                 "visible": {
                     "min": true
@@ -100,7 +112,15 @@
                 },
                 "angle_abs": {
                     "target": 4.29,
-                    "tol": 9.27
+                    "tol": 6.95
+                },
+                "x_axis": {
+                    "target": -8.26,
+                    "tol": 25.95
+                },
+                "y_axis": {
+                    "target": -11.12,
+                    "tol": 6.57
                 }
             }
         },
@@ -245,7 +265,14 @@
                 "target_lock_hold_bad_frames": 2,
                 "target_lock_acquire_timeout_s": 0.35,
                 "target_lock_center_x_worse_margin_mm": 1.5,
-                "target_lock_center_y_worse_margin_mm": 2.0
+                "target_lock_center_y_worse_margin_mm": 2.0,
+                "gap_rotation_enabled": true,
+                "gap_rotation_chunk_min_mm": 3.0,
+                "gap_rotation_chunk_max_mm": 6.0,
+                "gap_rotation_y_priority_penalty": 1.25,
+                "gap_rotation_y_hold_last_mm": 3.0,
+                "gap_rotation_force_recovery_switch": true,
+                "gap_rotation_tech_debt_logging": true
             },
             "start_gates": {
                 "visible": {
@@ -265,7 +292,7 @@
                     "tol": 1.5
                 },
                 "dist": {
-                    "target": 105.63,
+                    "target": 108.63,
                     "tol": 1.5
                 }
             }
@@ -309,19 +336,39 @@
         },
         "FIND_WALL2": {
             "controller": "align",
+            "align_policy": {
+                "target_lock_enabled": false
+            },
+            "start_ground_reset_exception": {
+                "enabled": false,
+                "operator_log_reminder": "Exception active: startup ground reset using tiny_roi_floor lift estimate.",
+                "command": "d",
+                "score": 100,
+                "min_acts": 2,
+                "max_acts": 12,
+                "ground_level_lift_mm_goal": 50.0,
+                "require_tiny_roi_floor": true,
+                "fail_on_unconfirmed": false,
+                "run_after_startup_action": true
+            },
             "scan_direction": "l",
             "search_visible_false_speed_cycle": {
                 "enabled": true,
-                "high_score": 20,
-                "low_score": 5,
-                "start_with_high": true
+                "high_score": 25,
+                "low_score": 25,
+                "start_with_high": true,
+                "commands": [
+                    "l",
+                    "b"
+                ]
             },
-            "operator_exception_reminder": "Exception active: startup hard-left scan x9.",
+            "operator_exception_reminder": "Exception active: startup hard-left scan x7.",
             "startup_action_exception": {
                 "enabled": true,
                 "command": "l",
                 "score": 100,
-                "acts": 9
+                "acts": 7,
+                "pause_s": 0.25
             },
             "prefer_demo_speed": false,
             "visible_only_speed_tiers": {
@@ -375,8 +422,12 @@
                     "min": true
                 },
                 "angle_abs": {
-                    "target": 6.61,
-                    "tol": 0.0
+                    "target": 1.02,
+                    "tol": 1.18
+                },
+                "xAxis_offset_abs": {
+                    "target": -5.94,
+                    "tol": 1.4
                 }
             }
         },
@@ -388,6 +439,7 @@
                 }
             },
             "lock_start_gates": true,
+            "lock_success_gates": true,
             "height_snapshot": {
                 "enabled": true,
                 "target": "wall_height",
@@ -402,37 +454,19 @@
             "topmost_crosshair_exception": {
                 "enabled": true,
                 "ground_up_level2_enabled": true,
-                "operator_log_reminder": "Exception active: mast-only stack-height detection (ground reset to ~50mm, then mast UP 100% with level2 inCrosshairs confirmation).",
-                "ground_reset_command": "d",
-                "ground_reset_score": 100,
-                "ground_reset_min_acts": 5,
-                "ground_reset_max_acts": 12,
-                "ground_level_y_axis_max": 10.0,
+                "operator_log_reminder": "Exception active: mast-only stack-height detection (mast UP 100% with level2 inCrosshairs confirmation).",
+                "ground_reset_enabled": false,
                 "mast_up_command": "u",
                 "mast_up_score": 100,
-                "mast_up_max_acts": 16,
-                "level2_use_full_gatecheck": true,
-                "require_true_before_false": true,
-                "min_true_observations": 1,
-                "false_up_acts_required": 6,
-                "false_confirm_frames": 1,
-                "post_ground_reset_handoff": {
-                    "enabled": true,
-                    "step": "BRICK_LOCK_WALL"
-                },
-                "post_success_descend": {
-                    "enabled": false,
-                    "command": "d",
-                    "score": 100,
-                    "true_down_acts_required": 3,
-                    "max_acts": 0
-                }
+                "mast_up_max_acts": 32,
+                "false_up_acts_required": 5,
+                "false_confirm_frames": 3,
+                "consecutive_no_required": 5,
+                "level2_use_full_gatecheck": false,
+                "observation_confidence_min": 50.0
             },
             "success_gates": {
-                "visible": {
-                    "min": true
-                },
-                "brick_above": {
+                "inCrosshairs": {
                     "target": false,
                     "tol": 0.0
                 }
@@ -468,6 +502,10 @@
                         "target": -2.94,
                         "tol": 1.4
                     },
+                    "yAxis_offset_abs": {
+                        "target": 7.74,
+                        "tol": 3.0
+                    },
                     "dist": {
                         "target": 120.0,
                         "tol": 4.34
@@ -492,6 +530,10 @@
                 "xAxis_offset_abs": {
                     "target": -2.94,
                     "tol": 1.4
+                },
+                "yAxis_offset_abs": {
+                    "target": 7.74,
+                    "tol": 3.0
                 },
                 "dist": {
                     "target": 120.0,
@@ -579,7 +621,14 @@
                 "target_lock_hold_bad_frames": 2,
                 "target_lock_acquire_timeout_s": 0.35,
                 "target_lock_center_x_worse_margin_mm": 1.5,
-                "target_lock_center_y_worse_margin_mm": 2.0
+                "target_lock_center_y_worse_margin_mm": 2.0,
+                "gap_rotation_enabled": true,
+                "gap_rotation_chunk_min_mm": 3.0,
+                "gap_rotation_chunk_max_mm": 6.0,
+                "gap_rotation_y_priority_penalty": 1.25,
+                "gap_rotation_y_hold_last_mm": 3.0,
+                "gap_rotation_force_recovery_switch": true,
+                "gap_rotation_tech_debt_logging": true
             },
             "start_gates": {
                 "visible": {

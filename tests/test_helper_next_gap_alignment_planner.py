@@ -539,6 +539,43 @@ class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
         self.assertEqual(plan.get("cmd"), "f", plan)
         self.assertTrue(bool(plan.get("rotation_override")), plan)
 
+    def test_gap_planner_recovery_disqualify_list_avoids_multiple_types(self):
+        process_rules = {
+            "SEAT_BRICK2": {
+                "success_gates": {
+                    "visible": {"min": True},
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 1.5},
+                    "yAxis_offset_abs": {"target": 0.0, "tol": 1.5},
+                    "dist": {"target": 48.0, "tol": 4.0},
+                }
+            }
+        }
+        orig = helper_next.compute_alignment_decision
+        try:
+            helper_next.compute_alignment_decision = lambda **kwargs: {
+                "cmd": "r",
+                "worst_metric": "xAxis_offset_abs",
+                "speed_score": 6,
+            }
+            plan = helper_next.select_alignment_next_act(
+                process_rules=process_rules,
+                learned_rules={},
+                step="SEAT_BRICK2",
+                x_axis_mm=8.0,
+                y_axis_mm=8.0,
+                dist_mm=60.0,
+                visible=True,
+                angle_deg=0.0,
+                duration_s=0.05,
+                avoid_correction_type=["x_axis", "distance"],
+            )
+        finally:
+            helper_next.compute_alignment_decision = orig
+
+        self.assertEqual(plan.get("planner"), "gap", plan)
+        self.assertEqual(plan.get("correction_type"), "y_axis", plan)
+        self.assertIn(plan.get("cmd"), ("u", "d"), plan)
+
     def test_gap_planner_seat_brick2_keeps_y_axis_low_priority_until_other_gaps_ready(self):
         process_rules = {
             "SEAT_BRICK2": {
@@ -578,6 +615,139 @@ class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
         self.assertEqual(plan.get("planner"), "gap", plan)
         self.assertIn(plan.get("correction_type"), ("x_axis", "distance"), plan)
         self.assertNotEqual(plan.get("correction_type"), "y_axis", plan)
+
+    def test_gap_rotation_switches_to_next_metric_after_chunk_progress(self):
+        process_rules = {
+            "SEAT_BRICK2": {
+                "align_policy": {
+                    "gap_rotation_enabled": True,
+                    "gap_rotation_chunk_min_mm": 3.0,
+                    "gap_rotation_chunk_max_mm": 6.0,
+                    "gap_rotation_y_priority_penalty": 1.25,
+                    "gap_rotation_y_hold_last_mm": 3.0,
+                    "y_axis_edge_force_enabled": False,
+                    "y_axis_close_bottom_bias_enabled": False,
+                },
+                "success_gates": {
+                    "visible": {"min": True},
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 1.5},
+                    "yAxis_offset_abs": {"target": 0.0, "tol": 1.5},
+                    "dist": {"target": 48.0, "tol": 4.0},
+                },
+            }
+        }
+        planner_state = {}
+        plan1 = helper_next.select_alignment_next_act(
+            process_rules=process_rules,
+            learned_rules={},
+            step="SEAT_BRICK2",
+            x_axis_mm=8.0,
+            y_axis_mm=6.0,
+            dist_mm=60.0,
+            visible=True,
+            angle_deg=0.0,
+            duration_s=0.05,
+            planner_state=planner_state,
+        )
+        first_type = str(plan1.get("correction_type") or "").strip().lower()
+        self.assertIn(first_type, {"x_axis", "distance"}, plan1)
+        self.assertTrue(bool(plan1.get("gap_rotation_active")), plan1)
+
+        x2 = 8.0
+        y2 = 6.0
+        d2 = 60.0
+        if first_type == "x_axis":
+            x2 = 2.0
+        elif first_type == "distance":
+            d2 = 52.0
+        else:
+            y2 = 1.0
+
+        plan2 = helper_next.select_alignment_next_act(
+            process_rules=process_rules,
+            learned_rules={},
+            step="SEAT_BRICK2",
+            x_axis_mm=x2,
+            y_axis_mm=y2,
+            dist_mm=d2,
+            visible=True,
+            angle_deg=0.0,
+            duration_s=0.05,
+            planner_state=planner_state,
+        )
+        second_type = str(plan2.get("correction_type") or "").strip().lower()
+        self.assertTrue(bool(plan2.get("gap_rotation_chunk_switch")), plan2)
+        self.assertNotEqual(second_type, first_type, (plan1, plan2))
+
+    def test_gap_rotation_holds_small_y_gap_for_endgame(self):
+        process_rules = {
+            "SEAT_BRICK2": {
+                "align_policy": {
+                    "gap_rotation_enabled": True,
+                    "gap_rotation_chunk_min_mm": 3.0,
+                    "gap_rotation_chunk_max_mm": 6.0,
+                    "gap_rotation_y_priority_penalty": 1.25,
+                    "gap_rotation_y_hold_last_mm": 3.0,
+                    "y_axis_edge_force_enabled": False,
+                    "y_axis_close_bottom_bias_enabled": False,
+                },
+                "success_gates": {
+                    "visible": {"min": True},
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 1.5},
+                    "yAxis_offset_abs": {"target": 0.0, "tol": 1.5},
+                    "dist": {"target": 48.0, "tol": 4.0},
+                },
+            }
+        }
+        plan = helper_next.select_alignment_next_act(
+            process_rules=process_rules,
+            learned_rules={},
+            step="SEAT_BRICK2",
+            x_axis_mm=3.6,
+            y_axis_mm=2.6,
+            dist_mm=53.0,
+            visible=True,
+            angle_deg=0.0,
+            duration_s=0.05,
+            planner_state={},
+        )
+        self.assertTrue(bool(plan.get("gap_rotation_y_hold_active")), plan)
+        self.assertNotEqual(plan.get("correction_type"), "y_axis", plan)
+
+    def test_gap_rotation_recovery_nonrepeat_never_reuses_disqualified_type(self):
+        process_rules = {
+            "SEAT_BRICK2": {
+                "align_policy": {
+                    "gap_rotation_enabled": True,
+                    "gap_rotation_force_recovery_switch": True,
+                    "gap_rotation_chunk_min_mm": 3.0,
+                    "gap_rotation_chunk_max_mm": 6.0,
+                    "y_axis_edge_force_enabled": False,
+                    "y_axis_close_bottom_bias_enabled": False,
+                },
+                "success_gates": {
+                    "visible": {"min": True},
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 1.5},
+                    "yAxis_offset_abs": {"target": 0.0, "tol": 1.5},
+                    "dist": {"target": 48.0, "tol": 4.0},
+                },
+            }
+        }
+        plan = helper_next.select_alignment_next_act(
+            process_rules=process_rules,
+            learned_rules={},
+            step="SEAT_BRICK2",
+            x_axis_mm=8.0,
+            y_axis_mm=4.0,
+            dist_mm=49.0,
+            visible=True,
+            angle_deg=0.0,
+            duration_s=0.05,
+            avoid_correction_type="x_axis",
+            planner_state={},
+        )
+        self.assertNotEqual(plan.get("correction_type"), "x_axis", plan)
+        self.assertTrue(bool(plan.get("gap_rotation_non_repeat_override")), plan)
 
     def test_gap_planner_holds_when_all_gaps_are_within_gates(self):
         process_rules = {

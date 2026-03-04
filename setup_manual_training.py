@@ -1985,7 +1985,15 @@ def run_auto_step(app_state, obj_enum):
         except Exception:
             robot_check = None
 
-        start_ok = _gate_ok(brick_check) and _gate_ok(wall_check) and _gate_ok(robot_check)
+        # Brick start-gate evaluation is required for start eligibility.
+        # Optional checkers (wall/robot) should only participate when available.
+        brick_start_ok = _gate_ok(brick_check)
+        optional_start_ok = all(
+            _gate_ok(check)
+            for check in (wall_check, robot_check)
+            if check is not None
+        )
+        start_ok = brick_start_ok and optional_start_ok
         reason_parts = []
         brick_start_gates = (cfg.get("start_gates") if isinstance(cfg, dict) else None) or {}
         for label, check in (("brick", brick_check), ("wall", wall_check), ("robot", robot_check)):

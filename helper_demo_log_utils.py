@@ -38,7 +38,16 @@ def normalize_step_label(label):
     if hasattr(label, "value"):
         label = label.value
     key = str(label).strip().upper()
-    return STEP_ALIASES.get(key, key)
+    normalized = STEP_ALIASES.get(key, key)
+    for suffix in ("_ALIGN_SETTLE", "_ALIGN", "_SETTLE"):
+        if not str(normalized).endswith(suffix):
+            continue
+        candidate = str(normalized)[: -len(suffix)].strip().upper()
+        if not candidate:
+            continue
+        normalized = STEP_ALIASES.get(candidate, candidate)
+        break
+    return normalized
 
 
 def resolve_session_log(session_path):

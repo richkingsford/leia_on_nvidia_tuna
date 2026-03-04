@@ -82,6 +82,10 @@ METRIC_DIRECTIONS = {
     # Use a non-one-sided direction so gate checks use abs(value-target) <= tol.
     "xAxis_offset_abs": "band",
     "yAxis_offset_abs": "band",
+    "xAxis_offset": "band",
+    "yAxis_offset": "band",
+    "x_axis": "band",
+    "y_axis": "band",
     "dist": "low",
     "visible": "high",
     "confidence": "high",
@@ -120,6 +124,15 @@ ALIGN_POLICY_DEFAULTS = {
     "slow_fast_mm_scale": 0.25,
     "auto_speed_hard_cap_exempt": False,
     "calibration_profile_fallback_step": None,
+    # Optional chunked gap rotation mode for fragile alignment steps.
+    # When enabled, planner closes one gap by a bounded chunk and rotates.
+    "gap_rotation_enabled": False,
+    "gap_rotation_chunk_min_mm": 3.0,
+    "gap_rotation_chunk_max_mm": 6.0,
+    "gap_rotation_y_priority_penalty": 1.25,
+    "gap_rotation_y_hold_last_mm": 3.0,
+    "gap_rotation_force_recovery_switch": True,
+    "gap_rotation_tech_debt_logging": False,
 }
 
 
@@ -534,7 +547,18 @@ def align_brick_x_axis_tol_scale(
 def compute_alignment_analytics(world, process_rules, learned_rules, step, duration_s=0.05):
     obj_name = _step_name(step)
     align_policy = _align_policy_for_step(process_rules, obj_name)
-    success_metrics = (process_rules or {}).get(obj_name, {}).get("success_gates") or {}
+    raw_success_metrics = (process_rules or {}).get(obj_name, {}).get("success_gates") or {}
+    success_metrics = dict(raw_success_metrics) if isinstance(raw_success_metrics, dict) else {}
+    if "xAxis_offset_abs" not in success_metrics:
+        if "x_axis" in success_metrics:
+            success_metrics["xAxis_offset_abs"] = success_metrics.get("x_axis")
+        elif "xAxis_offset" in success_metrics:
+            success_metrics["xAxis_offset_abs"] = success_metrics.get("xAxis_offset")
+    if "yAxis_offset_abs" not in success_metrics:
+        if "y_axis" in success_metrics:
+            success_metrics["yAxis_offset_abs"] = success_metrics.get("y_axis")
+        elif "yAxis_offset" in success_metrics:
+            success_metrics["yAxis_offset_abs"] = success_metrics.get("yAxis_offset")
     step_cfg = (process_rules or {}).get(obj_name, {}) or {}
     brick = world.brick or {}
     visible = bool(brick.get("visible"))
@@ -1077,7 +1101,18 @@ def step_uses_gap_alignment_planner(process_rules, step):
     if not isinstance(success_gates, dict) or not success_gates:
         return False
     gate_keys = {str(key) for key in success_gates.keys() if key is not None}
-    return bool(gate_keys & {"xAxis_offset_abs", "yAxis_offset_abs", "dist"})
+    return bool(
+        gate_keys
+        & {
+            "xAxis_offset_abs",
+            "yAxis_offset_abs",
+            "xAxis_offset",
+            "yAxis_offset",
+            "x_axis",
+            "y_axis",
+            "dist",
+        }
+    )
 
 
 def compute_alignment_decision(
@@ -1148,6 +1183,7 @@ def select_align_brick_next_act(
     duration_s=0.05,
     previous_correction_type=None,
     avoid_correction_type=None,
+    planner_state=None,
 ):
     """
     Single source selector for ALIGN-style x/y/dist micro-adjust next act (cmd + speed score).
@@ -1175,18 +1211,36 @@ def select_align_brick_next_act(
     worst_metric = analytics.get("worst_metric")
 
     _obj_name, success_gates = _success_gates_for_step(process_rules, step_name)
-    x_stats = success_gates.get("xAxis_offset_abs") if isinstance(success_gates, dict) else {}
+    if not isinstance(success_gates, dict):
+        success_gates = {}
+    normalized_success_gates = dict(success_gates)
+    if "xAxis_offset_abs" not in normalized_success_gates:
+        if "x_axis" in normalized_success_gates:
+            normalized_success_gates["xAxis_offset_abs"] = normalized_success_gates.get("x_axis")
+        elif "xAxis_offset" in normalized_success_gates:
+            normalized_success_gates["xAxis_offset_abs"] = normalized_success_gates.get("xAxis_offset")
+    if "yAxis_offset_abs" not in normalized_success_gates:
+        if "y_axis" in normalized_success_gates:
+            normalized_success_gates["yAxis_offset_abs"] = normalized_success_gates.get("y_axis")
+        elif "yAxis_offset" in normalized_success_gates:
+            normalized_success_gates["yAxis_offset_abs"] = normalized_success_gates.get("yAxis_offset")
+
+    x_stats = normalized_success_gates.get("xAxis_offset_abs")
     if not isinstance(x_stats, dict):
         x_stats = {}
     x_required = bool(x_stats)
-    y_stats = success_gates.get("yAxis_offset_abs") if isinstance(success_gates, dict) else {}
+    y_stats = normalized_success_gates.get("yAxis_offset_abs")
     if not isinstance(y_stats, dict):
         y_stats = {}
     y_required = bool(y_stats)
-    d_stats = success_gates.get("dist") if isinstance(success_gates, dict) else {}
+    d_stats = normalized_success_gates.get("dist")
     if not isinstance(d_stats, dict):
         d_stats = {}
     d_required = bool(d_stats)
+    angle_stats = normalized_success_gates.get("angle_abs")
+    if not isinstance(angle_stats, dict):
+        angle_stats = {}
+    angle_required = bool(angle_stats)
 
     x_target = _coerce_float(x_stats.get("target"), 0.0) or 0.0
     # `offset_y` is relative to the camera vertical center, so target remains 0 by default.
@@ -1194,6 +1248,7 @@ def select_align_brick_next_act(
     if y_target is None:
         y_target = 0.0
     dist_target = _coerce_float(d_stats.get("target"), 0.0) or 0.0
+    angle_target = _coerce_float(angle_stats.get("target"), 0.0) or 0.0
 
     x_tol = abs(_coerce_float(x_stats.get("tol"), 0.0) or 0.0)
     y_tol = _coerce_float(y_stats.get("tol"), None)
@@ -1201,16 +1256,20 @@ def select_align_brick_next_act(
         y_tol = x_tol
     y_tol = abs(float(y_tol) or 0.0)
     dist_tol = abs(_coerce_float(d_stats.get("tol"), 0.0) or 0.0)
+    angle_tol = abs(_coerce_float(angle_stats.get("tol"), 0.0) or 0.0)
 
     x_direction = metric_direction_for_step("xAxis_offset_abs", step_name, process_rules=process_rules)
     y_direction = metric_direction_for_step("yAxis_offset_abs", step_name, process_rules=process_rules)
     d_direction = metric_direction_for_step("dist", step_name, process_rules=process_rules)
+    angle_direction = metric_direction_for_step("angle_abs", step_name, process_rules=process_rules)
 
     x_axis_val = _coerce_float(x_axis_mm, 0.0) or 0.0
     x_err_mm = float(x_axis_val - x_target)
     y_axis_val = _coerce_float(y_axis_mm, None)
     y_err_mm = None if y_axis_val is None else float(y_axis_val - y_target)
     dist_val = _coerce_float(dist_mm, None)
+    angle_val = _coerce_float(angle_deg, 0.0) or 0.0
+    angle_signed_err = float(angle_val - angle_target)
     if dist_val is None:
         dist_err_mm = float("inf")
     else:
@@ -1224,6 +1283,11 @@ def select_align_brick_next_act(
     dist_gate_outside_mm = (
         _gate_outside_mm(dist_val, d_stats, d_direction)
         if (d_required and dist_val is not None)
+        else 0.0
+    )
+    angle_gate_outside_mm = (
+        _gate_outside_mm(abs(float(angle_val)), angle_stats, angle_direction)
+        if angle_required
         else 0.0
     )
 
@@ -1245,6 +1309,16 @@ def select_align_brick_next_act(
         if (d_required and dist_val is not None)
         else 0.0
     )
+    angle_ratio = _gate_ratio(angle_gate_outside_mm, angle_tol, fallback_scale=1.0) if angle_required else 0.0
+    if angle_required:
+        try:
+            x_gate_outside_mm = max(
+                float(x_gate_outside_mm or 0.0),
+                float(angle_gate_outside_mm or 0.0),
+            )
+        except (TypeError, ValueError):
+            x_gate_outside_mm = float(angle_gate_outside_mm or 0.0)
+        x_ratio = max(float(x_ratio), float(angle_ratio))
     try:
         ratio_eps = max(0.0, float(GAP_ALIGN_OUTSIDE_GATE_RATIO_EPS))
     except (TypeError, ValueError):
@@ -1257,7 +1331,16 @@ def select_align_brick_next_act(
             return 0.0
         if str(correction_type or "").strip().lower() == "y_axis":
             try:
-                penalty = max(1.0, float(GAP_ALIGN_Y_AXIS_PRIORITY_PENALTY))
+                penalty = max(
+                    1.0,
+                    float(
+                        _coerce_float(
+                            align_policy.get("gap_rotation_y_priority_penalty"),
+                            GAP_ALIGN_Y_AXIS_PRIORITY_PENALTY,
+                        )
+                        or GAP_ALIGN_Y_AXIS_PRIORITY_PENALTY
+                    ),
+                )
             except (TypeError, ValueError):
                 penalty = 1.0
             return float(ratio_val) / float(penalty)
@@ -1308,6 +1391,43 @@ def select_align_brick_next_act(
         recovery_fallback_candidates["x_axis"] = dict(x_candidate)
         if x_ratio > ratio_eps:
             candidates["x_axis"] = dict(x_candidate)
+
+    if angle_required:
+        if prod_cmd in ("l", "r"):
+            angle_cmd = str(prod_cmd)
+        elif float(angle_signed_err) > 0.0:
+            angle_cmd = "l"
+        elif float(angle_signed_err) < 0.0:
+            angle_cmd = "r"
+        else:
+            angle_cmd = None
+        try:
+            angle_score = int(normalize_speed_score(analytics.get("speed_score")))
+        except Exception:
+            angle_score = int(align_brick_x_axis_one_shot_score(float(angle_signed_err)))
+        if angle_cmd in ("l", "r"):
+            angle_candidate = {
+                "cmd": str(angle_cmd),
+                "correction_type": "x_axis",
+                "score": int(angle_score),
+                "score_float": None,
+                "reason": "angle_alignment",
+                "worst_metric": "angle_abs",
+                "ratio": float(angle_ratio),
+            }
+            existing_recovery_x = recovery_fallback_candidates.get("x_axis")
+            existing_recovery_ratio = (
+                float(existing_recovery_x.get("ratio", 0.0))
+                if isinstance(existing_recovery_x, dict)
+                else -1.0
+            )
+            if float(angle_candidate["ratio"]) >= existing_recovery_ratio:
+                recovery_fallback_candidates["x_axis"] = dict(angle_candidate)
+            if angle_ratio > ratio_eps:
+                existing_x = candidates.get("x_axis")
+                existing_ratio = float(existing_x.get("ratio", 0.0)) if isinstance(existing_x, dict) else -1.0
+                if float(angle_candidate["ratio"]) >= existing_ratio:
+                    candidates["x_axis"] = dict(angle_candidate)
 
     if y_required and y_err_mm is not None:
         y_candidate = {
@@ -1485,15 +1605,30 @@ def select_align_brick_next_act(
         elif dist_gap_mm > 150.0 and x_axis_gap_mm < 5.0:
             force_dist_focus = True
 
-    def _best_alternative(excluded_types, *, include_recovery_fallback=False):
+    def _best_alternative(
+        excluded_types,
+        *,
+        include_recovery_fallback=False,
+        require_outside_gate=True,
+        enforce_y_near_ready=True,
+    ):
+        excluded = {
+            str(item).strip().lower()
+            for item in (excluded_types or set())
+            if item is not None and str(item).strip()
+        }
         viable = [
             dict(v)
             for k, v in candidates.items()
             if (
-                str(k) not in excluded_types
-                and float(v.get("ratio", 0.0) or 0.0) > ratio_eps
+                str(k) not in excluded
                 and (
-                    str(v.get("correction_type") or "").strip().lower() != "y_axis"
+                    not bool(require_outside_gate)
+                    or float(v.get("ratio", 0.0) or 0.0) > ratio_eps
+                )
+                and (
+                    not bool(enforce_y_near_ready)
+                    or str(v.get("correction_type") or "").strip().lower() != "y_axis"
                     or bool(y_other_gaps_near_ready)
                 )
             )
@@ -1503,10 +1638,11 @@ def select_align_brick_next_act(
                 dict(v)
                 for k, v in recovery_fallback_candidates.items()
                 if (
-                    str(k) not in excluded_types
-                    and str(v.get("correction_type") or "").strip().lower() != str(avoid_corr or "").strip().lower()
+                    str(k) not in excluded
+                    and str(v.get("correction_type") or "").strip().lower() not in avoid_corr_set
                     and (
-                        str(v.get("correction_type") or "").strip().lower() != "y_axis"
+                        not bool(enforce_y_near_ready)
+                        or str(v.get("correction_type") or "").strip().lower() != "y_axis"
                         or bool(y_other_gaps_near_ready)
                     )
                 )
@@ -1523,15 +1659,30 @@ def select_align_brick_next_act(
         return viable[0]
 
     prev_corr = str(previous_correction_type or "").strip().lower()
-    avoid_corr = str(avoid_correction_type or "").strip().lower()
 
-    if bool(y_edge_force_triggered) and "y_axis" in candidates and avoid_corr != "y_axis":
+    def _normalize_avoid_corr_types(raw):
+        if raw is None:
+            return set()
+        if isinstance(raw, (list, tuple, set)):
+            items = list(raw)
+        else:
+            items = [raw]
+        out = []
+        for item in items:
+            corr = str(item or "").strip().lower()
+            if corr in {"x_axis", "y_axis", "distance"} and corr not in out:
+                out.append(corr)
+        return set(out)
+
+    avoid_corr_set = _normalize_avoid_corr_types(avoid_correction_type)
+
+    if bool(y_edge_force_triggered) and "y_axis" in candidates and "y_axis" not in avoid_corr_set:
         chosen = dict(candidates["y_axis"])
         chosen["reason"] = "y_axis_edge_force"
-    elif bool(y_close_bottom_bias_triggered) and "y_axis" in candidates and avoid_corr != "y_axis":
+    elif bool(y_close_bottom_bias_triggered) and "y_axis" in candidates and "y_axis" not in avoid_corr_set:
         chosen = dict(candidates["y_axis"])
         chosen["reason"] = "y_axis_close_bottom_bias"
-    elif dist_priority_cheat_active and "distance" in candidates and avoid_corr != "distance":
+    elif dist_priority_cheat_active and "distance" in candidates and "distance" not in avoid_corr_set:
         chosen = dict(candidates["distance"])
         chosen["reason"] = "distance_priority_cheat"
         chosen["_cheat_dist_priority"] = True
@@ -1562,10 +1713,15 @@ def select_align_brick_next_act(
 
     rotation_override = False
     chosen_type = str(chosen.get("correction_type") or "").strip().lower()
-    if avoid_corr and chosen_type == avoid_corr:
-        alt = _best_alternative({avoid_corr})
+    if avoid_corr_set and chosen_type in avoid_corr_set:
+        alt = _best_alternative(set(avoid_corr_set))
         if alt is None:
-            alt = _best_alternative({avoid_corr}, include_recovery_fallback=True)
+            alt = _best_alternative(
+                set(avoid_corr_set),
+                include_recovery_fallback=True,
+                require_outside_gate=False,
+                enforce_y_near_ready=False,
+            )
         if alt is not None:
             chosen = alt
             chosen_type = str(chosen.get("correction_type") or "").strip().lower()
@@ -1577,6 +1733,190 @@ def select_align_brick_next_act(
                 chosen = alt
                 chosen_type = str(chosen.get("correction_type") or "").strip().lower()
                 rotation_override = True
+
+    gap_rotation_active = False
+    gap_rotation_chunk_switch = False
+    gap_rotation_chunk_progress_mm = None
+    gap_rotation_chunk_target_mm = None
+    gap_rotation_y_hold_active = False
+    gap_rotation_non_repeat_override = False
+    gap_rotation_tech_debt_notes = []
+    gap_rotation_enabled = bool(align_policy.get("gap_rotation_enabled", False))
+    if gap_rotation_enabled:
+        try:
+            chunk_min_mm = max(0.5, float(_coerce_float(align_policy.get("gap_rotation_chunk_min_mm"), 3.0) or 3.0))
+        except (TypeError, ValueError):
+            chunk_min_mm = 3.0
+        try:
+            chunk_max_mm = max(chunk_min_mm, float(_coerce_float(align_policy.get("gap_rotation_chunk_max_mm"), 6.0) or 6.0))
+        except (TypeError, ValueError):
+            chunk_max_mm = max(chunk_min_mm, 6.0)
+        try:
+            y_hold_last_mm = max(0.0, float(_coerce_float(align_policy.get("gap_rotation_y_hold_last_mm"), 3.0) or 3.0))
+        except (TypeError, ValueError):
+            y_hold_last_mm = 3.0
+        force_recovery_switch = bool(align_policy.get("gap_rotation_force_recovery_switch", True))
+        log_tech_debt = bool(align_policy.get("gap_rotation_tech_debt_logging", False))
+
+        outside_mm_by_type = {
+            "x_axis": max(0.0, float(x_gate_outside_mm or 0.0)),
+            "y_axis": max(0.0, float(y_gate_outside_mm or 0.0)),
+            "distance": max(0.0, float(dist_gate_outside_mm or 0.0)),
+        }
+
+        non_y_outside_present = any(outside_mm_by_type.get(t, 0.0) > float(ratio_eps) for t in ("x_axis", "distance"))
+        y_gap_now = outside_mm_by_type.get("y_axis", 0.0)
+        gap_rotation_y_hold_active = bool(
+            y_gap_now > float(ratio_eps) and y_gap_now <= float(y_hold_last_mm) and non_y_outside_present
+        )
+
+        if not isinstance(planner_state, dict):
+            planner_state = {}
+        rotation_state = planner_state.get("gap_rotation")
+        if not isinstance(rotation_state, dict):
+            rotation_state = {}
+            planner_state["gap_rotation"] = rotation_state
+
+        def _rotation_candidate(corr_type, *, include_recovery=False):
+            corr_key = str(corr_type or "").strip().lower()
+            row = candidates.get(corr_key)
+            if row is None and include_recovery:
+                row = recovery_fallback_candidates.get(corr_key)
+            return dict(row) if isinstance(row, dict) else None
+
+        def _chunk_target_for_gap(gap_mm):
+            try:
+                gap_val = max(0.0, float(gap_mm or 0.0))
+            except (TypeError, ValueError):
+                gap_val = 0.0
+            if gap_val <= float(chunk_min_mm):
+                return float(gap_val)
+            scaled = max(float(chunk_min_mm), min(float(chunk_max_mm), float(gap_val) * 0.5))
+            return float(scaled)
+
+        def _pick_rotation_candidate(
+            *,
+            excluded_types=None,
+            include_recovery=False,
+            require_outside=True,
+            allow_reserved_y=False,
+        ):
+            excluded = {str(item).strip().lower() for item in (excluded_types or []) if item is not None}
+            pool = []
+            for corr_key in ("x_axis", "distance", "y_axis"):
+                if corr_key in excluded:
+                    continue
+                row = _rotation_candidate(corr_key, include_recovery=include_recovery)
+                if row is None:
+                    continue
+                gap_now_local = max(0.0, float(outside_mm_by_type.get(corr_key, 0.0) or 0.0))
+                if require_outside and gap_now_local <= float(ratio_eps):
+                    continue
+                if (
+                    corr_key == "y_axis"
+                    and bool(gap_rotation_y_hold_active)
+                    and not bool(allow_reserved_y)
+                ):
+                    continue
+                score = _priority_ratio(corr_key, row.get("ratio", 0.0))
+                if score <= 0.0:
+                    score = float(gap_now_local)
+                pool.append((float(score), float(gap_now_local), 1.0 if corr_key != "y_axis" else 0.0, corr_key, row))
+            if not pool:
+                return None
+            pool.sort(key=lambda row: (row[0], row[1], row[2]), reverse=True)
+            _score, _gap, _non_y_bias, corr_key, row = pool[0]
+            return corr_key, dict(row)
+
+        active_type = str(rotation_state.get("active_type") or "").strip().lower()
+        if active_type not in {"x_axis", "y_axis", "distance"}:
+            active_type = None
+            rotation_state["active_type"] = None
+        active_start_gap = _coerce_float(rotation_state.get("chunk_start_gap_mm"), None)
+        active_target_gap = _coerce_float(rotation_state.get("chunk_target_mm"), None)
+        active_gap_now = outside_mm_by_type.get(active_type, 0.0) if active_type else None
+        if active_type and active_start_gap is not None and active_target_gap is not None and active_gap_now is not None:
+            gap_rotation_chunk_progress_mm = max(0.0, float(active_start_gap) - float(active_gap_now))
+            gap_rotation_chunk_target_mm = max(0.0, float(active_target_gap))
+            if (
+                float(active_gap_now) <= float(ratio_eps)
+                or float(gap_rotation_chunk_progress_mm) >= max(0.0, float(active_target_gap))
+            ):
+                rotation_state["last_completed_type"] = str(active_type)
+                rotation_state["active_type"] = None
+                rotation_state["chunk_start_gap_mm"] = None
+                rotation_state["chunk_target_mm"] = None
+                active_type = None
+                gap_rotation_chunk_switch = True
+
+        if not active_type:
+            excluded = set()
+            if force_recovery_switch and avoid_corr_set:
+                excluded.update(set(avoid_corr_set))
+            last_completed = str(rotation_state.get("last_completed_type") or "").strip().lower()
+            if last_completed in {"x_axis", "y_axis", "distance"}:
+                excluded.add(last_completed)
+            picked = _pick_rotation_candidate(excluded_types=excluded, include_recovery=False, require_outside=True)
+            if picked is None and last_completed in excluded:
+                excluded_wo_last = {item for item in excluded if item != last_completed}
+                picked = _pick_rotation_candidate(
+                    excluded_types=excluded_wo_last,
+                    include_recovery=False,
+                    require_outside=True,
+                )
+            if picked is None and force_recovery_switch and avoid_corr_set:
+                picked = _pick_rotation_candidate(
+                    excluded_types=set(avoid_corr_set),
+                    include_recovery=True,
+                    require_outside=False,
+                    allow_reserved_y=True,
+                )
+                if picked is not None:
+                    gap_rotation_non_repeat_override = True
+            if picked is not None:
+                active_type, _picked_row = picked
+                active_gap_now = outside_mm_by_type.get(active_type, 0.0)
+                active_start_gap = max(0.0, float(active_gap_now or 0.0))
+                active_target_gap = _chunk_target_for_gap(active_start_gap)
+                rotation_state["active_type"] = str(active_type)
+                rotation_state["chunk_start_gap_mm"] = float(active_start_gap)
+                rotation_state["chunk_target_mm"] = float(active_target_gap)
+                gap_rotation_chunk_progress_mm = 0.0
+                gap_rotation_chunk_target_mm = float(active_target_gap)
+
+        if active_type:
+            forced = _rotation_candidate(active_type, include_recovery=True)
+            if forced is not None:
+                prev_type_for_override = str(chosen.get("correction_type") or "").strip().lower()
+                chosen = dict(forced)
+                if gap_rotation_non_repeat_override:
+                    chosen["reason"] = "gap_rotation_recovery_nonrepeat"
+                elif bool(gap_rotation_chunk_switch):
+                    chosen["reason"] = "gap_rotation_chunk_switch"
+                else:
+                    chosen["reason"] = "gap_rotation_chunk_follow"
+                chosen["_gap_rotation_active"] = True
+                chosen["_gap_rotation_chunk_switch"] = bool(gap_rotation_chunk_switch)
+                if prev_type_for_override != str(chosen.get("correction_type") or "").strip().lower():
+                    rotation_override = True
+                chosen_type = str(chosen.get("correction_type") or "").strip().lower()
+                gap_rotation_active = True
+
+        if log_tech_debt and gap_rotation_active:
+            chunk_prog_txt = (
+                "N/A" if gap_rotation_chunk_progress_mm is None else f"{float(gap_rotation_chunk_progress_mm):.1f}"
+            )
+            chunk_goal_txt = (
+                "N/A" if gap_rotation_chunk_target_mm is None else f"{float(gap_rotation_chunk_target_mm):.1f}"
+            )
+            gap_rotation_tech_debt_notes = [
+                (
+                    "TECH-DEBT hack active: chunked gap rotation "
+                    f"({float(chunk_min_mm):.1f}-{float(chunk_max_mm):.1f}mm). "
+                    f"chunk={chunk_prog_txt}/{chunk_goal_txt}mm; y_last_hold<={float(y_hold_last_mm):.1f}mm="
+                    f"{'ON' if gap_rotation_y_hold_active else 'OFF'}."
+                )
+            ]
 
     correction_type = chosen.get("correction_type")
     score_float = chosen.get("score_float")
@@ -1607,6 +1947,19 @@ def select_align_brick_next_act(
         "cheat_dist_priority": bool(chosen.get("_cheat_dist_priority")),
         "cheat_dist_priority_context": (
             dict(dist_priority_cheat_context) if isinstance(dist_priority_cheat_context, dict) else None
+        ),
+        "gap_rotation_active": bool(gap_rotation_active),
+        "gap_rotation_chunk_switch": bool(gap_rotation_chunk_switch),
+        "gap_rotation_chunk_progress_mm": (
+            None if gap_rotation_chunk_progress_mm is None else float(gap_rotation_chunk_progress_mm)
+        ),
+        "gap_rotation_chunk_target_mm": (
+            None if gap_rotation_chunk_target_mm is None else float(gap_rotation_chunk_target_mm)
+        ),
+        "gap_rotation_y_hold_active": bool(gap_rotation_y_hold_active),
+        "gap_rotation_non_repeat_override": bool(gap_rotation_non_repeat_override),
+        "exception_tech_debt_notes": (
+            list(gap_rotation_tech_debt_notes) if isinstance(gap_rotation_tech_debt_notes, list) else []
         ),
         "x_err_mm": float(x_err_mm),
         "y_err_mm": (None if y_err_mm is None else float(y_err_mm)),
@@ -1643,6 +1996,7 @@ def select_alignment_next_act(
     duration_s=0.05,
     previous_correction_type=None,
     avoid_correction_type=None,
+    planner_state=None,
 ):
     """
     Unified ALIGN-step next-act selector.
@@ -1667,6 +2021,7 @@ def select_alignment_next_act(
             duration_s=duration_s,
             previous_correction_type=previous_correction_type,
             avoid_correction_type=avoid_correction_type,
+            planner_state=planner_state,
         )
         cmd = plan.get("cmd")
         score = plan.get("score")

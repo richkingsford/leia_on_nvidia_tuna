@@ -59,7 +59,7 @@ METRICS_BY_STEP = {
     "FIND_WALL": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "EXIT_WALL": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
     "FIND_BRICK": ("angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "visible"),
-    "APPROACH_VECTOR_BRICK_SUPPLY": ("angle_abs", "xAxis_offset_abs", "dist", "visible"),
+    "APPROACH_VECTOR_BRICK_SUPPLY": ("angle_abs", "xAxis_offset_abs", "x_axis", "y_axis", "dist", "visible"),
     "FIND_TOPMOST_BRICK": ("yAxis_offset_abs", "dist", "brick_above", "brick_below", "visible"),
     "FIND_TOPMOST_BRICK_WALL": ("yAxis_offset_abs", "dist", "brick_above", "brick_below", "visible"),
     "BRICK_LOCK": ("xAxis_offset_abs", "dist", "brick_above", "brick_below", "visible"),
@@ -76,7 +76,15 @@ METRICS_BY_STEP = {
 
 SCOOP_LIKE_STEPS = {"SEAT_BRICK", "SEAT_BRICK2"}
 
-VISIBILITY_REQUIRED_METRICS = {"angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist"}
+X_AXIS_GATE_METRICS = {"xAxis_offset_abs", "xAxis_offset", "x_axis"}
+Y_AXIS_GATE_METRICS = {"yAxis_offset_abs", "yAxis_offset", "y_axis"}
+VISIBILITY_REQUIRED_METRICS = {
+    "angle_abs",
+    "dist",
+    "confidence",
+    *X_AXIS_GATE_METRICS,
+    *Y_AXIS_GATE_METRICS,
+}
 
 DEFAULT_ARUCO_MARKER_SIZE_MM = 20.0
 BRICK_HEIGHT_MM = 44.0
@@ -362,7 +370,16 @@ def _step_name(step):
     else:
         name = str(step)
     key = name.strip().upper()
-    return STEP_ALIASES.get(key, key)
+    normalized = STEP_ALIASES.get(key, key)
+    for suffix in ("_ALIGN_SETTLE", "_ALIGN", "_SETTLE"):
+        if not str(normalized).endswith(suffix):
+            continue
+        candidate = str(normalized)[: -len(suffix)].strip().upper()
+        if not candidate:
+            continue
+        normalized = STEP_ALIASES.get(candidate, candidate)
+        break
+    return normalized
 
 
 def percentile(values, pct):
@@ -377,11 +394,9 @@ def percentile(values, pct):
 def metric_value(brick, metric):
     if metric == "angle_abs":
         return abs(brick.get("angle", 0.0))
-    if metric == "xAxis_offset_abs":
+    if metric in X_AXIS_GATE_METRICS:
         return brick.get("x_axis", brick.get("offset_x", 0.0))
-    if metric == "yAxis_offset_abs":
-        return brick.get("y_axis", brick.get("offset_y", 0.0))
-    if metric == "yAxis_offset":
+    if metric in Y_AXIS_GATE_METRICS:
         return brick.get("y_axis", brick.get("offset_y", 0.0))
     if metric == "dist":
         return brick.get("dist", 0.0)
@@ -1177,7 +1192,7 @@ def evaluate_start_gates(world, step, learned_rules, process_rules=None):
     start_metrics = (process_rules or {}).get(obj_name, {}).get("start_gates") or {}
     if start_metrics:
         for metric, stats in start_metrics.items():
-            if metric in ("angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "confidence") and not visible:
+            if metric in VISIBILITY_REQUIRED_METRICS and not visible:
                 reasons.append("brick not visible")
                 continue
             min_val = stats.get("min")
@@ -1252,7 +1267,7 @@ def _success_gate_eval(world, step, learned_rules, process_rules=None, visibilit
             "visible_grace_s": visible_grace_s,
         }
 
-        if metric in ("angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist", "confidence") and not visible:
+        if metric in VISIBILITY_REQUIRED_METRICS and not visible:
             reasons.append("brick not visible")
             entry["value"] = None
             entry["raw_value"] = metric_value(raw_brick, metric)
@@ -1268,7 +1283,7 @@ def _success_gate_eval(world, step, learned_rules, process_rules=None, visibilit
                 reasons.append("angle_abs gate")
             elif ok is None and angle_val > stats.get("max", 0.0):
                 reasons.append("angle_abs gate")
-        elif metric == "xAxis_offset_abs":
+        elif metric in X_AXIS_GATE_METRICS:
             offset_val = brick.get("x_axis", brick.get("offset_x", 0.0))
             entry["value"] = offset_val
             entry["raw_value"] = metric_value(raw_brick, metric)
@@ -1279,10 +1294,10 @@ def _success_gate_eval(world, step, learned_rules, process_rules=None, visibilit
             else:
                 ok = _target_tol_ok(offset_val, stats, direction)
             if ok is False:
-                reasons.append("xAxis_offset_abs gate")
+                reasons.append(f"{metric} gate")
             elif ok is None and offset_val > stats.get("max", 0.0):
-                reasons.append("xAxis_offset_abs gate")
-        elif metric == "yAxis_offset_abs":
+                reasons.append(f"{metric} gate")
+        elif metric in Y_AXIS_GATE_METRICS:
             offset_val = brick.get("y_axis", brick.get("offset_y", 0.0))
             entry["value"] = offset_val
             entry["raw_value"] = metric_value(raw_brick, metric)
@@ -1293,9 +1308,9 @@ def _success_gate_eval(world, step, learned_rules, process_rules=None, visibilit
             else:
                 ok = _target_tol_ok(offset_val, stats, direction)
             if ok is False:
-                reasons.append("yAxis_offset_abs gate")
+                reasons.append(f"{metric} gate")
             elif ok is None and offset_val > stats.get("max", 0.0):
-                reasons.append("yAxis_offset_abs gate")
+                reasons.append(f"{metric} gate")
         elif metric == "dist":
             dist_val = brick.get("dist", 0.0)
             entry["value"] = dist_val
@@ -1401,7 +1416,7 @@ def evaluate_failure_gates(world, step, learned_rules, process_rules=None):
     
     # Check if current state matches known failure patterns
     for metric, stats in failure_metrics.items():
-        if metric in ("angle_abs", "xAxis_offset_abs", "yAxis_offset_abs", "dist") and not visible:
+        if metric in VISIBILITY_REQUIRED_METRICS and not visible:
             # Can't match failure pattern if brick isn't visible
             continue
             
