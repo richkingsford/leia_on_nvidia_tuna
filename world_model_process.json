@@ -27,10 +27,11 @@
                 "command": "d",
                 "score": 100,
                 "min_acts": 2,
-                "max_acts": 12,
+                "max_acts": 4,
+                "observe_between_acts": false,
                 "ground_level_lift_mm_goal": 50.0,
                 "require_tiny_roi_floor": true,
-                "fail_on_unconfirmed": false,
+                "fail_on_unconfirmed": true,
                 "run_after_startup_action": true
             },
             "success_gates": {
@@ -85,7 +86,7 @@
                     "b"
                 ],
                 "command_scores": {
-                    "b": 5
+                    "b": 30
                 }
             },
             "align_policy": {
@@ -178,9 +179,10 @@
                 "mast_up_command": "u",
                 "mast_up_score": 100,
                 "mast_up_max_acts": 32,
-                "false_up_acts_required": 5,
+                "false_up_acts_required": 4,
                 "false_confirm_frames": 3,
-                "consecutive_no_required": 5,
+                "consecutive_no_required": 4,
+                "complete_on_crosshair_drop": true,
                 "level2_require_visible_for_confirm": false,
                 "level2_fail_on_skipped_observation": false,
                 "level2_reset_on_skipped_observation": true,
@@ -261,8 +263,14 @@
                 "require_consistent_observation": true,
                 "consistent_observation_max_checks": 100,
                 "completion_mode": "true_then_false_streak",
-                "false_after_true_down_acts_required": 3,
+                "false_after_true_down_acts_required": 2,
                 "true_down_acts_required": 3,
+                "exclude_when_active_steps": [
+                    "FIND_TOPMOST_BRICK_WALL"
+                ],
+                "exclude_when_active_step_numbers": [
+                    12
+                ],
                 "max_acts": 32
             },
             "post_success_descend": {
@@ -327,7 +335,7 @@
                     "tol": 1.5
                 },
                 "dist": {
-                    "target": 108.63,
+                    "target": 105.63,
                     "tol": 1.5
                 }
             }
@@ -376,7 +384,7 @@
                 "target_lock_enabled": false
             },
             "start_ground_reset_exception": {
-                "enabled": false,
+                "enabled": true,
                 "operator_log_reminder": "Exception active: startup ground reset using tiny_roi_floor lift estimate.",
                 "command": "d",
                 "score": 100,
@@ -398,6 +406,15 @@
                     "b"
                 ]
             },
+            "startup_pre_action_exception": {
+                "enabled": true,
+                "operator_log_reminder": "Exception active: before startup hard-left scan, pulse BACK 50% x5.",
+                "command": "b",
+                "score": 50,
+                "acts": 5,
+                "observe_between_acts": false,
+                "pause_s": 0.0
+            },
             "operator_exception_reminder": "Exception active: startup hard-left scan x7.",
             "startup_action_exception": {
                 "enabled": true,
@@ -413,6 +430,22 @@
                 "standard": 6,
                 "fast": 25
             },
+            "search_turn_followup_exception": {
+                "enabled": true,
+                "operator_log_reminder": "Exception hack: after each LEFT turn while searching for wall2, pulse BACK 25%.",
+                "trigger_cmds": [
+                    "l"
+                ],
+                "command": "b",
+                "score": 25,
+                "acts": 1,
+                "phases": [
+                    "demo",
+                    "replay",
+                    "settle",
+                    "tail"
+                ]
+            },
             "height_intelligence": {
                 "enabled": true,
                 "source": "wall_height",
@@ -426,9 +459,17 @@
                 "low_bricks_max": 2,
                 "high_bricks_min": 4,
                 "low_cmd": "d",
-                "high_cmd": "u",
+                "high_cmd": "d",
                 "score": 1,
-                "cooldown_s": 0.6
+                "cooldown_s": 0.6,
+                "phase_overrides": {
+                    "tail": {
+                        "score": 100,
+                        "allow_uncapped_score": true,
+                        "burst_acts": 8,
+                        "observe_between_acts": false
+                    }
+                }
             },
             "lock_success_gates": true,
             "success_gates": {
@@ -490,6 +531,10 @@
                 "false_up_acts_required": 5,
                 "false_confirm_frames": 3,
                 "consecutive_no_required": 5,
+                "complete_on_crosshair_drop": true,
+                "level2_require_visible_for_confirm": false,
+                "level2_fail_on_skipped_observation": false,
+                "level2_reset_on_skipped_observation": false,
                 "level2_use_full_gatecheck": false,
                 "observation_confidence_min": 50.0
             },
@@ -660,11 +705,14 @@
             },
             "progress_mast_exception": {
                 "enabled": true,
-                "operator_log_reminder": "Exception active: at 60% dist progress, lower mast D 1% x1, then continue.",
-                "trigger_progress_fraction": 0.6,
+                "operator_log_reminder": "Exception active: at 75%-away then 50%-away dist checkpoints, lower mast D 10% x2, then continue.",
+                "trigger_progress_fractions": [
+                    0.25,
+                    0.5
+                ],
                 "command": "d",
-                "score": 1,
-                "acts": 1,
+                "score": 10,
+                "acts": 2,
                 "min_start_to_target_gap_mm": 4.0
             },
             "near_dist_visibility_mast_exception": {
@@ -701,10 +749,10 @@
             },
             "post_success_mast_exception": {
                 "enabled": true,
-                "operator_log_reminder": "Exception active: step tail mast-down settle (D 10% x10) with no observations.",
+                "operator_log_reminder": "Exception active: step tail mast-down settle (mast_down 100% x4) with no observations.",
                 "command": "d",
-                "score": 10,
-                "acts": 10,
+                "score": 100,
+                "acts": 4,
                 "observe_between_acts": false,
                 "pause_s": 0.0
             },

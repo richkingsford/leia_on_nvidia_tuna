@@ -65,6 +65,7 @@ from telemetry_process import (
     merge_motion_steps,
     nominal_actions_from_events,
     reset_auto_step_action_stats,
+    reset_repeat_act_guard,
     send_robot_command,
     send_robot_command_pwm,
     step_requires_start_gates,
@@ -437,6 +438,12 @@ def _demos_dir_for_vision_mode(mode):
     return Path(path)
 
 
+def _runs_dir_for_vision_mode(mode):
+    mode_norm = normalize_vision_mode(mode, fallback=_DEFAULT_VISION_MODE)
+    suffix = "cyan" if mode_norm == VISION_MODE_CYAN else "aruco"
+    return Path(__file__).resolve().parent / f"Runs - {suffix}"
+
+
 def normalize_cyan_profile(value, fallback=CYAN_PROFILE_DEFAULT):
     key = str(value or "").strip().lower()
     key = _CYAN_PROFILE_ALIASES.get(key, key)
@@ -622,6 +629,16 @@ ATTEMPT_STATUS = {
 class AutoStepCancelled(Exception):
     """Raised to cooperatively abort a running auto-step (e.g. Esc pressed)."""
     pass
+
+
+def _is_repeat_act_safety_fail(reason):
+    text = str(reason or "").strip().lower()
+    if not text:
+        return False
+    if "[safety-fail]" in text and "repeat" in text:
+        return True
+    return "repeat-act guard" in text
+
 
 def step_label(obj_enum):
     return obj_enum.value
@@ -857,9 +874,6 @@ def _cmd_to_motion_action_type(cmd):
 
 
 def _demo_logging_active(app_state):
-    # Auto-steps should never record into demo/session logs.
-    if bool(getattr(app_state, "auto_running", False)):
-        return False
     if getattr(app_state, "active_attempt", None):
         return True
     return bool(getattr(app_state, "auto_demo_logging_active", False))
@@ -879,6 +893,15 @@ def _log_motion_event_and_state(app_state, cmd, speed, score, duration_ms=None):
     evt = MotionEvent(action_type, power_u8, max(1, int(dur_ms)), speed_score=score)
     app_state.logger.log_event(evt, app_state.world.step_state.value)
     app_state.logger.log_state(app_state.world)
+    with app_state.lock:
+        if getattr(app_state, "active_attempt", None):
+            app_state.current_attempt_action_count = int(
+                getattr(app_state, "current_attempt_action_count", 0) or 0
+            ) + 1
+        elif bool(getattr(app_state, "auto_demo_logging_active", False)):
+            app_state.current_auto_action_count = int(
+                getattr(app_state, "current_auto_action_count", 0) or 0
+            ) + 1
 
 
 def _apply_manual_motion_telemetry_from_send(app_state, *, cmd, speed, score, send_result=None):
@@ -1215,6 +1238,8 @@ def _begin_auto_demo_logging(app_state, obj_enum):
     app_state.world.recording_active = True
     app_state.world.attempt_status = ATTEMPT_STATUS["NOMINAL"]
     app_state.auto_demo_logging_active = True
+    app_state.current_auto_step = normalize_step_label(obj_label) or obj_label
+    app_state.current_auto_action_count = 0
 
 
 def _end_auto_demo_logging(app_state, obj_enum):
@@ -1222,6 +1247,8 @@ def _end_auto_demo_logging(app_state, obj_enum):
         app_state.auto_demo_logging_active = False
         app_state.world.recording_active = False
         app_state.world.attempt_status = "NORMAL"
+        app_state.current_auto_step = None
+        app_state.current_auto_action_count = 0
         return
     marker = ATTEMPT_MARKERS["NOMINAL"][1]
     obj_label = step_label(obj_enum)
@@ -1229,6 +1256,8 @@ def _end_auto_demo_logging(app_state, obj_enum):
     app_state.auto_demo_logging_active = False
     app_state.world.recording_active = False
     app_state.world.attempt_status = "NORMAL"
+    app_state.current_auto_step = None
+    app_state.current_auto_action_count = 0
     if app_state.log_path:
         valid_blocks = prune_log_file(app_state.log_path, delete_if_empty=False)
         if int(valid_blocks) <= 0:
@@ -1578,6 +1607,12 @@ def maybe_prompt_hotkey_var_update(app_state, cmd, score, *, enter_edit=False, h
         if not ok:
             log_line(f"[HOTKEY] Update failed: {err}")
             return
+        _record_manual_hotkey_edit(
+            app_state,
+            hotkey=hotkey_target,
+            cmd=cmd,
+            score=score_used,
+        )
         log_line(
             f"[HOTKEY] Updated world model for {str(cmd).upper()} {int(score_used)}% "
             f"-> (pwm={int(pwm_new)}, power={float(power_new):.3f}, {int(duration_new)}ms)"
@@ -1772,15 +1807,336 @@ def _open_stream_in_chrome(url):
             return True
     return False
 
+
+def _stats_inc(counter, key, delta=1):
+    if not isinstance(counter, dict):
+        return
+    key_text = str(key or "").strip()
+    if not key_text:
+        return
+    counter[key_text] = int(counter.get(key_text, 0) or 0) + int(delta)
+
+
+def _stats_step_key(step):
+    key = normalize_step_label(step)
+    if key:
+        return str(key)
+    return str(step or "UNKNOWN").strip().upper() or "UNKNOWN"
+
+
+def _record_step_completion_actions(app_state, step, actions_required, *, source):
+    try:
+        actions_int = int(actions_required)
+    except (TypeError, ValueError):
+        return
+    if actions_int < 0:
+        return
+    step_key = _stats_step_key(step)
+    now_ts = float(time.time())
+    with app_state.lock:
+        by_step = getattr(app_state, "session_step_actions_by_step", None)
+        if not isinstance(by_step, dict):
+            by_step = {}
+            app_state.session_step_actions_by_step = by_step
+        bucket = by_step.get(step_key)
+        if not isinstance(bucket, list):
+            bucket = []
+            by_step[step_key] = bucket
+        bucket.append(int(actions_int))
+        records = getattr(app_state, "session_step_action_records", None)
+        if not isinstance(records, list):
+            records = []
+            app_state.session_step_action_records = records
+        records.append(
+            {
+                "timestamp": round(now_ts, 3),
+                "step": step_key,
+                "actions_required": int(actions_int),
+                "source": str(source or "unknown").strip().lower() or "unknown",
+            }
+        )
+
+
+def _record_auto_step_cancel(app_state, step):
+    step_key = _stats_step_key(step)
+    with app_state.lock:
+        app_state.session_auto_step_cancel_count = int(
+            getattr(app_state, "session_auto_step_cancel_count", 0) or 0
+        ) + 1
+        by_step = getattr(app_state, "session_auto_step_cancel_by_step", None)
+        if not isinstance(by_step, dict):
+            by_step = {}
+            app_state.session_auto_step_cancel_by_step = by_step
+        _stats_inc(by_step, step_key, 1)
+
+
+def _record_auto_step_restart(app_state, step):
+    step_key = _stats_step_key(step)
+    with app_state.lock:
+        app_state.session_auto_step_restart_count = int(
+            getattr(app_state, "session_auto_step_restart_count", 0) or 0
+        ) + 1
+        by_step = getattr(app_state, "session_auto_step_restart_by_step", None)
+        if not isinstance(by_step, dict):
+            by_step = {}
+            app_state.session_auto_step_restart_by_step = by_step
+        _stats_inc(by_step, step_key, 1)
+
+
+def _record_manual_step_restart(app_state, step):
+    step_key = _stats_step_key(step)
+    with app_state.lock:
+        app_state.session_manual_step_restart_count = int(
+            getattr(app_state, "session_manual_step_restart_count", 0) or 0
+        ) + 1
+        by_step = getattr(app_state, "session_manual_step_restart_by_step", None)
+        if not isinstance(by_step, dict):
+            by_step = {}
+            app_state.session_manual_step_restart_by_step = by_step
+        _stats_inc(by_step, step_key, 1)
+
+
+def _record_manual_hotkey_press(app_state, *, hotkey, cmd=None, score=None):
+    hotkey_key = str(hotkey or "").strip().lower()
+    if not hotkey_key:
+        return
+    cmd_key = str(cmd or "").strip().lower()
+    with app_state.lock:
+        by_hotkey = getattr(app_state, "session_manual_hotkey_press_by_hotkey", None)
+        if not isinstance(by_hotkey, dict):
+            by_hotkey = {}
+            app_state.session_manual_hotkey_press_by_hotkey = by_hotkey
+        _stats_inc(by_hotkey, hotkey_key, 1)
+        app_state.session_manual_hotkey_press_count = int(
+            getattr(app_state, "session_manual_hotkey_press_count", 0) or 0
+        ) + 1
+
+        by_cmd = getattr(app_state, "session_manual_hotkey_press_by_command", None)
+        if not isinstance(by_cmd, dict):
+            by_cmd = {}
+            app_state.session_manual_hotkey_press_by_command = by_cmd
+        if cmd_key:
+            _stats_inc(by_cmd, cmd_key, 1)
+
+        details = getattr(app_state, "session_manual_hotkey_press_details", None)
+        if not isinstance(details, list):
+            details = []
+            app_state.session_manual_hotkey_press_details = details
+        details.append(
+            {
+                "timestamp": round(time.time(), 3),
+                "hotkey": hotkey_key,
+                "command": cmd_key or None,
+                "score": None if score is None else int(score),
+            }
+        )
+
+
+def _record_manual_hotkey_edit(app_state, *, hotkey, cmd=None, score=None):
+    hotkey_key = str(hotkey or "").strip().lower()
+    if not hotkey_key:
+        return
+    cmd_key = str(cmd or "").strip().lower()
+    with app_state.lock:
+        by_hotkey = getattr(app_state, "session_manual_hotkey_edit_by_hotkey", None)
+        if not isinstance(by_hotkey, dict):
+            by_hotkey = {}
+            app_state.session_manual_hotkey_edit_by_hotkey = by_hotkey
+        _stats_inc(by_hotkey, hotkey_key, 1)
+        app_state.session_manual_hotkey_edit_count = int(
+            getattr(app_state, "session_manual_hotkey_edit_count", 0) or 0
+        ) + 1
+
+        details = getattr(app_state, "session_manual_hotkey_edit_details", None)
+        if not isinstance(details, list):
+            details = []
+            app_state.session_manual_hotkey_edit_details = details
+        details.append(
+            {
+                "timestamp": round(time.time(), 3),
+                "hotkey": hotkey_key,
+                "command": cmd_key or None,
+                "score": None if score is None else int(score),
+            }
+        )
+
+
+def _session_summary_payload(app_state):
+    with app_state.lock:
+        started_ts = float(getattr(app_state, "session_started_ts", time.time()) or time.time())
+        summary_generated_ts = float(time.time())
+        by_step_raw = getattr(app_state, "session_step_actions_by_step", {}) or {}
+        by_step = {}
+        if isinstance(by_step_raw, dict):
+            by_step = {str(k): list(v) for k, v in by_step_raw.items() if isinstance(v, list)}
+        auto_cancel_by_step = dict(getattr(app_state, "session_auto_step_cancel_by_step", {}) or {})
+        auto_restart_by_step = dict(getattr(app_state, "session_auto_step_restart_by_step", {}) or {})
+        manual_restart_by_step = dict(getattr(app_state, "session_manual_step_restart_by_step", {}) or {})
+        hotkey_press_by_hotkey = dict(
+            getattr(app_state, "session_manual_hotkey_press_by_hotkey", {}) or {}
+        )
+        hotkey_press_by_command = dict(
+            getattr(app_state, "session_manual_hotkey_press_by_command", {}) or {}
+        )
+        hotkey_edit_by_hotkey = dict(
+            getattr(app_state, "session_manual_hotkey_edit_by_hotkey", {}) or {}
+        )
+        run_logs_raw = list(getattr(app_state, "session_log_paths", []) or [])
+        run_logs = []
+        for p in run_logs_raw:
+            path = Path(p)
+            if path.exists():
+                run_logs.append(str(path))
+        action_records = list(getattr(app_state, "session_step_action_records", []) or [])
+        hotkey_press_details = list(getattr(app_state, "session_manual_hotkey_press_details", []) or [])
+        hotkey_edit_details = list(getattr(app_state, "session_manual_hotkey_edit_details", []) or [])
+        active_vision_mode = _stream_state_vision_mode(
+            app_state,
+            _DEFAULT_VISION_MODE,
+        )
+
+    completion_stats = {}
+    for step_key in sorted(by_step.keys()):
+        samples = [int(x) for x in by_step.get(step_key, [])]
+        if not samples:
+            continue
+        avg = float(statistics.mean(samples))
+        if len(samples) >= 2:
+            stddev = float(statistics.pstdev(samples))
+        else:
+            stddev = 0.0
+        completion_stats[str(step_key)] = {
+            "count": int(len(samples)),
+            "average_actions": round(avg, 3),
+            "stddev_actions": round(stddev, 3),
+            "samples": samples,
+        }
+
+    payload = {
+        "session": {
+            "started_at_ts": round(started_ts, 3),
+            "started_at_local": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started_ts)),
+            "ended_at_ts": round(summary_generated_ts, 3),
+            "ended_at_local": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(summary_generated_ts)),
+            "duration_s": round(max(0.0, summary_generated_ts - started_ts), 3),
+            "active_vision_mode": str(active_vision_mode),
+        },
+        "run_logs": run_logs,
+        "step_completion_actions": {
+            "by_step": completion_stats,
+            "records": action_records,
+        },
+        "counts": {
+            "cancelled_steps_total": int(sum(int(v) for v in auto_cancel_by_step.values())),
+            "cancelled_steps_by_step": auto_cancel_by_step,
+            "restarted_steps_total": int(
+                sum(int(v) for v in auto_restart_by_step.values())
+                + sum(int(v) for v in manual_restart_by_step.values())
+            ),
+            "restarted_steps_auto_full_gatecheck_by_step": auto_restart_by_step,
+            "restarted_steps_manual_by_step": manual_restart_by_step,
+        },
+        "manual_hotkeys": {
+            "press_count_total": int(sum(int(v) for v in hotkey_press_by_hotkey.values())),
+            "press_count_by_hotkey": hotkey_press_by_hotkey,
+            "press_count_by_command": hotkey_press_by_command,
+            "press_details": hotkey_press_details,
+            "edit_count_total": int(sum(int(v) for v in hotkey_edit_by_hotkey.values())),
+            "edit_count_by_hotkey": hotkey_edit_by_hotkey,
+            "edit_details": hotkey_edit_details,
+        },
+    }
+    return payload
+
+
+def _pretty_run_timestamp(ts=None):
+    local_ts = float(time.time() if ts is None else ts)
+    local = time.localtime(local_ts)
+    month_day = f"{time.strftime('%b', local)} {int(local.tm_mday)}"
+    hhmm_ampm = time.strftime("%I%M%p", local).lstrip("0").lower()
+    return f"{month_day} {hhmm_ampm}"
+
+
+def _unique_json_path(folder, stem):
+    target = folder / f"{stem}.json"
+    if not target.exists():
+        return target
+    index = 2
+    while True:
+        candidate = folder / f"{stem} ({index}).json"
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
+def write_session_summary(app_state):
+    runs_dir = Path(getattr(app_state, "runs_dir", Path(__file__).resolve().parent))
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    payload = _session_summary_payload(app_state)
+    summary_stem = f"Summary - {_pretty_run_timestamp()}"
+    summary_path = _unique_json_path(runs_dir, summary_stem)
+    summary_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return summary_path, payload
+
+
+def log_session_summary(app_state):
+    payload = _session_summary_payload(app_state)
+    completion_by_step = (
+        ((payload.get("step_completion_actions") or {}).get("by_step"))
+        if isinstance(payload, dict)
+        else {}
+    )
+    counts = (payload.get("counts") or {}) if isinstance(payload, dict) else {}
+    hotkeys = (payload.get("manual_hotkeys") or {}) if isinstance(payload, dict) else {}
+    log_line("[SESSION SUMMARY] Completion actions by step (avg±stddev, n):")
+    if isinstance(completion_by_step, dict) and completion_by_step:
+        for step_key in sorted(completion_by_step.keys()):
+            row = completion_by_step.get(step_key) or {}
+            avg = row.get("average_actions")
+            std = row.get("stddev_actions")
+            count = row.get("count")
+            log_line(
+                f"[SESSION SUMMARY] {step_key}: {avg} ± {std} (n={count})"
+            )
+    else:
+        log_line("[SESSION SUMMARY] No completed step samples recorded.")
+
+    log_line(
+        "[SESSION SUMMARY] Cancelled steps: "
+        f"{int((counts or {}).get('cancelled_steps_total', 0) or 0)}"
+    )
+    log_line(
+        "[SESSION SUMMARY] Restarted steps: "
+        f"{int((counts or {}).get('restarted_steps_total', 0) or 0)}"
+    )
+    log_line(
+        "[SESSION SUMMARY] Manual hotkey presses: "
+        f"{int((hotkeys or {}).get('press_count_total', 0) or 0)}"
+    )
+    log_line(
+        "[SESSION SUMMARY] Manual hotkey edits: "
+        f"{int((hotkeys or {}).get('edit_count_total', 0) or 0)}"
+    )
+
 def open_new_log(app_state):
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    log_path = app_state.demos_dir / f"kbd_{timestamp}.json"
-    log_line(f"[SESSION] Recording Keyboard Demo to: {log_path}")
+    runs_dir = Path(
+        getattr(
+            app_state,
+            "runs_dir",
+            getattr(app_state, "demos_dir", Path(__file__).resolve().parent),
+        )
+    )
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    log_path = _unique_json_path(runs_dir, _pretty_run_timestamp())
+    log_line(f"[SESSION] Recording Run Log to: {log_path}")
     app_state.logger = TelemetryLogger(log_path)
     app_state.logger.enabled = False  # Wait for first attempt marker
     app_state.logger_closed = False
     app_state.log_path = log_path
-    app_state.world.run_id = f"run_{timestamp}"
+    session_logs = getattr(app_state, "session_log_paths", None)
+    if isinstance(session_logs, list):
+        session_logs.append(Path(log_path))
+    app_state.world.run_id = f"run_{time.strftime('%Y%m%d_%H%M%S')}"
     app_state.world.attempt_id = 1
 
 def ensure_log_open(app_state):
@@ -1797,18 +2153,7 @@ def close_log(app_state, marker=None):
     app_state.logger_closed = True
     if app_state.log_path:
         valid_blocks = prune_log_file(app_state.log_path, delete_if_empty=False)
-        removed_empty_file = False
-        try:
-            raw = Path(app_state.log_path).read_text(encoding="utf-8")
-            parsed = json.loads(raw)
-            if isinstance(parsed, list) and len(parsed) == 0:
-                Path(app_state.log_path).unlink(missing_ok=True)
-                removed_empty_file = True
-        except Exception:
-            removed_empty_file = False
-        if removed_empty_file:
-            log_line(f"[SESSION] Deleted empty demo file: {app_state.log_path}")
-        elif int(valid_blocks) <= 0:
+        if int(valid_blocks) <= 0:
             log_line(
                 "[SESSION] No completed attempts found in the current log; "
                 f"kept file at {app_state.log_path}."
@@ -1818,21 +2163,34 @@ def close_log(app_state, marker=None):
 def _set_active_demos_dir_for_mode(app_state, mode):
     mode_norm = normalize_vision_mode(mode, fallback=_DEFAULT_VISION_MODE)
     next_dir = _demos_dir_for_vision_mode(mode_norm)
+    next_runs_dir = _runs_dir_for_vision_mode(mode_norm)
     next_dir.mkdir(parents=True, exist_ok=True)
+    next_runs_dir.mkdir(parents=True, exist_ok=True)
     current_dir = Path(getattr(app_state, "demos_dir", next_dir))
+    current_runs_dir = Path(getattr(app_state, "runs_dir", next_runs_dir))
     try:
-        unchanged = current_dir.resolve() == next_dir.resolve()
+        unchanged = (
+            current_dir.resolve() == next_dir.resolve()
+            and current_runs_dir.resolve() == next_runs_dir.resolve()
+        )
     except Exception:
-        unchanged = str(current_dir) == str(next_dir)
+        unchanged = (
+            str(current_dir) == str(next_dir)
+            and str(current_runs_dir) == str(next_runs_dir)
+        )
     if unchanged:
         return False
     close_log(app_state, marker=None)
     app_state.demos_dir = next_dir
+    app_state.runs_dir = next_runs_dir
     app_state.config_mtime = 0
     app_state.last_config_check = 0
     open_new_log(app_state)
     log_line(
         f"[DEMOS] Active folder for {_vision_mode_label(mode_norm)}: {next_dir}"
+    )
+    log_line(
+        f"[RUNS] Active folder for {_vision_mode_label(mode_norm)}: {next_runs_dir}"
     )
     return True
 
@@ -1849,6 +2207,13 @@ def trash_current_session(app_state):
         app_state.logger.close()
     app_state.logger_closed = True
     app_state.log_path = None
+    session_logs = getattr(app_state, "session_log_paths", None)
+    if isinstance(session_logs, list) and log_path is not None:
+        try:
+            log_resolved = Path(log_path).resolve()
+            session_logs[:] = [p for p in session_logs if Path(p).resolve() != log_resolved]
+        except Exception:
+            session_logs[:] = [p for p in session_logs if Path(p) != Path(log_path)]
     if log_path and log_path.exists():
         try:
             log_path.unlink()
@@ -1861,6 +2226,7 @@ def run_auto_step(app_state, obj_enum):
     _set_stream_state_success_gate_step(app_state, step_key)
     print("\n" * 5, end="")
     log_line(f"[AUTO] Attempting {step_key}...")
+    reset_repeat_act_guard(app_state.world, app_state.robot)
     mini_x_axis_ran = False
 
     if step_key in AUTO_MINI_X_AXIS_STEPS:
@@ -1924,6 +2290,8 @@ def run_auto_step(app_state, obj_enum):
     if not segment:
         log_line(f"[AUTO] No demo segment found for {step_key}.")
         return False
+    _begin_auto_demo_logging(app_state, obj_enum)
+    auto_demo_logging_started = True
 
     events = segment.get("events") or []
     actions = nominal_actions_from_events(events)
@@ -2160,6 +2528,8 @@ def run_auto_step(app_state, obj_enum):
         reason_norm = str(reason or "").strip().lower()
         if not reason_norm:
             return True
+        if _is_repeat_act_safety_fail(reason_norm):
+            return False
         if "cancelled by user" in reason_norm or "confirm cancelled" in reason_norm:
             return False
         if "start gates not met" in reason_norm:
@@ -2170,8 +2540,8 @@ def run_auto_step(app_state, obj_enum):
 
     prior_suppress_skip_start_log = bool(getattr(app_state.world, "_suppress_start_gate_skip_log", False))
     app_state.world._suppress_start_gate_skip_log = True
+    reset_repeat_act_guard(app_state.world, app_state.robot)
     try:
-        # Auto execution should not generate new demo recordings; demos are authored manually.
         ok = False
         reason = "cancelled by user"
         full_gatecheck_restarts_used = 0
@@ -2200,6 +2570,18 @@ def run_auto_step(app_state, obj_enum):
                         app_state.robot.stop()
                 except Exception:
                     pass
+            except RuntimeError as exc:
+                if _is_repeat_act_safety_fail(exc):
+                    ok = False
+                    reason = str(exc) or "repeat-act safety guard"
+                    try:
+                        if app_state.robot:
+                            app_state.robot.stop()
+                    except Exception:
+                        pass
+                    reset_repeat_act_guard(app_state.world, app_state.robot)
+                else:
+                    raise
 
             if ok:
                 _log_full_gatecheck_final("PASS", reason=reason, attempt_num=attempt_num)
@@ -2212,6 +2594,7 @@ def run_auto_step(app_state, obj_enum):
                 and not (bool(getattr(app_state, "auto_cancel_event", None)) and app_state.auto_cancel_event.is_set())
             ):
                 full_gatecheck_restarts_used += 1
+                _record_auto_step_restart(app_state, step_key)
                 log_line(
                     f"[AUTO] {step_key} full gatecheck failed; restarting "
                     f"(attempt {int(attempt_num) + 1}/{int(max_full_gatecheck_attempts)})."
@@ -2220,6 +2603,7 @@ def run_auto_step(app_state, obj_enum):
             break
     finally:
         app_state.world._suppress_start_gate_skip_log = prior_suppress_skip_start_log
+        reset_repeat_act_guard(app_state.world, app_state.robot)
         try:
             app_state.auto_cancel_event.clear()
         except Exception:
@@ -2276,6 +2660,17 @@ def run_auto_step(app_state, obj_enum):
             acts_total = int(parts_sum)
         elif acts_total > parts_sum:
             acts_unknown += int(acts_total - parts_sum)
+        if int(acts_total) <= 0:
+            try:
+                acts_total = int(getattr(app_state, "current_auto_action_count", 0) or 0)
+            except (TypeError, ValueError):
+                acts_total = 0
+        _record_step_completion_actions(
+            app_state,
+            step_key,
+            int(max(0, int(acts_total))),
+            source="auto",
+        )
         step_code = step_code_for_obj(obj_enum)
         log_line(f"ACHIEVED step {step_code} ({step_key}) in {acts_total} acts.")
         log_line(f"  {acts_closer} closer acts")
@@ -2285,7 +2680,11 @@ def run_auto_step(app_state, obj_enum):
     else:
         reason_norm = str(reason or "").strip().lower()
         if reason_norm == "cancelled by user":
+            _record_auto_step_cancel(app_state, step_key)
             log_line(f"[AUTO] {step_key} cancelled (Esc).")
+        elif _is_repeat_act_safety_fail(reason):
+            log_line(str(reason))
+            log_line(f"[AUTO] {step_key} cancelled (repeat-act safety guard).")
         else:
             log_line(f"[AUTO] {step_key} failed ({reason}).")
         if str(reason or "").strip().lower() == "start gates not met":
@@ -3106,6 +3505,7 @@ def start_attempt(app_state, obj_enum, attempt_type):
     marker = ATTEMPT_MARKERS[attempt_type][0]
     app_state.logger.log_keyframe(marker, obj_label)
     app_state.active_attempt = attempt_type
+    app_state.current_attempt_action_count = 0
     app_state.world.attempt_status = ATTEMPT_STATUS[attempt_type]
     app_state.world.recording_active = True
     log_line(height_intel_step_begin_line(app_state.world, obj_label))
@@ -3120,9 +3520,19 @@ def end_attempt(app_state, complete_step=True):
     marker = ATTEMPT_MARKERS[attempt_type][1]
     app_state.logger.log_keyframe(marker, obj_label)
     should_close = False
+    try:
+        attempt_actions = int(getattr(app_state, "current_attempt_action_count", 0) or 0)
+    except (TypeError, ValueError):
+        attempt_actions = 0
 
     if attempt_type == "SUCCESS":
         _emit_stream_step_success_event(app_state, obj_label)
+        _record_step_completion_actions(
+            app_state,
+            obj_label,
+            int(max(0, int(attempt_actions))),
+            source="manual",
+        )
         try:
             apply_height_snapshot_from_step(app_state.world, obj_label, log=True)
         except Exception as exc:
@@ -3144,6 +3554,7 @@ def end_attempt(app_state, complete_step=True):
 
     app_state.world.attempt_status = "NORMAL"
     app_state.active_attempt = None
+    app_state.current_attempt_action_count = 0
     app_state.logger.enabled = False
     return True, f"[OBJ] {obj_label} {attempt_type} finished.", obj_enum, attempt_type, False
 
@@ -3170,6 +3581,8 @@ def handle_attempt_command(app_state, obj_enum, attempt_type):
 
     # 4. Start the new attempt
     ok, msg = start_attempt(app_state, obj_enum, attempt_type)
+    if ok and ended_info:
+        _record_manual_step_restart(app_state, obj_label)
     return ok, msg, ended_info, ended_close
 
 class AppState:
@@ -3212,10 +3625,32 @@ class AppState:
         vision_mode_norm = normalize_vision_mode(vision_mode, fallback=_DEFAULT_VISION_MODE)
         self.demos_dir = _demos_dir_for_vision_mode(vision_mode_norm)
         self.demos_dir.mkdir(parents=True, exist_ok=True)
+        self.runs_dir = _runs_dir_for_vision_mode(vision_mode_norm)
+        self.runs_dir.mkdir(parents=True, exist_ok=True)
         self.world = WorldModel()
         self.logger = None
         self.logger_closed = True
         self.log_path = None
+        self.session_started_ts = float(time.time())
+        self.session_log_paths = []
+        self.session_step_actions_by_step = {}
+        self.session_step_action_records = []
+        self.session_auto_step_cancel_count = 0
+        self.session_auto_step_cancel_by_step = {}
+        self.session_auto_step_restart_count = 0
+        self.session_auto_step_restart_by_step = {}
+        self.session_manual_step_restart_count = 0
+        self.session_manual_step_restart_by_step = {}
+        self.session_manual_hotkey_press_count = 0
+        self.session_manual_hotkey_press_by_hotkey = {}
+        self.session_manual_hotkey_press_by_command = {}
+        self.session_manual_hotkey_press_details = []
+        self.session_manual_hotkey_edit_count = 0
+        self.session_manual_hotkey_edit_by_hotkey = {}
+        self.session_manual_hotkey_edit_details = []
+        self.current_attempt_action_count = 0
+        self.current_auto_step = None
+        self.current_auto_action_count = 0
         open_new_log(self)
         
         # ID Init
@@ -4529,6 +4964,13 @@ def command_loop(app_state):
                 score=score_used,
                 send_result=send_result,
             )
+            if hotkey:
+                _record_manual_hotkey_press(
+                    app_state,
+                    hotkey=hotkey,
+                    cmd=cmd,
+                    score=score_used,
+                )
             if (
                 hotkey
                 and isinstance(send_result, dict)
@@ -4689,4 +5131,10 @@ if __name__ == "__main__":
         if state.robot: state.robot.close()
         if state.vision: state.vision.close()
         close_log(state, marker=None)
+        try:
+            log_session_summary(state)
+            summary_path, _summary_payload = write_session_summary(state)
+            log_line(f"[SESSION SUMMARY] Wrote {summary_path}")
+        except Exception as exc:
+            log_line(f"[SESSION SUMMARY] Failed to write summary ({exc})")
         log_line("Shutdown complete.")

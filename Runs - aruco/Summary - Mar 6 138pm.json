@@ -1,0 +1,582 @@
+{
+  "session": {
+    "started_at_ts": 1772828126.323,
+    "started_at_local": "2026-03-06 13:15:26",
+    "ended_at_ts": 1772829496.358,
+    "ended_at_local": "2026-03-06 13:38:16",
+    "duration_s": 1370.035,
+    "active_vision_mode": "aruco"
+  },
+  "run_logs": [
+    "/home/richkingsford/cub-queso/Runs - aruco/Mar 6 115pm.json"
+  ],
+  "step_completion_actions": {
+    "by_step": {
+      "ALIGN_BRICK": {
+        "count": 1,
+        "average_actions": 22.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          22
+        ]
+      },
+      "APPROACH_VECTOR_WALL": {
+        "count": 1,
+        "average_actions": 5.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          5
+        ]
+      },
+      "BRICK_LOCK_WALL": {
+        "count": 1,
+        "average_actions": 23.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          23
+        ]
+      },
+      "ELEVATE_BRICK": {
+        "count": 1,
+        "average_actions": 19.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          19
+        ]
+      },
+      "FIND_TOPMOST_BRICK": {
+        "count": 1,
+        "average_actions": 0.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          0
+        ]
+      },
+      "FIND_TOPMOST_BRICK_WALL": {
+        "count": 1,
+        "average_actions": 0.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          0
+        ]
+      },
+      "FIND_WALL2": {
+        "count": 1,
+        "average_actions": 40.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          40
+        ]
+      },
+      "POSITION_BRICK": {
+        "count": 2,
+        "average_actions": 68.0,
+        "stddev_actions": 29.0,
+        "samples": [
+          39,
+          97
+        ]
+      },
+      "RETREAT": {
+        "count": 1,
+        "average_actions": 11.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          11
+        ]
+      },
+      "SEAT_BRICK": {
+        "count": 1,
+        "average_actions": 39.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          39
+        ]
+      },
+      "SEAT_BRICK2": {
+        "count": 1,
+        "average_actions": 27.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          27
+        ]
+      }
+    },
+    "records": [
+      {
+        "timestamp": 1772828176.067,
+        "step": "FIND_TOPMOST_BRICK",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772828386.585,
+        "step": "ALIGN_BRICK",
+        "actions_required": 22,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772828449.009,
+        "step": "SEAT_BRICK",
+        "actions_required": 39,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772828466.949,
+        "step": "ELEVATE_BRICK",
+        "actions_required": 19,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772828516.995,
+        "step": "FIND_WALL2",
+        "actions_required": 40,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772828539.985,
+        "step": "APPROACH_VECTOR_WALL",
+        "actions_required": 5,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772828561.4,
+        "step": "FIND_TOPMOST_BRICK_WALL",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772828660.732,
+        "step": "BRICK_LOCK_WALL",
+        "actions_required": 23,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772828859.409,
+        "step": "POSITION_BRICK",
+        "actions_required": 39,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772829364.311,
+        "step": "POSITION_BRICK",
+        "actions_required": 97,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772829413.314,
+        "step": "SEAT_BRICK2",
+        "actions_required": 27,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772829441.81,
+        "step": "RETREAT",
+        "actions_required": 11,
+        "source": "auto"
+      }
+    ]
+  },
+  "counts": {
+    "cancelled_steps_total": 4,
+    "cancelled_steps_by_step": {
+      "BRICK_LOCK": 1,
+      "POSITION_BRICK": 2,
+      "FIND_WALL": 1
+    },
+    "restarted_steps_total": 5,
+    "restarted_steps_auto_full_gatecheck_by_step": {
+      "BRICK_LOCK": 1,
+      "SEAT_BRICK2": 1,
+      "FIND_WALL": 3
+    },
+    "restarted_steps_manual_by_step": {}
+  },
+  "manual_hotkeys": {
+    "press_count_total": 60,
+    "press_count_by_hotkey": {
+      "p": 16,
+      "r": 14,
+      "e": 1,
+      "w": 2,
+      "l": 3,
+      "o": 14,
+      "f": 3,
+      "s": 3,
+      "q": 4
+    },
+    "press_count_by_command": {
+      "u": 30,
+      "f": 16,
+      "r": 1,
+      "d": 3,
+      "b": 6,
+      "l": 4
+    },
+    "press_details": [
+      {
+        "timestamp": 1772828133.633,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772828133.866,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772828323.402,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772828323.804,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772828324.273,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772828325.177,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772828325.85,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772828326.533,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828326.806,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828326.94,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828327.081,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828327.215,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828327.385,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828327.855,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828328.392,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772828329.497,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828329.631,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828329.799,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828329.966,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828330.1,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828330.234,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828330.402,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828330.469,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772828330.837,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772828331.246,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772828331.856,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772828333.7,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828333.868,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828334.002,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828334.145,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828334.279,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828334.413,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828334.547,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828334.748,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828334.881,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828335.016,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828335.15,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772828335.325,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772828335.788,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828335.99,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828336.191,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828336.325,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772828754.996,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772828755.673,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772828756.953,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772828759.302,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772829046.863,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772829048.137,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772829167.716,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772829168.92,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772829169.322,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772829169.523,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772829169.724,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772829487.569,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772829488.071,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772829488.539,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772829488.941,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772829489.309,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772829489.744,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772829490.218,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      }
+    ],
+    "edit_count_total": 0,
+    "edit_count_by_hotkey": {},
+    "edit_details": []
+  }
+}

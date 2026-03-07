@@ -14,9 +14,13 @@ class _DummyRobot:
         self.sent = []
         self._last_turn_cmd = None
         self.supports_timed_command_queue = bool(supports_timed_command_queue)
+        self.stop_calls = 0
 
     def send_command_pwm(self, cmd, pwm, duration_ms=0):
         self.sent.append((cmd, pwm, duration_ms))
+
+    def stop(self):
+        self.stop_calls += 1
 
 
 class _DummyWorld:
@@ -226,6 +230,46 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
         self.assertFalse(isinstance(meta.get("segments"), list))
         self.assertEqual(len(robot.sent), 1)
         self.assertNotIn("EASE(", str(getattr(world, "_last_action_sent_display", "")))
+
+    def test_repeated_identical_act_guard_blocks_51st_send(self):
+        world = _DummyWorld()
+        robot = _DummyRobot()
+        for _ in range(int(telemetry_process.MAX_CONSECUTIVE_IDENTICAL_ACTS)):
+            telemetry_process.send_robot_command(
+                robot,
+                world,
+                step="ALIGN_BRICK",
+                cmd="f",
+                speed=0.0,
+                speed_score=telemetry_robot.SPEED_SCORE_MIN,
+                auto_mode=True,
+            )
+        self.assertEqual(len(robot.sent), int(telemetry_process.MAX_CONSECUTIVE_IDENTICAL_ACTS))
+        with self.assertRaisesRegex(RuntimeError, r"\[SAFETY-FAIL\].*repeat 51 times"):
+            telemetry_process.send_robot_command(
+                robot,
+                world,
+                step="ALIGN_BRICK",
+                cmd="f",
+                speed=0.0,
+                speed_score=telemetry_robot.SPEED_SCORE_MIN,
+                auto_mode=True,
+            )
+        self.assertEqual(len(robot.sent), int(telemetry_process.MAX_CONSECUTIVE_IDENTICAL_ACTS))
+        self.assertGreaterEqual(robot.stop_calls, 1)
+
+        with self.assertRaisesRegex(RuntimeError, r"\[SAFETY-FAIL\]"):
+            telemetry_process.send_robot_command(
+                robot,
+                world,
+                step="ALIGN_BRICK",
+                cmd="l",
+                speed=0.0,
+                speed_score=telemetry_robot.SPEED_SCORE_MIN,
+                auto_mode=True,
+            )
+        self.assertEqual(len(robot.sent), int(telemetry_process.MAX_CONSECUTIVE_IDENTICAL_ACTS))
+        self.assertGreaterEqual(robot.stop_calls, 2)
 
 
 if __name__ == "__main__":

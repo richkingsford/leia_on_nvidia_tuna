@@ -38,11 +38,11 @@ class TestTelemetryProcessGatecheckFailureLogging(unittest.TestCase):
         text = telemetry_process._gatecheck_next_action_text(
             "r",
             speed_score=20,
-            reason="adaptive replay",
+            reason="replay",
         )
         self.assertIn("continuing with next act", text)
         self.assertIn("R 20%", text)
-        self.assertIn("adaptive replay", text)
+        self.assertIn("replay", text)
 
     def test_gatecheck_next_action_text_unknown_action(self):
         text = telemetry_process._gatecheck_next_action_text(

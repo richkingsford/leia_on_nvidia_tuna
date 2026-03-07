@@ -83,6 +83,85 @@ class TestTelemetryProcessNominalReplay(unittest.TestCase):
         self.assertEqual(calls.count("post"), 2)
         self.assertEqual(pauses, [telemetry_process.DEMO_ACTION_PAUSE_FRAMES])
 
+    def test_replay_startup_action_runs_before_start_ground_reset_when_deferred(self):
+        segment = {
+            "events": [
+                {"type": "action", "command": "left", "speedScore": 10},
+            ]
+        }
+        world = _DummyWorld()
+        world.process_rules = {
+            "FIND_WALL2": {
+                "controller": "replay",
+                "startup_action_exception": {
+                    "enabled": True,
+                    "command": "l",
+                    "score": 100,
+                    "acts": 3,
+                },
+                "start_ground_reset_exception": {
+                    "enabled": True,
+                    "run_after_startup_action": True,
+                },
+            }
+        }
+        world.brick = {"visible": True}
+        robot = _DummyRobot()
+        order = []
+
+        def _fake_wait_for_start_gates(*_args, **_kwargs):
+            order.append("wait_start_gates")
+            return "success"
+
+        def _fake_send_robot_command(*args, **_kwargs):
+            order.append(f"startup:{str(args[3])}")
+            return {}
+
+        def _fake_ground_reset(*_args, **_kwargs):
+            order.append("ground_reset")
+            return {"enabled": True, "success": True, "reason": "ground reset pass"}
+
+        def _fake_ground_up(*_args, **_kwargs):
+            order.append("ground_up")
+            return {"enabled": True, "handled": True, "success": True, "reason": "ok"}
+
+        orig_wait = telemetry_process.wait_for_start_gates
+        orig_send = telemetry_process.send_robot_command
+        orig_ground_reset = telemetry_process._run_start_ground_reset_exception
+        orig_ground_up = telemetry_process._run_ground_up_level2_exception
+        orig_post = telemetry_process.post_act_analysis
+        orig_sleep = telemetry_process.time.sleep
+        try:
+            telemetry_process.wait_for_start_gates = _fake_wait_for_start_gates
+            telemetry_process.send_robot_command = _fake_send_robot_command
+            telemetry_process._run_start_ground_reset_exception = _fake_ground_reset
+            telemetry_process._run_ground_up_level2_exception = _fake_ground_up
+            telemetry_process.post_act_analysis = lambda *_a, **_k: None
+            telemetry_process.time.sleep = lambda *_a, **_k: None
+
+            ok, reason = telemetry_process.replay_segment(
+                segment=segment,
+                step="FIND_WALL2",
+                robot=robot,
+                vision=object(),
+                world=world,
+                align_silent=True,
+            )
+        finally:
+            telemetry_process.wait_for_start_gates = orig_wait
+            telemetry_process.send_robot_command = orig_send
+            telemetry_process._run_start_ground_reset_exception = orig_ground_reset
+            telemetry_process._run_ground_up_level2_exception = orig_ground_up
+            telemetry_process.post_act_analysis = orig_post
+            telemetry_process.time.sleep = orig_sleep
+
+        self.assertTrue(ok)
+        self.assertEqual(reason, "ok")
+        startup_calls = [entry for entry in order if entry.startswith("startup:")]
+        self.assertEqual(len(startup_calls), 3)
+        self.assertIn("ground_reset", order)
+        self.assertLess(order.index(startup_calls[-1]), order.index("ground_reset"))
+
 
 if __name__ == "__main__":
     unittest.main()

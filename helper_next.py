@@ -1644,6 +1644,7 @@ def select_align_brick_next_act(
                 if (
                     str(k) not in excluded
                     and str(v.get("correction_type") or "").strip().lower() not in avoid_corr_set
+                    and float(v.get("ratio", 0.0) or 0.0) > ratio_eps
                     and (
                         not bool(enforce_y_near_ready)
                         or str(v.get("correction_type") or "").strip().lower() != "y_axis"
@@ -1872,7 +1873,7 @@ def select_align_brick_next_act(
                 picked = _pick_rotation_candidate(
                     excluded_types=set(avoid_corr_set),
                     include_recovery=True,
-                    require_outside=False,
+                    require_outside=True,
                     allow_reserved_y=True,
                 )
                 if picked is not None:

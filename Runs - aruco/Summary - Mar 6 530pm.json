@@ -1,0 +1,7035 @@
+{
+  "session": {
+    "started_at_ts": 1772830492.707,
+    "started_at_local": "2026-03-06 13:54:52",
+    "ended_at_ts": 1772843429.059,
+    "ended_at_local": "2026-03-06 17:30:29",
+    "duration_s": 12936.352,
+    "active_vision_mode": "aruco"
+  },
+  "run_logs": [
+    "/home/richkingsford/cub-queso/Runs - aruco/Mar 6 154pm.json"
+  ],
+  "step_completion_actions": {
+    "by_step": {
+      "ALIGN_BRICK": {
+        "count": 13,
+        "average_actions": 35.615,
+        "stddev_actions": 24.681,
+        "samples": [
+          15,
+          25,
+          26,
+          106,
+          22,
+          38,
+          41,
+          20,
+          51,
+          8,
+          13,
+          50,
+          48
+        ]
+      },
+      "APPROACH_VECTOR_BRICK_SUPPLY": {
+        "count": 7,
+        "average_actions": 13.571,
+        "stddev_actions": 18.07,
+        "samples": [
+          2,
+          39,
+          45,
+          2,
+          4,
+          2,
+          1
+        ]
+      },
+      "APPROACH_VECTOR_WALL": {
+        "count": 7,
+        "average_actions": 4.714,
+        "stddev_actions": 4.165,
+        "samples": [
+          2,
+          4,
+          6,
+          0,
+          11,
+          10,
+          0
+        ]
+      },
+      "BRICK_LOCK": {
+        "count": 6,
+        "average_actions": 49.0,
+        "stddev_actions": 22.716,
+        "samples": [
+          54,
+          22,
+          73,
+          58,
+          72,
+          15
+        ]
+      },
+      "BRICK_LOCK_WALL": {
+        "count": 11,
+        "average_actions": 22.182,
+        "stddev_actions": 18.085,
+        "samples": [
+          18,
+          25,
+          33,
+          72,
+          31,
+          10,
+          13,
+          10,
+          9,
+          19,
+          4
+        ]
+      },
+      "ELEVATE_BRICK": {
+        "count": 10,
+        "average_actions": 18.8,
+        "stddev_actions": 2.272,
+        "samples": [
+          19,
+          19,
+          19,
+          17,
+          18,
+          24,
+          21,
+          16,
+          19,
+          16
+        ]
+      },
+      "EXIT_WALL": {
+        "count": 7,
+        "average_actions": 9.857,
+        "stddev_actions": 0.639,
+        "samples": [
+          10,
+          10,
+          10,
+          9,
+          10,
+          11,
+          9
+        ]
+      },
+      "FIND_BRICK": {
+        "count": 8,
+        "average_actions": 31.875,
+        "stddev_actions": 8.343,
+        "samples": [
+          37,
+          31,
+          33,
+          26,
+          31,
+          27,
+          50,
+          20
+        ]
+      },
+      "FIND_TOPMOST_BRICK": {
+        "count": 10,
+        "average_actions": 0.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "FIND_TOPMOST_BRICK_WALL": {
+        "count": 12,
+        "average_actions": 0.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "FIND_WALL": {
+        "count": 4,
+        "average_actions": 4.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          4,
+          4,
+          4,
+          4
+        ]
+      },
+      "FIND_WALL2": {
+        "count": 3,
+        "average_actions": 33.667,
+        "stddev_actions": 13.888,
+        "samples": [
+          51,
+          17,
+          33
+        ]
+      },
+      "POSITION_BRICK": {
+        "count": 12,
+        "average_actions": 17.583,
+        "stddev_actions": 9.759,
+        "samples": [
+          17,
+          19,
+          24,
+          13,
+          8,
+          16,
+          37,
+          12,
+          13,
+          12,
+          36,
+          4
+        ]
+      },
+      "RETREAT": {
+        "count": 7,
+        "average_actions": 12.286,
+        "stddev_actions": 2.185,
+        "samples": [
+          12,
+          12,
+          11,
+          10,
+          10,
+          16,
+          15
+        ]
+      },
+      "SEAT_BRICK": {
+        "count": 9,
+        "average_actions": 35.556,
+        "stddev_actions": 19.317,
+        "samples": [
+          15,
+          16,
+          14,
+          37,
+          54,
+          55,
+          68,
+          19,
+          42
+        ]
+      },
+      "SEAT_BRICK2": {
+        "count": 8,
+        "average_actions": 24.5,
+        "stddev_actions": 6.782,
+        "samples": [
+          39,
+          17,
+          18,
+          26,
+          28,
+          26,
+          24,
+          18
+        ]
+      }
+    },
+    "records": [
+      {
+        "timestamp": 1772830505.561,
+        "step": "FIND_WALL",
+        "actions_required": 4,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772830521.721,
+        "step": "EXIT_WALL",
+        "actions_required": 10,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772830669.359,
+        "step": "FIND_BRICK",
+        "actions_required": 37,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772830685.158,
+        "step": "APPROACH_VECTOR_BRICK_SUPPLY",
+        "actions_required": 2,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772830716.742,
+        "step": "FIND_TOPMOST_BRICK",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772830880.755,
+        "step": "BRICK_LOCK",
+        "actions_required": 54,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772830927.111,
+        "step": "ALIGN_BRICK",
+        "actions_required": 15,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772830967.639,
+        "step": "SEAT_BRICK",
+        "actions_required": 15,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772830986.031,
+        "step": "ELEVATE_BRICK",
+        "actions_required": 19,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772831066.413,
+        "step": "FIND_WALL2",
+        "actions_required": 51,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772831082.272,
+        "step": "APPROACH_VECTOR_WALL",
+        "actions_required": 2,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772831203.41,
+        "step": "FIND_TOPMOST_BRICK_WALL",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772831302.838,
+        "step": "BRICK_LOCK_WALL",
+        "actions_required": 18,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772831345.572,
+        "step": "POSITION_BRICK",
+        "actions_required": 17,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772831559.499,
+        "step": "SEAT_BRICK2",
+        "actions_required": 39,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772831705.225,
+        "step": "EXIT_WALL",
+        "actions_required": 10,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772831828.977,
+        "step": "FIND_BRICK",
+        "actions_required": 31,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772831835.802,
+        "step": "APPROACH_VECTOR_BRICK_SUPPLY",
+        "actions_required": 39,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772831851.563,
+        "step": "FIND_TOPMOST_BRICK",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772831953.184,
+        "step": "BRICK_LOCK",
+        "actions_required": 22,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772832028.921,
+        "step": "ALIGN_BRICK",
+        "actions_required": 25,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772832069.641,
+        "step": "SEAT_BRICK",
+        "actions_required": 16,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772832089.12,
+        "step": "ELEVATE_BRICK",
+        "actions_required": 19,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772832127.637,
+        "step": "FIND_WALL2",
+        "actions_required": 17,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772832144.991,
+        "step": "APPROACH_VECTOR_WALL",
+        "actions_required": 4,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772832203.244,
+        "step": "FIND_TOPMOST_BRICK_WALL",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772832329.876,
+        "step": "BRICK_LOCK_WALL",
+        "actions_required": 25,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772832388.882,
+        "step": "POSITION_BRICK",
+        "actions_required": 19,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772832574.847,
+        "step": "EXIT_WALL",
+        "actions_required": 10,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772832687.664,
+        "step": "FIND_BRICK",
+        "actions_required": 33,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772832838.097,
+        "step": "APPROACH_VECTOR_BRICK_SUPPLY",
+        "actions_required": 45,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772832854.682,
+        "step": "FIND_TOPMOST_BRICK",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772832959.789,
+        "step": "FIND_TOPMOST_BRICK",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772833094.563,
+        "step": "ALIGN_BRICK",
+        "actions_required": 26,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772833124.317,
+        "step": "SEAT_BRICK",
+        "actions_required": 14,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772833143.051,
+        "step": "ELEVATE_BRICK",
+        "actions_required": 19,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772833219.27,
+        "step": "APPROACH_VECTOR_WALL",
+        "actions_required": 6,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772833237.941,
+        "step": "FIND_TOPMOST_BRICK_WALL",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772833414.098,
+        "step": "BRICK_LOCK_WALL",
+        "actions_required": 33,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772833520.261,
+        "step": "POSITION_BRICK",
+        "actions_required": 24,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772833566.925,
+        "step": "SEAT_BRICK2",
+        "actions_required": 17,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772833609.19,
+        "step": "RETREAT",
+        "actions_required": 12,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772833749.146,
+        "step": "FIND_BRICK",
+        "actions_required": 26,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772833762.708,
+        "step": "APPROACH_VECTOR_BRICK_SUPPLY",
+        "actions_required": 2,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772833802.952,
+        "step": "FIND_TOPMOST_BRICK",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772833956.339,
+        "step": "BRICK_LOCK",
+        "actions_required": 73,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772834169.903,
+        "step": "ALIGN_BRICK",
+        "actions_required": 106,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772834244.873,
+        "step": "SEAT_BRICK",
+        "actions_required": 37,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772834263.029,
+        "step": "ELEVATE_BRICK",
+        "actions_required": 17,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772834354.769,
+        "step": "APPROACH_VECTOR_WALL",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772834407.398,
+        "step": "FIND_TOPMOST_BRICK_WALL",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772834666.534,
+        "step": "BRICK_LOCK_WALL",
+        "actions_required": 72,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772834710.442,
+        "step": "POSITION_BRICK",
+        "actions_required": 13,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772834760.622,
+        "step": "SEAT_BRICK2",
+        "actions_required": 18,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772834798.261,
+        "step": "RETREAT",
+        "actions_required": 12,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772834994.34,
+        "step": "FIND_BRICK",
+        "actions_required": 31,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772835015.378,
+        "step": "APPROACH_VECTOR_BRICK_SUPPLY",
+        "actions_required": 4,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772835053.235,
+        "step": "FIND_TOPMOST_BRICK",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772835203.389,
+        "step": "BRICK_LOCK",
+        "actions_required": 58,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772835260.704,
+        "step": "ALIGN_BRICK",
+        "actions_required": 22,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772835379.085,
+        "step": "SEAT_BRICK",
+        "actions_required": 54,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772835398.487,
+        "step": "ELEVATE_BRICK",
+        "actions_required": 18,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772835533.519,
+        "step": "APPROACH_VECTOR_WALL",
+        "actions_required": 11,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772835599.305,
+        "step": "FIND_TOPMOST_BRICK_WALL",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772835731.513,
+        "step": "BRICK_LOCK_WALL",
+        "actions_required": 31,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772835759.938,
+        "step": "POSITION_BRICK",
+        "actions_required": 8,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772836104.311,
+        "step": "POSITION_BRICK",
+        "actions_required": 16,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772836172.784,
+        "step": "SEAT_BRICK2",
+        "actions_required": 26,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772836213.457,
+        "step": "RETREAT",
+        "actions_required": 11,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772836481.722,
+        "step": "FIND_BRICK",
+        "actions_required": 27,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772836496.609,
+        "step": "APPROACH_VECTOR_BRICK_SUPPLY",
+        "actions_required": 2,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772836515.159,
+        "step": "FIND_TOPMOST_BRICK",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772836672.873,
+        "step": "FIND_TOPMOST_BRICK_WALL",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772836736.069,
+        "step": "BRICK_LOCK_WALL",
+        "actions_required": 10,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772836827.511,
+        "step": "POSITION_BRICK",
+        "actions_required": 37,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772837352.122,
+        "step": "ALIGN_BRICK",
+        "actions_required": 38,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772838093.723,
+        "step": "ALIGN_BRICK",
+        "actions_required": 41,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772838247.01,
+        "step": "ELEVATE_BRICK",
+        "actions_required": 24,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772838429.584,
+        "step": "FIND_TOPMOST_BRICK_WALL",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772838516.952,
+        "step": "BRICK_LOCK_WALL",
+        "actions_required": 13,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772839125.231,
+        "step": "EXIT_WALL",
+        "actions_required": 9,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772839233.495,
+        "step": "FIND_BRICK",
+        "actions_required": 50,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772839243.63,
+        "step": "APPROACH_VECTOR_BRICK_SUPPLY",
+        "actions_required": 1,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772839261.584,
+        "step": "FIND_TOPMOST_BRICK",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772839410.285,
+        "step": "BRICK_LOCK",
+        "actions_required": 72,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772839458.844,
+        "step": "ALIGN_BRICK",
+        "actions_required": 20,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772839649.768,
+        "step": "ALIGN_BRICK",
+        "actions_required": 51,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772839851.633,
+        "step": "ALIGN_BRICK",
+        "actions_required": 8,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772839946.316,
+        "step": "SEAT_BRICK",
+        "actions_required": 55,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772839968.111,
+        "step": "ELEVATE_BRICK",
+        "actions_required": 21,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772840091.654,
+        "step": "FIND_TOPMOST_BRICK_WALL",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772840209.447,
+        "step": "FIND_TOPMOST_BRICK_WALL",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772840293.401,
+        "step": "BRICK_LOCK_WALL",
+        "actions_required": 10,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772840331.25,
+        "step": "POSITION_BRICK",
+        "actions_required": 12,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772840393.208,
+        "step": "SEAT_BRICK2",
+        "actions_required": 28,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772840429.578,
+        "step": "RETREAT",
+        "actions_required": 10,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772840505.661,
+        "step": "FIND_TOPMOST_BRICK",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772840543.971,
+        "step": "BRICK_LOCK",
+        "actions_required": 15,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772840569.677,
+        "step": "ALIGN_BRICK",
+        "actions_required": 13,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772840673.498,
+        "step": "SEAT_BRICK",
+        "actions_required": 68,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772840691.997,
+        "step": "ELEVATE_BRICK",
+        "actions_required": 16,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772840758.475,
+        "step": "FIND_WALL2",
+        "actions_required": 33,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772840812.618,
+        "step": "APPROACH_VECTOR_WALL",
+        "actions_required": 10,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772840827.927,
+        "step": "FIND_TOPMOST_BRICK_WALL",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772840886.954,
+        "step": "BRICK_LOCK_WALL",
+        "actions_required": 9,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772840933.476,
+        "step": "POSITION_BRICK",
+        "actions_required": 13,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772840974.668,
+        "step": "POSITION_BRICK",
+        "actions_required": 12,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772841026.266,
+        "step": "SEAT_BRICK2",
+        "actions_required": 26,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772841056.594,
+        "step": "RETREAT",
+        "actions_required": 10,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772841081.008,
+        "step": "FIND_WALL",
+        "actions_required": 4,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772841098.826,
+        "step": "EXIT_WALL",
+        "actions_required": 10,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772841470.663,
+        "step": "FIND_TOPMOST_BRICK",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772841865.234,
+        "step": "ALIGN_BRICK",
+        "actions_required": 50,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772841926.573,
+        "step": "SEAT_BRICK",
+        "actions_required": 19,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772841946.949,
+        "step": "ELEVATE_BRICK",
+        "actions_required": 19,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772842045.106,
+        "step": "APPROACH_VECTOR_WALL",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772842082.445,
+        "step": "FIND_TOPMOST_BRICK_WALL",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772842159.632,
+        "step": "BRICK_LOCK_WALL",
+        "actions_required": 19,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772842239.871,
+        "step": "POSITION_BRICK",
+        "actions_required": 36,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772842451.636,
+        "step": "SEAT_BRICK2",
+        "actions_required": 24,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772842495.489,
+        "step": "RETREAT",
+        "actions_required": 16,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772842527.578,
+        "step": "FIND_WALL",
+        "actions_required": 4,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772842545.368,
+        "step": "EXIT_WALL",
+        "actions_required": 11,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772842622.767,
+        "step": "FIND_BRICK",
+        "actions_required": 20,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772842928.024,
+        "step": "ALIGN_BRICK",
+        "actions_required": 48,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772843039.566,
+        "step": "SEAT_BRICK",
+        "actions_required": 42,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772843059.402,
+        "step": "ELEVATE_BRICK",
+        "actions_required": 16,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772843184.695,
+        "step": "FIND_TOPMOST_BRICK_WALL",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772843240.416,
+        "step": "BRICK_LOCK_WALL",
+        "actions_required": 4,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772843278.926,
+        "step": "POSITION_BRICK",
+        "actions_required": 4,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772843322.091,
+        "step": "SEAT_BRICK2",
+        "actions_required": 18,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772843363.82,
+        "step": "RETREAT",
+        "actions_required": 15,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772843396.288,
+        "step": "FIND_WALL",
+        "actions_required": 4,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772843414.638,
+        "step": "EXIT_WALL",
+        "actions_required": 9,
+        "source": "auto"
+      }
+    ]
+  },
+  "counts": {
+    "cancelled_steps_total": 31,
+    "cancelled_steps_by_step": {
+      "RETREAT": 1,
+      "FIND_WALL": 4,
+      "FIND_TOPMOST_BRICK_WALL": 1,
+      "SEAT_BRICK2": 3,
+      "BRICK_LOCK": 4,
+      "FIND_WALL2": 7,
+      "POSITION_BRICK": 3,
+      "SEAT_BRICK": 5,
+      "FIND_BRICK": 2,
+      "APPROACH_VECTOR_BRICK_SUPPLY": 1
+    },
+    "restarted_steps_total": 35,
+    "restarted_steps_auto_full_gatecheck_by_step": {
+      "FIND_TOPMOST_BRICK_WALL": 1,
+      "BRICK_LOCK_WALL": 6,
+      "SEAT_BRICK2": 3,
+      "FIND_WALL": 23,
+      "BRICK_LOCK": 1,
+      "POSITION_BRICK": 1
+    },
+    "restarted_steps_manual_by_step": {}
+  },
+  "manual_hotkeys": {
+    "press_count_total": 985,
+    "press_count_by_hotkey": {
+      "k": 70,
+      "r": 164,
+      "f": 36,
+      "s": 63,
+      "p": 252,
+      "l": 24,
+      "w": 36,
+      "q": 61,
+      "a": 67,
+      "e": 46,
+      "d": 137,
+      "c": 2,
+      "o": 27
+    },
+    "press_count_by_command": {
+      "d": 94,
+      "f": 200,
+      "b": 99,
+      "u": 279,
+      "l": 128,
+      "r": 185
+    },
+    "press_details": [
+      {
+        "timestamp": 1772831575.629,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831575.997,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831576.534,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831576.802,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831577.106,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831577.407,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831577.775,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831579.415,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831580.286,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772831581.19,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831581.391,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831581.592,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831581.793,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831581.961,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831582.095,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831582.262,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831582.429,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831582.596,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831582.797,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831582.898,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831583.068,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831583.233,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831583.401,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831583.534,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831583.702,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831583.87,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831584.003,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831584.171,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831584.304,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831584.473,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831584.606,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831584.776,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831585.388,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772831586.019,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831586.521,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831586.723,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831586.891,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772831592.786,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772831592.988,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772831593.155,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772831593.323,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772831593.959,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772831594.461,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772831595.799,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772831634.761,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772831675.734,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772831676.268,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772831676.669,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772831677.105,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832178.435,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832178.937,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832180.107,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832180.509,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832180.977,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832453.998,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832454.466,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832454.968,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832455.369,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832455.805,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832456.273,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832456.909,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772832457.678,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772832458.382,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772832458.917,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832460.155,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772832460.924,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772832461.693,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772832462.429,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772832463.133,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772832463.873,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772832465.177,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772832477.585,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832477.853,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832478.053,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832478.254,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832478.421,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832478.555,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832478.722,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832478.957,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832479.057,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832479.324,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832479.424,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832479.625,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832479.759,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832479.894,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832480.062,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832480.195,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832899.438,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772832900.309,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772832901.079,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772832901.784,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772832902.653,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772832903.29,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832903.861,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832904.06,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832904.395,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832904.462,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832904.662,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832904.897,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832904.998,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832905.132,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832905.266,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832905.433,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832905.534,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832905.668,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832906.036,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832906.103,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832906.27,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832906.404,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832906.572,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832906.706,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832906.873,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832907.04,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832907.175,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832907.45,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772832907.979,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832908.286,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832908.418,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832908.586,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832908.72,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832908.854,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832908.988,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832909.189,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832909.322,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832909.49,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832909.624,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832909.826,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832909.993,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832910.159,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832910.495,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832910.662,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832910.898,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832911.5,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832911.835,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832912.069,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832912.236,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832912.538,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832912.74,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832913.14,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832913.477,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832913.745,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832914.079,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832914.35,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832914.783,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832915.252,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832915.72,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832916.255,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832916.69,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832917.16,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832917.628,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832918.13,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832918.598,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832919.068,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832919.536,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832919.975,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832920.376,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832920.777,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832922.048,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772832923.821,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832924.691,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832924.891,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832925.059,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832925.192,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832925.326,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772832925.46,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772833045.178,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772833172.573,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833173.141,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833173.777,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833174.58,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833175.315,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833176.487,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833177.423,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833178.427,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833179.832,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833180.267,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833181.004,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833181.443,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833182.348,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833183.05,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833183.351,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833183.719,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833183.953,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833184.69,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833185.359,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833185.827,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772833186.295,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772833186.463,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772833186.597,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772833186.763,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772833186.931,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772833187.065,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772833187.232,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772833443.35,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772833443.884,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772833444.385,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772833444.819,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772833631.368,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772833631.735,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772833632.137,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772833632.571,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772833634.615,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833636.189,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833637.259,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833637.493,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833637.76,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833638.095,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833638.33,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833638.664,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833638.898,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833639.265,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833639.433,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833639.633,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833640.034,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833640.235,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833640.536,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833640.703,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833640.871,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772833641.038,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834315.791,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834315.958,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834316.126,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834316.327,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834316.494,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834316.661,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834316.862,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834317.029,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834317.196,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834317.397,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834317.598,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834317.764,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834317.965,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834318.132,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834318.333,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834318.534,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834318.735,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834318.936,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834319.069,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834319.237,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834320.34,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834321.009,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834321.879,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834322.684,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834323.42,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834324.156,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834324.925,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834325.895,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834326.698,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834327.065,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834327.265,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834327.433,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834327.6,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834328.136,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834329.006,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834329.575,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834331.015,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772834331.684,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834862.384,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834862.752,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834863.121,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834863.558,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834863.893,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834864.16,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834864.687,
+        "hotkey": "c",
+        "command": "r",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834865.086,
+        "hotkey": "c",
+        "command": "r",
+        "score": 100
+      },
+      {
+        "timestamp": 1772834865.461,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834865.661,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834865.929,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834866.13,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834866.297,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834866.43,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834866.598,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834866.732,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834866.966,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834867.268,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834868.204,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834868.472,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834868.673,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834868.842,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834869.042,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834869.276,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772834869.978,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772835457.249,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835457.483,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835457.717,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835457.888,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835458.123,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835458.323,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835458.524,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835458.725,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835458.959,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835459.159,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835459.36,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835459.567,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835459.768,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835460.002,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835460.209,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835460.476,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835460.677,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835460.879,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835461.045,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835461.248,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835461.419,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835461.62,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835461.821,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835462.023,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835462.189,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835462.391,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835462.558,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835462.725,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835462.86,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835463.068,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772835463.57,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772835464.272,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772835465.009,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772835466.146,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836040.917,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836041.051,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836041.787,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836042.155,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836042.324,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836042.524,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836043.093,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836043.328,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836043.495,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836043.662,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836044.23,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836044.866,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836045.635,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836047.207,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836047.374,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836047.575,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836047.709,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836047.876,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836368.29,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772836368.725,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772836369.233,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772836370.708,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836371.076,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836371.578,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836371.811,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836371.979,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836372.146,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836372.314,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836372.447,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836372.615,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836372.782,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836372.949,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836373.121,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836373.289,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836373.423,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836373.557,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836631.927,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836632.635,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836633.405,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836634.276,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836972.781,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836973.684,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836976.7,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772836977.135,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772836977.536,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772836978.174,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772836978.575,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836978.742,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836978.877,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836979.043,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836979.177,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836979.344,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836979.478,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836979.679,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836979.813,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836979.98,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836980.147,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836980.314,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836980.448,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836980.582,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836980.851,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772836981.252,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836981.453,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836982.558,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772836983.861,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836985.166,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836985.772,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772836986.808,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772837241.899,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772837242.173,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772837242.374,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838196.535,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838196.936,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838197.204,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838197.505,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838197.739,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838198.074,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838198.308,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838198.483,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838198.643,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838198.777,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838198.91,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838199.077,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838199.245,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838199.446,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838199.613,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838199.814,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838199.981,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838200.148,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838201.391,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838201.592,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838201.76,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838201.933,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838202.095,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838202.229,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838202.43,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838202.564,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838202.731,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838202.898,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838203.166,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772838204.069,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838204.437,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838204.604,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838204.771,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838204.905,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838205.072,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838205.24,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838205.441,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838205.942,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838206.344,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838206.578,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838206.779,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838206.946,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838207.081,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838207.248,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838207.382,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838207.549,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838207.683,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838207.816,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838207.983,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838208.217,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838208.385,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838208.519,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838208.652,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838208.819,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838208.954,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838209.087,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838209.255,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838209.389,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838209.557,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838209.724,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838209.858,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838210.025,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838210.159,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838210.695,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838210.828,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838210.961,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838211.129,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838211.71,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838212.244,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838213.08,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838214.619,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838214.853,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838215.02,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838215.155,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838215.321,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838215.489,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772838215.723,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838215.923,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838216.124,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838216.292,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838216.493,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772838216.894,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838217.095,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838217.23,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838217.398,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838217.565,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838217.699,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838218.0,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838218.334,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838307.308,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838307.542,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838307.742,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838307.909,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838308.11,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838308.277,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838308.478,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838308.946,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838309.182,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838309.347,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838309.514,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838309.715,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838309.916,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838310.083,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838310.284,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838310.485,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838310.652,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838310.819,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838311.02,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838311.154,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838311.355,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838311.556,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838311.723,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838311.924,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838312.091,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772838314.232,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838320.284,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838321.02,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838321.589,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838322.291,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838323.064,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838323.834,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838324.737,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838325.44,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838325.874,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838326.377,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838339.425,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838340.262,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838340.666,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838341.133,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838341.234,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838341.769,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838342.771,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838343.239,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838343.44,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838343.607,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838343.775,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838343.976,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838344.41,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838346.587,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838346.754,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838346.921,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838347.055,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838347.189,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838347.324,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838347.492,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838347.826,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838348.73,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838349.667,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838349.867,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838350.001,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838350.135,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838350.371,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838350.537,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838350.704,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838350.838,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838351.073,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838351.24,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838351.407,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838351.542,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838352.01,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838980.773,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772838981.408,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772838981.675,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772838982.512,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772838983.716,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772838984.687,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838985.123,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772838985.291,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839076.215,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839076.784,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839077.625,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839078.226,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839078.996,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839079.564,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839080.172,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839080.774,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839083.698,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839083.902,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839084.067,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839084.234,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839084.402,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839084.569,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839084.703,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839084.837,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839084.971,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839085.138,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839085.306,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839085.44,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839085.54,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839085.674,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839085.842,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839085.975,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839086.146,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839086.344,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839086.512,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839086.679,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839086.847,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839087.014,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839087.181,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839087.55,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772839088.052,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772839088.761,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772839089.362,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772839089.868,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772839097.984,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772839099.59,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772839100.528,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772839102.067,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839102.201,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839102.369,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839102.502,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839102.636,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839102.773,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839102.904,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839103.041,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839103.172,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839103.339,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839103.44,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839103.607,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839103.712,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839103.879,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839104.013,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839104.114,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839104.214,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839104.381,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839104.515,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839104.682,
+        "hotkey": "o",
+        "command": "u",
+        "score": 1
+      },
+      {
+        "timestamp": 1772839105.151,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772839105.722,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772839106.762,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772839108.034,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772839109.276,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772839110.012,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772839110.547,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772839111.187,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772839815.519,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772839816.058,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772839816.459,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840031.308,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840031.876,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840032.11,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840032.277,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840032.478,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840032.679,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840032.879,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840033.114,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840033.314,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840033.515,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840033.682,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840033.883,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840034.049,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840034.251,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840034.451,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840034.653,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840034.854,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840035.055,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840035.256,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840035.456,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840035.691,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840035.958,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840036.301,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840036.536,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840036.769,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840037.037,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840037.405,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840037.639,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840037.873,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840038.608,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840039.277,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840039.979,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840041.017,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840041.953,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840042.187,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840042.355,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840042.522,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840042.857,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840042.99,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840043.157,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840043.325,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840044.53,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840044.965,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840045.332,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840045.77,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840046.005,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840046.272,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840046.54,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840046.975,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840047.209,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840047.477,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840047.645,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840047.845,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840048.514,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840049.15,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840049.586,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840049.888,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840050.156,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840050.56,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840050.692,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840051.23,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840447.68,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840448.182,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840448.584,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840449.018,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840449.453,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840449.922,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840450.859,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840451.395,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840451.663,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840451.865,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840452.031,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840452.165,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840452.368,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840452.636,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840452.838,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840453.004,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840453.406,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840453.606,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840453.773,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840455.547,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840455.748,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840455.915,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840456.115,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840456.282,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840456.65,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840456.818,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840456.985,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840457.086,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840457.287,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840457.522,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840457.722,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840458.057,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840458.19,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840458.425,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840458.626,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840458.827,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840458.993,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840459.228,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840459.429,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840459.666,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840459.867,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840460.301,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840460.402,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840460.669,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840460.805,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840460.972,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840461.14,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840461.306,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840461.474,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840461.742,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840461.944,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840462.111,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840462.245,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840462.613,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840463.116,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840463.785,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840464.153,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840464.354,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840464.622,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772840933.613,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840933.982,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840934.316,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772840934.718,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841279.587,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841279.988,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841280.29,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841280.49,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841280.694,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841280.862,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841281.028,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841281.196,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841281.33,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841281.464,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841281.632,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841281.801,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841281.968,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841282.101,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841282.269,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841282.436,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841282.604,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841282.771,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841282.939,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841283.173,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841283.341,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841283.475,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841283.71,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841283.877,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841284.279,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841285.183,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841286.12,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841286.555,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841286.722,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841287.225,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841287.662,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841288.199,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841289.237,
+        "hotkey": "d",
+        "command": "r",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841507.27,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841507.469,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841507.67,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841507.871,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841508.038,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841508.206,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841508.372,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841508.54,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841508.707,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841508.874,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841509.042,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841509.209,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841509.376,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841509.544,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841509.744,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841509.911,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841510.112,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841510.279,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841510.446,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841510.647,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841510.815,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841510.983,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841511.15,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841511.317,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841511.519,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841511.686,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841511.887,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841512.054,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841512.221,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841512.422,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841512.589,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841512.79,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841512.99,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841513.191,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841513.392,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841513.56,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841513.76,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841513.961,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841514.095,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841514.295,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841514.596,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841514.797,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841514.965,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841515.098,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841515.433,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841515.801,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841515.968,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841516.136,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841516.504,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841516.704,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841516.905,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841517.073,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841517.509,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841517.709,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841517.91,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841518.077,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841518.277,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841518.579,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841518.913,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772841759.983,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841760.485,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841761.121,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841761.759,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841763.24,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772841764.752,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841765.12,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841765.355,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841765.592,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841765.76,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841765.927,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841766.029,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841766.23,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841766.398,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841766.734,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841766.934,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841767.072,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841767.235,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841767.373,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841879.07,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841879.472,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841879.672,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841880.043,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841880.719,
+        "hotkey": "f",
+        "command": "b",
+        "score": 10
+      },
+      {
+        "timestamp": 1772841881.757,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841882.593,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841883.195,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841884.57,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772841885.038,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842006.495,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842006.896,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842007.331,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842007.732,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842008.201,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842008.669,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842009.136,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842009.572,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842010.073,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842010.507,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842011.009,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842011.447,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842011.882,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842012.32,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842012.787,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842013.29,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842013.825,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842014.327,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772842015.431,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772842016.301,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772842017.17,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772842017.873,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772842018.375,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772842018.575,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772842019.077,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772842020.147,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772842020.95,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772842021.821,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772842022.422,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772842023.125,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772842023.829,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772842024.966,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842025.17,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842025.337,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842025.471,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842025.605,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842025.839,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772842026.275,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842026.476,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842026.643,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842026.81,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842027.011,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842027.212,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772842027.747,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772842028.216,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842028.45,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842028.651,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842028.784,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842028.952,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842029.086,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842029.219,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842029.353,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842029.587,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772842030.155,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772842030.958,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842031.158,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842031.327,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842031.496,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842031.663,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842031.797,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842031.964,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842032.132,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842032.298,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842786.689,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842787.057,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842787.492,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842787.763,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842788.129,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842788.431,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842788.766,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842790.339,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842790.54,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842790.707,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842790.907,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842791.042,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842791.142,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842791.309,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842791.443,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842791.61,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842791.71,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842791.91,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842792.077,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842792.211,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842792.379,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842792.546,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842792.713,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842792.914,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772842793.114,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842793.315,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842793.482,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842793.649,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842793.783,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842793.95,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842794.151,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772842794.251,
+        "hotkey": "r",
+        "command": "f",
+        "score": 1
+      },
+      {
+        "timestamp": 1772843092.408,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772843093.179,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772843094.152,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772843094.823,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772843095.592,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772843096.329,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772843096.564,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772843096.731,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772843096.865,
+        "hotkey": "q",
+        "command": "l",
+        "score": 1
+      },
+      {
+        "timestamp": 1772843097.1,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772843097.568,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772843098.103,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772843098.472,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772843098.941,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772843099.61,
+        "hotkey": "a",
+        "command": "l",
+        "score": 50
+      },
+      {
+        "timestamp": 1772843100.346,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      },
+      {
+        "timestamp": 1772843101.384,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772843101.585,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772843101.752,
+        "hotkey": "e",
+        "command": "r",
+        "score": 1
+      },
+      {
+        "timestamp": 1772843102.087,
+        "hotkey": "w",
+        "command": "f",
+        "score": 50
+      }
+    ],
+    "edit_count_total": 0,
+    "edit_count_by_hotkey": {},
+    "edit_details": []
+  }
+}

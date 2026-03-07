@@ -502,7 +502,7 @@ class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
         self.assertEqual(plan.get("correction_type"), "y_axis", plan)
         self.assertIn(plan.get("cmd"), ("u", "d"), plan)
 
-    def test_gap_planner_recovery_disqualify_switches_from_y_axis_to_distance(self):
+    def test_gap_planner_recovery_disqualify_never_uses_in_gate_distance(self):
         process_rules = {
             "SEAT_BRICK2": {
                 "success_gates": {
@@ -525,7 +525,7 @@ class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
                 step="SEAT_BRICK2",
                 x_axis_mm=0.0,
                 y_axis_mm=8.0,          # y is clearly outside gate
-                dist_mm=49.0,           # in gate, but above target so fallback can move forward
+                dist_mm=49.0,           # in gate; must not be selected as fallback correction
                 visible=True,
                 angle_deg=0.0,
                 duration_s=0.05,
@@ -535,9 +535,7 @@ class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
             helper_next.compute_alignment_decision = orig
 
         self.assertEqual(plan.get("planner"), "gap", plan)
-        self.assertEqual(plan.get("correction_type"), "distance", plan)
-        self.assertEqual(plan.get("cmd"), "f", plan)
-        self.assertTrue(bool(plan.get("rotation_override")), plan)
+        self.assertNotEqual(plan.get("correction_type"), "distance", plan)
 
     def test_gap_planner_recovery_disqualify_list_avoids_multiple_types(self):
         process_rules = {

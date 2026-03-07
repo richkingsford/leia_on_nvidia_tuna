@@ -102,6 +102,52 @@ class _DummyPostMastWorld:
         return None
 
 
+class _DummyNearDistVisibilityWorld:
+    def __init__(self, *, max_attempts=3):
+        self.process_rules = {
+            "SEAT_BRICK2": {
+                "start_gates": {
+                    "visible": {"min": True},
+                },
+                "success_gates": {
+                    "visible": {"min": True},
+                    "x_axis": {"target": 0.0, "tol": 1.0},
+                    "y_axis": {"target": 1.0, "tol": 2.5},
+                    "dist": {"target": 48.0, "tol": 4.0},
+                },
+                "near_dist_visibility_mast_exception": {
+                    "enabled": True,
+                    "operator_log_reminder": "Exception active: near-dist rescue.",
+                    "command": "d",
+                    "score": 1,
+                    "max_attempts": int(max_attempts),
+                    "near_gate_ratio_max": 0.2,
+                    "continuous_until_visible": True,
+                    "hard_fail_on_exhausted_attempts": True,
+                    "observe_s": 0.1,
+                },
+            }
+        }
+        self.learned_rules = {}
+        self.wall_envelope = None
+        self.brick = {
+            "visible": True,
+            "dist": 48.6,
+            "angle": 0.0,
+            "offset_x": 0.0,
+            "x_axis": 0.0,
+            "y_axis": 1.0,
+            "confidence": 95.0,
+        }
+        self._frame_id = 0
+        self._success_confirm_frames = 0
+        self._success_confirm_progress = None
+        self._success_confirm_logged = False
+
+    def update_from_motion(self, _evt):
+        return None
+
+
 class TestSeatBrick2YAxisHoldException(unittest.TestCase):
     def test_y_axis_hold_offset_applies_then_releases_for_end_phase(self):
         world = _DummyWorld()
@@ -195,6 +241,7 @@ class TestSeatBrick2YAxisHoldException(unittest.TestCase):
         world = _DummyPostMastWorld()
         robot = _DummyRobot()
         sent = []
+        auto_modes = []
 
         def _fake_update_world(_world, _vision, log=True):
             _ = log
@@ -203,6 +250,7 @@ class TestSeatBrick2YAxisHoldException(unittest.TestCase):
 
         def _fake_send_robot_command(_robot, _world, _step, cmd, *_args, **kwargs):
             speed_score = kwargs.get("speed_score")
+            auto_modes.append(bool(kwargs.get("auto_mode")))
             sent.append((str(cmd), int(speed_score) if speed_score is not None else None))
             return {
                 "cmd_sent": str(cmd),
@@ -239,6 +287,160 @@ class TestSeatBrick2YAxisHoldException(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(reason, "success gate")
         self.assertEqual(sent, [("d", 10)] * 10)
+        self.assertEqual(auto_modes, [False] * 10)
+
+
+class TestSeatBrick2NearDistVisibilityException(unittest.TestCase):
+    def test_near_dist_visibility_rescue_retries_immediately_until_recovered(self):
+        world = _DummyNearDistVisibilityWorld(max_attempts=3)
+        robot = _DummyRobot()
+        sent_cmds = []
+        gate_calls = {"n": 0}
+        update_calls = {"n": 0}
+        clock = {"t": 0.0}
+
+        def _fake_time():
+            clock["t"] += 0.05
+            return float(clock["t"])
+
+        def _fake_update_world(_world, _vision, log=True):
+            _ = log
+            update_calls["n"] += 1
+            call_idx = int(update_calls["n"])
+            # call 1: main loop visible (arms gap planner)
+            # call 2: main loop invisible (triggers near-dist rescue)
+            # calls 3-4: observe attempt 1 still invisible
+            # call 5+: observe attempt 2 visible => recovered
+            if call_idx == 1:
+                _world.brick["visible"] = True
+                _world.brick["dist"] = 48.6
+            elif call_idx <= 4:
+                _world.brick["visible"] = False
+                _world.brick["dist"] = 48.5
+            else:
+                _world.brick["visible"] = True
+                _world.brick["dist"] = 48.2
+            _world._frame_id = int(getattr(_world, "_frame_id", 0)) + 1
+
+        def _fake_observe_success_gatecheck(*_args, **_kwargs):
+            gate_calls["n"] += 1
+            if gate_calls["n"] >= 3:
+                return {"success_met": True, "hold_for_confirm": False}
+            return {"success_met": False, "hold_for_confirm": False}
+
+        def _fake_send_robot_command(_robot, _world, _step, cmd, *_args, **kwargs):
+            sent_cmds.append((str(cmd), int(kwargs.get("speed_score") or 0)))
+            return {
+                "cmd_sent": str(cmd),
+                "score_effective": kwargs.get("speed_score"),
+                "power": 0.0,
+                "pwm": 0,
+                "duration_ms": 10,
+            }
+
+        with patch.object(telemetry_process, "wait_for_start_gates", return_value="start"), \
+             patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world), \
+             patch.object(telemetry_process, "observe_success_gatecheck", side_effect=_fake_observe_success_gatecheck), \
+             patch.object(
+                 telemetry_process.next_module,
+                 "select_alignment_next_act",
+                 return_value={"planner": "gap", "cmd": None, "speed": 0.0, "reason": "all_gaps_within_gate", "score": None},
+             ), \
+             patch.object(telemetry_process, "run_full_gatecheck_after_act", return_value=False), \
+             patch.object(telemetry_process, "send_robot_command", side_effect=_fake_send_robot_command), \
+             patch.object(telemetry_process, "ALIGN_RECOVERY_LOST_VISIBLE_FRAMES", 1), \
+             patch.object(telemetry_process, "ALIGN_RECOVERY_LOST_VISIBLE_MIN_S", 0.0), \
+             patch.object(telemetry_process.telemetry_brick, "success_gate_bounds", return_value={}), \
+             patch.object(telemetry_process.time, "time", side_effect=_fake_time), \
+             patch.object(telemetry_process.time, "sleep", return_value=None):
+            ok, reason = telemetry_process.run_alignment_segment(
+                segment={"events": []},
+                step="SEAT_BRICK2",
+                robot=robot,
+                vision=object(),
+                world=world,
+                steps=[],
+                raw_steps=[],
+                observer=None,
+                analysis_pause_s=0.0,
+                confirm_callback=None,
+                align_silent=True,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(reason, "success gate")
+        self.assertEqual(sent_cmds, [("d", 1), ("d", 1)])
+
+    def test_near_dist_visibility_rescue_hard_fails_when_exhausted(self):
+        world = _DummyNearDistVisibilityWorld(max_attempts=2)
+        robot = _DummyRobot()
+        sent_cmds = []
+        update_calls = {"n": 0}
+        clock = {"t": 0.0}
+
+        def _fake_time():
+            clock["t"] += 0.05
+            return float(clock["t"])
+
+        def _fake_update_world(_world, _vision, log=True):
+            _ = log
+            update_calls["n"] += 1
+            call_idx = int(update_calls["n"])
+            if call_idx == 1:
+                _world.brick["visible"] = True
+                _world.brick["dist"] = 48.6
+            else:
+                _world.brick["visible"] = False
+                _world.brick["dist"] = 48.6
+            _world._frame_id = int(getattr(_world, "_frame_id", 0)) + 1
+
+        def _fake_send_robot_command(_robot, _world, _step, cmd, *_args, **kwargs):
+            sent_cmds.append((str(cmd), int(kwargs.get("speed_score") or 0)))
+            return {
+                "cmd_sent": str(cmd),
+                "score_effective": kwargs.get("speed_score"),
+                "power": 0.0,
+                "pwm": 0,
+                "duration_ms": 10,
+            }
+
+        with patch.object(telemetry_process, "wait_for_start_gates", return_value="start"), \
+             patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world), \
+             patch.object(
+                 telemetry_process,
+                 "observe_success_gatecheck",
+                 return_value={"success_met": False, "hold_for_confirm": False},
+             ), \
+             patch.object(
+                 telemetry_process.next_module,
+                 "select_alignment_next_act",
+                 return_value={"planner": "gap", "cmd": None, "speed": 0.0, "reason": "all_gaps_within_gate", "score": None},
+             ), \
+             patch.object(telemetry_process, "run_full_gatecheck_after_act", return_value=False), \
+             patch.object(telemetry_process, "send_robot_command", side_effect=_fake_send_robot_command), \
+             patch.object(telemetry_process, "ALIGN_RECOVERY_LOST_VISIBLE_FRAMES", 1), \
+             patch.object(telemetry_process, "ALIGN_RECOVERY_LOST_VISIBLE_MIN_S", 0.0), \
+             patch.object(telemetry_process.telemetry_brick, "success_gate_bounds", return_value={}), \
+             patch.object(telemetry_process.time, "time", side_effect=_fake_time), \
+             patch.object(telemetry_process.time, "sleep", return_value=None):
+            ok, reason = telemetry_process.run_alignment_segment(
+                segment={"events": []},
+                step="SEAT_BRICK2",
+                robot=robot,
+                vision=object(),
+                world=world,
+                steps=[],
+                raw_steps=[],
+                observer=None,
+                analysis_pause_s=0.0,
+                confirm_callback=None,
+                align_silent=True,
+            )
+
+        self.assertFalse(ok)
+        self.assertEqual(reason, "near_dist_visibility_rescue_failed")
+        self.assertEqual(sent_cmds, [("d", 1), ("d", 1)])
+        self.assertGreaterEqual(robot.stop_calls, 1)
 
 
 if __name__ == "__main__":

@@ -270,19 +270,19 @@
     "1": 0.065
   },
   "speed_score_seconds_turn_meta": {
-    "mini_x_axis_last_run_epoch_s": 1772477446.737,
-    "mini_x_axis_last_run_iso_utc": "2026-03-02T18:50:46Z",
-    "mini_x_axis_last_run_step": "ALIGN_BRICK",
+    "mini_x_axis_last_run_epoch_s": 1772820984.813,
+    "mini_x_axis_last_run_iso_utc": "2026-03-06T18:16:24Z",
+    "mini_x_axis_last_run_step": "POSITION_BRICK",
     "mini_x_axis_last_run_ok": true,
     "mini_x_axis_last_run_confident": false,
-    "mini_x_axis_last_run_seconds": 16.225,
+    "mini_x_axis_last_run_seconds": 73.902,
     "mini_x_axis_min_interval_hours": 12.0,
     "mini_x_axis_tiny_profile_pct": 0.01,
-    "mini_x_axis_tiny_profile_last_updated_epoch_s": 1772477434.78,
-    "mini_x_axis_tiny_profile_last_updated_iso_utc": "2026-03-02T18:50:34Z",
+    "mini_x_axis_tiny_profile_last_updated_epoch_s": 1772820925.075,
+    "mini_x_axis_tiny_profile_last_updated_iso_utc": "2026-03-06T18:15:25Z",
     "mini_x_axis_tiny_profile_notches": {
       "l": -9,
-      "r": -9
+      "r": -3
     }
   },
   "hotkey_motion_discovery_meta": {
@@ -308,8 +308,8 @@
   "turn_intensity_posts_turn_right": {
     "0.01": {
       "score": 1,
-      "duration_scale": 0.1,
-      "notch": -9,
+      "duration_scale": 0.7,
+      "notch": -3,
       "source": "mini_x_axis_discovery"
     }
   }

@@ -1,0 +1,155 @@
+{
+  "session": {
+    "started_at_ts": 1772827668.709,
+    "started_at_local": "2026-03-06 13:07:48",
+    "ended_at_ts": 1772828036.031,
+    "ended_at_local": "2026-03-06 13:13:56",
+    "duration_s": 367.321,
+    "active_vision_mode": "aruco"
+  },
+  "run_logs": [
+    "/home/richkingsford/cub-queso/Runs - aruco/Mar 6 107pm (2).json"
+  ],
+  "step_completion_actions": {
+    "by_step": {
+      "EXIT_WALL": {
+        "count": 1,
+        "average_actions": 11.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          11
+        ]
+      },
+      "FIND_BRICK": {
+        "count": 1,
+        "average_actions": 28.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          28
+        ]
+      },
+      "FIND_TOPMOST_BRICK": {
+        "count": 1,
+        "average_actions": 0.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          0
+        ]
+      },
+      "FIND_WALL": {
+        "count": 1,
+        "average_actions": 4.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          4
+        ]
+      }
+    },
+    "records": [
+      {
+        "timestamp": 1772827696.316,
+        "step": "FIND_WALL",
+        "actions_required": 4,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772827712.257,
+        "step": "EXIT_WALL",
+        "actions_required": 11,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772827805.652,
+        "step": "FIND_BRICK",
+        "actions_required": 28,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772827948.236,
+        "step": "FIND_TOPMOST_BRICK",
+        "actions_required": 0,
+        "source": "auto"
+      }
+    ]
+  },
+  "counts": {
+    "cancelled_steps_total": 1,
+    "cancelled_steps_by_step": {
+      "APPROACH_VECTOR_BRICK_SUPPLY": 1
+    },
+    "restarted_steps_total": 2,
+    "restarted_steps_auto_full_gatecheck_by_step": {
+      "FIND_WALL": 1,
+      "BRICK_LOCK": 1
+    },
+    "restarted_steps_manual_by_step": {}
+  },
+  "manual_hotkeys": {
+    "press_count_total": 9,
+    "press_count_by_hotkey": {
+      "p": 9
+    },
+    "press_count_by_command": {
+      "u": 9
+    },
+    "press_details": [
+      {
+        "timestamp": 1772827845.42,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772827845.621,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772827845.822,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772827846.19,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772827846.424,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772827846.725,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772827846.927,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772827847.128,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      },
+      {
+        "timestamp": 1772827847.329,
+        "hotkey": "p",
+        "command": "u",
+        "score": 100
+      }
+    ],
+    "edit_count_total": 0,
+    "edit_count_by_hotkey": {},
+    "edit_details": []
+  }
+}

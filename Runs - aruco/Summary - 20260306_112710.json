@@ -1,0 +1,282 @@
+{
+  "session": {
+    "started_at_ts": 1772820195.284,
+    "started_at_local": "2026-03-06 11:03:15",
+    "ended_at_ts": 1772821630.073,
+    "ended_at_local": "2026-03-06 11:27:10",
+    "duration_s": 1434.788,
+    "active_vision_mode": "aruco"
+  },
+  "run_logs": [
+    "/home/richkingsford/cub-queso/Runs - aruco/kbd_20260306_110315.json"
+  ],
+  "step_completion_actions": {
+    "by_step": {
+      "ALIGN_BRICK": {
+        "count": 3,
+        "average_actions": 26.333,
+        "stddev_actions": 5.735,
+        "samples": [
+          19,
+          33,
+          27
+        ]
+      },
+      "APPROACH_VECTOR_WALL": {
+        "count": 1,
+        "average_actions": 5.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          5
+        ]
+      },
+      "BRICK_LOCK": {
+        "count": 2,
+        "average_actions": 8.5,
+        "stddev_actions": 3.5,
+        "samples": [
+          12,
+          5
+        ]
+      },
+      "BRICK_LOCK_WALL": {
+        "count": 1,
+        "average_actions": 19.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          19
+        ]
+      },
+      "ELEVATE_BRICK": {
+        "count": 1,
+        "average_actions": 17.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          17
+        ]
+      },
+      "FIND_TOPMOST_BRICK": {
+        "count": 2,
+        "average_actions": 0.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          0,
+          0
+        ]
+      },
+      "FIND_TOPMOST_BRICK_WALL": {
+        "count": 1,
+        "average_actions": 0.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          0
+        ]
+      },
+      "FIND_WALL2": {
+        "count": 1,
+        "average_actions": 26.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          26
+        ]
+      },
+      "POSITION_BRICK": {
+        "count": 1,
+        "average_actions": 2.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          2
+        ]
+      },
+      "SEAT_BRICK": {
+        "count": 1,
+        "average_actions": 36.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          36
+        ]
+      },
+      "SEAT_BRICK2": {
+        "count": 1,
+        "average_actions": 41.0,
+        "stddev_actions": 0.0,
+        "samples": [
+          41
+        ]
+      }
+    },
+    "records": [
+      {
+        "timestamp": 1772820268.338,
+        "step": "FIND_TOPMOST_BRICK",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772820310.536,
+        "step": "BRICK_LOCK",
+        "actions_required": 12,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772820346.84,
+        "step": "ALIGN_BRICK",
+        "actions_required": 19,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772820443.268,
+        "step": "ALIGN_BRICK",
+        "actions_required": 33,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772820533.465,
+        "step": "FIND_TOPMOST_BRICK",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772820570.873,
+        "step": "BRICK_LOCK",
+        "actions_required": 5,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772820630.099,
+        "step": "ALIGN_BRICK",
+        "actions_required": 27,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772820704.126,
+        "step": "SEAT_BRICK",
+        "actions_required": 36,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772820721.328,
+        "step": "ELEVATE_BRICK",
+        "actions_required": 17,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772820777.363,
+        "step": "FIND_WALL2",
+        "actions_required": 26,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772820804.569,
+        "step": "APPROACH_VECTOR_WALL",
+        "actions_required": 5,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772820835.592,
+        "step": "FIND_TOPMOST_BRICK_WALL",
+        "actions_required": 0,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772820905.618,
+        "step": "BRICK_LOCK_WALL",
+        "actions_required": 19,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772821488.45,
+        "step": "POSITION_BRICK",
+        "actions_required": 2,
+        "source": "auto"
+      },
+      {
+        "timestamp": 1772821593.229,
+        "step": "SEAT_BRICK2",
+        "actions_required": 41,
+        "source": "auto"
+      }
+    ]
+  },
+  "counts": {
+    "cancelled_steps_total": 3,
+    "cancelled_steps_by_step": {
+      "SEAT_BRICK": 2,
+      "POSITION_BRICK": 1
+    },
+    "restarted_steps_total": 0,
+    "restarted_steps_auto_full_gatecheck_by_step": {},
+    "restarted_steps_manual_by_step": {}
+  },
+  "manual_hotkeys": {
+    "press_count_total": 9,
+    "press_count_by_hotkey": {
+      "s": 1,
+      "l": 2,
+      "k": 6
+    },
+    "press_count_by_command": {
+      "b": 1,
+      "d": 8
+    },
+    "press_details": [
+      {
+        "timestamp": 1772820358.79,
+        "hotkey": "s",
+        "command": "b",
+        "score": 50
+      },
+      {
+        "timestamp": 1772820360.598,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772820361.234,
+        "hotkey": "l",
+        "command": "d",
+        "score": 100
+      },
+      {
+        "timestamp": 1772820362.84,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772820363.008,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772820363.142,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772820363.275,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772820363.443,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      },
+      {
+        "timestamp": 1772820363.61,
+        "hotkey": "k",
+        "command": "d",
+        "score": 1
+      }
+    ],
+    "edit_count_total": 0,
+    "edit_count_by_hotkey": {},
+    "edit_details": []
+  }
+}

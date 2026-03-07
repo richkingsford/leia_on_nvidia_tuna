@@ -175,8 +175,7 @@ GAP_SWITCH_REASSURE_STEPS = {
     "POSITION_BRICK",
 }
 AUTO_SPEED_SCORE_HARD_MAX = 25
-REPEATED_UNCHANGED_SPEED_BUMP_SCORE_CAP = 20
-REPEATED_UNCHANGED_SPEED_BUMP_MAX_COUNT = 8
+MAX_CONSECUTIVE_IDENTICAL_ACTS = 50
 AUTO_DEMO_SPEED_STEPS = {
     "FIND_WALL",
     "EXIT_WALL",
@@ -1491,19 +1490,33 @@ def _align_correction_type_for_cmd(cmd, *, fallback=None):
     return "x_axis"
 
 
-def _align_error_signature_for_correction(correction_type, local_gate_before_action):
-    ctype = str(correction_type or "").strip().lower()
-    state = local_gate_before_action if isinstance(local_gate_before_action, dict) else {}
-    try:
-        if ctype == "distance":
-            dist_now = state.get("dist")
-            dist_target = state.get("dist_target")
-            return round(float(dist_now) - float(dist_target), 2)
-        if ctype == "y_axis":
-            return round(float(state.get("y_err")), 2)
-        return round(float(state.get("x_err")), 2)
-    except (TypeError, ValueError):
-        return None
+def _required_align_unknown_gaps(local_gate):
+    state = local_gate if isinstance(local_gate, dict) else {}
+
+    def _is_finite_number(value):
+        try:
+            return math.isfinite(float(value))
+        except (TypeError, ValueError):
+            return False
+
+    missing = []
+    if bool(state.get("x_required")) and not _is_finite_number(state.get("x_err")):
+        missing.append("x_err")
+    if bool(state.get("y_required")) and not _is_finite_number(state.get("y_err")):
+        missing.append("y_err")
+    if bool(state.get("dist_required")):
+        if not _is_finite_number(state.get("dist")):
+            missing.append("dist")
+        if not _is_finite_number(state.get("dist_target")):
+            missing.append("dist_target")
+    return tuple(missing)
+
+
+def _should_fail_required_gap_unknown(local_gate, *, is_search_action=False):
+    if bool(is_search_action):
+        return False
+    state = local_gate if isinstance(local_gate, dict) else {}
+    return bool(state.get("visible"))
 
 
 def _align_local_gate_status_single_source(world, step):
@@ -1637,121 +1650,6 @@ def _align_local_gate_status_single_source(world, step):
     }
 
 
-def _maybe_apply_repeated_unchanged_speed_bump(
-    *,
-    cmd,
-    score,
-    delta_class,
-    correction_type,
-    error_signature,
-    previous_cmd,
-    state=None,
-):
-    cmd_key = str(cmd or "").strip().lower()
-    prev_cmd_key = str(previous_cmd or "").strip().lower()
-    reset_state = {
-        "streak": 0,
-        "cmd": None,
-        "correction_type": None,
-        "error_signature": None,
-        "bump_count": 0,
-        "last_boosted_score": None,
-        "exhausted": False,
-    }
-    base_state = {
-        "streak": 0,
-        "cmd": None,
-        "correction_type": None,
-        "error_signature": None,
-        "bump_count": 0,
-        "last_boosted_score": None,
-        "exhausted": False,
-    }
-    if isinstance(state, dict):
-        base_state.update(
-            {
-                "streak": int(state.get("streak", 0) or 0),
-                "cmd": state.get("cmd"),
-                "correction_type": state.get("correction_type"),
-                "error_signature": state.get("error_signature"),
-                "bump_count": int(state.get("bump_count", 0) or 0),
-                "last_boosted_score": state.get("last_boosted_score"),
-                "exhausted": bool(state.get("exhausted", False)),
-            }
-        )
-
-    ctype = str(correction_type or "").strip().lower() or "x_axis"
-    should_track = (
-        cmd_key in ("f", "b", "l", "r", "u", "d")
-        and prev_cmd_key == cmd_key
-        and str(delta_class or "").strip().lower() == "unchanged"
-    )
-    if not should_track:
-        return score, reset_state, False
-
-    same_signature = (
-        str(base_state.get("cmd") or "").strip().lower() == cmd_key
-        and str(base_state.get("correction_type") or "").strip().lower() == ctype
-        and base_state.get("error_signature") == error_signature
-    )
-    if same_signature:
-        streak = int(base_state.get("streak", 0) or 0) + 1
-        bump_count = int(base_state.get("bump_count", 0) or 0)
-        last_boosted_score = base_state.get("last_boosted_score")
-    else:
-        streak = 1
-        bump_count = 0
-        last_boosted_score = None
-    next_state = {
-        "streak": int(streak),
-        "cmd": cmd_key,
-        "correction_type": ctype,
-        "error_signature": error_signature,
-        "bump_count": int(bump_count),
-        "last_boosted_score": last_boosted_score,
-        "exhausted": False,
-    }
-
-    try:
-        score_now = _cap_auto_speed_score(score)
-    except Exception:
-        score_now = None
-    if score_now is None:
-        return score, next_state, False
-
-    score_now = min(int(score_now), int(REPEATED_UNCHANGED_SPEED_BUMP_SCORE_CAP))
-    if last_boosted_score is not None:
-        try:
-            last_boosted_score = int(round(float(last_boosted_score)))
-        except (TypeError, ValueError):
-            last_boosted_score = None
-    if last_boosted_score is not None:
-        score_now = max(
-            int(score_now),
-            min(int(last_boosted_score), int(REPEATED_UNCHANGED_SPEED_BUMP_SCORE_CAP)),
-        )
-
-    if int(bump_count) >= int(REPEATED_UNCHANGED_SPEED_BUMP_MAX_COUNT):
-        next_state["last_boosted_score"] = int(score_now)
-        next_state["exhausted"] = True
-        return int(score_now), next_state, False
-
-    score_boosted = min(
-        int(score_now) + 1,
-        int(REPEATED_UNCHANGED_SPEED_BUMP_SCORE_CAP),
-    )
-    if int(score_boosted) <= int(score_now):
-        next_state["last_boosted_score"] = int(score_now)
-        return int(score_now), next_state, False
-
-    bump_count = int(bump_count) + 1
-    next_state["bump_count"] = int(bump_count)
-    next_state["last_boosted_score"] = int(score_boosted)
-    if int(bump_count) >= int(REPEATED_UNCHANGED_SPEED_BUMP_MAX_COUNT):
-        next_state["exhausted"] = True
-    return int(score_boosted), next_state, True
-
-
 def _apply_find_brick_turn_speed_policy(step, cmd, score, *, phase=None):
     if score is None:
         return None
@@ -1874,6 +1772,51 @@ def _height_intel_step_cfg(world, step):
     if not isinstance(step_cfg, dict):
         return step_key, {}
     return step_key, step_cfg
+
+
+def _height_intel_cfg_for_phase(step_cfg, *, phase=None):
+    if not isinstance(step_cfg, dict):
+        return {}
+    cfg_base = step_cfg.get("height_intelligence")
+    if not isinstance(cfg_base, dict):
+        return {}
+    cfg = dict(cfg_base)
+    phase_key = str(phase or "").strip().lower()
+    if phase_key:
+        phase_overrides = cfg_base.get("phase_overrides")
+        if isinstance(phase_overrides, dict):
+            phase_cfg = phase_overrides.get(phase_key)
+            if isinstance(phase_cfg, dict):
+                cfg.update(phase_cfg)
+    return cfg
+
+
+def _action_meta_wait_seconds(action_meta, *, fallback_s=CONTROL_DT):
+    duration_ms = None
+    if isinstance(action_meta, dict):
+        segments = action_meta.get("segments")
+        if isinstance(segments, list):
+            seg_total_ms = 0
+            for seg in segments:
+                if not isinstance(seg, dict):
+                    continue
+                seg_ms = _as_int(seg.get("duration_ms"), None)
+                if seg_ms is None:
+                    seg_ms = _as_int(seg.get("duration_model_ms"), None)
+                if seg_ms is None:
+                    continue
+                seg_total_ms += int(max(0, int(seg_ms)))
+            if seg_total_ms > 0:
+                duration_ms = int(seg_total_ms)
+        if duration_ms is None:
+            duration_ms = _as_int(action_meta.get("duration_ms"), None)
+        if duration_ms is None:
+            duration_ms = _as_int(action_meta.get("duration_model_ms"), None)
+    if duration_ms is None or int(duration_ms) <= 0:
+        duration_ms = _as_int(getattr(telemetry_robot_module, "ACT_DURATION_MS", None), None)
+    if duration_ms is None or int(duration_ms) <= 0:
+        return max(0.0, float(fallback_s))
+    return max(float(fallback_s), float(duration_ms) / 1000.0)
 
 
 def height_intel_values(world):
@@ -2034,7 +1977,7 @@ def _apply_height_intel_replay_override(world, step, cmd, score, *, phase=None, 
     if cmd_key not in ("f", "b", "l", "r", "u", "d"):
         return cmd, score, None, False
     step_key, step_cfg = _height_intel_step_cfg(world, step)
-    cfg = step_cfg.get("height_intelligence") if isinstance(step_cfg, dict) else {}
+    cfg = _height_intel_cfg_for_phase(step_cfg, phase=phase)
     if not isinstance(cfg, dict) or not bool(cfg.get("enabled", False)):
         return cmd, score, None, False
 
@@ -2091,7 +2034,15 @@ def _apply_height_intel_replay_override(world, step, cmd, score, *, phase=None, 
     cooldown_by_step[step_key] = float(now_s)
     setattr(world, "_height_intel_last_override_ts", cooldown_by_step)
 
-    score_out = _cap_auto_speed_score(cfg.get("score", telemetry_robot_module.SPEED_SCORE_MIN))
+    allow_uncapped_score = bool(cfg.get("allow_uncapped_score", False))
+    score_raw = cfg.get("score", telemetry_robot_module.SPEED_SCORE_MIN)
+    if bool(allow_uncapped_score):
+        try:
+            score_out = telemetry_robot_module.normalize_speed_score(score_raw)
+        except Exception:
+            score_out = telemetry_robot_module.normalize_speed_score(telemetry_robot_module.SPEED_SCORE_MIN)
+    else:
+        score_out = _cap_auto_speed_score(score_raw)
     context_note = f"height intel ({source_key} {reason_key})"
     if log:
         phase_key = str(phase or "replay").strip().lower() or "replay"
@@ -2105,6 +2056,130 @@ def _apply_height_intel_replay_override(world, step, cmd, score, *, phase=None, 
             )
         )
     return str(chosen_cmd), int(score_out), context_note, True
+
+
+def _repeat_act_guard_subject(world, robot):
+    if world is not None:
+        return world, "_repeat_act_guard_state"
+    return robot, "_repeat_act_guard_state"
+
+
+def _repeat_act_guard_state(world, robot):
+    subject, attr = _repeat_act_guard_subject(world, robot)
+    state = getattr(subject, attr, None) if subject is not None else None
+    if not isinstance(state, dict):
+        state = {"cmd": None, "count": 0}
+        if subject is not None:
+            setattr(subject, attr, state)
+    return state
+
+
+def _repeat_act_guard_next_count(world, robot, cmd):
+    cmd_key = str(cmd or "").strip().lower()
+    state = _repeat_act_guard_state(world, robot)
+    prev_cmd = str((state or {}).get("cmd") or "").strip().lower()
+    prev_count = int((state or {}).get("count", 0) or 0)
+    if cmd_key and prev_cmd == cmd_key:
+        return int(prev_count) + 1
+    return 1 if cmd_key else 0
+
+
+def _repeat_act_guard_trip_message(world, robot):
+    subjects = [world, robot]
+    for subject in subjects:
+        if subject is None:
+            continue
+        if bool(getattr(subject, "_repeat_act_guard_tripped", False)):
+            msg = str(getattr(subject, "_repeat_act_guard_message", "") or "").strip()
+            if msg:
+                return str(msg)
+            return "[SAFETY-FAIL] repeat-act guard previously tripped; movement locked."
+    return None
+
+
+def _repeat_act_guard_mark_tripped(world, robot, message):
+    msg = str(message or "").strip()
+    subject = world if world is not None else robot
+    if subject is not None:
+        try:
+            subject._repeat_act_guard_tripped = True
+            subject._repeat_act_guard_message = str(msg)
+        except Exception:
+            pass
+    if world is not None:
+        try:
+            world._last_action_line = str(msg)
+        except Exception:
+            pass
+
+
+def reset_repeat_act_guard(world=None, robot=None):
+    subjects = []
+    if world is not None:
+        subjects.append(world)
+    if robot is not None and robot is not world:
+        subjects.append(robot)
+    for subject in subjects:
+        try:
+            setattr(subject, "_repeat_act_guard_state", {"cmd": None, "count": 0})
+        except Exception:
+            pass
+        try:
+            setattr(subject, "_repeat_act_guard_tripped", False)
+        except Exception:
+            pass
+        try:
+            setattr(subject, "_repeat_act_guard_message", "")
+        except Exception:
+            pass
+
+
+def _repeat_act_guard_before_send(world, robot, step, cmd):
+    tripped_msg = _repeat_act_guard_trip_message(world, robot)
+    if tripped_msg:
+        if robot:
+            try:
+                robot.stop()
+            except Exception:
+                pass
+        raise RuntimeError(str(tripped_msg))
+
+    cmd_key = str(cmd or "").strip().lower()
+    if not cmd_key:
+        return
+    next_count = int(_repeat_act_guard_next_count(world, robot, cmd_key))
+    limit = int(MAX_CONSECUTIVE_IDENTICAL_ACTS)
+    if next_count <= limit:
+        return
+    step_key = normalize_step_label(step) or str(step or "UNKNOWN")
+    msg = (
+        f"[SAFETY-FAIL] {step_key}: command {str(cmd_key).upper()} would repeat "
+        f"{int(next_count)} times in a row (limit {int(limit)}); cancelling current step."
+    )
+    if robot:
+        try:
+            robot.stop()
+        except Exception:
+            pass
+    _repeat_act_guard_mark_tripped(world, robot, msg)
+    raise RuntimeError(msg)
+
+
+def _repeat_act_guard_after_send(world, robot, cmd):
+    cmd_key = str(cmd or "").strip().lower()
+    if not cmd_key:
+        return
+    state = _repeat_act_guard_state(world, robot)
+    prev_cmd = str((state or {}).get("cmd") or "").strip().lower()
+    prev_count = int((state or {}).get("count", 0) or 0)
+    if prev_cmd == cmd_key:
+        next_count = int(prev_count) + 1
+    else:
+        next_count = 1
+    subject, attr = _repeat_act_guard_subject(world, robot)
+    next_state = {"cmd": str(cmd_key), "count": int(next_count)}
+    if subject is not None:
+        setattr(subject, attr, next_state)
 
 
 def send_robot_command_pwm(
@@ -2124,6 +2199,7 @@ def send_robot_command_pwm(
 ):
     if robot is None or cmd is None:
         return None
+    _repeat_act_guard_before_send(world, robot, step, cmd)
     try:
         pwm_val = int(round(pwm))
     except (TypeError, ValueError):
@@ -2387,6 +2463,7 @@ def send_robot_command_pwm(
                     score_model=speed_score,
                     anti_alias_note=ease_note,
                 )
+                _repeat_act_guard_after_send(world, robot, cmd)
                 return {
                     "cmd_sent": cmd_sent,
                     "power": power_val,
@@ -2463,6 +2540,7 @@ def send_robot_command_pwm(
         score_model=speed_score,
         anti_alias_note=ease_note,
     )
+    _repeat_act_guard_after_send(world, robot, cmd)
 
     try:
         duration_model_ms = int(duration_ms)
@@ -2954,6 +3032,8 @@ def _align_brick_lite_fail_fallback_action(world, step):
         "POSITION_BRICK",
         "BRICK_LOCK",
         "BRICK_LOCK_WALL",
+        "SEAT_BRICK",
+        "SEAT_BRICK2",
     }:
         return None
     process_rules = getattr(world, "process_rules", None) or {}
@@ -3083,6 +3163,7 @@ def _run_start_ground_reset_exception(
     require_tiny_roi_floor = bool(cfg.get("require_tiny_roi_floor", False))
     fail_on_unconfirmed = bool(cfg.get("fail_on_unconfirmed", False))
     operator_reminder = str(cfg.get("operator_log_reminder") or "").strip()
+    observe_between_acts = bool(cfg.get("observe_between_acts", True))
 
     speed = telemetry_robot_module.manual_speed_for_cmd(cmd, score)
     prev_lift_mm = _as_float(getattr(world, "lift_height", None), None)
@@ -3099,6 +3180,7 @@ def _run_start_ground_reset_exception(
                 (
                     f" [{step_key}] Start ground reset: {str(cmd).upper()} {int(score)}%, "
                     f"goal=lift<={float(goal_lift_mm):.1f}mm (tiny_roi_floor {tiny_req_text}), "
+                    f"observe_between_acts={'YES' if bool(observe_between_acts) else 'NO'}, "
                     f"min={int(min_acts)}, max={int(max_acts)}."
                 ),
             )
@@ -3122,62 +3204,12 @@ def _run_start_ground_reset_exception(
             "gate_word": gate_word,
         }
 
-    update_world_from_vision(world, vision, log=not align_silent)
-    if observer:
-        observer("frame", world, vision, None, None, None)
-    status = _status_words()
-    if bool(status.get("gate_ok")):
-        if robot:
-            robot.stop()
-        if not align_silent:
-            print(
-                format_headline(
-                    "[EXCEPTION]",
-                    COLOR_MAGENTA_BRIGHT,
-                    (
-                        f" [{step_key}] Start ground reset complete: "
-                        f"source={status.get('src_word')}, gate={status.get('gate_word')}, "
-                        f"{status.get('lift_text')}."
-                    ),
-                )
-            )
-        return {"enabled": True, "success": True, "reason": "ground reset pass", "acts": int(acts_sent)}
-
-    for idx in range(1, int(max_acts) + 1):
-        if confirm_callback and not confirm_callback(world, vision):
-            return {"enabled": True, "success": False, "reason": "confirm cancelled", "acts": int(acts_sent)}
-        if observer:
-            observer("analysis", world, vision, cmd, speed, "start_ground_reset_exception")
-        send_robot_command(
-            robot,
-            world,
-            step_key,
-            cmd,
-            speed,
-            speed_score=score,
-            auto_mode=True,
-        )
-        acts_sent += 1
-        post_act_analysis(world, vision, step=step_key, log=not align_silent, include_pause=False)
+    status = None
+    if bool(observe_between_acts):
         update_world_from_vision(world, vision, log=not align_silent)
         if observer:
             observer("frame", world, vision, None, None, None)
-            observer("action", world, vision, cmd, speed, "start_ground_reset_exception")
         status = _status_words()
-        if not align_silent:
-            print(
-                format_headline(
-                    "[EXCEPTION]",
-                    COLOR_MAGENTA_BRIGHT,
-                    (
-                        f" [{step_key}] Start ground reset pulse {int(idx)}/{int(max_acts)}: "
-                        f"{str(cmd).upper()} {int(score)}%, source={status.get('src_word')}, "
-                        f"{status.get('lift_text')}, gate={status.get('gate_word')}."
-                    ),
-                )
-            )
-        if bool(status.get("lift_mm") is not None):
-            prev_lift_mm = _as_float(status.get("lift_mm"), prev_lift_mm)
         if bool(status.get("gate_ok")):
             if robot:
                 robot.stop()
@@ -3194,10 +3226,95 @@ def _run_start_ground_reset_exception(
                     )
                 )
             return {"enabled": True, "success": True, "reason": "ground reset pass", "acts": int(acts_sent)}
+
+    for idx in range(1, int(max_acts) + 1):
+        if confirm_callback and not confirm_callback(world, vision):
+            return {"enabled": True, "success": False, "reason": "confirm cancelled", "acts": int(acts_sent)}
+        if observer:
+            observer("analysis", world, vision, cmd, speed, "start_ground_reset_exception")
+        send_robot_command(
+            robot,
+            world,
+            step_key,
+            cmd,
+            speed,
+            speed_score=score,
+            auto_mode=True,
+        )
+        acts_sent += 1
+        if bool(observe_between_acts):
+            post_act_analysis(world, vision, step=step_key, log=not align_silent, include_pause=False)
+            update_world_from_vision(world, vision, log=not align_silent)
+            if observer:
+                observer("frame", world, vision, None, None, None)
+                observer("action", world, vision, cmd, speed, "start_ground_reset_exception")
+            status = _status_words()
+            if not align_silent:
+                print(
+                    format_headline(
+                        "[EXCEPTION]",
+                        COLOR_MAGENTA_BRIGHT,
+                        (
+                            f" [{step_key}] Start ground reset pulse {int(idx)}/{int(max_acts)}: "
+                            f"{str(cmd).upper()} {int(score)}%, source={status.get('src_word')}, "
+                            f"{status.get('lift_text')}, gate={status.get('gate_word')}."
+                        ),
+                    )
+                )
+            if bool(status.get("lift_mm") is not None):
+                prev_lift_mm = _as_float(status.get("lift_mm"), prev_lift_mm)
+            if bool(status.get("gate_ok")):
+                if robot:
+                    robot.stop()
+                if not align_silent:
+                    print(
+                        format_headline(
+                            "[EXCEPTION]",
+                            COLOR_MAGENTA_BRIGHT,
+                            (
+                                f" [{step_key}] Start ground reset complete: "
+                                f"source={status.get('src_word')}, gate={status.get('gate_word')}, "
+                                f"{status.get('lift_text')}."
+                            ),
+                        )
+                    )
+                return {"enabled": True, "success": True, "reason": "ground reset pass", "acts": int(acts_sent)}
+        else:
+            if observer:
+                observer("action", world, vision, cmd, speed, "start_ground_reset_exception")
+            if not align_silent:
+                print(
+                    format_headline(
+                        "[EXCEPTION]",
+                        COLOR_MAGENTA_BRIGHT,
+                        (
+                            f" [{step_key}] Start ground reset pulse {int(idx)}/{int(max_acts)}: "
+                            f"{str(cmd).upper()} {int(score)}%, observation=SKIPPED."
+                        ),
+                    )
+                )
         time.sleep(CONTROL_DT)
 
     if robot:
         robot.stop()
+    if not bool(observe_between_acts):
+        if not align_silent:
+            print(
+                format_headline(
+                    "[EXCEPTION]",
+                    COLOR_MAGENTA_BRIGHT,
+                    (
+                        f" [{step_key}] Start ground reset complete: gate=SKIPPED. "
+                        f"acts={int(acts_sent)}/{int(max_acts)} (observation=SKIPPED)."
+                    ),
+                )
+            )
+        return {
+            "enabled": True,
+            "success": True,
+            "reason": "ground reset max acts (no observation)",
+            "acts": int(acts_sent),
+        }
     if not align_silent:
         fail_word = f"{COLOR_RED}FAIL{COLOR_RESET}"
         print(
@@ -3254,6 +3371,7 @@ def _run_ground_up_level2_exception(
     require_brick_above_false = gate_utils.bool_gate_target(above_gate_cfg) is False
     require_brick_below_false = gate_utils.bool_gate_target(below_gate_cfg) is False
     require_stack_false_gate = bool(require_brick_above_false or require_brick_below_false)
+    show_stack_gate_fields = bool(require_stack_false_gate)
 
     reminder_msg = str(topmost_cfg.get("operator_log_reminder") or "").strip()
     ground_reset_enabled = bool(topmost_cfg.get("ground_reset_enabled", True))
@@ -3298,8 +3416,14 @@ def _run_ground_up_level2_exception(
     level2_require_visible_for_confirm = bool(
         topmost_cfg.get("level2_require_visible_for_confirm", True)
     )
+    complete_on_crosshair_drop = bool(
+        topmost_cfg.get("complete_on_crosshair_drop", False)
+    )
     level2_fail_on_skipped_observation = bool(
         topmost_cfg.get("level2_fail_on_skipped_observation", False)
+    )
+    level2_confidence_gates_observation = bool(
+        topmost_cfg.get("level2_confidence_gates_observation", False)
     )
     observation_confidence_min = _as_float(
         topmost_cfg.get("observation_confidence_min"),
@@ -3450,12 +3574,21 @@ def _run_ground_up_level2_exception(
     def _observe_level2_crosshair_confident(*, confirm_frames=1):
         required = max(1, int(confirm_frames or 1))
         samples = []
+        confidence_samples = []
+        confidence_pass_samples = []
         latest_snapshot = None
         for idx in range(required):
             if idx > 0:
                 wait_for_frame_settle(world, vision, 1, log=not align_silent)
             latest_snapshot = _update_and_read_crosshair()
-            samples.append(latest_snapshot[0] if isinstance(latest_snapshot, tuple) else None)
+            if isinstance(latest_snapshot, tuple):
+                samples.append(latest_snapshot[0])
+                confidence_pass_samples.append(bool(latest_snapshot[3]))
+                confidence_samples.append(latest_snapshot[4])
+            else:
+                samples.append(None)
+                confidence_pass_samples.append(False)
+                confidence_samples.append(None)
 
         if not isinstance(latest_snapshot, tuple):
             latest_snapshot = (
@@ -3491,12 +3624,23 @@ def _run_ground_up_level2_exception(
         else:
             samples_consistent = _crosshair_samples_consistent(samples, require_non_wait=True)
             crosshair_now = samples[0] if bool(samples_consistent) else None
+
+        obs_confident_window = bool(obs_confident)
+        if int(required) > 1:
+            confident_hits = int(sum(1 for ok in confidence_pass_samples if bool(ok)))
+            numeric_conf_hits = int(sum(1 for val in confidence_samples if _as_float(val, None) is not None))
+            if numeric_conf_hits > 0:
+                required_conf_hits = max(1, int(math.ceil(float(required) / 2.0)))
+                obs_confident_window = int(confident_hits) >= int(required_conf_hits)
+            else:
+                # Unknown confidence should not block multi-frame crosshair confirmation.
+                obs_confident_window = True
         return (
             crosshair_now,
             tuple(samples),
             bool(samples_consistent),
             bool(visible_now),
-            bool(obs_confident),
+            bool(obs_confident_window),
             obs_confidence,
             brick_above_now,
             brick_below_now,
@@ -3860,6 +4004,8 @@ def _run_ground_up_level2_exception(
     last_obs_confidence = None
     last_obs_fresh = True
     stack_gate_armed = False
+    crosshair_drop_completed = False
+    crosshair_drop_cycle_idx = None
 
     def _read_crosshair_from_world_snapshot():
         brick_local = getattr(world, "brick", {}) or {}
@@ -3938,9 +4084,10 @@ def _run_ground_up_level2_exception(
         fresh_after_mast = int(frame_id_now) > int(pre_frame_id)
         last_obs_fresh = bool(fresh_after_mast)
         visible_ok_for_level2 = bool(visible_now) or (not bool(level2_require_visible_for_confirm))
+        confidence_ok_for_level2 = bool(obs_confident) or (not bool(level2_confidence_gates_observation))
         base_usable = (
             bool(visible_ok_for_level2)
-            and bool(obs_confident)
+            and bool(confidence_ok_for_level2)
             and bool(fresh_after_mast)
             and (crosshair_now is not None)
         )
@@ -3961,7 +4108,7 @@ def _run_ground_up_level2_exception(
             skip_reason = "stale frame"
         elif bool(level2_require_visible_for_confirm) and not bool(visible_now):
             skip_reason = "visible=NO"
-        elif not bool(obs_confident):
+        elif bool(level2_confidence_gates_observation) and not bool(obs_confident):
             if obs_confidence is None:
                 skip_reason = "low confidence"
             else:
@@ -4005,6 +4152,12 @@ def _run_ground_up_level2_exception(
             used_observation
             and (crosshair_now is False)
         )
+        crosshair_drop_hit = bool(
+            bool(complete_on_crosshair_drop)
+            and bool(used_observation)
+            and (pre_crosshair_now is True)
+            and (crosshair_now is False)
+        )
         # Level2 streak policy:
         # - PASS cycle increments.
         # - Contradicting usable observation resets.
@@ -4023,6 +4176,11 @@ def _run_ground_up_level2_exception(
             confident_no_streak = int(confident_no_streak)
             streak_update_state = "hold"
         level2_ok = int(confident_no_streak) >= int(no_streak_required)
+        if bool(crosshair_drop_hit):
+            confident_no_streak = max(int(confident_no_streak), int(no_streak_required))
+            level2_ok = True
+            crosshair_drop_completed = True
+            crosshair_drop_cycle_idx = int(idx)
         if observer:
             observer("action", world, vision, mast_cmd, mast_speed, "ground_up_level2_mast_up")
         if not align_silent:
@@ -4038,17 +4196,25 @@ def _run_ground_up_level2_exception(
             # `cycle_condition` is per-cycle truth only.
             if bool(condition_hit):
                 cond_word = f"{COLOR_GREEN}PASS{COLOR_RESET}"
-                streak_word = f"{COLOR_GREEN}PASS{COLOR_RESET}"
             elif bool(used_observation):
                 cond_word = f"{COLOR_RED}FAIL{COLOR_RESET}"
-                streak_word = f"{COLOR_RED}FAIL{COLOR_RESET}"
             else:
                 if bool(level2_reset_on_skipped_observation):
                     cond_word = f"{COLOR_RED}FAIL{COLOR_RESET}"
-                    streak_word = f"{COLOR_RED}FAIL{COLOR_RESET}"
                 else:
                     cond_word = f"{COLOR_ORANGE_BRIGHT}SKIP{COLOR_RESET}"
-                    streak_word = f"{COLOR_ORANGE_BRIGHT}SKIP{COLOR_RESET}"
+            # `level2 success gate check` reflects actual gate progress truth.
+            if bool(level2_ok):
+                streak_word = f"{COLOR_GREEN}PASS{COLOR_RESET}"
+            elif bool(used_observation):
+                if bool(condition_hit):
+                    streak_word = f"{COLOR_ORANGE_BRIGHT}WAIT{COLOR_RESET}"
+                else:
+                    streak_word = f"{COLOR_RED}FAIL{COLOR_RESET}"
+            elif bool(level2_reset_on_skipped_observation):
+                streak_word = f"{COLOR_RED}FAIL{COLOR_RESET}"
+            else:
+                streak_word = f"{COLOR_ORANGE_BRIGHT}WAIT{COLOR_RESET}"
             if bool(level2_ok):
                 progress_word = f"{COLOR_GREEN}COMPLETE{COLOR_RESET}"
             elif bool(condition_hit):
@@ -4068,6 +4234,11 @@ def _run_ground_up_level2_exception(
             else:
                 if (not bool(visible_now)) and (not bool(level2_require_visible_for_confirm)):
                     obs_text = "USED(visible=NO allowed)"
+                elif (not bool(obs_confident)) and (not bool(level2_confidence_gates_observation)):
+                    if obs_confidence is None:
+                        obs_text = "USED(conf=unknown advisory)"
+                    else:
+                        obs_text = f"USED(conf={float(obs_confidence):.1f}% advisory)"
                 else:
                     obs_text = "USED"
             raw_crosshair_text = "WAIT" if raw_crosshair_now is None else ("YES" if bool(raw_crosshair_now) else "NO")
@@ -4091,20 +4262,32 @@ def _run_ground_up_level2_exception(
                     COLOR_MAGENTA_BRIGHT,
                     f" {exc_runtime_color}[{step_key}] Cycle {int(idx)}/{int(mast_max_acts)}: "
                     f"observe(pre)=inCrosshairs={pre_crosshair_text}, "
-                    f"brickAbove={pre_above_text}, "
                     + (
-                        f"brickBelow={pre_below_text}, "
-                        if bool(require_brick_below_false)
+                        (
+                            f"brickAbove={pre_above_text}, "
+                            + (
+                                f"brickBelow={pre_below_text}, "
+                                if bool(require_brick_below_false)
+                                else ""
+                            )
+                        )
+                        if bool(show_stack_gate_fields)
                         else ""
                     )
                     + f"conf={pre_conf_text}, frame={int(pre_obs_frame_id)} "
                     + f"-> act={COLOR_ORANGE_BRIGHT}{('MAST_UP' if str(mast_cmd) == 'u' else 'MAST_DOWN' if str(mast_cmd) == 'd' else str(mast_cmd).upper())} {int(mast_score)}%{exc_runtime_color} "
                     + f"-> confirm: inCrosshairs={c_text}, "
                     + f"{crosshair_samples_note}"
-                    + f"brickAbove={b_text}, "
                     + (
-                        f"brickBelow={bb_text}, "
-                        if bool(require_brick_below_false)
+                        (
+                            f"brickAbove={b_text}, "
+                            + (
+                                f"brickBelow={bb_text}, "
+                                if bool(require_brick_below_false)
+                                else ""
+                            )
+                        )
+                        if bool(show_stack_gate_fields)
                         else ""
                     )
                     + (
@@ -4123,6 +4306,11 @@ def _run_ground_up_level2_exception(
                             if bool(level2_use_full_gatecheck)
                             else ""
                         )
+                        + (
+                            "crosshair_drop=YES, "
+                            if bool(crosshair_drop_hit)
+                            else ""
+                        )
                         + f"{lift_text}.{COLOR_RESET}"
                     ),
                 )
@@ -4138,8 +4326,17 @@ def _run_ground_up_level2_exception(
                         COLOR_MAGENTA_BRIGHT,
                         (
                             f" {exc_runtime_color}[{step_key}] Transition: "
-                            f"inCrosshairs=NO observed for {int(no_streak_required)} "
-                            f"consecutive confident mast-up observations"
+                            + (
+                                (
+                                    "inCrosshairs dropped YES->NO across a mast pulse"
+                                    f" (cycle {int(crosshair_drop_cycle_idx or idx)}/{int(mast_max_acts)})"
+                                )
+                                if bool(crosshair_drop_completed)
+                                else (
+                                    f"inCrosshairs=NO observed for {int(no_streak_required)} "
+                                    f"consecutive confident mast-up observations"
+                                )
+                            )
                             + (
                                 (
                                     " with brickAbove=NO and brickBelow=NO"
@@ -9266,10 +9463,26 @@ def run_alignment_segment(
         progress_mast_cfg = {}
     progress_mast_enabled = bool(progress_mast_cfg.get("enabled"))
     progress_mast_reminder = str(progress_mast_cfg.get("operator_log_reminder") or "").strip()
-    progress_mast_trigger_fraction = max(
-        0.0,
-        min(1.0, float(_as_float(progress_mast_cfg.get("trigger_progress_fraction"), 0.25))),
-    )
+    progress_mast_trigger_fractions = []
+    progress_mast_trigger_candidates = progress_mast_cfg.get("trigger_progress_fractions")
+    if not isinstance(progress_mast_trigger_candidates, (list, tuple)):
+        progress_mast_trigger_candidates = []
+    if not progress_mast_trigger_candidates:
+        progress_mast_trigger_candidates = [progress_mast_cfg.get("trigger_progress_fraction")]
+    trigger_seen = set()
+    for trigger_val_raw in progress_mast_trigger_candidates:
+        trigger_val = _as_float(trigger_val_raw, None)
+        if trigger_val is None:
+            continue
+        trigger_val = max(0.0, min(1.0, float(trigger_val)))
+        trigger_key = f"{float(trigger_val):.6f}"
+        if trigger_key in trigger_seen:
+            continue
+        trigger_seen.add(trigger_key)
+        progress_mast_trigger_fractions.append(float(trigger_val))
+    if not progress_mast_trigger_fractions:
+        progress_mast_trigger_fractions = [0.25]
+    progress_mast_trigger_fractions = sorted(progress_mast_trigger_fractions)
     progress_mast_cmd = str(progress_mast_cfg.get("command") or "d").strip().lower()
     if progress_mast_cmd not in ("d", "u"):
         progress_mast_cmd = "d"
@@ -9291,7 +9504,11 @@ def run_alignment_segment(
         dist_gate_cfg = success_gate_cfg.get("dist")
         if isinstance(dist_gate_cfg, dict):
             progress_mast_target_dist = _as_float(dist_gate_cfg.get("target"), None)
-    progress_mast_active = bool(progress_mast_enabled and progress_mast_target_dist is not None)
+    progress_mast_active = bool(
+        progress_mast_enabled
+        and progress_mast_target_dist is not None
+        and bool(progress_mast_trigger_fractions)
+    )
     near_dist_vis_cfg = step_rules.get("near_dist_visibility_mast_exception") if isinstance(step_rules, dict) else {}
     if not isinstance(near_dist_vis_cfg, dict):
         near_dist_vis_cfg = {}
@@ -9312,6 +9529,10 @@ def run_alignment_segment(
     near_dist_vis_ratio_max = max(
         0.0,
         min(1.0, float(_as_float(near_dist_vis_cfg.get("near_gate_ratio_max"), 0.2))),
+    )
+    near_dist_vis_continuous = bool(near_dist_vis_cfg.get("continuous_until_visible"))
+    near_dist_vis_hard_fail_on_exhausted = bool(
+        near_dist_vis_cfg.get("hard_fail_on_exhausted_attempts")
     )
     near_dist_vis_observe_s = max(
         float(CONTROL_DT),
@@ -9498,6 +9719,62 @@ def run_alignment_segment(
                 int(_as_int(step_pre_desc_score_when_visible_raw, int(step_pre_desc_score))),
             ),
         )
+    step_pre_desc_y_axis_speed_cfg = step_pre_desc_cfg.get("y_axis_speed_curve")
+    if not isinstance(step_pre_desc_y_axis_speed_cfg, dict):
+        step_pre_desc_y_axis_speed_cfg = {}
+    step_pre_desc_y_axis_speed_enabled = bool(step_pre_desc_y_axis_speed_cfg.get("enabled", False))
+    step_pre_desc_y_axis_speed_use_abs = bool(step_pre_desc_y_axis_speed_cfg.get("use_abs", True))
+    step_pre_desc_y_axis_speed_min_y_mm = max(
+        0.0,
+        float(_as_float(step_pre_desc_y_axis_speed_cfg.get("min_y_mm"), 0.0)),
+    )
+    step_pre_desc_y_axis_speed_slow_start_mm = max(
+        float(step_pre_desc_y_axis_speed_min_y_mm),
+        float(_as_float(step_pre_desc_y_axis_speed_cfg.get("slow_start_mm"), 25.0)),
+    )
+    step_pre_desc_y_axis_speed_max_y_mm = max(
+        float(step_pre_desc_y_axis_speed_slow_start_mm),
+        float(_as_float(step_pre_desc_y_axis_speed_cfg.get("max_y_mm"), 500.0)),
+    )
+    step_pre_desc_y_axis_speed_min_score = max(
+        int(telemetry_robot_module.SPEED_SCORE_MIN),
+        min(
+            int(MAX_SPEED_SCORE),
+            int(
+                _as_int(
+                    step_pre_desc_y_axis_speed_cfg.get("min_score"),
+                    int(telemetry_robot_module.SPEED_SCORE_MIN),
+                )
+            ),
+        ),
+    )
+    step_pre_desc_y_axis_speed_max_score = max(
+        int(step_pre_desc_y_axis_speed_min_score),
+        min(
+            int(MAX_SPEED_SCORE),
+            int(
+                _as_int(
+                    step_pre_desc_y_axis_speed_cfg.get("max_score"),
+                    int(step_pre_desc_score),
+                )
+            ),
+        ),
+    )
+    step_pre_desc_y_axis_speed_score_at_slow_start = max(
+        int(step_pre_desc_y_axis_speed_min_score),
+        min(
+            int(step_pre_desc_y_axis_speed_max_score),
+            int(
+                _as_int(
+                    step_pre_desc_y_axis_speed_cfg.get("score_at_slow_start"),
+                    int(step_pre_desc_y_axis_speed_max_score),
+                )
+            ),
+        ),
+    )
+    step_pre_desc_apply_visible_cap_with_y_axis_speed = bool(
+        step_pre_desc_cfg.get("apply_score_when_visible_with_y_axis_speed", False)
+    )
     step_pre_desc_confirm_frames = max(
         1,
         int(_as_int(step_pre_desc_cfg.get("confirm_frames"), 3)),
@@ -9520,11 +9797,38 @@ def run_alignment_segment(
     step_pre_desc_completion_mode = str(step_pre_desc_cfg.get("completion_mode") or "true_streak").strip().lower()
     if step_pre_desc_completion_mode not in ("true_streak", "true_then_false_streak"):
         step_pre_desc_completion_mode = "true_streak"
+    step_pre_desc_seek_below_top_raw = step_pre_desc_cfg.get("seek_below_top_enabled")
+    if step_pre_desc_seek_below_top_raw is not None:
+        step_pre_desc_completion_mode = (
+            "true_then_false_streak"
+            if bool(step_pre_desc_seek_below_top_raw)
+            else "true_streak"
+        )
     step_pre_desc_true_required = max(1, int(_as_int(step_pre_desc_cfg.get("true_down_acts_required"), 3)))
     step_pre_desc_false_after_true_required = max(
         1,
         int(_as_int(step_pre_desc_cfg.get("false_after_true_down_acts_required"), 2)),
     )
+    step_pre_desc_exclude_active_steps_raw = step_pre_desc_cfg.get("exclude_when_active_steps")
+    step_pre_desc_exclude_active_steps = set()
+    if isinstance(step_pre_desc_exclude_active_steps_raw, (list, tuple, set)):
+        for item in step_pre_desc_exclude_active_steps_raw:
+            item_key = normalize_step_label(item)
+            if item_key:
+                step_pre_desc_exclude_active_steps.add(item_key)
+    step_pre_desc_exclude_active_step_numbers_raw = step_pre_desc_cfg.get(
+        "exclude_when_active_step_numbers"
+    )
+    step_pre_desc_exclude_active_step_numbers = set()
+    if isinstance(step_pre_desc_exclude_active_step_numbers_raw, (list, tuple, set)):
+        for raw_num in step_pre_desc_exclude_active_step_numbers_raw:
+            num = _as_int(raw_num, None)
+            if num is None:
+                continue
+            try:
+                step_pre_desc_exclude_active_step_numbers.add(int(num))
+            except (TypeError, ValueError):
+                continue
     if step_pre_desc_enabled:
         step_pre_desc_max_acts = max(
             1,
@@ -10033,6 +10337,34 @@ def run_alignment_segment(
             return "WAIT"
         return "YES" if bool(value) else "NO"
 
+    def _pre_align_desc_y_axis_curve_score():
+        if not bool(step_pre_desc_y_axis_speed_enabled):
+            return None, None, None
+        brick_local = getattr(world, "brick", {}) or {}
+        y_raw = brick_local.get("y_axis", brick_local.get("offset_y"))
+        y_num = _as_float(y_raw, None)
+        if y_num is None:
+            return None, None, None
+        y_value = float(abs(float(y_num))) if bool(step_pre_desc_y_axis_speed_use_abs) else float(y_num)
+        min_y = float(step_pre_desc_y_axis_speed_min_y_mm)
+        slow_start_y = float(step_pre_desc_y_axis_speed_slow_start_mm)
+        max_y = float(step_pre_desc_y_axis_speed_max_y_mm)
+        min_score = int(step_pre_desc_y_axis_speed_min_score)
+        slow_start_score = int(step_pre_desc_y_axis_speed_score_at_slow_start)
+        max_score = int(step_pre_desc_y_axis_speed_max_score)
+        y_clamped = max(min_y, min(max_y, y_value))
+        if float(y_clamped) <= float(slow_start_y):
+            span = max(1e-6, float(slow_start_y - min_y))
+            ratio = (float(y_clamped) - float(min_y)) / float(span)
+            score_float = float(min_score) + (float(slow_start_score - min_score) * float(ratio))
+        else:
+            span = max(1e-6, float(max_y - slow_start_y))
+            ratio = (float(y_clamped) - float(slow_start_y)) / float(span)
+            score_float = float(slow_start_score) + (float(max_score - slow_start_score) * float(ratio))
+        score_out = int(round(float(score_float)))
+        score_out = max(int(min_score), min(int(max_score), int(score_out)))
+        return int(score_out), float(y_num), float(y_clamped)
+
     def _maybe_run_micro_adjust_focus_guard(*, phase_label="align"):
         nonlocal micro_adjust_focus_latched_true
         nonlocal last_micro_adjust_act
@@ -10354,6 +10686,29 @@ def run_alignment_segment(
         nonlocal step_pre_desc_run_once
         if not bool(step_pre_desc_enabled) or int(step_pre_desc_max_acts) <= 0:
             return {"enabled": False, "success": True, "reason": "disabled"}
+        active_step_state = getattr(world, "step_state", None)
+        active_step_key = normalize_step_label(getattr(active_step_state, "value", active_step_state))
+        active_step_num = _step_number_for_label(active_step_key) if active_step_key else None
+        skip_for_active_step = bool(
+            (active_step_key and active_step_key in step_pre_desc_exclude_active_steps)
+            or (
+                active_step_num is not None
+                and int(active_step_num) in step_pre_desc_exclude_active_step_numbers
+            )
+        )
+        if bool(skip_for_active_step):
+            if not align_silent:
+                active_step_text = str(active_step_key or "?")
+                active_step_num_text = (
+                    f"#{int(active_step_num)} " if active_step_num is not None else ""
+                )
+                _print_exception_line(
+                    (
+                        f"[{step_key}] Pre-align descend skipped: excluded while active step is "
+                        f"{active_step_num_text}{active_step_text}."
+                    )
+                )
+            return {"enabled": False, "success": True, "reason": "excluded by active step"}
         if bool(step_pre_desc_run_once):
             return {"enabled": True, "success": True, "reason": "already completed"}
         step_pre_desc_run_once = True
@@ -10375,6 +10730,19 @@ def run_alignment_segment(
                 speed_note += (
                     f", consistent-observe=YES(max={int(step_pre_desc_consistent_observation_max_checks)})"
                 )
+            if bool(step_pre_desc_y_axis_speed_enabled):
+                y_axis_label = "|y_axis|" if bool(step_pre_desc_y_axis_speed_use_abs) else "y_axis"
+                speed_note += (
+                    f", y-axis-speed={y_axis_label} "
+                    f"{float(step_pre_desc_y_axis_speed_min_y_mm):.1f}->{int(step_pre_desc_y_axis_speed_min_score)}% "
+                    f"{float(step_pre_desc_y_axis_speed_slow_start_mm):.1f}->{int(step_pre_desc_y_axis_speed_score_at_slow_start)}% "
+                    f"{float(step_pre_desc_y_axis_speed_max_y_mm):.1f}->{int(step_pre_desc_y_axis_speed_max_score)}%"
+                )
+                if step_pre_desc_score_when_visible is not None:
+                    speed_note += (
+                        ", visible-cap-with-y-axis-speed="
+                        f"{'YES' if bool(step_pre_desc_apply_visible_cap_with_y_axis_speed) else 'NO'}"
+                    )
             _print_exception_line(
                 (
                     f"[{step_key}] Pre-align descend start: "
@@ -10457,8 +10825,23 @@ def run_alignment_segment(
                 gate_done = int(true_down_streak) >= int(step_pre_desc_true_required)
                 progress_text = f"true-streak={int(true_down_streak)}/{int(step_pre_desc_true_required)}"
             pulse_score = int(step_pre_desc_score_after_seen_true) if bool(saw_true) else int(step_pre_desc_score)
+            y_axis_curve_score = None
+            y_axis_curve_raw = None
+            y_axis_curve_clamped = None
+            if bool(step_pre_desc_y_axis_speed_enabled):
+                y_axis_curve_score, y_axis_curve_raw, y_axis_curve_clamped = _pre_align_desc_y_axis_curve_score()
+                if y_axis_curve_score is not None:
+                    pulse_score = min(int(pulse_score), int(y_axis_curve_score))
             visible_now = bool((getattr(world, "brick", {}) or {}).get("visible"))
-            if (step_pre_desc_score_when_visible is not None) and bool(visible_now):
+            apply_visible_cap = bool(
+                (step_pre_desc_score_when_visible is not None)
+                and bool(visible_now)
+                and (
+                    (not bool(step_pre_desc_y_axis_speed_enabled))
+                    or bool(step_pre_desc_apply_visible_cap_with_y_axis_speed)
+                )
+            )
+            if bool(apply_visible_cap):
                 pulse_score = min(int(pulse_score), int(step_pre_desc_score_when_visible))
             pulse_speed = telemetry_robot_module.manual_speed_for_cmd(step_pre_desc_cmd, pulse_score)
             if not align_silent:
@@ -10469,12 +10852,25 @@ def run_alignment_segment(
                     samples_note = (
                         f", obs{int(step_pre_desc_confirm_frames)}=[{_crosshair_sample_text(crosshair_samples)}]"
                     )
+                speed_note = ""
+                if bool(step_pre_desc_y_axis_speed_enabled):
+                    y_axis_label = "|y_axis|" if bool(step_pre_desc_y_axis_speed_use_abs) else "y_axis"
+                    if y_axis_curve_score is None or y_axis_curve_raw is None or y_axis_curve_clamped is None:
+                        speed_note += ", y-axis-speed=NA"
+                    else:
+                        speed_note += (
+                            f", {y_axis_label}={float(y_axis_curve_raw):.1f}mm"
+                            f"(eval={float(y_axis_curve_clamped):.1f}mm), "
+                            f"curve={int(y_axis_curve_score)}%"
+                        )
+                if bool(apply_visible_cap):
+                    speed_note += f", visible-cap={int(step_pre_desc_score_when_visible)}%"
                 next_action = "STOP" if bool(gate_done) else f"{str(step_pre_desc_cmd).upper()} {int(pulse_score)}%"
                 _print_exception_line(
                     (
                         f"[{step_key}] Pre-align descend pulse "
                         f"{int(idx)}/{int(step_pre_desc_max_acts)}: "
-                        f"speed={int(pulse_score)}%, inCrosshairs={crosshair_text}{samples_note}, "
+                        f"speed={int(pulse_score)}%{speed_note}, inCrosshairs={crosshair_text}{samples_note}, "
                         f"{progress_text}, gate={gate_word}, next={next_action}, obs-checks={int(observation_checks)}."
                     )
                 )
@@ -10526,17 +10922,53 @@ def run_alignment_segment(
             step_post_mast_cmd,
             step_post_mast_score,
         )
+        step_post_mast_cmd_text = str(cmd_to_motion_type(step_post_mast_cmd) or "").strip().lower()
+        if step_post_mast_cmd_text == "wait" or not step_post_mast_cmd_text:
+            step_post_mast_cmd_text = str(step_post_mast_cmd).strip().lower() or "hold"
         if not align_silent:
             if step_post_mast_reminder:
                 _print_exception_line(f"[{step_key}] {step_post_mast_reminder}")
             _print_exception_line(
                 (
                     f"[{step_key}] Post-success mast pulse start: "
-                    f"{str(step_post_mast_cmd).upper()} {int(step_post_mast_score)}% "
+                    f"{int(step_post_mast_score)}% {step_post_mast_cmd_text} "
                     f"x{int(step_post_mast_acts)} (observe_between_acts="
                     f"{'YES' if bool(step_post_mast_observe_between_acts) else 'NO'})."
                 )
             )
+
+        def _tail_pulse_wait_seconds(action_meta):
+            # Non-queued transport may drop/override back-to-back timed commands.
+            # When pause_s is not configured, wait for the commanded pulse duration
+            # so post-success mast pulses behave like explicit hotkey taps.
+            if float(step_post_mast_pause_s) > 0.0:
+                return float(step_post_mast_pause_s)
+            duration_ms = None
+            if isinstance(action_meta, dict):
+                segments = action_meta.get("segments")
+                if isinstance(segments, list):
+                    seg_total_ms = 0
+                    for seg in segments:
+                        if not isinstance(seg, dict):
+                            continue
+                        seg_ms = _as_int(seg.get("duration_ms"), None)
+                        if seg_ms is None:
+                            seg_ms = _as_int(seg.get("duration_model_ms"), None)
+                        if seg_ms is None:
+                            continue
+                        seg_total_ms += int(max(0, int(seg_ms)))
+                    if seg_total_ms > 0:
+                        duration_ms = int(seg_total_ms)
+                if duration_ms is None:
+                    duration_ms = _as_int(action_meta.get("duration_ms"), None)
+                if duration_ms is None:
+                    duration_ms = _as_int(action_meta.get("duration_model_ms"), None)
+            if duration_ms is None or int(duration_ms) <= 0:
+                duration_ms = _as_int(getattr(telemetry_robot_module, "ACT_DURATION_MS", None), None)
+            if duration_ms is None or int(duration_ms) <= 0:
+                return float(CONTROL_DT)
+            return max(float(CONTROL_DT), float(duration_ms) / 1000.0)
+
         for idx in range(1, int(step_post_mast_acts) + 1):
             if confirm_callback and not confirm_callback(world, vision):
                 return {"enabled": True, "success": False, "reason": "confirm cancelled"}
@@ -10549,14 +10981,17 @@ def run_alignment_segment(
                     step_post_mast_speed,
                     "post_success_mast_exception",
                 )
-            send_robot_command(
+            action_meta = send_robot_command(
                 robot,
                 world,
                 step,
                 step_post_mast_cmd,
                 step_post_mast_speed,
                 speed_score=step_post_mast_score,
-                auto_mode=True,
+                # Preserve configured post-success mast intent exactly (for
+                # example 100% tail-settle pulses) instead of applying the
+                # generic autonomous speed cap.
+                auto_mode=False,
             )
             if bool(step_post_mast_observe_between_acts):
                 post_act_analysis(world, vision, step=step, log=not align_silent, include_pause=False)
@@ -10575,11 +11010,36 @@ def run_alignment_segment(
                     (
                         f"[{step_key}] Post-success mast pulse "
                         f"{int(idx)}/{int(step_post_mast_acts)}: "
-                        f"{str(step_post_mast_cmd).upper()} {int(step_post_mast_score)}%."
+                        f"{int(step_post_mast_score)}% {step_post_mast_cmd_text}."
                     )
                 )
-            if step_post_mast_pause_s > 0.0:
-                time.sleep(float(step_post_mast_pause_s))
+                wire_text = None
+                if isinstance(action_meta, dict):
+                    wire_text = str(action_meta.get("cmd_sent") or "").strip().lower()
+                    pwm_wire = _as_int(action_meta.get("pwm"), None)
+                    dur_wire = _as_int(action_meta.get("duration_ms"), None)
+                    if wire_text:
+                        extras = []
+                        if pwm_wire is not None:
+                            extras.append(str(int(pwm_wire)))
+                        if dur_wire is not None:
+                            extras.append(str(int(dur_wire)))
+                        if extras:
+                            wire_text = f"{wire_text} {' '.join(extras)}"
+                if not wire_text:
+                    world_wire = getattr(world, "_last_action_wire", None)
+                    if world_wire:
+                        wire_text = str(world_wire).strip()
+                if wire_text:
+                    print(
+                        format_headline(
+                            f"[{step_key} EXCEPTION WIRE] pulse {int(idx)}/{int(step_post_mast_acts)}: {wire_text}",
+                            COLOR_GRAY,
+                        )
+                    )
+            wait_s = _tail_pulse_wait_seconds(action_meta)
+            if float(wait_s) > 0.0:
+                time.sleep(float(wait_s))
         if not align_silent:
             _print_exception_line(
                 f"[{step_key}] Post-success mast pulse complete."
@@ -10591,6 +11051,13 @@ def run_alignment_segment(
         # micro-pulse can fire after a passing gatecheck.
         if robot:
             robot.stop()
+        if bool(step_post_mast_enabled):
+            # Give the transport one command window before tail pulses so the
+            # first post-success mast act is not swallowed by a preceding stop.
+            settle_ms = _as_int(getattr(telemetry_robot_module, "ACT_DURATION_MS", None), None)
+            if settle_ms is None or int(settle_ms) <= 0:
+                settle_ms = int(max(1, int(round(float(CONTROL_DT) * 1000.0))))
+            time.sleep(max(float(CONTROL_DT), float(settle_ms) / 1000.0))
         post_mast_result = _run_step_post_success_mast_exception()
         if bool((post_mast_result or {}).get("enabled")) and not bool((post_mast_result or {}).get("success")):
             if robot:
@@ -10705,7 +11172,6 @@ def run_alignment_segment(
     gap_planner_state = {}
     last_align_action = None
     last_align_signature = None
-    unchanged_speed_bump_state = None
     recent_align_acts = collections.deque(maxlen=32)
     align_target_lock = None
     align_target_lock_required = bool(align_target_lock_enabled)
@@ -10716,7 +11182,7 @@ def run_alignment_segment(
     last_no_action_gatecheck_log_loop = 0
     no_action_lite_failed_reason = None
     progress_mast_start_dist = None
-    progress_mast_triggered = False
+    progress_mast_pending_triggers = [float(v) for v in progress_mast_trigger_fractions]
     near_dist_vis_attempts = 0
     near_dist_vis_reminder_logged = False
     last_visible_dist_mm = None
@@ -11000,10 +11466,10 @@ def run_alignment_segment(
         return "ran"
 
     def _maybe_run_progress_mast_exception():
-        nonlocal progress_mast_start_dist, progress_mast_triggered, last_align_action
+        nonlocal progress_mast_start_dist, progress_mast_pending_triggers, last_align_action
         if not bool(progress_mast_active):
             return False, None
-        if bool(progress_mast_triggered):
+        if not bool(progress_mast_pending_triggers):
             return False, None
         brick_local = getattr(world, "brick", {}) or {}
         if not bool(brick_local.get("visible")):
@@ -11020,7 +11486,7 @@ def run_alignment_segment(
         start_to_target = float(target_dist_local - start_dist_local)
         total_gap_abs = abs(float(start_to_target))
         if total_gap_abs < float(progress_mast_min_gap_mm):
-            progress_mast_triggered = True
+            progress_mast_pending_triggers = []
             if not align_silent:
                 print(
                     format_headline(
@@ -11039,10 +11505,11 @@ def run_alignment_segment(
             return False, None
 
         progress_ratio = min(1.0, max(0.0, abs(float(start_to_curr)) / float(total_gap_abs)))
-        if float(progress_ratio) + 1e-9 < float(progress_mast_trigger_fraction):
+        trigger_fraction = float(progress_mast_pending_triggers[0])
+        if float(progress_ratio) + 1e-9 < float(trigger_fraction):
             return False, None
 
-        progress_mast_triggered = True
+        progress_mast_pending_triggers = list(progress_mast_pending_triggers[1:])
         if not align_silent:
             if progress_mast_reminder:
                 print(
@@ -11055,14 +11522,17 @@ def run_alignment_segment(
                 format_headline(
                     (
                         f"[{step_key} EXCEPTION] Triggered at {float(progress_ratio) * 100.0:.1f}% "
-                        f"dist progress (start={start_dist_local:.2f}, now={float(curr_dist_local):.2f}, "
+                        f"dist progress ({(1.0 - float(progress_ratio)) * 100.0:.1f}% away; "
+                        f"trigger {float(trigger_fraction) * 100.0:.1f}% progress / "
+                        f"{(1.0 - float(trigger_fraction)) * 100.0:.1f}% away, "
+                        f"{len(progress_mast_pending_triggers)} remaining) "
+                        f"(start={start_dist_local:.2f}, now={float(curr_dist_local):.2f}, "
                         f"target={target_dist_local:.2f}); executing "
                         f"{str(progress_mast_cmd).upper()} {int(progress_mast_score)}% x{int(progress_mast_acts)}."
                     ),
                     COLOR_MAGENTA_BRIGHT,
                 )
             )
-
         for idx in range(1, int(progress_mast_acts) + 1):
             if confirm_callback and not confirm_callback(world, vision):
                 return True, "confirm cancelled"
@@ -11186,7 +11656,6 @@ def run_alignment_segment(
         if float(gap_mm) > float(near_dist_vis_gap_mm_max):
             return "skipped"
 
-        attempt_idx = int(near_dist_vis_attempts) + 1
         if not align_silent and near_dist_vis_reminder and not bool(near_dist_vis_reminder_logged):
             print(
                 format_headline(
@@ -11195,83 +11664,111 @@ def run_alignment_segment(
                 )
             )
             near_dist_vis_reminder_logged = True
-        if not align_silent:
-            print(
-                format_headline(
-                    (
-                        f"[{step_key} EXCEPTION] Near-target visibility rescue {int(attempt_idx)}/{int(near_dist_vis_max_attempts)}: "
-                        f"visible=NO, dist={float(dist_now):.2f}mm, gap={float(gap_mm):.2f}mm "
-                        f"(threshold <= {float(near_dist_vis_gap_mm_max):.2f}mm = "
-                        f"{float(near_dist_vis_ratio_max) * 100.0:.0f}% of tol {float(near_dist_vis_tol):.2f}mm); "
-                        f"executing {str(near_dist_vis_cmd).upper()} {int(near_dist_vis_score)}%."
-                    ),
-                    COLOR_MAGENTA_BRIGHT,
-                )
-            )
+        attempts_remaining = max(0, int(near_dist_vis_max_attempts) - int(near_dist_vis_attempts))
+        if int(attempts_remaining) <= 0:
+            return "skipped"
+        attempts_this_call = int(attempts_remaining) if bool(near_dist_vis_continuous) else 1
+        attempted_any = False
 
-        if confirm_callback and not confirm_callback(world, vision):
-            return "confirm cancelled"
-
-        cmd_local = str(near_dist_vis_cmd)
-        score_local = int(near_dist_vis_score)
-        speed_local = telemetry_robot_module.manual_speed_for_cmd(cmd_local, score_local)
-        action_tag = "near_dist_visibility_mast_exception"
-        if observer:
-            observer("analysis", world, vision, cmd_local, speed_local, action_tag)
-        action_meta_local = send_robot_command(
-            robot,
-            world,
-            step,
-            cmd_local,
-            speed_local,
-            speed_score=score_local,
-            auto_mode=True,
-        )
-        near_dist_vis_attempts = int(attempt_idx)
-        recent_align_acts.append({"cmd": str(cmd_local), "score": int(score_local)})
-        if isinstance(action_meta_local, dict):
-            last_align_action = {
-                "cmd": str(cmd_local),
-                "cmd_sent": action_meta_local.get("cmd_sent"),
-                "score": int(score_local),
-                "pwm": action_meta_local.get("pwm"),
-                "power": action_meta_local.get("power"),
-                "duration_ms": action_meta_local.get("duration_ms"),
-            }
-        else:
-            last_align_action = {"cmd": str(cmd_local), "score": int(score_local)}
-        if observer:
-            observer("action", world, vision, cmd_local, speed_local, action_tag)
-
-        if _observe_visible(float(near_dist_vis_observe_s)):
-            update_world_from_vision(world, vision, log=not align_silent)
-            restored_dist = _as_float((getattr(world, "brick", {}) or {}).get("dist"), None)
-            if restored_dist is not None:
-                last_visible_dist_mm = float(restored_dist)
-            near_dist_vis_attempts = 0
-            near_dist_vis_reminder_logged = False
+        for local_idx in range(1, int(attempts_this_call) + 1):
+            attempt_idx = int(near_dist_vis_attempts) + 1
             if not align_silent:
                 print(
                     format_headline(
                         (
-                            f"[{step_key} EXCEPTION] Near-target visibility rescue recovered visibility "
-                            f"after {str(cmd_local).upper()} {int(score_local)}%."
+                            f"[{step_key} EXCEPTION] Near-target visibility rescue {int(attempt_idx)}/{int(near_dist_vis_max_attempts)}: "
+                            f"visible=NO, dist={float(dist_now):.2f}mm, gap={float(gap_mm):.2f}mm "
+                            f"(threshold <= {float(near_dist_vis_gap_mm_max):.2f}mm = "
+                            f"{float(near_dist_vis_ratio_max) * 100.0:.0f}% of tol {float(near_dist_vis_tol):.2f}mm); "
+                            f"executing {str(near_dist_vis_cmd).upper()} {int(near_dist_vis_score)}%."
                         ),
                         COLOR_MAGENTA_BRIGHT,
                     )
                 )
-            return "recovered"
 
-        if not align_silent:
-            print(
-                format_headline(
-                    (
-                        f"[{step_key} EXCEPTION] Near-target visibility rescue "
-                        f"{int(attempt_idx)}/{int(near_dist_vis_max_attempts)} did not recover visibility."
-                    ),
-                    COLOR_MAGENTA_BRIGHT,
-                )
+            if confirm_callback and not confirm_callback(world, vision):
+                return "confirm cancelled"
+
+            cmd_local = str(near_dist_vis_cmd)
+            score_local = int(near_dist_vis_score)
+            speed_local = telemetry_robot_module.manual_speed_for_cmd(cmd_local, score_local)
+            action_tag = "near_dist_visibility_mast_exception"
+            if observer:
+                observer("analysis", world, vision, cmd_local, speed_local, action_tag)
+            action_meta_local = send_robot_command(
+                robot,
+                world,
+                step,
+                cmd_local,
+                speed_local,
+                speed_score=score_local,
+                auto_mode=True,
             )
+            near_dist_vis_attempts = int(attempt_idx)
+            attempted_any = True
+            recent_align_acts.append({"cmd": str(cmd_local), "score": int(score_local)})
+            if isinstance(action_meta_local, dict):
+                last_align_action = {
+                    "cmd": str(cmd_local),
+                    "cmd_sent": action_meta_local.get("cmd_sent"),
+                    "score": int(score_local),
+                    "pwm": action_meta_local.get("pwm"),
+                    "power": action_meta_local.get("power"),
+                    "duration_ms": action_meta_local.get("duration_ms"),
+                }
+            else:
+                last_align_action = {"cmd": str(cmd_local), "score": int(score_local)}
+            if observer:
+                observer("action", world, vision, cmd_local, speed_local, action_tag)
+
+            if _observe_visible(float(near_dist_vis_observe_s)):
+                update_world_from_vision(world, vision, log=not align_silent)
+                restored_dist = _as_float((getattr(world, "brick", {}) or {}).get("dist"), None)
+                if restored_dist is not None:
+                    last_visible_dist_mm = float(restored_dist)
+                near_dist_vis_attempts = 0
+                near_dist_vis_reminder_logged = False
+                if not align_silent:
+                    print(
+                        format_headline(
+                            (
+                                f"[{step_key} EXCEPTION] Near-target visibility rescue recovered visibility "
+                                f"after {str(cmd_local).upper()} {int(score_local)}%."
+                            ),
+                            COLOR_MAGENTA_BRIGHT,
+                        )
+                    )
+                return "recovered"
+
+            if not align_silent:
+                print(
+                    format_headline(
+                        (
+                            f"[{step_key} EXCEPTION] Near-target visibility rescue "
+                            f"{int(attempt_idx)}/{int(near_dist_vis_max_attempts)} did not recover visibility."
+                        ),
+                        COLOR_MAGENTA_BRIGHT,
+                    )
+                )
+            if int(local_idx) < int(attempts_this_call):
+                time.sleep(CONTROL_DT)
+
+        if (
+            bool(attempted_any)
+            and bool(near_dist_vis_hard_fail_on_exhausted)
+            and int(near_dist_vis_attempts) >= int(near_dist_vis_max_attempts)
+        ):
+            if not align_silent:
+                print(
+                    format_headline(
+                        (
+                            f"[{step_key} EXCEPTION] Near-target visibility rescue exhausted "
+                            f"{int(near_dist_vis_max_attempts)} attempt(s); hard-failing step."
+                        ),
+                        COLOR_RED,
+                    )
+                )
+            return "failed_hard"
         return "attempted"
 
     def _recover_visibility(source="unknown", reason=None, reverse_max_acts=None):
@@ -12386,8 +12883,14 @@ def run_alignment_segment(
         return False, str(topmost_seek_status or "topmost target not confirmed")
 
     if bool(progress_mast_active) and not align_silent:
+        progress_trigger_text = ", ".join(
+            [
+                f"{float(fraction) * 100.0:.1f}% progress ({(1.0 - float(fraction)) * 100.0:.1f}% away)"
+                for fraction in progress_mast_trigger_fractions
+            ]
+        )
         reminder_msg = progress_mast_reminder or (
-            f"Exception active: after {float(progress_mast_trigger_fraction) * 100.0:.1f}% dist progress, "
+            f"Exception active: at dist checkpoints {progress_trigger_text}, "
             f"run {str(progress_mast_cmd).upper()} {int(progress_mast_score)}% x{int(progress_mast_acts)}."
         )
         print(format_headline(f"[{step_key} EXCEPTION] {reminder_msg}", COLOR_MAGENTA_BRIGHT))
@@ -12567,6 +13070,9 @@ def run_alignment_segment(
             near_dist_vis_status = _maybe_run_near_dist_visibility_mast_exception()
             if near_dist_vis_status == "confirm cancelled":
                 return False, "confirm cancelled"
+            if near_dist_vis_status == "failed_hard":
+                pause_after_fail(robot)
+                return False, "near_dist_visibility_rescue_failed"
             if near_dist_vis_status == "recovered":
                 stale_pre_obs_streak = 0
                 stale_frame_streak = 0
@@ -12821,7 +13327,7 @@ def run_alignment_segment(
             force_gatecheck_hold = True
             if (
                 bool(progress_mast_active)
-                and not bool(progress_mast_triggered)
+                and bool(progress_mast_pending_triggers)
                 and no_action_reason != "all_gaps_within_gate"
             ):
                 force_gatecheck_hold = False
@@ -12933,6 +13439,29 @@ def run_alignment_segment(
                 world,
                 step,
             )
+            unknown_required_gaps = _required_align_unknown_gaps(local_gate_before_action)
+            if unknown_required_gaps and _should_fail_required_gap_unknown(
+                local_gate_before_action,
+                is_search_action=is_search_action,
+            ):
+                if robot:
+                    robot.stop()
+                step_label = normalize_step_label(step) or str(step or "ALIGN")
+                missing_text = ", ".join(str(item) for item in unknown_required_gaps)
+                if not align_silent:
+                    print(
+                        format_headline(
+                            (
+                                f"[FAIL] {step_label}: required gap(s) unknown "
+                                f"({missing_text}); stopping to avoid blind correction."
+                            ),
+                            COLOR_RED,
+                        )
+                    )
+                if observer:
+                    observer("action", world, vision, None, 0.0, f"fail_unknown_gap_{missing_text}")
+                pause_after_fail(robot)
+                return False, f"required gap unknown ({missing_text})"
             dist_err_before_action = _forward_stall_dist_err_from_local_gate(local_gate_before_action)
             forward_stall_triggered, forward_stall_improvement_mm = _forward_stall_should_trigger(
                 cmd_value=cmd,
@@ -12946,39 +13475,6 @@ def run_alignment_segment(
                     return False, "confirm cancelled"
                 time.sleep(CONTROL_DT)
                 continue
-            if not bool(is_search_action):
-                unknown_metric = _unknown_metric_for_planned_action(
-                    cmd=cmd,
-                    cmd_reason=cmd_reason,
-                    local_gate_before_action=local_gate_before_action,
-                )
-                if unknown_metric:
-                    if robot:
-                        robot.stop()
-                    if not align_silent:
-                        step_label = normalize_step_label(step) or str(step or "ALIGN")
-                        try:
-                            score_txt = int(round(float(speed_score))) if speed_score is not None else 0
-                        except (TypeError, ValueError):
-                            score_txt = 0
-                        print(
-                            format_headline(
-                                (
-                                    f"[ALIGN] {step_label}: skipping {str(cmd).upper()} {int(score_txt)}% "
-                                    f"(missing {str(unknown_metric)}); observing next frame."
-                                ),
-                                COLOR_ORANGE_BRIGHT,
-                            )
-                        )
-                    if observer:
-                        observer("action", world, vision, None, 0.0, f"missing_{str(unknown_metric)}")
-                    _record_forward_stall_progress(
-                        cmd_value=None,
-                        dist_err_before_action=None,
-                        is_search_action=True,
-                    )
-                    time.sleep(CONTROL_DT)
-                    continue
             correction_type_for_stats = _align_correction_type_for_cmd(
                 cmd,
                 fallback=prev_log_correction_type,
@@ -12991,56 +13487,34 @@ def run_alignment_segment(
                 prev_log_y_err=prev_log_y_err,
                 prev_log_dist=prev_log_dist,
             )
-            previous_cmd_for_bump = str(
-                ((last_align_action or {}).get("cmd") if isinstance(last_align_action, dict) else "") or ""
-            ).strip().lower()
-            previous_speed_score = speed_score
-            speed_score, unchanged_speed_bump_state, bumped_for_unchanged = _maybe_apply_repeated_unchanged_speed_bump(
-                cmd=cmd,
-                score=speed_score,
-                delta_class=delta_class_for_stats,
-                correction_type=correction_type_for_stats,
-                error_signature=_align_error_signature_for_correction(
-                    correction_type_for_stats,
-                    local_gate_before_action,
-                ),
-                previous_cmd=previous_cmd_for_bump,
-                state=unchanged_speed_bump_state,
-            )
-            if bool((unchanged_speed_bump_state or {}).get("exhausted")) and not bool(bumped_for_unchanged):
-                if not align_silent:
-                    print(
-                        format_headline(
-                            (
-                                f"[ADAPT] repeated unchanged result on {str(cmd).upper()}: "
-                                f"bump limit {int(REPEATED_UNCHANGED_SPEED_BUMP_MAX_COUNT)} reached "
-                                f"(cap {int(REPEATED_UNCHANGED_SPEED_BUMP_SCORE_CAP)}%); "
-                                "failing to avoid endless retries"
-                            ),
-                            COLOR_RED,
+            if not bool(is_search_action):
+                unknown_metric = _unknown_metric_for_planned_action(
+                    cmd=cmd,
+                    cmd_reason=cmd_reason,
+                    local_gate_before_action=local_gate_before_action,
+                )
+                if unknown_metric:
+                    if robot:
+                        robot.stop()
+                    step_label = normalize_step_label(step) or str(step or "ALIGN")
+                    if not align_silent:
+                        try:
+                            score_txt = int(round(float(speed_score))) if speed_score is not None else 0
+                        except (TypeError, ValueError):
+                            score_txt = 0
+                        print(
+                            format_headline(
+                                (
+                                    f"[FAIL] {step_label}: missing {str(unknown_metric)} before "
+                                    f"{str(cmd).upper()} {int(score_txt)}%; hard stop."
+                                ),
+                                COLOR_RED,
+                            )
                         )
-                    )
-                pause_after_fail(robot)
-                return False, "adaptive unchanged-result bump limit reached"
-            if bumped_for_unchanged and not align_silent:
-                try:
-                    prev_score_txt = int(round(float(previous_speed_score)))
-                except (TypeError, ValueError):
-                    prev_score_txt = None
-                try:
-                    new_score_txt = int(round(float(speed_score)))
-                except (TypeError, ValueError):
-                    new_score_txt = None
-                if prev_score_txt is not None and new_score_txt is not None:
-                    print(
-                        format_headline(
-                            (
-                                f"[ADAPT] repeated unchanged result on {str(cmd).upper()}: "
-                                f"bumping speed {int(prev_score_txt)}% -> {int(new_score_txt)}%"
-                            ),
-                            COLOR_ORANGE_BRIGHT,
-                        )
-                    )
+                    if observer:
+                        observer("action", world, vision, None, 0.0, f"fail_missing_{str(unknown_metric)}")
+                    pause_after_fail(robot)
+                    return False, f"missing metric for planned action ({str(unknown_metric)})"
             pre_frame_id = getattr(world, "_frame_id", 0)
             pre_gate_text = None
             pre_focus = None
@@ -13562,6 +14036,26 @@ def run_alignment_segment(
                 world,
                 step,
             )
+            unknown_required_gaps = _required_align_unknown_gaps(local_gate_before_action)
+            if unknown_required_gaps and _should_fail_required_gap_unknown(local_gate_before_action):
+                if robot:
+                    robot.stop()
+                step_label = normalize_step_label(step) or str(step or "ALIGN")
+                missing_text = ", ".join(str(item) for item in unknown_required_gaps)
+                if not align_silent:
+                    print(
+                        format_headline(
+                            (
+                                f"[FAIL] {step_label}: required gap(s) unknown "
+                                f"({missing_text}) during settle; stopping to avoid blind correction."
+                            ),
+                            COLOR_RED,
+                        )
+                    )
+                if observer:
+                    observer("action", world, vision, None, 0.0, f"fail_unknown_gap_settle_{missing_text}")
+                pause_after_fail(robot)
+                return False, f"required gap unknown during settle ({missing_text})"
             unknown_metric = _unknown_metric_for_planned_action(
                 cmd=cmd,
                 cmd_reason=cmd_reason,
@@ -13570,8 +14064,8 @@ def run_alignment_segment(
             if unknown_metric:
                 if robot:
                     robot.stop()
+                step_label = normalize_step_label(step) or str(step or "ALIGN")
                 if not align_silent:
-                    step_label = normalize_step_label(step) or str(step or "ALIGN")
                     try:
                         score_txt = int(round(float(speed_score))) if speed_score is not None else 0
                     except (TypeError, ValueError):
@@ -13579,78 +14073,16 @@ def run_alignment_segment(
                     print(
                         format_headline(
                             (
-                                f"[ALIGN] {step_label}: skipping {str(cmd).upper()} {int(score_txt)}% "
-                                f"(missing {str(unknown_metric)}); observing next frame."
-                            ),
-                            COLOR_ORANGE_BRIGHT,
-                        )
-                    )
-                if observer:
-                    observer("action", world, vision, None, 0.0, f"missing_{str(unknown_metric)}")
-                time.sleep(CONTROL_DT)
-                continue
-            correction_type_for_stats = _align_correction_type_for_cmd(
-                cmd,
-                fallback=prev_log_correction_type,
-            )
-            delta_class_for_stats = _classify_align_delta_class(
-                correction_type=correction_type_for_stats,
-                local_gate_before_action=local_gate_before_action,
-                prev_log_correction_type=prev_log_correction_type,
-                prev_log_x_err=prev_log_x_err,
-                prev_log_y_err=prev_log_y_err,
-                prev_log_dist=prev_log_dist,
-            )
-            previous_cmd_for_bump = str(
-                ((last_align_action or {}).get("cmd") if isinstance(last_align_action, dict) else "") or ""
-            ).strip().lower()
-            previous_speed_score = speed_score
-            speed_score, unchanged_speed_bump_state, bumped_for_unchanged = _maybe_apply_repeated_unchanged_speed_bump(
-                cmd=cmd,
-                score=speed_score,
-                delta_class=delta_class_for_stats,
-                correction_type=correction_type_for_stats,
-                error_signature=_align_error_signature_for_correction(
-                    correction_type_for_stats,
-                    local_gate_before_action,
-                ),
-                previous_cmd=previous_cmd_for_bump,
-                state=unchanged_speed_bump_state,
-            )
-            if bool((unchanged_speed_bump_state or {}).get("exhausted")) and not bool(bumped_for_unchanged):
-                if not align_silent:
-                    print(
-                        format_headline(
-                            (
-                                f"[ADAPT] repeated unchanged result on {str(cmd).upper()}: "
-                                f"bump limit {int(REPEATED_UNCHANGED_SPEED_BUMP_MAX_COUNT)} reached "
-                                f"(cap {int(REPEATED_UNCHANGED_SPEED_BUMP_SCORE_CAP)}%); "
-                                "failing to avoid endless retries"
+                                f"[FAIL] {step_label}: missing {str(unknown_metric)} before "
+                                f"{str(cmd).upper()} {int(score_txt)}% in settle; hard stop."
                             ),
                             COLOR_RED,
                         )
                     )
+                if observer:
+                    observer("action", world, vision, None, 0.0, f"fail_missing_settle_{str(unknown_metric)}")
                 pause_after_fail(robot)
-                return False, "adaptive unchanged-result bump limit reached"
-            if bumped_for_unchanged and not align_silent:
-                try:
-                    prev_score_txt = int(round(float(previous_speed_score)))
-                except (TypeError, ValueError):
-                    prev_score_txt = None
-                try:
-                    new_score_txt = int(round(float(speed_score)))
-                except (TypeError, ValueError):
-                    new_score_txt = None
-                if prev_score_txt is not None and new_score_txt is not None:
-                    print(
-                        format_headline(
-                            (
-                                f"[ADAPT] repeated unchanged result on {str(cmd).upper()}: "
-                                f"bumping speed {int(prev_score_txt)}% -> {int(new_score_txt)}%"
-                            ),
-                            COLOR_ORANGE_BRIGHT,
-                        )
-                    )
+                return False, f"missing metric for planned settle action ({str(unknown_metric)})"
             pre_gate_text = None
             pre_focus = None
             pre_entries = None
@@ -13965,18 +14397,26 @@ def replay_segment(
             confirm_callback=confirm_callback,
             align_silent=align_silent,
         )
-    start_ground_reset_result = _run_start_ground_reset_exception(
-        world,
-        vision,
-        step_key,
-        robot=robot,
-        observer=observer,
-        confirm_callback=confirm_callback,
-        align_silent=align_silent,
-    )
-    if bool((start_ground_reset_result or {}).get("enabled")) and not bool((start_ground_reset_result or {}).get("success")):
-        pause_after_fail(robot)
-        return False, str((start_ground_reset_result or {}).get("reason") or "start ground reset failed")
+    start_ground_reset_cfg = cfg.get("start_ground_reset_exception") if isinstance(cfg, dict) else {}
+    if not isinstance(start_ground_reset_cfg, dict):
+        start_ground_reset_cfg = {}
+    start_ground_reset_active = bool(start_ground_reset_cfg.get("enabled"))
+    start_ground_reset_run_after_startup = bool(start_ground_reset_cfg.get("run_after_startup_action", False))
+    start_ground_reset_ran = False
+    if bool(start_ground_reset_active) and not bool(start_ground_reset_run_after_startup):
+        start_ground_reset_result = _run_start_ground_reset_exception(
+            world,
+            vision,
+            step_key,
+            robot=robot,
+            observer=observer,
+            confirm_callback=confirm_callback,
+            align_silent=align_silent,
+        )
+        start_ground_reset_ran = bool((start_ground_reset_result or {}).get("enabled"))
+        if bool((start_ground_reset_result or {}).get("enabled")) and not bool((start_ground_reset_result or {}).get("success")):
+            pause_after_fail(robot)
+            return False, str((start_ground_reset_result or {}).get("reason") or "start ground reset failed")
     if step_is_nominal_only(step, world.process_rules):
         actions = nominal_actions_from_events(events)
         if not actions:
@@ -14126,7 +14566,42 @@ def replay_segment(
             startup_action_cfg = step_cfg_local.get("startup_action_exception") or {}
             if not isinstance(startup_action_cfg, dict):
                 startup_action_cfg = {}
+            startup_pre_action_cfg = step_cfg_local.get("startup_pre_action_exception") or {}
+            if not isinstance(startup_pre_action_cfg, dict):
+                startup_pre_action_cfg = {}
             operator_exception_reminder = str(step_cfg_local.get("operator_exception_reminder") or "").strip()
+            startup_pre_action_reminder = str(
+                startup_pre_action_cfg.get("operator_log_reminder") or ""
+            ).strip()
+            startup_pre_enabled = bool(startup_pre_action_cfg.get("enabled"))
+            startup_pre_cmd = str(startup_pre_action_cfg.get("command") or "").strip().lower()
+            if startup_pre_cmd not in ("f", "b", "l", "r", "u", "d"):
+                startup_pre_cmd = ""
+            startup_pre_acts = max(1, int(_as_int(startup_pre_action_cfg.get("acts"), 1)))
+            startup_pre_score = None
+            startup_pre_score_hotkey = str(startup_pre_action_cfg.get("score_from_hotkey") or "").strip().lower()
+            if startup_pre_score_hotkey:
+                hotkey_rows = getattr(telemetry_robot_module, "HOTKEY_SPEED_SCORES", {})
+                hotkey_row = hotkey_rows.get(startup_pre_score_hotkey) if isinstance(hotkey_rows, dict) else None
+                if isinstance(hotkey_row, dict):
+                    score_val = _as_int(hotkey_row.get("score"), None)
+                    if score_val is not None:
+                        startup_pre_score = int(score_val)
+            if startup_pre_score is None:
+                startup_pre_score = int(
+                    _as_int(startup_pre_action_cfg.get("score"), int(telemetry_robot_module.SPEED_SCORE_MIN))
+                )
+            startup_pre_score = max(
+                int(telemetry_robot_module.SPEED_SCORE_MIN),
+                min(int(MAX_SPEED_SCORE), int(startup_pre_score)),
+            )
+            startup_pre_pause_s = max(
+                0.0,
+                float(_as_float(startup_pre_action_cfg.get("pause_s"), CONTROL_DT)),
+            )
+            startup_pre_observe_between_acts = bool(
+                startup_pre_action_cfg.get("observe_between_acts", False)
+            )
             startup_enabled = bool(startup_action_cfg.get("enabled"))
             startup_cmd = str(startup_action_cfg.get("command") or "").strip().lower()
             if startup_cmd not in ("f", "b", "l", "r", "u", "d"):
@@ -14149,9 +14624,58 @@ def replay_segment(
                 int(telemetry_robot_module.SPEED_SCORE_MIN),
                 min(int(MAX_SPEED_SCORE), int(startup_score)),
             )
+            startup_pre_active = bool(startup_pre_enabled and startup_pre_cmd)
             if startup_enabled and startup_cmd and start_status in {"start", "success"}:
                 startup_action_ran = True
                 startup_speed = telemetry_robot_module.manual_speed_for_cmd(startup_cmd, startup_score)
+                if startup_pre_active:
+                    startup_pre_speed = telemetry_robot_module.manual_speed_for_cmd(startup_pre_cmd, startup_pre_score)
+                    if startup_pre_action_reminder and not align_silent:
+                        print(
+                            format_headline(
+                                f"[{step_key} EXCEPTION] {startup_pre_action_reminder}",
+                                COLOR_MAGENTA_BRIGHT,
+                            )
+                        )
+                    if not align_silent:
+                        print(
+                            format_headline(
+                                f"[{step_key} EXCEPTION] Executing startup pre-action "
+                                f"{str(startup_pre_cmd).upper()} {int(startup_pre_score)}% x{int(startup_pre_acts)}.",
+                                COLOR_MAGENTA_BRIGHT,
+                            )
+                        )
+                    for idx in range(1, int(startup_pre_acts) + 1):
+                        if confirm_callback and not confirm_callback(world, vision):
+                            if robot:
+                                robot.stop()
+                            return False, "confirm cancelled"
+                        action_tag = "startup_pre_action_exception"
+                        if observer:
+                            observer("analysis", world, vision, startup_pre_cmd, startup_pre_speed, action_tag)
+                        send_robot_command(
+                            robot,
+                            world,
+                            step_key,
+                            startup_pre_cmd,
+                            startup_pre_speed,
+                            speed_score=startup_pre_score,
+                            auto_mode=True,
+                        )
+                        if observer:
+                            observer("action", world, vision, startup_pre_cmd, startup_pre_speed, action_tag)
+                        if bool(startup_pre_observe_between_acts):
+                            post_act_analysis(world, vision, step=step_key, log=not align_silent)
+                        if not align_silent:
+                            print(
+                                format_headline(
+                                    f"[{step_key} EXCEPTION] Pre-action pulse "
+                                    f"{int(idx)}/{int(startup_pre_acts)} complete.",
+                                    COLOR_MAGENTA_BRIGHT,
+                                )
+                            )
+                        if int(idx) < int(startup_pre_acts) and float(startup_pre_pause_s) > 0.0:
+                            time.sleep(float(startup_pre_pause_s))
                 if operator_exception_reminder and not align_silent:
                     print(format_headline(f"[{step_key} EXCEPTION] {operator_exception_reminder}", COLOR_MAGENTA_BRIGHT))
                 if not align_silent:
@@ -14189,6 +14713,25 @@ def replay_segment(
                             )
                         )
                     time.sleep(CONTROL_DT)
+    if (
+        bool(start_ground_reset_active)
+        and bool(start_ground_reset_run_after_startup)
+        and (not bool(start_ground_reset_ran))
+        and start_status in {"start", "success"}
+    ):
+        start_ground_reset_result = _run_start_ground_reset_exception(
+            world,
+            vision,
+            step_key,
+            robot=robot,
+            observer=observer,
+            confirm_callback=confirm_callback,
+            align_silent=align_silent,
+        )
+        start_ground_reset_ran = bool((start_ground_reset_result or {}).get("enabled"))
+        if bool((start_ground_reset_result or {}).get("enabled")) and not bool((start_ground_reset_result or {}).get("success")):
+            pause_after_fail(robot)
+            return False, str((start_ground_reset_result or {}).get("reason") or "start ground reset failed")
     if start_status == "success" and not startup_action_ran:
         if _step_allows_topmost_ground_up_level2(step_key):
             # Topmost steps must run the level2 mast workflow; do not short-circuit
@@ -14683,7 +15226,7 @@ def replay_segment(
             if not bool((gate_obs or {}).get("effective_success_ok")):
                 _log_gatecheck_failure(world, step_key, "settle", log=not align_silent)
             if last_cmd:
-                reason_text = "adaptive replay"
+                reason_text = "replay"
                 if speed_tier_label:
                     reason_text = f"{reason_text}; {speed_tier_label} tier"
                 _log_gatecheck_next_action(
@@ -14923,6 +15466,70 @@ def replay_segment(
                     log=not align_silent,
                 )
                 desired_score = int(score_exec)
+                if bool(_height_used):
+                    step_cfg_local = (
+                        world.process_rules.get(step_key, {})
+                        if isinstance(getattr(world, "process_rules", None), dict)
+                        else {}
+                    )
+                    height_cfg_tail = _height_intel_cfg_for_phase(step_cfg_local, phase="tail")
+                    burst_acts = max(1, int(_as_int(height_cfg_tail.get("burst_acts"), 1)))
+                    observe_between_acts = bool(height_cfg_tail.get("observe_between_acts", True))
+                    burst_pause_s = _as_float(height_cfg_tail.get("pause_s"), None)
+                    if burst_acts > 1:
+                        if not align_silent:
+                            print(
+                                format_headline(
+                                    (
+                                        f"[HEIGHT INTEL] {step_key} tail burst start: "
+                                        f"{str(cmd_exec).upper()} {int(score_exec)}% "
+                                        f"x{int(burst_acts)} (observe_between_acts="
+                                        f"{'YES' if bool(observe_between_acts) else 'NO'})."
+                                    ),
+                                    COLOR_MAGENTA_BRIGHT,
+                                )
+                            )
+                        for burst_idx in range(1, int(burst_acts) + 1):
+                            burst_speed = telemetry_robot_module.manual_speed_for_cmd(cmd_exec, score_exec)
+                            burst_meta = send_robot_command(
+                                robot,
+                                world,
+                                step_key,
+                                cmd_exec,
+                                burst_speed,
+                                speed_score=score_exec,
+                                auto_mode=False,
+                            )
+                            if bool(observe_between_acts):
+                                post_act_analysis(world, vision, step=step_key, log=not align_silent, include_pause=False)
+                                update_world_from_vision(world, vision, log=not align_silent)
+                            if observer:
+                                observer("action", world, vision, cmd_exec, burst_speed, "height_intel_tail_burst")
+                            if not align_silent:
+                                print(
+                                    format_headline(
+                                        (
+                                            f"[HEIGHT INTEL] {step_key} tail burst pulse "
+                                            f"{int(burst_idx)}/{int(burst_acts)}: "
+                                            f"{str(cmd_exec).upper()} {int(score_exec)}%."
+                                        ),
+                                        COLOR_MAGENTA_BRIGHT,
+                                    )
+                                )
+                            if burst_pause_s is not None and float(burst_pause_s) > 0.0:
+                                wait_s = float(burst_pause_s)
+                            else:
+                                wait_s = _action_meta_wait_seconds(burst_meta, fallback_s=CONTROL_DT)
+                            if float(wait_s) > 0.0:
+                                time.sleep(float(wait_s))
+                        if not align_silent:
+                            print(
+                                format_headline(
+                                    f"[HEIGHT INTEL] {step_key} tail burst complete.",
+                                    COLOR_MAGENTA_BRIGHT,
+                                )
+                            )
+                        continue
                 pre_entries = _success_gate_entries(world, step_key)
                 pre_gate_text = _auto_gate_snapshot_text(world, step_key, include_requirements=True)
                 pre_focus = _capture_auto_diag_focus(world, step_key)

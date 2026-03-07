@@ -68,6 +68,20 @@ class TestTelemetryProcessFindWall2Gates(unittest.TestCase):
         self.assertNotIn("brick_above", gates)
         self.assertNotIn("brick_below", gates)
 
+    def test_process_model_find_topmost_brick_wall_level2_uses_non_reset_skip_policy(self):
+        model = telemetry_process.load_process_model()
+        steps = (model or {}).get("steps") if isinstance(model, dict) else {}
+        step_cfg = (steps or {}).get("FIND_TOPMOST_BRICK_WALL") if isinstance(steps, dict) else {}
+        exception_cfg = (
+            (step_cfg or {}).get("topmost_crosshair_exception")
+            if isinstance(step_cfg, dict)
+            else {}
+        )
+        self.assertIsInstance(exception_cfg, dict)
+        self.assertIs(exception_cfg.get("level2_require_visible_for_confirm"), False)
+        self.assertIs(exception_cfg.get("level2_reset_on_skipped_observation"), False)
+        self.assertIs(exception_cfg.get("level2_fail_on_skipped_observation"), False)
+
     def test_process_model_find_wall2_includes_y_axis_success_gate(self):
         model = telemetry_process.load_process_model()
         steps = (model or {}).get("steps") if isinstance(model, dict) else {}
@@ -76,6 +90,29 @@ class TestTelemetryProcessFindWall2Gates(unittest.TestCase):
         self.assertIsInstance(gates, dict)
         self.assertIn("y_axis", gates)
         self.assertNotIn("yAxis_offset_abs", gates)
+
+    def test_process_model_approach_vector_brick_supply_uses_tight_y_axis_tol(self):
+        model = telemetry_process.load_process_model()
+        steps = (model or {}).get("steps") if isinstance(model, dict) else {}
+        step_cfg = (steps or {}).get("APPROACH_VECTOR_BRICK_SUPPLY") if isinstance(steps, dict) else {}
+        gates = (step_cfg or {}).get("success_gates") if isinstance(step_cfg, dict) else {}
+        y_gate = (gates or {}).get("y_axis") if isinstance(gates, dict) else {}
+        self.assertIsInstance(y_gate, dict)
+        self.assertEqual(float(y_gate.get("tol")), 3.0)
+
+    def test_process_model_topmost_steps_enable_crosshair_drop_completion(self):
+        model = telemetry_process.load_process_model()
+        steps = (model or {}).get("steps") if isinstance(model, dict) else {}
+        for step_name in ("FIND_TOPMOST_BRICK", "FIND_TOPMOST_BRICK_WALL"):
+            with self.subTest(step=step_name):
+                step_cfg = (steps or {}).get(step_name) if isinstance(steps, dict) else {}
+                exception_cfg = (
+                    (step_cfg or {}).get("topmost_crosshair_exception")
+                    if isinstance(step_cfg, dict)
+                    else {}
+                )
+                self.assertIsInstance(exception_cfg, dict)
+                self.assertIs(exception_cfg.get("complete_on_crosshair_drop"), True)
 
 
 if __name__ == "__main__":
