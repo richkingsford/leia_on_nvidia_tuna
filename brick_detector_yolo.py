@@ -454,6 +454,44 @@ class BrickDetector:
         offset_y_px = float(center_y_px) - frame_center_y
         return (offset_y_px / float(self.focal_px)) * float(dist_mm)
 
+    def _smooth_angle(self, raw_angle, prev_angle):
+        """
+        Angle-aware EMA with jump clamping.
+
+        Brick orientation is symmetric at 180°, so angles live in [-90, 90].
+        A raw jump from e.g. -85° to +85° is really a 10° rotation (through
+        the ±90° wrap), not a 170° flip.  This method:
+        1. Computes the shortest angular delta (handling ±90° wrap).
+        2. Clamps the delta to ±MAX_ANGLE_JUMP_PER_FRAME to reject noise.
+        3. Applies EMA smoothing on the clamped result.
+        """
+        MAX_ANGLE_JUMP = 30.0  # degrees per frame
+        if prev_angle is None:
+            return raw_angle
+
+        delta = raw_angle - prev_angle
+        # Shortest path in [-90, 90] orientation space (period = 180°)
+        if delta > 90.0:
+            delta -= 180.0
+        elif delta < -90.0:
+            delta += 180.0
+
+        # Clamp
+        if delta > MAX_ANGLE_JUMP:
+            delta = MAX_ANGLE_JUMP
+        elif delta < -MAX_ANGLE_JUMP:
+            delta = -MAX_ANGLE_JUMP
+
+        clamped = prev_angle + delta
+        # Normalise back to [-90, 90]
+        while clamped > 90.0:
+            clamped -= 180.0
+        while clamped < -90.0:
+            clamped += 180.0
+
+        # EMA on the clamped value
+        return self._smooth_alpha * clamped + (1 - self._smooth_alpha) * prev_angle
+
     # ------------------------------------------------------------------
     # HSV segmentation for individual cyan brick detection
     # ------------------------------------------------------------------
@@ -579,11 +617,12 @@ class BrickDetector:
         hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
         mask = cv2.inRange(hsv, self._hsv_lower, self._hsv_upper)
 
-        # Light cleanup: open to remove noise, then gentle erosion (3x3, 1 iter)
-        # to separate touching bricks without distorting shape.
+        # Light cleanup only — no erosion.  Erosion was causing contour
+        # distortion (near-square shapes) especially at close range where
+        # the brick fills the frame.  Since we already isolated this brick's
+        # bbox, separation from neighbours is not needed here.
         kern = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kern)
-        mask = cv2.erode(mask, kern, iterations=1)
 
         contours, _ = cv2.findContours(
             mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -794,9 +833,9 @@ class BrickDetector:
             self.last_primary_confidence = float(yolo_conf)
             conf_pct = float(yolo_conf) * 100.0
 
-            # Angle from un-eroded contour (erosion distorts near-square shapes)
+            # Angle from contour with jump clamping to prevent 0/90 flips
             raw_angle = self._refine_angle_for_primary(frame, primary)
-            angle = self._smooth(raw_angle, self._prev_angle)
+            angle = self._smooth_angle(raw_angle, self._prev_angle)
             self._prev_angle = angle
 
             # Distance from individual brick bbox height
@@ -845,7 +884,7 @@ class BrickDetector:
         conf_pct = float(conf) * 100.0
 
         raw_angle = self._estimate_angle(frame, x1, y1, x2, y2)
-        angle = self._smooth(raw_angle, self._prev_angle)
+        angle = self._smooth_angle(raw_angle, self._prev_angle)
         self._prev_angle = angle
 
         bbox_h = y2 - y1
