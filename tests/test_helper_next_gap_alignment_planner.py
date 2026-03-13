@@ -5,6 +5,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import helper_next
+import helper_next2
 
 
 class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
@@ -397,7 +398,7 @@ class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
         self.assertEqual(plan.get("correction_type"), "x_axis", plan)
         self.assertIn(plan.get("cmd"), ("l", "r"), plan)
 
-    def test_gap_planner_keeps_its_own_score_instead_of_analytics_override(self):
+    def test_gap_planner_keeps_its_own_curve_profile_instead_of_analytics_override(self):
         process_rules = {
             "BRICK_LOCK_WALL": {
                 "success_gates": {
@@ -428,10 +429,49 @@ class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
         finally:
             helper_next.compute_alignment_decision = orig
 
-        expected_score = int(helper_next.align_brick_x_axis_one_shot_score(x_err_mm))
+        expected_profile = helper_next2.calibrated_axis_motion_for_error(axis="x", err_mm=x_err_mm)
         self.assertEqual(plan.get("correction_type"), "x_axis", plan)
-        self.assertEqual(int(plan.get("score") or 0), expected_score, plan)
+        self.assertIsNotNone(expected_profile)
+        self.assertEqual(plan.get("cmd"), "l", plan)
+        self.assertEqual(int(plan.get("score") or 0), int(expected_profile["score"]), plan)
+        self.assertEqual(
+            int(plan.get("duration_override_ms") or 0),
+            int(expected_profile["duration_override_ms"]),
+            plan,
+        )
         self.assertNotEqual(int(plan.get("score") or 0), 1, plan)
+
+    def test_gap_planner_uses_y_curve_duration_override_when_available(self):
+        process_rules = {
+            "ALIGN_BRICK": {
+                "success_gates": {
+                    "visible": {"min": True},
+                    "yAxis_offset_abs": {"target": 0.0, "tol": 1.5},
+                }
+            }
+        }
+        plan = helper_next.select_align_brick_next_act(
+            process_rules=process_rules,
+            learned_rules={},
+            step="ALIGN_BRICK",
+            x_axis_mm=0.0,
+            y_axis_mm=6.0,
+            dist_mm=100.0,
+            visible=True,
+            angle_deg=0.0,
+            duration_s=0.05,
+        )
+
+        expected_profile = helper_next2.calibrated_axis_motion_for_error(axis="y", err_mm=6.0)
+        self.assertIsNotNone(expected_profile)
+        self.assertEqual(plan.get("correction_type"), "y_axis", plan)
+        self.assertEqual(plan.get("cmd"), "d", plan)
+        self.assertEqual(int(plan.get("score") or 0), int(expected_profile["score"]), plan)
+        self.assertEqual(
+            int(plan.get("duration_override_ms") or 0),
+            int(expected_profile["duration_override_ms"]),
+            plan,
+        )
 
     def test_gap_planner_dist_only_step_does_not_invent_x_gap(self):
         process_rules = {

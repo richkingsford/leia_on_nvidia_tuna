@@ -58,9 +58,14 @@ SPEED_SECONDS_KEY = "speed_score_seconds"
 SPEED_SECONDS_KEY_TURN = "speed_score_seconds_turn"
 SPEED_SECONDS_KEY_TURN_LEFT = "speed_score_seconds_turn_left"
 SPEED_SECONDS_KEY_TURN_RIGHT = "speed_score_seconds_turn_right"
+SPEED_SECONDS_KEY_MAST_UP = "speed_score_seconds_mast_up"
+SPEED_SECONDS_KEY_MAST_DOWN = "speed_score_seconds_mast_down"
 TURN_INTENSITY_KEY_TURN = "turn_intensity_posts_turn"
 TURN_INTENSITY_KEY_TURN_LEFT = "turn_intensity_posts_turn_left"
 TURN_INTENSITY_KEY_TURN_RIGHT = "turn_intensity_posts_turn_right"
+MAST_INTENSITY_KEY_MAST = "mast_intensity_posts_mast"
+MAST_INTENSITY_KEY_MAST_UP = "mast_intensity_posts_mast_up"
+MAST_INTENSITY_KEY_MAST_DOWN = "mast_intensity_posts_mast_down"
 
 ROBOT_MODEL_FILE = Path(__file__).resolve().parent / "world_model_robot.json"
 DEFAULT_SPEED_MODEL = {
@@ -123,6 +128,14 @@ DEFAULT_SPEED_MODEL = {
         "1": 0.30,
         "100": 0.30,
     },
+    SPEED_SECONDS_KEY_MAST_UP: {
+        "1": 0.30,
+        "100": 0.30,
+    },
+    SPEED_SECONDS_KEY_MAST_DOWN: {
+        "1": 0.30,
+        "100": 0.30,
+    },
     # Optional fractional turn-intensity anchors (%). Values are interpolated
     # piecewise to produce PWM/power/duration for L/R turns.
     TURN_INTENSITY_KEY_TURN: {
@@ -141,6 +154,24 @@ DEFAULT_SPEED_MODEL = {
     },
     TURN_INTENSITY_KEY_TURN_RIGHT: {
         "0.5": {"score": 1, "duration_scale": 0.5},
+        "1.0": {"score": 1},
+        "5.0": {"score": 5},
+        "25.0": {"score": 25},
+        "100.0": {"score": 100},
+    },
+    MAST_INTENSITY_KEY_MAST: {
+        "1.0": {"score": 1},
+        "5.0": {"score": 5},
+        "25.0": {"score": 25},
+        "100.0": {"score": 100},
+    },
+    MAST_INTENSITY_KEY_MAST_UP: {
+        "1.0": {"score": 1},
+        "5.0": {"score": 5},
+        "25.0": {"score": 25},
+        "100.0": {"score": 100},
+    },
+    MAST_INTENSITY_KEY_MAST_DOWN: {
         "1.0": {"score": 1},
         "5.0": {"score": 5},
         "25.0": {"score": 25},
@@ -663,6 +694,18 @@ def _load_speed_model(path):
         model.get(SPEED_SECONDS_KEY_TURN_RIGHT),
         score_seconds_turn,
     )
+    directional_mast_duration_maps = bool(
+        isinstance(model.get(SPEED_SECONDS_KEY_MAST_UP), dict)
+        or isinstance(model.get(SPEED_SECONDS_KEY_MAST_DOWN), dict)
+    )
+    score_seconds_mast_up = _coerce_score_seconds(
+        model.get(SPEED_SECONDS_KEY_MAST_UP),
+        score_seconds,
+    )
+    score_seconds_mast_down = _coerce_score_seconds(
+        model.get(SPEED_SECONDS_KEY_MAST_DOWN),
+        score_seconds,
+    )
 
     turn_intensity_raw = model.get(TURN_INTENSITY_KEY_TURN)
     if not isinstance(turn_intensity_raw, dict):
@@ -673,6 +716,15 @@ def _load_speed_model(path):
     turn_intensity_right_raw = model.get(TURN_INTENSITY_KEY_TURN_RIGHT)
     if not isinstance(turn_intensity_right_raw, dict):
         turn_intensity_right_raw = turn_intensity_raw
+    mast_intensity_raw = model.get(MAST_INTENSITY_KEY_MAST)
+    if not isinstance(mast_intensity_raw, dict):
+        mast_intensity_raw = DEFAULT_SPEED_MODEL.get(MAST_INTENSITY_KEY_MAST, {})
+    mast_intensity_up_raw = model.get(MAST_INTENSITY_KEY_MAST_UP)
+    if not isinstance(mast_intensity_up_raw, dict):
+        mast_intensity_up_raw = mast_intensity_raw
+    mast_intensity_down_raw = model.get(MAST_INTENSITY_KEY_MAST_DOWN)
+    if not isinstance(mast_intensity_down_raw, dict):
+        mast_intensity_down_raw = mast_intensity_raw
 
     if not score_seconds_turn:
         score_seconds_turn = dict(score_seconds)
@@ -680,6 +732,10 @@ def _load_speed_model(path):
         score_seconds_turn_left = dict(score_seconds_turn)
     if not score_seconds_turn_right:
         score_seconds_turn_right = dict(score_seconds_turn)
+    if not score_seconds_mast_up:
+        score_seconds_mast_up = dict(score_seconds)
+    if not score_seconds_mast_down:
+        score_seconds_mast_down = dict(score_seconds)
 
     def _duration_ms_map(score_seconds_raw):
         return {
@@ -691,6 +747,8 @@ def _load_speed_model(path):
     duration_ms_by_score_turn = _duration_ms_map(score_seconds_turn)
     duration_ms_by_score_turn_left = _duration_ms_map(score_seconds_turn_left)
     duration_ms_by_score_turn_right = _duration_ms_map(score_seconds_turn_right)
+    duration_ms_by_score_mast_up = _duration_ms_map(score_seconds_mast_up)
+    duration_ms_by_score_mast_down = _duration_ms_map(score_seconds_mast_down)
 
     for score_key, duration_ms in duration_ms_by_score.items():
         entry = drive_map.get(score_key)
@@ -725,6 +783,14 @@ def _load_speed_model(path):
     except (TypeError, ValueError):
         low_pwm_right = int(MIN_PWM)
         high_pwm_right = int(MAX_PWM)
+    low_pwm_mast = ((drive_map.get(SPEED_SCORE_MIN) or {}).get("pwm") if isinstance(drive_map, dict) else None)
+    high_pwm_mast = ((drive_map.get(SPEED_SCORE_MAX) or {}).get("pwm") if isinstance(drive_map, dict) else None)
+    try:
+        low_pwm_mast = int(low_pwm_mast)
+        high_pwm_mast = int(high_pwm_mast)
+    except (TypeError, ValueError):
+        low_pwm_mast = 0
+        high_pwm_mast = int(MAX_PWM)
 
     turn_intensity_posts_left = _coerce_turn_intensity_posts(
         turn_intensity_left_raw,
@@ -744,6 +810,26 @@ def _load_speed_model(path):
         high_pwm=high_pwm_right,
         duration_map=duration_ms_by_score_turn_right,
         min_pwm=min_pwm,
+        max_pwm=max_pwm,
+    )
+    mast_intensity_posts_up = _coerce_turn_intensity_posts(
+        mast_intensity_up_raw,
+        DEFAULT_SPEED_MODEL.get(MAST_INTENSITY_KEY_MAST_UP, {}),
+        cmd="u",
+        low_pwm=low_pwm_mast,
+        high_pwm=high_pwm_mast,
+        duration_map=duration_ms_by_score_mast_up,
+        min_pwm=0,
+        max_pwm=max_pwm,
+    )
+    mast_intensity_posts_down = _coerce_turn_intensity_posts(
+        mast_intensity_down_raw,
+        DEFAULT_SPEED_MODEL.get(MAST_INTENSITY_KEY_MAST_DOWN, {}),
+        cmd="d",
+        low_pwm=low_pwm_mast,
+        high_pwm=high_pwm_mast,
+        duration_map=duration_ms_by_score_mast_down,
+        min_pwm=0,
         max_pwm=max_pwm,
     )
     hotkey_fallback = {} if loaded_from_file else DEFAULT_SPEED_MODEL["hotkey_speed_scores"]
@@ -775,12 +861,17 @@ def _load_speed_model(path):
         duration_ms_by_score_turn_left,
         duration_ms_by_score_turn_right,
         directional_turn_duration_maps,
+        duration_ms_by_score_mast_up,
+        duration_ms_by_score_mast_down,
+        directional_mast_duration_maps,
         turn_eff,
         cmd_remap,
         act_duration_ms,
         auto_turn_speed_boost_pct,
         turn_intensity_posts_left,
         turn_intensity_posts_right,
+        mast_intensity_posts_up,
+        mast_intensity_posts_down,
         min_pwm,
         max_pwm,
         min_turn_power,
@@ -799,12 +890,17 @@ def _load_speed_model(path):
     SPEED_SCORE_DURATION_MS_TURN_LEFT,
     SPEED_SCORE_DURATION_MS_TURN_RIGHT,
     USE_DIRECTIONAL_TURN_DURATION_MAPS,
+    SPEED_SCORE_DURATION_MS_MAST_UP,
+    SPEED_SCORE_DURATION_MS_MAST_DOWN,
+    USE_DIRECTIONAL_MAST_DURATION_MAPS,
     TURN_EFFICIENCY,
     COMMAND_REMAP,
     ACT_DURATION_MS,
     AUTO_TURN_SPEED_BOOST_PCT,
     TURN_INTENSITY_POSTS_LEFT,
     TURN_INTENSITY_POSTS_RIGHT,
+    MAST_INTENSITY_POSTS_UP,
+    MAST_INTENSITY_POSTS_DOWN,
     MIN_PWM,
     MAX_PWM,
     MIN_TURN_POWER,
@@ -1046,6 +1142,13 @@ def _duration_map_for_cmd(cmd):
                 return SPEED_SCORE_DURATION_MS_TURN_RIGHT
         if isinstance(SPEED_SCORE_DURATION_MS_TURN, dict) and SPEED_SCORE_DURATION_MS_TURN:
             return SPEED_SCORE_DURATION_MS_TURN
+        return SPEED_SCORE_DURATION_MS
+    if cmd in ("u", "d"):
+        if bool(USE_DIRECTIONAL_MAST_DURATION_MAPS):
+            if cmd == "u" and isinstance(SPEED_SCORE_DURATION_MS_MAST_UP, dict):
+                return SPEED_SCORE_DURATION_MS_MAST_UP
+            if cmd == "d" and isinstance(SPEED_SCORE_DURATION_MS_MAST_DOWN, dict):
+                return SPEED_SCORE_DURATION_MS_MAST_DOWN
         return SPEED_SCORE_DURATION_MS
     return SPEED_SCORE_DURATION_MS
 
@@ -1325,25 +1428,33 @@ def drive_anti_alias_segments(cmd, *, speed_score=None, power=None, pwm=None, du
     )
 
 
-def _turn_intensity_posts_for_cmd(cmd):
+def _motion_intensity_posts_for_cmd(cmd):
     if cmd == "l":
         return TURN_INTENSITY_POSTS_LEFT if isinstance(TURN_INTENSITY_POSTS_LEFT, dict) else {}
     if cmd == "r":
         return TURN_INTENSITY_POSTS_RIGHT if isinstance(TURN_INTENSITY_POSTS_RIGHT, dict) else {}
+    if cmd == "u":
+        return MAST_INTENSITY_POSTS_UP if isinstance(MAST_INTENSITY_POSTS_UP, dict) else {}
+    if cmd == "d":
+        return MAST_INTENSITY_POSTS_DOWN if isinstance(MAST_INTENSITY_POSTS_DOWN, dict) else {}
     return {}
 
 
-def speed_power_pwm_for_turn_intensity(cmd, intensity_pct):
+def _intensity_posts_for_cmd(cmd):
+    return _motion_intensity_posts_for_cmd(cmd)
+
+
+def speed_power_pwm_for_motion_intensity(cmd, intensity_pct):
     """
-    Fractional turn intensity path for L/R commands.
+    Fractional motion intensity path for L/R/U/D commands.
     Uses piecewise interpolation over configured intensity anchor posts.
     Returns (power, pwm, score_estimate, duration_ms, intensity_effective).
     """
-    if cmd not in ("l", "r"):
+    if cmd not in ("l", "r", "u", "d"):
         power, pwm, score_used, duration_ms = speed_power_pwm_for_cmd(cmd, intensity_pct)
         return power, pwm, score_used, duration_ms, None
 
-    posts = _turn_intensity_posts_for_cmd(cmd)
+    posts = _motion_intensity_posts_for_cmd(cmd)
     if not posts:
         power, pwm, score_used, duration_ms = speed_power_pwm_for_cmd(cmd, intensity_pct)
         try:
@@ -1378,7 +1489,8 @@ def speed_power_pwm_for_turn_intensity(cmd, intensity_pct):
             pwm_val = int(round(_v(only, "pwm", 0.0)))
             pwm_val = clamp_pwm(pwm_val)
             if pwm_val > 0:
-                pwm_val = max(turn_pwm_floor(), int(pwm_val))
+                if cmd in ("l", "r"):
+                    pwm_val = max(turn_pwm_floor(), int(pwm_val))
                 pwm_val = max(int(baseline_pwm_floor_for_cmd(cmd)), int(pwm_val))
             duration_ms = max(1, int(round(_v(only, "duration_ms", DEFAULT_ACT_DURATION_MS))))
             power = _pwm_to_power(pwm_val)
@@ -1419,7 +1531,8 @@ def speed_power_pwm_for_turn_intensity(cmd, intensity_pct):
     pwm_val = int(round(low_pwm + (high_pwm - low_pwm) * frac))
     pwm_val = clamp_pwm(pwm_val)
     if pwm_val > 0:
-        pwm_val = max(turn_pwm_floor(), int(pwm_val))
+        if cmd in ("l", "r"):
+            pwm_val = max(turn_pwm_floor(), int(pwm_val))
         pwm_val = max(int(baseline_pwm_floor_for_cmd(cmd)), int(pwm_val))
 
     low_ms = _v(low, "duration_ms", DEFAULT_ACT_DURATION_MS)
@@ -1433,6 +1546,13 @@ def speed_power_pwm_for_turn_intensity(cmd, intensity_pct):
     if score_est is None:
         score_est = SPEED_SCORE_MIN
     return float(power), int(pwm_val), int(score_est), int(duration_ms), float(intensity_eff)
+
+
+def speed_power_pwm_for_turn_intensity(cmd, intensity_pct):
+    """
+    Backward-compatible alias for older L/R turn-intensity callers.
+    """
+    return speed_power_pwm_for_motion_intensity(cmd, intensity_pct)
 
 
 def turn_duration_scale(cmd, turn_efficiency=None, min_scale=0.5, max_scale=1.5):

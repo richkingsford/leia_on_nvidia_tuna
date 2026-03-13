@@ -56,14 +56,14 @@
       "score": 1,
       "pwm": 40,
       "power": 0.2,
-      "duration_ms": 250
+      "duration_ms": 300
     },
     "k": {
       "cmd": "d",
       "score": 1,
       "pwm": 40,
       "power": 0.2,
-      "duration_ms": 250
+      "duration_ms": 260
     },
     "u": {
       "cmd": "u",
@@ -129,6 +129,80 @@
     "1": 0.25,
     "20": 0.275,
     "100": 0.3
+  },
+  "speed_score_seconds_mast_up": {
+    "1": 0.30,
+    "20": 0.34,
+    "100": 0.40
+  },
+  "speed_score_seconds_mast_down": {
+    "1": 0.26,
+    "20": 0.30,
+    "100": 0.36
+  },
+  "mast_intensity_posts_mast_up": {
+    "4.0": {
+      "pwm": 40,
+      "duration_ms": 240
+    },
+    "8.0": {
+      "pwm": 40,
+      "duration_ms": 360
+    },
+    "12.0": {
+      "pwm": 42,
+      "duration_ms": 650
+    },
+    "18.0": {
+      "pwm": 46,
+      "duration_ms": 820
+    },
+    "35.0": {
+      "pwm": 52,
+      "duration_ms": 980
+    },
+    "55.0": {
+      "pwm": 60,
+      "duration_ms": 1120
+    }
+  },
+  "mast_intensity_posts_mast_down": {
+    "1.0": {
+      "pwm": 36,
+      "duration_ms": 120
+    },
+    "2.0": {
+      "pwm": 37,
+      "duration_ms": 160
+    },
+    "3.0": {
+      "pwm": 38,
+      "duration_ms": 210
+    },
+    "4.0": {
+      "pwm": 39,
+      "duration_ms": 250
+    },
+    "8.0": {
+      "pwm": 40,
+      "duration_ms": 380
+    },
+    "12.0": {
+      "pwm": 42,
+      "duration_ms": 720
+    },
+    "18.0": {
+      "pwm": 46,
+      "duration_ms": 920
+    },
+    "35.0": {
+      "pwm": 54,
+      "duration_ms": 1150
+    },
+    "55.0": {
+      "pwm": 62,
+      "duration_ms": 1300
+    }
   },
   "command_remap": {
     "f": "b",
@@ -264,10 +338,12 @@
     }
   },
   "speed_score_seconds_turn_left": {
-    "1": 0.135
+    "1": 0.135,
+    "100": 1.2
   },
   "speed_score_seconds_turn_right": {
-    "1": 0.065
+    "1": 0.065,
+    "100": 1.0
   },
   "speed_score_seconds_turn_meta": {
     "mini_x_axis_last_run_epoch_s": 1772820984.813,

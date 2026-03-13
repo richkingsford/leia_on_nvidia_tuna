@@ -136,7 +136,7 @@ ALIGN_BRICK_TOPMOST_TIMEOUT_S = 30.0
 ALIGN_BRICK_TOPMOST_GATECHECK_MAX_TRIES = 6
 ALIGN_BRICK_SECOND_UPPERMOST_DESCENT_HOTKEY = "l"
 ALIGN_BRICK_SECOND_UPPERMOST_DESCENT_PULSES = 3
-POST_ACTION_OBSERVE_DELAY_S = 0.5
+POST_ACTION_OBSERVE_DELAY_S = 0.15
 
 MM_METRICS = {
     "xAxis_offset_abs",
@@ -2194,6 +2194,8 @@ def send_robot_command_pwm(
     auto_mode=False,
     turn_intensity_requested=None,
     turn_intensity_effective=None,
+    motion_intensity_requested=None,
+    motion_intensity_effective=None,
     half_first_turn_pulse=True,
     ease_in_out_enabled=None,
 ):
@@ -2474,6 +2476,8 @@ def send_robot_command_pwm(
                     "score_effective": top_score_effective,
                     "turn_intensity_requested": turn_intensity_requested,
                     "turn_intensity_effective": turn_intensity_effective,
+                    "motion_intensity_requested": motion_intensity_requested,
+                    "motion_intensity_effective": motion_intensity_effective,
                     "segments": sent_segments,
                     "ease_in_out_note": ease_note,
                     "anti_alias_note": ease_note,
@@ -2556,6 +2560,8 @@ def send_robot_command_pwm(
         "score_effective": score_effective,
         "turn_intensity_requested": turn_intensity_requested,
         "turn_intensity_effective": turn_intensity_effective,
+        "motion_intensity_requested": motion_intensity_requested,
+        "motion_intensity_effective": motion_intensity_effective,
         "ease_in_out_note": ease_note,
         "anti_alias_note": ease_note,
     }
@@ -2570,6 +2576,7 @@ def send_robot_command(
     speed_score=None,
     auto_mode=False,
     turn_intensity=None,
+    motion_intensity=None,
     duration_override_ms=None,
     half_first_turn_pulse=True,
     ease_in_out_enabled=None,
@@ -2579,6 +2586,12 @@ def send_robot_command(
 
     turn_intensity_requested = None
     turn_intensity_effective = None
+    motion_intensity_requested = None
+    motion_intensity_effective = None
+    try:
+        duration_override_val = int(round(float(duration_override_ms)))
+    except (TypeError, ValueError):
+        duration_override_val = None
 
     if cmd in ("l", "r") and turn_intensity is not None:
         try:
@@ -2586,15 +2599,20 @@ def send_robot_command(
         except (TypeError, ValueError):
             turn_intensity_requested = None
         if turn_intensity_requested is not None:
-            power, pwm, score_used, duration_ms, turn_intensity_effective = telemetry_robot_module.speed_power_pwm_for_turn_intensity(
+            power, pwm, score_used, duration_ms, turn_intensity_effective = telemetry_robot_module.speed_power_pwm_for_motion_intensity(
                 cmd,
                 turn_intensity_requested,
             )
+            motion_intensity_requested = turn_intensity_requested
+            motion_intensity_effective = turn_intensity_effective
             if auto_mode:
                 score_used = telemetry_robot_module.normalize_speed_score(score_used)
                 score_used = _cap_auto_speed_score(score_used)
                 power, pwm, score_used, duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd(cmd, score_used)
                 turn_intensity_effective = None
+                motion_intensity_effective = None
+            if duration_override_val is not None and duration_override_val > 0:
+                duration_ms = int(duration_override_val)
             return send_robot_command_pwm(
                 robot,
                 world,
@@ -2607,6 +2625,43 @@ def send_robot_command(
                 auto_mode=auto_mode,
                 turn_intensity_requested=turn_intensity_requested,
                 turn_intensity_effective=turn_intensity_effective,
+                motion_intensity_requested=motion_intensity_requested,
+                motion_intensity_effective=motion_intensity_effective,
+                half_first_turn_pulse=half_first_turn_pulse,
+                ease_in_out_enabled=ease_in_out_enabled,
+            )
+
+    if cmd in ("u", "d") and motion_intensity is not None:
+        try:
+            motion_intensity_requested = float(motion_intensity)
+        except (TypeError, ValueError):
+            motion_intensity_requested = None
+        if motion_intensity_requested is not None:
+            power, pwm, score_used, duration_ms, motion_intensity_effective = telemetry_robot_module.speed_power_pwm_for_motion_intensity(
+                cmd,
+                motion_intensity_requested,
+            )
+            if auto_mode:
+                score_used = telemetry_robot_module.normalize_speed_score(score_used)
+                score_used = _cap_auto_speed_score(score_used)
+                power, pwm, score_used, duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd(cmd, score_used)
+                motion_intensity_effective = None
+            if duration_override_val is not None and duration_override_val > 0:
+                duration_ms = int(duration_override_val)
+            return send_robot_command_pwm(
+                robot,
+                world,
+                step,
+                cmd,
+                power,
+                pwm,
+                duration_ms,
+                speed_score=score_used,
+                auto_mode=auto_mode,
+                turn_intensity_requested=turn_intensity_requested,
+                turn_intensity_effective=turn_intensity_effective,
+                motion_intensity_requested=motion_intensity_requested,
+                motion_intensity_effective=motion_intensity_effective,
                 half_first_turn_pulse=half_first_turn_pulse,
                 ease_in_out_enabled=ease_in_out_enabled,
             )
@@ -2622,10 +2677,6 @@ def send_robot_command(
         score_used = telemetry_robot_module.normalize_speed_score(score_used)
         score_used = _cap_auto_speed_score(score_used)
     power, pwm, score_used, duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd(cmd, score_used)
-    try:
-        duration_override_val = int(round(float(duration_override_ms)))
-    except (TypeError, ValueError):
-        duration_override_val = None
     if duration_override_val is not None and duration_override_val > 0:
         duration_ms = int(duration_override_val)
 
@@ -2641,6 +2692,8 @@ def send_robot_command(
         auto_mode=auto_mode,
         turn_intensity_requested=turn_intensity_requested,
         turn_intensity_effective=turn_intensity_effective,
+        motion_intensity_requested=motion_intensity_requested,
+        motion_intensity_effective=motion_intensity_effective,
         half_first_turn_pulse=half_first_turn_pulse,
         ease_in_out_enabled=ease_in_out_enabled,
     )
@@ -3877,6 +3930,9 @@ def _run_ground_up_level2_exception(
                 handoff_cmd = handoff_plan.get("cmd") if isinstance(handoff_plan, dict) else None
                 handoff_score = handoff_plan.get("score") if isinstance(handoff_plan, dict) else None
                 handoff_speed = handoff_plan.get("speed") if isinstance(handoff_plan, dict) else None
+                handoff_duration_override_ms = (
+                    handoff_plan.get("duration_override_ms") if isinstance(handoff_plan, dict) else None
+                )
                 if isinstance(handoff_plan, dict):
                     handoff_prev_correction_type = (
                         str(handoff_plan.get("correction_type") or "").strip().lower() or None
@@ -3928,6 +3984,7 @@ def _run_ground_up_level2_exception(
                     handoff_speed,
                     speed_score=handoff_score,
                     auto_mode=True,
+                    duration_override_ms=handoff_duration_override_ms,
                 )
                 handoff_acts_sent = int(handoff_acts_sent) + 1
                 post_act_analysis(world, vision, step=step, log=not align_silent, include_pause=False)
@@ -13204,6 +13261,7 @@ def run_alignment_segment(
         speed = act_plan.get("speed") or 0.0
         cmd_reason = act_plan.get("reason") or "align"
         speed_score = act_plan.get("score")
+        duration_override_ms = act_plan.get("duration_override_ms")
         if visible_search_mode and cmd in ("f", "b", "l", "r", "u", "d"):
             speed_score = _next_visible_search_score(cmd)
             speed_score = _apply_find_brick_turn_speed_policy(
@@ -13963,6 +14021,7 @@ def run_alignment_segment(
         speed = act_plan.get("speed") or 0.0
         cmd_reason = act_plan.get("reason") or "align"
         speed_score = act_plan.get("score")
+        duration_override_ms = act_plan.get("duration_override_ms")
         planned_corr_type = str(act_plan.get("correction_type") or "").strip().lower() or None
         active_disqualify_types = _active_disqualified_gap_types()
         if (

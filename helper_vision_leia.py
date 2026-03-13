@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import time
+import os
 from dataclasses import dataclass
 from typing import Optional, Tuple, List
 
@@ -18,6 +19,10 @@ class LeiaVision:
         self.camera_matrix = None
         self.dist_coeffs = None
         self.debug_frame = None
+        self.cap = None
+        self.camera_index = None
+        self.current_frame = None
+        self.raw_frame = None
         
         # --- PHYSICAL CONSTANTS (mm) ---
         self.BRICK_W = 64.0
@@ -50,7 +55,27 @@ class LeiaVision:
         self.ALPHA = 0.15 # Balanced smoothing for stability vs speed
         self.frames_since_last_pos = 0
 
-    def init_camera(self, width=640, height=480):
+    def init_camera(self, width=640, height=480, camera_index: Optional[int] = None):
+        if self.cap is None or not self.cap.isOpened():
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
+
+            tried_indices: List[int] = []
+            for idx in self._candidate_camera_indices(camera_index):
+                tried_indices.append(idx)
+                cap = self._open_camera(idx, width, height)
+                if cap is not None and cap.isOpened():
+                    self.cap = cap
+                    self.camera_index = idx
+                    break
+
+            if self.cap is None or not self.cap.isOpened():
+                self.cap = None
+                self.camera_index = None
+                print(f"[VISION] Unable to open camera. Tried indices: {tried_indices}", flush=True)
+
+        # Approximate camera matrix if none provided
         focal_length = width 
         center = (width/2, height/2)
         self.camera_matrix = np.array(
@@ -59,6 +84,76 @@ class LeiaVision:
              [0, 0, 1]], dtype="double"
         )
         self.dist_coeffs = np.zeros((4,1))
+
+    def _candidate_camera_indices(self, preferred_index: Optional[int]) -> List[int]:
+        candidates: List[int] = []
+
+        if preferred_index is not None:
+            candidates.append(int(preferred_index))
+
+        env_index = os.getenv("LEIA_CAMERA_INDEX")
+        if env_index:
+            try:
+                candidates.append(int(env_index))
+            except ValueError:
+                pass
+
+        candidates.extend([0, 1, 2, 3])
+
+        deduped: List[int] = []
+        for idx in candidates:
+            if idx not in deduped:
+                deduped.append(idx)
+        return deduped
+
+    def _open_camera(self, index: int, width: int, height: int):
+        backend_pref = cv2.CAP_V4L2 if hasattr(cv2, "CAP_V4L2") else cv2.CAP_ANY
+        for backend in (backend_pref, cv2.CAP_ANY):
+            cap = cv2.VideoCapture(index, backend)
+            if cap is not None and cap.isOpened():
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                return cap
+            if cap is not None:
+                cap.release()
+            if backend == cv2.CAP_ANY:
+                break
+        return None
+
+    def read(self):
+        """Capture a frame and process it. Returns (found, angle, dist, offset_x, conf, cam_h, above, below)."""
+        if self.cap is None or not self.cap.isOpened():
+            self.init_camera()
+            if self.cap is None or not self.cap.isOpened():
+                return False, 0, -1, 0, 0, 0, False, False
+
+        ret, frame = self.cap.read()
+        if not ret:
+            return False, 0, -1, 0, 0, 0, False, False
+
+        self.raw_frame = frame.copy()
+        pose = self.process(frame)
+        self.current_frame = self.debug_frame if self.debug_frame is not None else frame
+        
+        if not pose.found:
+            return False, 0, 0, 0, 0, 0, False, False
+
+        # Return in same format as ArucoBrickVision: (found, angle, dist, offset_x, conf, cam_h, above, below)
+        return (
+            True,
+            pose.orientation[1],  # Yaw angle
+            pose.position[2],     # Z distance
+            pose.position[0],     # X offset
+            pose.confidence,
+            pose.position[1],     # Y height (cam relative)
+            False,                # above (not available in LeiaVision)
+            False                 # below (not available in LeiaVision)
+        )
+
+    def close(self):
+        if self.cap:
+            self.cap.release()
 
     def process(self, frame: np.ndarray) -> BrickPose:
         # 1. Preprocess - EXTREME WASH

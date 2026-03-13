@@ -322,6 +322,16 @@
                     "min": true
                 }
             },
+            "y_axis_hold_offset_exception": {
+                "enabled": true,
+                "operator_log_reminder": "Exception active: keep y-axis hold at +4mm above final target until x/dist are settled, then finish the descent.",
+                "hold_offset_mm": 4.0,
+                "release_when_metrics_within_tol": [
+                    "x_axis",
+                    "dist"
+                ],
+                "release_confirm_frames": 2
+            },
             "success_gates": {
                 "visible": {
                     "min": true
@@ -787,11 +797,6 @@
                 "slow_fast_mm_scale": 1.0,
                 "auto_speed_hard_cap_exempt": true
             },
-            "start_gates": {
-                "visible": {
-                    "min": true
-                }
-            },
             "success_gates": {
                 "visible": {
                     "min": true
@@ -799,6 +804,11 @@
                 "dist": {
                     "target": 124.69,
                     "tol": 12.3
+                }
+            },
+            "start_gates": {
+                "visible": {
+                    "min": true
                 }
             }
         }

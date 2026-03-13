@@ -30,11 +30,9 @@ from helper_vision_config import (
 from helper_micro_speed_adjust import micro_adjust_speed_score
 from helper_align_profile import load_align_profile, inject_align_profile_into_learned_rules
 from helper_next import (
-    ALIGN_BRICK_X_AXIS_CURVE_BINS_MM,
-    align_brick_x_axis_decision_line,
-    align_brick_x_axis_one_shot_score,
+    x_axis_curve_lookup_lines,
 )
-from helper_mini_x_axis_calibrate import (
+from helper_mini_align_calibrate import (
     MINI_TRIALS_DEFAULT as MINI_X_AXIS_TRIALS_DEFAULT,
     RUN_LOG_FILE_DEFAULT as MINI_X_AXIS_LOG_DEFAULT,
     run_mini_x_axis_calibration,
@@ -208,7 +206,8 @@ STREAM_VISION_MODE_OPTIONS = [
     (VISION_MODE_ARUCO, "AruCo Markers"),
     (VISION_MODE_CYAN, "Cyan Bricks"),
 ]
-CYAN_PROFILE_DEFAULT = "config1_defaults"
+# prefer config2 (no erosion) for cyan vision by default; empirical best during manual testing
+CYAN_PROFILE_DEFAULT = "config2_no_erosion"
 CYAN_PROFILE_OPTIONS = [
     ("config1_defaults", "Config 1 - Defaults (baseline)"),
     ("config2_no_erosion", "Config 2 - No erosion (best angle, bricks may merge)"),
@@ -846,19 +845,8 @@ def _format_brick_start_gate_details(world, start_gates):
 
 
 def log_align_curve_lookup_table():
-    log_line("[ALIGN_CURVE] Single-source x-axis turn curve loaded:")
-    log_line(f"[ALIGN_CURVE] {align_brick_x_axis_decision_line()}")
-    log_line("[ALIGN_CURVE] Turn maps are directional; L and R can differ.")
-    for x_err_mm in ALIGN_BRICK_X_AXIS_CURVE_BINS_MM:
-        score = int(align_brick_x_axis_one_shot_score(x_err_mm))
-        l_power, l_pwm, _l_score_used, l_duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd("l", score)
-        r_power, r_pwm, _r_score_used, r_duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd("r", score)
-        log_line(
-            "[ALIGN_CURVE] "
-            f"|x_err|={float(x_err_mm):>4.1f}mm -> score={int(score):>2d}% "
-            f"L(pwm={int(l_pwm)}, pwr={float(l_power):.3f}, t={int(l_duration_ms)}ms) "
-            f"R(pwm={int(r_pwm)}, pwr={float(r_power):.3f}, t={int(r_duration_ms)}ms)"
-        )
+    for line in x_axis_curve_lookup_lines():
+        log_line(str(line))
 
 
 def _cmd_to_motion_action_type(cmd):

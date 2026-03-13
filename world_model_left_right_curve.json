@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "source": "calibrate_align_left_right",
+  "generated_at": 1773251102.426937,
+  "generated_at_iso_utc": "2026-03-11T17:45:02Z",
+  "step": "ALIGN_BRICK",
+  "x_axis_sign": 1.0,
+  "x_gate_target_mm": -4.74,
+  "x_gate_tol_mm": 1.4,
+  "curve": {
+    "model": "monotonic_bins",
+    "bins_mm": [
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      3.0,
+      4.0,
+      6.0,
+      8.0,
+      12.0,
+      16.0,
+      22.0,
+      30.0
+    ],
+    "min_intensity_pct": 1.0,
+    "max_intensity_pct": 100.0,
+    "by_cmd": {
+      "l": [
+        75.79491052162368,
+        75.79491052162368,
+        75.79491052162368,
+        75.79491052162368,
+        75.79491052162368,
+        75.79491052162368,
+        75.79491052162368,
+        100.0,
+        100.0,
+        100.0,
+        100.0,
+        100.0,
+        100.0
+      ],
+      "r": [
+        19.522569713154954,
+        19.522569713154954,
+        19.522569713154954,
+        19.522569713154954,
+        19.522569713154954,
+        19.522569713154954,
+        100.0,
+        100.0,
+        100.0,
+        100.0,
+        100.0,
+        100.0,
+        100.0
+      ]
+    }
+  },
+  "stats": {
+    "trials": 24,
+    "success_rate": 0.125,
+    "overshoot_rate": 0.0,
+    "median_abs_err_after_mm": 6.842477077727828,
+    "median_improvement_mm": 0.4822902468501371,
+    "median_duration_s": 0.065,
+    "x_tol_mm": 1.4,
+    "quality_score": 9.078761461136086
+  },
+  "aruco_marker_calibration": {
+    "schema_version": 1,
+    "generated_at_iso_utc": "2026-03-13T03:36:45Z",
+    "source": "calibrate_x.py with ArucoBrickVision",
+    "note": "Linear placeholder equations for x-axis turn motion using primary non-wrong-way trials from the 20% speed sweep.",
+    "fit_phase": "primary_non_wrong_way",
+    "speed_score_pct": 20,
+    "duration_range_ms": [
+      250,
+      500
+    ],
+    "reference_distance_mm": 122.0,
+    "observed_brick_distance_median_mm_all_trials": 121.59052215840609,
+    "observed_brick_distance_median_mm_fit_trials": 125.50678081584596,
+    "by_cmd": {
+      "l": {
+        "command": "left_turn",
+        "description": "Leftward x-axis motion (l command)",
+        "intercept_mm": -3.2827735599967127,
+        "slope_mm_per_ms": 0.023186108254226432,
+        "r_squared": 0.587178679745439,
+        "residual_std_mm": 1.4316608485791207,
+        "motion_rate_mm_per_sec": 23.186108254226433,
+        "data_points": 51,
+        "equation": "distance_mm = -3.2828 + 0.023186 * duration_ms",
+        "additional_distance_per_10ms_mm": 0.2318610825422643,
+        "additional_distance_per_100ms_mm": 2.318610825422643,
+        "eighty_five_percent_residual_band_mm": 2.1022206856601997,
+        "repeatability_mean_abs_delta_mm": 1.4427954547682915,
+        "repeatability_median_abs_delta_mm": 1.057580258243223,
+        "repeatability_max_abs_delta_mm": 4.508123949616185
+      },
+      "r": {
+        "command": "right_turn",
+        "description": "Rightward x-axis motion (r command)",
+        "intercept_mm": -2.910210126897856,
+        "slope_mm_per_ms": 0.020665511287899698,
+        "r_squared": 0.5538788639217892,
+        "residual_std_mm": 1.3909977306178987,
+        "motion_rate_mm_per_sec": 20.665511287899697,
+        "data_points": 52,
+        "equation": "distance_mm = -2.9102 + 0.020666 * duration_ms",
+        "additional_distance_per_10ms_mm": 0.206655112878997,
+        "additional_distance_per_100ms_mm": 2.06655112878997,
+        "eighty_five_percent_residual_band_mm": 2.1089808568114607,
+        "repeatability_mean_abs_delta_mm": 1.407926577466495,
+        "repeatability_median_abs_delta_mm": 1.197320810329364,
+        "repeatability_max_abs_delta_mm": 5.447109380324294
+      }
+    }
+  }
+}

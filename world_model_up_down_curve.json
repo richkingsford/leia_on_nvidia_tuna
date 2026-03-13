@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "source": "calibrate_align_mini",
+  "generated_at": 1773276293.4008303,
+  "generated_at_iso_utc": "2026-03-12T00:44:53Z",
+  "step": "ALIGN_BRICK",
+  "axis": "y",
+  "repeatability_targets_mm": [],
+  "y_motion_profile": "intensity_duration",
+  "y_fixed_motion_intensity_pct": 7.0,
+  "axis_sign": 1.0,
+  "intensity_scale": 0.32,
+  "intensity_scale_max": 0.32,
+  "intensity_scale_ramp_step": 0.02,
+  "intensity_scale_final": 0.32,
+  "intensity_scale_ceiling_final": 0.32,
+  "intensity_scale_too_far": null,
+  "axis_sign_initial": 1.0,
+  "axis_sign_final": 1.0,
+  "axis_sign_flipped": false,
+  "axis_sign_source": "arg",
+  "x_axis_sign": 1.0,
+  "y_axis_sign": 1.0,
+  "axis_gate_target_mm": 2.5,
+  "axis_gate_tol_mm": 1.5,
+  "x_gate_target_mm": null,
+  "x_gate_tol_mm": null,
+  "y_gate_target_mm": 2.5,
+  "y_gate_tol_mm": 1.5,
+  "curve": {
+    "model": "monotonic_bins",
+    "bins_mm": [
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      3.0,
+      4.0,
+      6.0,
+      8.0,
+      12.0,
+      16.0,
+      22.0,
+      30.0
+    ],
+    "min_intensity_pct": 1.0,
+    "max_intensity_pct": 100.0,
+    "by_cmd": {
+      "r": [
+        21.876248902728356,
+        21.876248902728356,
+        21.876248902728356,
+        21.876248902728356,
+        21.876248902728356,
+        21.876248902728356,
+        21.876248902728356,
+        21.876248902728356,
+        34.55051027826729,
+        34.55051027826729,
+        34.55051027826729,
+        34.55051027826729,
+        34.55051027826729
+      ],
+      "l": [
+        21.876248902728356,
+        21.876248902728356,
+        21.876248902728356,
+        21.876248902728356,
+        21.876248902728356,
+        21.876248902728356,
+        21.876248902728356,
+        21.876248902728356,
+        34.55051027826729,
+        34.55051027826729,
+        34.55051027826729,
+        34.55051027826729,
+        34.55051027826729
+      ]
+    }
+  },
+  "stats": {
+    "trials": 15,
+    "success_rate": 0.0,
+    "overshoot_rate": 0.0,
+    "median_abs_err_after_mm": 5.851003426393913,
+    "median_improvement_mm": 3.1564797138876095,
+    "negative_improve_rate": 0.4666666666666667,
+    "median_duration_s": 0.646,
+    "x_tol_mm": 1.5,
+    "quality_score": -21.592168379863622,
+    "curve_asymmetry_pct": 0.0
+  },
+  "aruco_marker_calibration": {
+    "schema_version": 1,
+    "generated_at_iso_utc": "2026-03-12T21:03:27.035755Z",
+    "source": "calibrate_y.py with LeiaVision (aruco fallback)",
+    "note": "Linear placeholder equations for y-axis mast motion using aruco marker detection.",
+    "speed_score_pct": 1,
+    "duration_range_ms": [
+      200,
+      300
+    ],
+    "by_cmd": {
+      "u": {
+        "command": "mast_up",
+        "description": "Upward mast motion (u command)",
+        "intercept_mm": 0.435032270502732,
+        "slope_mm_per_ms": 0.0012967641389615085,
+        "r_squared": 0.24890185577648916,
+        "residual_std_mm": 0.7320164210221997,
+        "motion_rate_mm_per_sec": 1.2967641389615086,
+        "data_points": 31,
+        "equation": "distance_mm = 0.4350 + 0.001297 * duration_ms"
+      },
+      "d": {
+        "command": "mast_down",
+        "description": "Downward mast motion (d command)",
+        "intercept_mm": 0.8572473099797412,
+        "slope_mm_per_ms": 0.0038220144819621246,
+        "r_squared": 0.3207208383052904,
+        "residual_std_mm": 1.6217929962236564,
+        "motion_rate_mm_per_sec": 3.8220144819621247,
+        "data_points": 62,
+        "equation": "distance_mm = 0.8572 + 0.003822 * duration_ms"
+      }
+    },
+    "reference_distance_mm": 49.0
+  }
+}

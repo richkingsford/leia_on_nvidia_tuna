@@ -5,10 +5,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+import helper_next2
 from helper_demo_log_utils import extract_attempt_segments, load_demo_logs, normalize_step_label
 from helper_vision_config import demos_dir_for_mode
 from telemetry_robot import (
     manual_speed_for_cmd,
+    speed_power_pwm_for_cmd,
     SPEED_SCORE_DEFAULT,
     SPEED_SCORE_MIN,
     SPEED_SCORE_MAX,
@@ -377,6 +379,83 @@ def align_brick_y_axis_one_shot_score(y_err_mm: float) -> int:
         except (TypeError, ValueError):
             continue
     return int(SPEED_SCORE_MIN)
+
+
+def _x_axis_correction_cmd(x_err_mm: float) -> str:
+    cmd = helper_next2.axis_cmd_for_error("x", x_err_mm)
+    return str(cmd or ("l" if float(_coerce_float(x_err_mm, 0.0) or 0.0) > 0.0 else "r"))
+
+
+def _y_axis_correction_cmd(y_err_mm: float) -> str:
+    cmd = helper_next2.axis_cmd_for_error("y", y_err_mm)
+    return str(cmd or ("d" if float(_coerce_float(y_err_mm, 0.0) or 0.0) > 0.0 else "u"))
+
+
+def _axis_curve_motion_plan(axis: str, err_mm: float, *, fallback_score: int) -> Optional[dict]:
+    plan = helper_next2.calibrated_axis_motion_for_error(axis=axis, err_mm=err_mm)
+    if not isinstance(plan, dict):
+        return None
+    try:
+        score = int(round(float(plan.get("score"))))
+    except (TypeError, ValueError):
+        score = int(fallback_score)
+    try:
+        duration_override_ms = int(round(float(plan.get("duration_override_ms"))))
+    except (TypeError, ValueError):
+        return None
+    if duration_override_ms <= 0:
+        return None
+    out = dict(plan)
+    out["score"] = int(score)
+    out["duration_override_ms"] = int(duration_override_ms)
+    return out
+
+
+def x_axis_curve_lookup_lines(sample_errors_mm=None) -> List[str]:
+    lines = []
+    calibration = helper_next2.load_axis_aruco_calibration("x")
+    bins = sample_errors_mm or ALIGN_BRICK_X_AXIS_CURVE_BINS_MM
+    if not isinstance(calibration, dict):
+        lines.append("[ALIGN_CURVE] Single-source x-axis turn curve loaded:")
+        lines.append(f"[ALIGN_CURVE] {align_brick_x_axis_decision_line()}")
+        lines.append("[ALIGN_CURVE] Turn maps are directional; L and R can differ.")
+        for x_err_mm in bins:
+            score = int(align_brick_x_axis_one_shot_score(x_err_mm))
+            l_power, l_pwm, _l_score_used, l_duration_ms = speed_power_pwm_for_cmd("l", score)
+            r_power, r_pwm, _r_score_used, r_duration_ms = speed_power_pwm_for_cmd("r", score)
+            lines.append(
+                "[ALIGN_CURVE] "
+                f"|x_err|={float(x_err_mm):>4.1f}mm -> score={int(score):>2d}% "
+                f"L(pwm={int(l_pwm)}, pwr={float(l_power):.3f}, t={int(l_duration_ms)}ms) "
+                f"R(pwm={int(r_pwm)}, pwr={float(r_power):.3f}, t={int(r_duration_ms)}ms)"
+            )
+        return lines
+
+    reference_distance_mm = _coerce_float(calibration.get("reference_distance_mm"), None)
+    speed_score_pct = _coerce_float(calibration.get("speed_score_pct"), None)
+    duration_range_ms = calibration.get("duration_range_ms")
+    title = "[ALIGN_CURVE] X-axis motion lookup uses aruco calibration equations"
+    if reference_distance_mm is not None:
+        title += f" at {float(reference_distance_mm):.0f}mm"
+    lines.append(title + ".")
+    if speed_score_pct is not None and isinstance(duration_range_ms, (list, tuple)) and len(duration_range_ms) >= 2:
+        lines.append(
+            "[ALIGN_CURVE] "
+            f"Fixed speed={int(round(float(speed_score_pct)))}% with duration lookup "
+            f"clamped to {int(round(float(duration_range_ms[0])))}..{int(round(float(duration_range_ms[1])))}ms."
+        )
+    for x_err_mm in bins:
+        left_plan = _axis_curve_motion_plan("x", float(x_err_mm), fallback_score=int(align_brick_x_axis_one_shot_score(x_err_mm)))
+        right_plan = _axis_curve_motion_plan("x", -float(x_err_mm), fallback_score=int(align_brick_x_axis_one_shot_score(x_err_mm)))
+        if not isinstance(left_plan, dict) or not isinstance(right_plan, dict):
+            continue
+        lines.append(
+            "[ALIGN_CURVE] "
+            f"|x_err|={float(x_err_mm):>4.1f}mm -> "
+            f"L({int(left_plan['score']):>2d}%, t={int(left_plan['duration_override_ms'])}ms, pred={float(left_plan['predicted_distance_mm']):.2f}mm) "
+            f"R({int(right_plan['score']):>2d}%, t={int(right_plan['duration_override_ms'])}ms, pred={float(right_plan['predicted_distance_mm']):.2f}mm)"
+        )
+    return lines
 
 
 def align_turn_speed_score_for_step(step, x_err_mm: float, *, dist_gate_error_mm=None, process_rules=None) -> int:
@@ -1190,12 +1269,13 @@ def select_align_brick_next_act(
     planner_state=None,
 ):
     """
-    Single source selector for ALIGN-style x/y/dist micro-adjust next act (cmd + speed score).
+    Single source selector for ALIGN-style x/y/dist micro-adjust next act.
 
     This function encapsulates the exact approach used by the best calibrate trials:
     - Direction source: `compute_alignment_decision(...)`
     - Distance score source: `align_brick_dist_error_speed_score(...)`
-    - Turn score source: `align_brick_x_axis_one_shot_score(...)`
+    - Turn fallback source: `align_brick_x_axis_one_shot_score(...)`
+    - Preferred x/y motion source: aruco calibration equations from the world model
     """
     step_name = _step_name(step) or "ALIGN_BRICK"
     align_policy = _align_policy_for_step(process_rules, step_name)
@@ -1375,7 +1455,7 @@ def select_align_brick_next_act(
             y_other_gaps_near_ready = y_other_gaps_near_ready and _ratio_is_near_gate(d_ratio)
 
     if prod_cmd not in ("f", "b", "l", "r"):
-        prod_cmd = "l" if x_err_mm <= 0.0 else "r"
+        prod_cmd = _x_axis_correction_cmd(x_err_mm)
         if not worst_metric:
             worst_metric = "xAxis_offset_abs"
 
@@ -1383,11 +1463,26 @@ def select_align_brick_next_act(
     recovery_fallback_candidates = {}
 
     if x_required:
+        x_score_fallback = int(align_brick_x_axis_one_shot_score(x_err_mm))
+        x_curve_plan = _axis_curve_motion_plan("x", x_err_mm, fallback_score=x_score_fallback)
         x_candidate = {
-            "cmd": "l" if x_err_mm <= 0.0 else "r",
+            "cmd": (
+                str(x_curve_plan.get("cmd"))
+                if isinstance(x_curve_plan, dict) and x_curve_plan.get("cmd") in ("l", "r")
+                else _x_axis_correction_cmd(x_err_mm)
+            ),
             "correction_type": "x_axis",
-            "score": int(align_brick_x_axis_one_shot_score(x_err_mm)),
+            "score": (
+                int(x_curve_plan.get("score"))
+                if isinstance(x_curve_plan, dict) and x_curve_plan.get("score") is not None
+                else int(x_score_fallback)
+            ),
             "score_float": None,
+            "duration_override_ms": (
+                int(x_curve_plan.get("duration_override_ms"))
+                if isinstance(x_curve_plan, dict) and x_curve_plan.get("duration_override_ms") is not None
+                else None
+            ),
             "reason": "x_axis_alignment",
             "worst_metric": "xAxis_offset_abs",
             "ratio": float(x_ratio),
@@ -1434,11 +1529,26 @@ def select_align_brick_next_act(
                     candidates["x_axis"] = dict(angle_candidate)
 
     if y_required and y_err_mm is not None:
+        y_score_fallback = int(align_brick_y_axis_one_shot_score(float(y_err_mm)))
+        y_curve_plan = _axis_curve_motion_plan("y", float(y_err_mm), fallback_score=y_score_fallback)
         y_candidate = {
-            "cmd": "d" if float(y_err_mm) > 0.0 else "u",
+            "cmd": (
+                str(y_curve_plan.get("cmd"))
+                if isinstance(y_curve_plan, dict) and y_curve_plan.get("cmd") in ("u", "d")
+                else _y_axis_correction_cmd(float(y_err_mm))
+            ),
             "correction_type": "y_axis",
-            "score": int(align_brick_y_axis_one_shot_score(float(y_err_mm))),
+            "score": (
+                int(y_curve_plan.get("score"))
+                if isinstance(y_curve_plan, dict) and y_curve_plan.get("score") is not None
+                else int(y_score_fallback)
+            ),
             "score_float": None,
+            "duration_override_ms": (
+                int(y_curve_plan.get("duration_override_ms"))
+                if isinstance(y_curve_plan, dict) and y_curve_plan.get("duration_override_ms") is not None
+                else None
+            ),
             "reason": "y_axis_alignment",
             "worst_metric": "yAxis_offset_abs",
             "ratio": float(y_ratio),
@@ -2018,6 +2128,13 @@ def select_align_brick_next_act(
         prod_cmd = None
     reason = str(chosen.get("reason"))
     worst_metric = chosen.get("worst_metric")
+    duration_override_ms = chosen.get("duration_override_ms")
+    try:
+        duration_override_ms = (
+            None if duration_override_ms is None else int(round(float(duration_override_ms)))
+        )
+    except (TypeError, ValueError):
+        duration_override_ms = None
 
     # Single-solution rule for gap micro-adjustments: keep the score selected by
     # this gap planner (x/dist/y one-shot logic). Do not override from the generic
@@ -2028,6 +2145,7 @@ def select_align_brick_next_act(
         "correction_type": (None if correction_type is None else str(correction_type)),
         "score": int(score_int),
         "score_float": score_float,
+        "duration_override_ms": duration_override_ms,
         "reason": str(reason),
         "worst_metric": worst_metric,
         "rotation_override": bool(rotation_override),
@@ -2149,6 +2267,7 @@ def select_alignment_next_act(
         "correction_type": correction_type,
         "score": score,
         "speed": float(speed or 0.0),
+        "duration_override_ms": None,
         "reason": analytics.get("worst_metric") or "align",
         "worst_metric": analytics.get("worst_metric"),
         "planner": "generic",
