@@ -221,6 +221,39 @@ class TestHelperNext2YAxisAlias(unittest.TestCase):
         self.assertEqual(profile["duration_clamped_to"], None)
         self.assertAlmostEqual(profile["predicted_distance_mm"], 7.0, places=3)
 
+    def test_calibrated_axis_motion_profile_supports_distance_axis(self):
+        payload = {
+            "aruco_marker_calibration": {
+                "speed_score_pct": 5,
+                "duration_range_ms": [200, 400],
+                "reference_distance_mm": 125.6,
+                "by_cmd": {
+                    "f": {
+                        "intercept_mm": -2.0,
+                        "slope_mm_per_ms": 0.01,
+                        "equation": "distance_mm = -2.0 + 0.010000 * duration_ms",
+                    }
+                },
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "dist_curve.json"
+            path.write_text(json.dumps(payload) + "\n")
+            profile = helper_next2.calibrated_axis_motion_profile(
+                axis="dist",
+                cmd="f",
+                gap_mm=2.0,
+                path=path,
+            )
+
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile["cmd"], "f")
+        self.assertEqual(profile["score"], 5)
+        self.assertEqual(profile["duration_override_ms"], 400)
+        self.assertEqual(profile["duration_clamped_to"], None)
+        self.assertAlmostEqual(profile["predicted_distance_mm"], 2.0, places=3)
+
 
 if __name__ == "__main__":
     unittest.main()

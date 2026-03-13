@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="2">
+  <title>Leia Workspace XYZ</title>
+  <style>
+    :root {
+      --bg: #efe8d9;
+      --panel: rgba(255,255,255,0.9);
+      --ink: #10202b;
+      --muted: #5d676e;
+      --line: rgba(16,32,43,0.12);
+    }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background: radial-gradient(circle at top, #f8f2e5 0%, var(--bg) 72%);
+      color: var(--ink);
+      font-family: "Segoe UI", sans-serif;
+    }
+    body {
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      box-sizing: border-box;
+    }
+    .shell {
+      width: min(1320px, 100%);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 340px;
+      gap: 18px;
+    }
+    .stage, .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      box-shadow: 0 20px 48px rgba(16,32,43,0.09);
+      overflow: hidden;
+    }
+    .stage {
+      padding: 12px;
+    }
+    .panel {
+      padding: 18px;
+      display: grid;
+      gap: 12px;
+      align-content: start;
+    }
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.2;
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    pre {
+      margin: 0;
+      max-height: 560px;
+      overflow: auto;
+      padding: 12px;
+      border-radius: 14px;
+      background: rgba(16,32,43,0.05);
+      border: 1px solid rgba(16,32,43,0.08);
+      font-size: 12px;
+      line-height: 1.38;
+    }
+    @media (max-width: 1080px) {
+      .shell {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="stage"><svg xmlns="http://www.w3.org/2000/svg" width="980" height="680" viewBox="0 0 980 680">
+<rect width="100%" height="100%" fill="#f4efe4" />
+<rect x="22" y="22" width="936" height="636" rx="24" fill="#f9f6ef" stroke="#d7d1c4" stroke-width="1.5" />
+<g id="grid">
+<line x1="64.4" y1="600.0" x2="64.4" y2="80.0" stroke="#d9d6cf" stroke-width="1" />
+<line x1="110.9" y1="600.0" x2="110.9" y2="80.0" stroke="#d9d6cf" stroke-width="1" />
+<line x1="157.3" y1="600.0" x2="157.3" y2="80.0" stroke="#d9d6cf" stroke-width="1" />
+<line x1="203.7" y1="600.0" x2="203.7" y2="80.0" stroke="#d9d6cf" stroke-width="1" />
+<line x1="250.1" y1="600.0" x2="250.1" y2="80.0" stroke="#d9d6cf" stroke-width="1" />
+<line x1="296.6" y1="600.0" x2="296.6" y2="80.0" stroke="#d9d6cf" stroke-width="1" />
+<line x1="343.0" y1="600.0" x2="343.0" y2="80.0" stroke="#d9d6cf" stroke-width="1" />
+<line x1="389.4" y1="600.0" x2="389.4" y2="80.0" stroke="#d9d6cf" stroke-width="1" />
+<line x1="435.9" y1="600.0" x2="435.9" y2="80.0" stroke="#d9d6cf" stroke-width="1" />
+<line x1="80.0" y1="640.1" x2="398.7" y2="640.1" stroke="#d9d6cf" stroke-width="1" />
+<line x1="80.0" y1="593.7" x2="398.7" y2="593.7" stroke="#d9d6cf" stroke-width="1" />
+<line x1="80.0" y1="547.2" x2="398.7" y2="547.2" stroke="#d9d6cf" stroke-width="1" />
+<line x1="80.0" y1="500.8" x2="398.7" y2="500.8" stroke="#d9d6cf" stroke-width="1" />
+<line x1="80.0" y1="454.4" x2="398.7" y2="454.4" stroke="#d9d6cf" stroke-width="1" />
+<line x1="80.0" y1="408.0" x2="398.7" y2="408.0" stroke="#d9d6cf" stroke-width="1" />
+<line x1="80.0" y1="361.5" x2="398.7" y2="361.5" stroke="#d9d6cf" stroke-width="1" />
+<line x1="80.0" y1="315.1" x2="398.7" y2="315.1" stroke="#d9d6cf" stroke-width="1" />
+<line x1="80.0" y1="268.7" x2="398.7" y2="268.7" stroke="#d9d6cf" stroke-width="1" />
+<line x1="80.0" y1="222.2" x2="398.7" y2="222.2" stroke="#d9d6cf" stroke-width="1" />
+<line x1="80.0" y1="175.8" x2="398.7" y2="175.8" stroke="#d9d6cf" stroke-width="1" />
+<line x1="80.0" y1="129.4" x2="398.7" y2="129.4" stroke="#d9d6cf" stroke-width="1" />
+<line x1="80.0" y1="83.0" x2="398.7" y2="83.0" stroke="#d9d6cf" stroke-width="1" />
+<line x1="80.0" y1="36.5" x2="398.7" y2="36.5" stroke="#d9d6cf" stroke-width="1" />
+</g>
+<line x1="157.3" y1="600.0" x2="157.3" y2="80.0" stroke="#8c877b" stroke-width="1.8" />
+<line x1="80.0" y1="315.1" x2="398.7" y2="315.1" stroke="#8c877b" stroke-width="1.8" />
+<line x1="270.7" y1="191.4" x2="270.7" y2="488.6" stroke="#c2523c" stroke-width="8" stroke-linecap="round" />
+<text x="270.7" y="324.0" text-anchor="middle" font-size="20" font-weight="700" fill="#8a2f22">Wall</text>
+<polygon points="312.4,266.8 312.4,317.0 262.2,317.0 262.2,266.8" fill="#63f2f7" stroke="#18494e" stroke-width="3" />
+<text x="287.3" y="299.9" text-anchor="middle" font-size="22" font-weight="700" fill="#0d2b32">?</text>
+<text x="287.3" y="333.9" text-anchor="middle" font-size="18" font-weight="700" fill="#18494e">Brick Supply</text>
+<polygon points="228.5,317.3 166.2,294.6 174.7,315.4 164.7,335.4" fill="#f0a43e" stroke="#233843" stroke-width="3.5" />
+<circle cx="191.4" cy="316.0" r="3.5" fill="#233843" />
+<circle cx="191.4" cy="316.0" r="6.5" fill="#2c6fbb" stroke="#0d2b32" stroke-width="1.5" />
+<text x="203.4" y="304.0" font-size="18" font-weight="700" fill="#1f4d80">Leia</text>
+<rect x="655" y="64" width="270" height="250" rx="18" fill="rgba(255,255,255,0.88)" stroke="#d7d1c4" stroke-width="1.5" />
+<text x="673" y="92" font-size="22" font-weight="700" fill="#10202b">Workspace</text>
+<text x="673" y="122" font-size="15" fill="#10202b">Robot: x=36.8 y=-0.9 theta=-2.1</text>
+<text x="673" y="146" font-size="15" fill="#10202b">Leia z=0.2mm</text>
+<text x="673" y="170" font-size="15" fill="#10202b">Brick Supply count=?</text>
+<text x="673" y="194" font-size="15" fill="#10202b">Held Brick=NO</text>
+<text x="673" y="218" font-size="15" fill="#10202b">Wall behind=0.0mm</text>
+<text x="673" y="250" font-size="15" font-weight="700" fill="#8a2f22">Wall Plan</text>
+<text x="673" y="274" font-size="15" fill="#10202b">reverse acts=0 then L</text>
+<text x="673" y="298" font-size="13" fill="#55626b">Auto-refresh HTML rewrites from motion/vision syncs.</text>
+<text x="60" y="48" font-size="26" font-weight="700" fill="#10202b">Leia Workspace XYZ</text>
+<text x="60" y="72" font-size="14" fill="#55626b">Top-down mm map. +X points right, +Y points up. Z is shown in labels.</text>
+</svg></div>
+    <div class="panel">
+      <div>
+        <h1>Leia Workspace XYZ</h1>
+        <p>Live workspace snapshot. Open this file once and it will refresh every 2 seconds while the helper rewrites it.</p>
+      </div>
+      <div>
+        <p><strong>Files</strong></p>
+        <p>/home/richkingsford/cub-queso/xyz layout/xyz_workspace_live.html</p>
+        <p>/home/richkingsford/cub-queso/xyz layout/xyz_workspace_live.svg</p>
+        <p>/home/richkingsford/cub-queso/xyz layout/xyz_workspace_live.json</p>
+      </div>
+      <pre>{
+  &quot;updated_at&quot;: 1773424865.0771236,
+  &quot;robot&quot;: {
+    &quot;x_mm&quot;: 36.77514598690901,
+    &quot;y_mm&quot;: -0.938891459746512,
+    &quot;z_mm&quot;: 0.0,
+    &quot;theta_deg&quot;: -2.0950610189317107,
+    &quot;lift_mm&quot;: 4.101573533489724
+  },
+  &quot;leia&quot;: {
+    &quot;x_mm&quot;: 36.77514598690901,
+    &quot;y_mm&quot;: -0.938891459746512,
+    &quot;z_mm&quot;: 0.22729785361818777,
+    &quot;theta_deg&quot;: -2.0950610189317107,
+    &quot;label&quot;: &quot;Leia&quot;
+  },
+  &quot;objects&quot;: {
+    &quot;brick_supply&quot;: {
+      &quot;name&quot;: &quot;brick_supply&quot;,
+      &quot;label&quot;: &quot;Brick Supply&quot;,
+      &quot;x_mm&quot;: 140.0,
+      &quot;y_mm&quot;: 25.0,
+      &quot;z_mm&quot;: 0.0,
+      &quot;theta_deg&quot;: 0.0,
+      &quot;count&quot;: null,
+      &quot;confidence&quot;: null,
+      &quot;visible&quot;: false,
+      &quot;source&quot;: &quot;default_layout_seed&quot;,
+      &quot;last_seen_ts&quot;: null
+    },
+    &quot;wall&quot;: {
+      &quot;name&quot;: &quot;wall&quot;,
+      &quot;label&quot;: &quot;Wall&quot;,
+      &quot;x_mm&quot;: 122.11803412564863,
+      &quot;y_mm&quot;: -26.808244248355464,
+      &quot;z_mm&quot;: 0.0,
+      &quot;theta_deg&quot;: 180.0,
+      &quot;length_mm&quot;: 320.0,
+      &quot;confidence&quot;: null,
+      &quot;visible&quot;: true,
+      &quot;valid&quot;: true,
+      &quot;source&quot;: &quot;ALIGN_BRICK&quot;,
+      &quot;last_seen_ts&quot;: 1773424865.0661502
+    }
+  },
+  &quot;held_brick&quot;: {
+    &quot;held&quot;: false,
+    &quot;length_mm&quot;: 44.0,
+    &quot;width_mm&quot;: 22.0,
+    &quot;height_mm&quot;: 22.0
+  },
+  &quot;wall_reverse_plan&quot;: {
+    &quot;ok&quot;: true,
+    &quot;reason&quot;: &quot;wall_not_behind&quot;,
+    &quot;wall_behind_mm&quot;: 0.0,
+    &quot;reverse_acts&quot;: 0,
+    &quot;actions&quot;: [
+      {
+        &quot;cmd&quot;: &quot;l&quot;,
+        &quot;reason&quot;: &quot;turn_now&quot;
+      }
+    ]
+  },
+  &quot;last_visible_brick&quot;: {
+    &quot;visible&quot;: true,
+    &quot;dist_mm&quot;: 97.03810911786384,
+    &quot;x_axis_mm&quot;: 12.78539253254542,
+    &quot;y_axis_mm&quot;: 4.636728923376429,
+    &quot;confidence&quot;: 94.1
+  }
+}</pre>
+    </div>
+  </div>
+</body>
+</html>

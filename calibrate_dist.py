@@ -89,6 +89,8 @@ PLOT_FILE_DEFAULT: str | None = None
 RUN_DIR = Path("Runs - aruco")
 BRICK_DISTANCE_SOURCE = "vision.dist"
 BRICK_DISTANCE_DEFINITION = "Camera-to-brick distance reported by vision at observation time (mm)."
+DISTANCE_DIRECTION_VERIFY_MIN_DELTA_MM = 0.5
+FAST_ALIGN_TIME_BUDGET_S = 1.5
 PLOT_TITLE_FONT_SIZE = 10
 PLOT_LABEL_FONT_SIZE = 9
 PLOT_TICK_FONT_SIZE = 8
@@ -135,6 +137,10 @@ class TrialResult:
     post_lite_required_frames: int | None = None
     phase: str = "primary"
     source_trial: int | None = None
+    pre_observe_elapsed_s: float | None = None
+    post_observe_elapsed_s: float | None = None
+    total_trial_elapsed_s: float | None = None
+    signed_effective_mm_per_s: float | None = None
 
 
 def log_line(message: str) -> None:
@@ -287,6 +293,330 @@ def _dist_cmd_for_negative_motion() -> str:
     return str(_inverse_cmd(_dist_cmd_for_positive_motion()) or "f")
 
 
+def _expected_distance_effect_for_cmd(cmd: str) -> str:
+    cmd_key = _normalize_cmd(cmd, allow_auto=False)
+    if cmd_key == "f":
+        return "decrease"
+    return "increase"
+
+
+def _distance_effect_from_raw_delta(raw_delta_mm: float, *, threshold_mm: float) -> str | None:
+    raw_delta = float(raw_delta_mm)
+    if abs(raw_delta) < max(0.0, float(threshold_mm)):
+        return None
+    return "increase" if raw_delta > 0.0 else "decrease"
+
+
+def _distance_effect_human(effect: str | None) -> str:
+    effect_key = str(effect or "").strip().lower()
+    if effect_key == "increase":
+        return "increase"
+    if effect_key == "decrease":
+        return "decrease"
+    return "inconclusive"
+
+
+def _new_distance_direction_check_entry(cmd: str) -> dict:
+    cmd_key = _normalize_cmd(cmd, allow_auto=False)
+    return {
+        "label": _drive_label_for_cmd(cmd_key),
+        "expected_effect": _expected_distance_effect_for_cmd(cmd_key),
+        "status": "pending",
+        "observations": 0,
+        "evidence_count": 0,
+        "match_count": 0,
+        "mismatch_count": 0,
+        "increase_count": 0,
+        "decrease_count": 0,
+        "inconclusive_count": 0,
+        "last_raw_delta_mm": None,
+        "last_cmd_sent": None,
+        "last_trial_label": None,
+    }
+
+
+def _new_distance_direction_check_state(*, threshold_mm: float = DISTANCE_DIRECTION_VERIFY_MIN_DELTA_MM) -> dict:
+    return {
+        "movement_threshold_mm": max(0.0, float(threshold_mm)),
+        "by_cmd": {
+            "f": _new_distance_direction_check_entry("f"),
+            "b": _new_distance_direction_check_entry("b"),
+        },
+    }
+
+
+def _distance_direction_check_entry(check_state: dict | None, cmd: str) -> dict | None:
+    if not isinstance(check_state, dict):
+        return None
+    cmd_key = _normalize_cmd(cmd, allow_auto=False)
+    by_cmd = check_state.setdefault("by_cmd", {})
+    entry = by_cmd.get(cmd_key)
+    if not isinstance(entry, dict):
+        entry = _new_distance_direction_check_entry(cmd_key)
+        by_cmd[cmd_key] = entry
+    return entry
+
+
+def _refresh_distance_direction_entry_status(entry: dict | None) -> str:
+    if not isinstance(entry, dict):
+        return "pending"
+    matches = max(0, int(_coerce_int(entry.get("match_count"), 0) or 0))
+    mismatches = max(0, int(_coerce_int(entry.get("mismatch_count"), 0) or 0))
+    inconclusive = max(0, int(_coerce_int(entry.get("inconclusive_count"), 0) or 0))
+    if matches > 0 and mismatches > 0:
+        status = "mixed"
+    elif mismatches > 0:
+        status = "mismatch"
+    elif matches > 0:
+        status = "verified"
+    elif inconclusive > 0:
+        status = "inconclusive"
+    else:
+        status = "pending"
+    entry["status"] = str(status)
+    return str(status)
+
+
+def _record_distance_direction_check(
+    check_state: dict | None,
+    *,
+    trial_label: str,
+    cmd: str,
+    cmd_sent: str | None,
+    raw_delta_mm: float,
+) -> None:
+    entry = _distance_direction_check_entry(check_state, cmd)
+    if not isinstance(entry, dict):
+        return
+
+    threshold_mm = max(
+        0.0,
+        float(_coerce_float((check_state or {}).get("movement_threshold_mm"), DISTANCE_DIRECTION_VERIFY_MIN_DELTA_MM) or 0.0),
+    )
+    cmd_key = _normalize_cmd(cmd, allow_auto=False)
+    expected_effect = str(entry.get("expected_effect") or _expected_distance_effect_for_cmd(cmd_key))
+    actual_effect = _distance_effect_from_raw_delta(float(raw_delta_mm), threshold_mm=float(threshold_mm))
+    prior_status = _refresh_distance_direction_entry_status(entry)
+
+    entry["observations"] = max(0, int(_coerce_int(entry.get("observations"), 0) or 0)) + 1
+    entry["last_raw_delta_mm"] = float(raw_delta_mm)
+    entry["last_cmd_sent"] = str(cmd_sent).strip().lower() if cmd_sent is not None else None
+    entry["last_trial_label"] = str(trial_label)
+
+    if actual_effect is None:
+        entry["inconclusive_count"] = max(0, int(_coerce_int(entry.get("inconclusive_count"), 0) or 0)) + 1
+        status = _refresh_distance_direction_entry_status(entry)
+        if prior_status in {"pending", "inconclusive"} and int(entry.get("inconclusive_count") or 0) == 1:
+            log_line(
+                f"[CALIBRATE_DIST_DIRECTION_CHECK] {trial_label}: pending {str(entry.get('label') or _drive_label_for_cmd(cmd_key))} verification; "
+                f"raw_delta={float(raw_delta_mm):+.2f}mm is below {float(threshold_mm):.2f}mm."
+            )
+        entry["status"] = str(status)
+        return
+
+    entry["evidence_count"] = max(0, int(_coerce_int(entry.get("evidence_count"), 0) or 0)) + 1
+    effect_key = str(actual_effect)
+    effect_count_key = f"{effect_key}_count"
+    entry[effect_count_key] = max(0, int(_coerce_int(entry.get(effect_count_key), 0) or 0)) + 1
+    if effect_key == expected_effect:
+        entry["match_count"] = max(0, int(_coerce_int(entry.get("match_count"), 0) or 0)) + 1
+    else:
+        entry["mismatch_count"] = max(0, int(_coerce_int(entry.get("mismatch_count"), 0) or 0)) + 1
+    status = _refresh_distance_direction_entry_status(entry)
+
+    if effect_key == expected_effect:
+        if prior_status != "verified":
+            log_line(
+                f"[CALIBRATE_DIST_DIRECTION_CHECK] {trial_label}: verified {str(entry.get('label') or _drive_label_for_cmd(cmd_key))} "
+                f"-> distance {_distance_effect_human(effect_key).upper()} "
+                f"(raw_delta={float(raw_delta_mm):+.2f}mm, wire={str(cmd_sent or cmd_key).strip().upper() or cmd_key.upper()})."
+            )
+        return
+
+    if prior_status != status or int(entry.get("mismatch_count") or 0) == 1:
+        log_line(
+            f"[CALIBRATE_DIST_DIRECTION_CHECK] {trial_label}: WARNING {str(entry.get('label') or _drive_label_for_cmd(cmd_key))} "
+            f"caused distance {_distance_effect_human(effect_key).upper()}; expected {_distance_effect_human(expected_effect).upper()} "
+            f"(raw_delta={float(raw_delta_mm):+.2f}mm, wire={str(cmd_sent or cmd_key).strip().upper() or cmd_key.upper()})."
+        )
+
+
+def _observed_distance_effect_for_cmd(check_state: dict | None, cmd: str) -> str | None:
+    entry = _distance_direction_check_entry(check_state, cmd)
+    if not isinstance(entry, dict):
+        return None
+    increase_count = max(0, int(_coerce_int(entry.get("increase_count"), 0) or 0))
+    decrease_count = max(0, int(_coerce_int(entry.get("decrease_count"), 0) or 0))
+    if increase_count > decrease_count:
+        return "increase"
+    if decrease_count > increase_count:
+        return "decrease"
+    return None
+
+
+def _inferred_distance_positive_cmd(check_state: dict | None) -> str | None:
+    forward_effect = _observed_distance_effect_for_cmd(check_state, "f")
+    backward_effect = _observed_distance_effect_for_cmd(check_state, "b")
+    if forward_effect == "increase" and backward_effect == "decrease":
+        return "f"
+    if backward_effect == "increase" and forward_effect == "decrease":
+        return "b"
+    return None
+
+
+def _distance_direction_check_summary_line(check_state: dict | None) -> str | None:
+    if not isinstance(check_state, dict):
+        return None
+    parts = []
+    for cmd_key in ("f", "b"):
+        entry = _distance_direction_check_entry(check_state, cmd_key)
+        if not isinstance(entry, dict):
+            continue
+        status = _refresh_distance_direction_entry_status(entry)
+        label = str(entry.get("label") or _drive_label_for_cmd(cmd_key))
+        expected_effect = str(entry.get("expected_effect") or _expected_distance_effect_for_cmd(cmd_key))
+        observed_effect = _observed_distance_effect_for_cmd(check_state, cmd_key)
+        observed_text = observed_effect if observed_effect is not None else "unknown"
+        parts.append(
+            f"{label}={status} expected={expected_effect} observed={observed_text} "
+            f"match={int(_coerce_int(entry.get('match_count'), 0) or 0)} "
+            f"mismatch={int(_coerce_int(entry.get('mismatch_count'), 0) or 0)}"
+        )
+    inferred_positive_cmd = _inferred_distance_positive_cmd(check_state)
+    if inferred_positive_cmd is not None and inferred_positive_cmd != _dist_cmd_for_positive_motion():
+        parts.append(
+            f"suspected_drive_inversion observed_distance_positive_cmd={str(inferred_positive_cmd).upper()} "
+            f"configured={str(_dist_cmd_for_positive_motion()).upper()}"
+        )
+    if not parts:
+        return None
+    return "[CALIBRATE_DIST_DIRECTION_CHECK] " + "; ".join(parts)
+
+
+def _should_abort_for_distance_inversion(check_state: dict | None) -> bool:
+    if not isinstance(check_state, dict):
+        return False
+    forward_entry = _distance_direction_check_entry(check_state, "f")
+    backward_entry = _distance_direction_check_entry(check_state, "b")
+    if not isinstance(forward_entry, dict) or not isinstance(backward_entry, dict):
+        return False
+    if _refresh_distance_direction_entry_status(forward_entry) != "mismatch":
+        return False
+    if _refresh_distance_direction_entry_status(backward_entry) != "mismatch":
+        return False
+    return (
+        int(_coerce_int(forward_entry.get("evidence_count"), 0) or 0) > 0
+        and int(_coerce_int(backward_entry.get("evidence_count"), 0) or 0) > 0
+    )
+
+
+def _fast_alignment_analysis(trials: list[TrialResult], *, target_budget_s: float) -> dict:
+    primary_trials = [row for row in trials if str(getattr(row, "phase", "primary")) != "repeat"]
+    by_duration: dict[int, list[TrialResult]] = {}
+    for row in primary_trials:
+        duration_ms = max(1, int(_coerce_int(getattr(row, "duration_ms", None), 1) or 1))
+        by_duration.setdefault(duration_ms, []).append(row)
+
+    duration_rows = []
+    recommended_row = None
+    for duration_ms in sorted(by_duration):
+        rows = by_duration[duration_ms]
+        valid_rows = [
+            row
+            for row in rows
+            if not bool(getattr(row, "wrong_way", False))
+            and _coerce_finite_float(getattr(row, "total_trial_elapsed_s", None)) is not None
+            and float(getattr(row, "total_trial_elapsed_s")) > 0.0
+        ]
+        analysis_row = {
+            "duration_ms": int(duration_ms),
+            "trial_count": len(rows),
+            "valid_trial_count": len(valid_rows),
+            "median_cmd_delta_mm": (
+                float(statistics.median(float(getattr(row, "cmd_delta_mm", 0.0)) for row in rows))
+                if rows
+                else None
+            ),
+            "median_total_trial_elapsed_s": (
+                float(statistics.median(float(getattr(row, "total_trial_elapsed_s")) for row in valid_rows))
+                if valid_rows
+                else None
+            ),
+            "median_signed_effective_mm_per_s": (
+                float(statistics.median(float(getattr(row, "signed_effective_mm_per_s")) for row in valid_rows))
+                if valid_rows
+                else None
+            ),
+        }
+        median_elapsed_s = _coerce_finite_float(analysis_row.get("median_total_trial_elapsed_s"))
+        analysis_row["fits_time_budget"] = bool(
+            median_elapsed_s is not None and float(median_elapsed_s) <= float(target_budget_s)
+        )
+        duration_rows.append(analysis_row)
+
+        if not valid_rows:
+            continue
+        row_score = _coerce_finite_float(analysis_row.get("median_signed_effective_mm_per_s"))
+        if row_score is None:
+            continue
+        if recommended_row is None:
+            recommended_row = analysis_row
+            continue
+        current_fit = bool(recommended_row.get("fits_time_budget"))
+        candidate_fit = bool(analysis_row.get("fits_time_budget"))
+        current_score = _coerce_finite_float(recommended_row.get("median_signed_effective_mm_per_s"))
+        if candidate_fit and not current_fit:
+            recommended_row = analysis_row
+            continue
+        if candidate_fit == current_fit and float(row_score) > float(current_score or float("-inf")) + 1e-9:
+            recommended_row = analysis_row
+
+    valid_trial_count = sum(int(row.get("valid_trial_count") or 0) for row in duration_rows)
+    analysis = {
+        "target_budget_s": float(target_budget_s),
+        "primary_trial_count": len(primary_trials),
+        "directionally_valid_trial_count": int(valid_trial_count),
+        "recommended_duration_ms": None if recommended_row is None else int(recommended_row["duration_ms"]),
+        "recommended_reason": None,
+        "by_duration_ms": duration_rows,
+    }
+    if recommended_row is None:
+        analysis["recommended_reason"] = "no_directionally_valid_trials"
+    elif bool(recommended_row.get("fits_time_budget")):
+        analysis["recommended_reason"] = "best_valid_mm_per_s_within_budget"
+    else:
+        analysis["recommended_reason"] = "best_valid_mm_per_s_outside_budget"
+    return analysis
+
+
+def _log_fast_alignment_analysis(analysis: dict | None) -> None:
+    if not isinstance(analysis, dict):
+        return
+    recommended_duration_ms = _coerce_int(analysis.get("recommended_duration_ms"))
+    if recommended_duration_ms is None:
+        log_line(
+            f"[CALIBRATE_DIST] Fast-align analysis blocked: {str(analysis.get('recommended_reason') or 'unavailable')}."
+        )
+        return
+    target_budget_s = float(_coerce_float(analysis.get("target_budget_s"), FAST_ALIGN_TIME_BUDGET_S) or FAST_ALIGN_TIME_BUDGET_S)
+    selected = None
+    for row in analysis.get("by_duration_ms") or []:
+        if int(_coerce_int((row or {}).get("duration_ms"), -1) or -1) == int(recommended_duration_ms):
+            selected = row
+            break
+    if not isinstance(selected, dict):
+        return
+    median_elapsed_s = _coerce_finite_float(selected.get("median_total_trial_elapsed_s"))
+    median_rate = _coerce_finite_float(selected.get("median_signed_effective_mm_per_s"))
+    fits_budget = bool(selected.get("fits_time_budget"))
+    elapsed_text = "unknown" if median_elapsed_s is None else f"{float(median_elapsed_s):.2f}s"
+    rate_text = "unknown" if median_rate is None else f"{float(median_rate):.2f}mm/s"
+    budget_text = "within" if fits_budget else "outside"
+    log_line(
+        f"[CALIBRATE_DIST] Fast-align recommendation: duration={int(recommended_duration_ms)}ms "
+        f"median_total_trial_time={elapsed_text} median_signed_rate={rate_text} ({budget_text} {float(target_budget_s):.2f}s budget)."
+    )
+
 def _command_delta_mm(cmd: str, pre_dist_mm: float, post_dist_mm: float) -> float:
     cmd_key = _normalize_cmd(cmd, allow_auto=False)
     if cmd_key == _dist_cmd_for_positive_motion():
@@ -315,6 +645,44 @@ def _highlight_drive_letter(cmd: str) -> str:
     if cmd_key == "f":
         return _colorize("F", ANSI_BLUE_BRIGHT)
     return _colorize("B", ANSI_MAGENTA_BRIGHT)
+
+
+def _log_distance_command_inversion_detail(
+    *,
+    prefix: str,
+    trial_label: str,
+    logical_cmd: str,
+    wire_cmd: str,
+    raw_delta_mm: float | None = None,
+    threshold_mm: float = DISTANCE_DIRECTION_VERIFY_MIN_DELTA_MM,
+) -> None:
+    logical_cmd_key = _normalize_cmd(logical_cmd, allow_auto=False)
+    wire_cmd_key = _normalize_cmd(wire_cmd, allow_auto=False)
+    expected_effect = _expected_distance_effect_for_cmd(logical_cmd_key)
+    wire_effect = _expected_distance_effect_for_cmd(wire_cmd_key)
+    if raw_delta_mm is None:
+        log_line(
+            f"{str(prefix)} {trial_label}: expected {_drive_label_for_cmd(logical_cmd_key)} to make distance "
+            f"{_distance_effect_human(expected_effect)}, but wire {_drive_label_for_cmd(wire_cmd_key)} implies "
+            f"{_distance_effect_human(wire_effect)}."
+        )
+        return
+
+    actual_effect = _distance_effect_from_raw_delta(float(raw_delta_mm), threshold_mm=float(threshold_mm))
+    if actual_effect is None:
+        log_line(
+            f"{str(prefix)} {trial_label}: expected {_drive_label_for_cmd(logical_cmd_key)} to make distance "
+            f"{_distance_effect_human(expected_effect)}, but raw_delta={float(raw_delta_mm):+.2f}mm is below "
+            f"the {float(threshold_mm):.2f}mm direction threshold."
+        )
+        return
+
+    log_line(
+        f"{str(prefix)} {trial_label}: expected {_drive_label_for_cmd(logical_cmd_key)} to make distance "
+        f"{_distance_effect_human(expected_effect)}, but observed {_distance_effect_human(actual_effect)} "
+        f"({abs(float(raw_delta_mm)):.2f}mm; raw_delta={float(raw_delta_mm):+.2f}mm). "
+        f"Wire {_drive_label_for_cmd(wire_cmd_key)} also implies {_distance_effect_human(wire_effect)}."
+    )
 
 
 def _target_distance_status(pre_dist_mm: float, *, target_dist_mm: float) -> tuple[float, str]:
@@ -632,12 +1000,15 @@ def _run_trial_action(
     observe_samples: int,
     observe_timeout_s: float,
     post_act_settle_s: float,
+    distance_direction_check: dict | None = None,
     plotter=None,
     compare_to_distance: float | None = None,
 ) -> tuple[TrialResult | None, str | None]:
     phase_key = str(phase or "primary")
     abort_prefix = "repeat_" if phase_key == "repeat" else ""
+    trial_start_ts = time.time()
 
+    pre_observe_start_ts = time.time()
     pre_pose, pre_obs_meta = _observe_pose_with_reobserve(
         vision=vision,
         world=world,
@@ -658,6 +1029,7 @@ def _run_trial_action(
         if pre_pose is None:
             log_line(f"[CALIBRATE_DIST] {trial_label}: recovery failed before act. Aborting.")
             return None, f"{abort_prefix}pre_pose_unavailable_trial_{trial_idx}"
+    pre_observe_elapsed_s = max(0.0, time.time() - float(pre_observe_start_ts))
     if not isinstance(pre_obs_meta, dict):
         pre_obs_meta = {"mode": "unknown", "reobserved": False}
 
@@ -693,6 +1065,7 @@ def _run_trial_action(
             "timestamp": time.time(),
         }
     )
+    post_observe_start_ts = time.time()
     post_pose, post_obs_meta = _observe_pose_with_reobserve(
         vision=vision,
         world=world,
@@ -722,23 +1095,53 @@ def _run_trial_action(
         recovered_visibility = True
         recovery_mode = str(post_obs_meta.get("mode") or "unknown")
         recovery_inverse_acts = _coerce_int(post_obs_meta.get("inverse_acts"), 0)
+    post_observe_elapsed_s = max(0.0, time.time() - float(post_observe_start_ts))
 
     post_dist_mm = float(post_pose.get("dist") or 0.0)
     movement = _movement_metrics(cmd, pre_dist_mm, post_dist_mm)
+    raw_delta_mm = float(movement["raw_delta_mm"])
+    signed_cmd_delta_mm = float(movement["signed_cmd_delta_mm"])
     cmd_delta_mm = float(movement["cmd_delta_mm"])
+    cmd_sent_effective = str(action_meta.get("cmd_sent") or cmd)
+    _record_distance_direction_check(
+        distance_direction_check,
+        trial_label=trial_label,
+        cmd=str(cmd),
+        cmd_sent=str(cmd_sent_effective),
+        raw_delta_mm=float(raw_delta_mm),
+    )
+    if str(cmd_sent_effective).strip().lower() != str(cmd).strip().lower():
+        _log_distance_command_inversion_detail(
+            prefix="[CALIBRATE_DIST] Command inversion detail:",
+            trial_label=trial_label,
+            logical_cmd=str(cmd),
+            wire_cmd=str(cmd_sent_effective),
+            raw_delta_mm=float(raw_delta_mm),
+            threshold_mm=float(
+                _coerce_float(
+                    (distance_direction_check or {}).get("movement_threshold_mm"),
+                    DISTANCE_DIRECTION_VERIFY_MIN_DELTA_MM,
+                )
+                or DISTANCE_DIRECTION_VERIFY_MIN_DELTA_MM
+            ),
+        )
     source_trial_value = _coerce_int(source_trial, trial_idx)
+    total_trial_elapsed_s = max(0.0, time.time() - float(trial_start_ts))
+    signed_effective_mm_per_s = None
+    if total_trial_elapsed_s > 0.0:
+        signed_effective_mm_per_s = float(signed_cmd_delta_mm) / float(total_trial_elapsed_s)
     row = TrialResult(
         trial=int(trial_idx),
         duration_ms=int(duration_used_ms or 0),
         cmd=str(cmd),
         score_requested=int(setup_score),
-        cmd_sent=str(action_meta.get("cmd_sent") or cmd),
+        cmd_sent=str(cmd_sent_effective),
         pwm=_coerce_int(action_meta.get("pwm")),
         power=_coerce_float(action_meta.get("power")),
         pre_dist_mm=pre_dist_mm,
         post_dist_mm=post_dist_mm,
-        raw_delta_mm=float(movement["raw_delta_mm"]),
-        signed_cmd_delta_mm=float(movement["signed_cmd_delta_mm"]),
+        raw_delta_mm=raw_delta_mm,
+        signed_cmd_delta_mm=signed_cmd_delta_mm,
         cmd_delta_mm=cmd_delta_mm,
         wrong_way=bool(movement["wrong_way"]),
         pre_brick_dist_mm=pre_dist_mm,
@@ -760,6 +1163,10 @@ def _run_trial_action(
         post_lite_required_frames=_coerce_int(post_pose.get("lite_required_frames")),
         phase=str(phase_key),
         source_trial=_coerce_int(source_trial_value),
+        pre_observe_elapsed_s=float(pre_observe_elapsed_s),
+        post_observe_elapsed_s=float(post_observe_elapsed_s),
+        total_trial_elapsed_s=float(total_trial_elapsed_s),
+        signed_effective_mm_per_s=None if signed_effective_mm_per_s is None else float(signed_effective_mm_per_s),
     )
 
     goal_delta_mm, goal_status = _distance_progress_status(
@@ -849,6 +1256,8 @@ def _build_payload(
     trials: list[TrialResult],
     status: str,
     abort_reason: str | None,
+    distance_direction_check: dict | None = None,
+    fast_alignment_analysis: dict | None = None,
 ) -> dict:
     return build_shared_payload(
         source="calibrate_dist",
@@ -858,6 +1267,10 @@ def _build_payload(
         reset_efforts=[],
         status=status,
         abort_reason=abort_reason,
+        extra_fields={
+            "distance_direction_check": json.loads(json.dumps(distance_direction_check or {})),
+            "fast_alignment_analysis": json.loads(json.dumps(fast_alignment_analysis or {})),
+        },
     )
 
 
@@ -887,6 +1300,17 @@ def main() -> int:
     parser.add_argument("--plot-path", type=str, default=PLOT_FILE_DEFAULT)
     parser.add_argument("--results-file", type=str, default=RESULTS_FILE_DEFAULT)
     parser.add_argument("--reference-distance-mm", type=float, default=None)
+    parser.add_argument(
+        "--fast-target-budget-s",
+        type=float,
+        default=FAST_ALIGN_TIME_BUDGET_S,
+        help=f"Target total time budget for one distance-correction cycle analysis (default: {FAST_ALIGN_TIME_BUDGET_S}).",
+    )
+    parser.add_argument(
+        "--allow-direction-mismatch",
+        action="store_true",
+        help="Continue the run even if forward/backward are both proven inverted against observed distance motion.",
+    )
     args = parser.parse_args()
     _ensure_run_dir()
 
@@ -904,6 +1328,7 @@ def main() -> int:
     post_act_settle_s = max(0.0, float(args.post_act_settle_s))
     min_duration_ms = max(1, int(args.min_duration_ms))
     max_duration_ms = max(min_duration_ms, int(args.max_duration_ms))
+    fast_target_budget_s = max(0.1, float(args.fast_target_budget_s))
     if args.reference_distance_mm is not None:
         global REFERENCE_BRICK_DISTANCE_MM
         REFERENCE_BRICK_DISTANCE_MM = float(args.reference_distance_mm)
@@ -938,6 +1363,9 @@ def main() -> int:
         "plot_path": str(plot_path) if plot_path is not None else None,
         "brick_distance_source": str(BRICK_DISTANCE_SOURCE),
         "brick_distance_definition": str(BRICK_DISTANCE_DEFINITION),
+        "fast_target_budget_s": float(fast_target_budget_s),
+        "direction_check_min_delta_mm": float(DISTANCE_DIRECTION_VERIFY_MIN_DELTA_MM),
+        "abort_on_direction_mismatch": not bool(args.allow_direction_mismatch),
     }
     if REFERENCE_BRICK_DISTANCE_MM is not None:
         config["reference_brick_distance_mm"] = float(REFERENCE_BRICK_DISTANCE_MM)
@@ -954,6 +1382,12 @@ def main() -> int:
     log_line(
         f"[CALIBRATE_DIST] repeat_pass=enabled; repeats are deferred until all {int(trials_planned)} primary trial(s) finish."
     )
+    log_line(
+        f"[CALIBRATE_DIST] direction check: forward should DECREASE distance and backward should INCREASE distance "
+        f"(threshold {float(DISTANCE_DIRECTION_VERIFY_MIN_DELTA_MM):.2f}mm)."
+    )
+    if not bool(args.allow_direction_mismatch):
+        log_line("[CALIBRATE_DIST] direction mismatch guard: aborting once both drive directions are proven inverted.")
 
     plotter = LivePlot(show_plot=bool(args.show_plot), plot_path=plot_path)
     robot = None
@@ -961,6 +1395,7 @@ def main() -> int:
     world = None
     recent_acts = deque(maxlen=32)
     trial_rows: list[TrialResult] = []
+    distance_direction_check = _new_distance_direction_check_state()
     status = "completed"
     abort_reason = None
     target_dist_mm = None if args.target_dist_mm is None else float(args.target_dist_mm)
@@ -1028,6 +1463,7 @@ def main() -> int:
                     observe_samples=observe_samples,
                     observe_timeout_s=observe_timeout_s,
                     post_act_settle_s=post_act_settle_s,
+                    distance_direction_check=distance_direction_check,
                     plotter=plotter,
                 )
                 if row is None:
@@ -1045,8 +1481,27 @@ def main() -> int:
                         trials=trial_rows,
                         status=status,
                         abort_reason=abort_reason,
+                        distance_direction_check=distance_direction_check,
+                        fast_alignment_analysis=_fast_alignment_analysis(
+                            trial_rows,
+                            target_budget_s=float(fast_target_budget_s),
+                        ),
                     ),
                 )
+                if not bool(args.allow_direction_mismatch) and _should_abort_for_distance_inversion(distance_direction_check):
+                    status = "aborted"
+                    abort_reason = "distance_command_inversion_suspected"
+                    summary_line = _distance_direction_check_summary_line(distance_direction_check)
+                    if summary_line:
+                        log_line(summary_line)
+                    inferred_positive_cmd = _inferred_distance_positive_cmd(distance_direction_check)
+                    if inferred_positive_cmd is not None:
+                        log_line(
+                            f"[CALIBRATE_DIST] Direction guard: observed distance-positive cmd={str(inferred_positive_cmd).upper()} "
+                            f"but configured={str(_dist_cmd_for_positive_motion()).upper()}. "
+                            f"Inspect drive command remap before re-running."
+                        )
+                    break
 
         if status == "completed":
             repeat_plan = [row for row in trial_rows if str(getattr(row, "phase", "primary")) != "repeat"]
@@ -1079,6 +1534,7 @@ def main() -> int:
                     observe_samples=observe_samples,
                     observe_timeout_s=observe_timeout_s,
                     post_act_settle_s=post_act_settle_s,
+                    distance_direction_check=distance_direction_check,
                     plotter=plotter,
                     compare_to_distance=float(source_row.cmd_delta_mm),
                 )
@@ -1097,6 +1553,11 @@ def main() -> int:
                         trials=trial_rows,
                         status=status,
                         abort_reason=abort_reason,
+                        distance_direction_check=distance_direction_check,
+                        fast_alignment_analysis=_fast_alignment_analysis(
+                            trial_rows,
+                            target_budget_s=float(fast_target_budget_s),
+                        ),
                     ),
                 )
     except KeyboardInterrupt:
@@ -1112,6 +1573,11 @@ def main() -> int:
                 trials=trial_rows,
                 status=status,
                 abort_reason=abort_reason,
+                distance_direction_check=distance_direction_check,
+                fast_alignment_analysis=_fast_alignment_analysis(
+                    trial_rows,
+                    target_budget_s=float(fast_target_budget_s),
+                ),
             ),
         )
         plotter.finish()
@@ -1126,6 +1592,15 @@ def main() -> int:
             except Exception:
                 pass
 
+    direction_summary = _distance_direction_check_summary_line(distance_direction_check)
+    if direction_summary:
+        log_line(direction_summary)
+    _log_fast_alignment_analysis(
+        _fast_alignment_analysis(
+            trial_rows,
+            target_budget_s=float(fast_target_budget_s),
+        )
+    )
     log_line(f"[CALIBRATE_DIST] Wrote results to {results_path}")
     if plot_path is not None:
         log_line(f"[CALIBRATE_DIST] Updated plot at {plot_path}")

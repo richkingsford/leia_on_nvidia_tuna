@@ -1,14 +1,14 @@
 {
   "session": {
-    "started_at_ts": 1773373964.414,
-    "started_at_local": "2026-03-12 21:52:44",
-    "ended_at_ts": 1773373999.039,
-    "ended_at_local": "2026-03-12 21:53:19",
-    "duration_s": 34.625,
+    "started_at_ts": 1773413817.25,
+    "started_at_local": "2026-03-13 08:56:57",
+    "ended_at_ts": 1773413839.03,
+    "ended_at_local": "2026-03-13 08:57:19",
+    "duration_s": 21.78,
     "active_vision_mode": "aruco"
   },
   "run_logs": [
-    "/home/richkingsford/cub-queso/Runs - aruco/Mar 12 952pm.json"
+    "/home/richkingsford/cub-queso/Runs - aruco/Mar 13 856am.json"
   ],
   "step_completion_actions": {
     "by_step": {},

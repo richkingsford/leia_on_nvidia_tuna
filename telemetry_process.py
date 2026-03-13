@@ -19,6 +19,7 @@ from helper_vision_config import (
     demos_dir_for_mode,
 )
 import helper_gate_utils as gate_utils
+import helper_xyz_coords
 from helper_robot_control import Robot
 from telemetry_robot import MotionEvent, StepState, WorldModel, draw_telemetry_overlay
 import telemetry_brick
@@ -116,6 +117,10 @@ PROCESS_START_METRICS_BY_STEP = {
 
 DEFAULT_SPEED_SCORE = telemetry_robot_module.SPEED_SCORE_DEFAULT
 MAX_SPEED_SCORE = telemetry_robot_module.SPEED_SCORE_MAX
+try:
+    EXCEPTION_PAUSE_S = max(0.0, float(_MANUAL_CONFIG.get("exception_pause_s", 5.0)))
+except (TypeError, ValueError):
+    EXCEPTION_PAUSE_S = 5.0
 
 ALIGN_RECOVERY_REVERSE_MAX_ACTS = 6
 ALIGN_RECOVERY_REVERSE_OBSERVE_S = 0.8
@@ -136,7 +141,7 @@ ALIGN_BRICK_TOPMOST_TIMEOUT_S = 30.0
 ALIGN_BRICK_TOPMOST_GATECHECK_MAX_TRIES = 6
 ALIGN_BRICK_SECOND_UPPERMOST_DESCENT_HOTKEY = "l"
 ALIGN_BRICK_SECOND_UPPERMOST_DESCENT_PULSES = 3
-POST_ACTION_OBSERVE_DELAY_S = 0.15
+POST_ACTION_OBSERVE_DELAY_S = 0.75
 
 MM_METRICS = {
     "xAxis_offset_abs",
@@ -257,6 +262,30 @@ def _step_number_for_label(step):
         return int(cache.get(step_key))
     except (TypeError, ValueError):
         return None
+
+
+def _step_number_prefix_text(step):
+    step_number = _step_number_for_label(step)
+    if step_number is None:
+        return ""
+    return f"{COLOR_WHITE}[step#{int(step_number)}]{COLOR_RESET} "
+
+
+def _exception_step_key_from_headline(headline, details=""):
+    headline_text = str(headline or "").strip()
+    details_text = str(details or "")
+    if headline_text:
+        match = re.match(r"^\[([A-Z0-9_]+) EXCEPTION(?: [A-Z0-9_]+)?\]", headline_text)
+        if match:
+            return normalize_step_label(match.group(1))
+        match = re.match(r"^\[EXCEPTION\]\s+\[([A-Z0-9_]+)\]", headline_text)
+        if match:
+            return normalize_step_label(match.group(1))
+    if headline_text == "[EXCEPTION]":
+        match = re.match(r"^\s*\[([A-Z0-9_]+)\]", details_text)
+        if match:
+            return normalize_step_label(match.group(1))
+    return None
 
 
 def default_speed_for_cmd(cmd, score=DEFAULT_SPEED_SCORE):
@@ -571,6 +600,7 @@ COLOR_GRAY = "\033[90m"
 COLOR_CYAN = "\033[36m"
 COLOR_BLUE_BRIGHT = "\033[94m"
 COLOR_YELLOW = "\033[33m"
+COLOR_ORANGE_DARK = "\033[38;5;172m"
 COLOR_ORANGE_BRIGHT = "\033[38;5;208m"
 COLOR_PINK = "\033[38;5;213m"
 COLOR_MAGENTA_BRIGHT = "\033[95m"
@@ -610,7 +640,9 @@ def cmd_to_motion_type(cmd):
 def format_headline(headline, color, details=""):
     if details is None:
         details = ""
-    return f"{color}{headline}{COLOR_RESET}{details}"
+    step_key = _exception_step_key_from_headline(headline, details)
+    step_prefix = _step_number_prefix_text(step_key) if step_key else ""
+    return f"{step_prefix}{color}{headline}{COLOR_RESET}{details}"
 
 
 def _log_dist_priority_cheat_act(step, act_plan, *, align_silent=False, settle=False):
@@ -1948,6 +1980,7 @@ def apply_height_snapshot_from_step(world, step, *, log=True):
     else:
         setattr(world, "brick_supply_height_bricks", int(bricks))
         setattr(world, "brick_supply_height_mm", float(quantized_mm))
+    helper_xyz_coords.sync_from_world(world, reason=f"height_snapshot_{target}")
 
     if log:
         print(
@@ -3238,6 +3271,12 @@ def _run_start_ground_reset_exception(
                 ),
             )
         )
+    pause_after_exception(
+        robot,
+        world,
+        step,
+        reason="start ground reset exception pause",
+    )
 
     def _status_words():
         lift_mm, lift_text = _exception_lift_estimate_text(world, prev_lift_mm)
@@ -3727,6 +3766,13 @@ def _run_ground_up_level2_exception(
                     COLOR_MAGENTA_BRIGHT,
                 )
             )
+
+    pause_after_exception(
+        robot,
+        world,
+        step,
+        reason="ground-up level2 exception pause",
+    )
 
     exc_runtime_color = COLOR_WHITE
     ground_speed = telemetry_robot_module.manual_speed_for_cmd(ground_cmd, ground_score)
@@ -4475,6 +4521,15 @@ def pause_after_fail(robot):
     if robot:
         robot.stop()
     time.sleep(FAIL_PAUSE_S)
+
+
+def pause_after_exception(robot, world=None, step=None, *, reason=None, pause_s=None):
+    _ = (world, step, reason)
+    if robot:
+        robot.stop()
+    pause_window_s = EXCEPTION_PAUSE_S if pause_s is None else max(0.0, float(pause_s))
+    if float(pause_window_s) > 0.0:
+        time.sleep(float(pause_window_s))
 
 
 def _visible_success_target_false(gates):
@@ -6355,7 +6410,7 @@ def _auto_diag_lite_gate_detail(world, step):
 
     plain = f"lite gatecheck: mode={mode_text}, lite={lite_text}, sample={truth_text}, checks={checks}"
     colored = (
-        f"{COLOR_GRAY}lite gatecheck: mode={mode_text}, lite={lite_text}, "
+        f"{COLOR_BLUE_BRIGHT}lite gatecheck:{COLOR_RESET} mode={mode_text}, lite={lite_text}, "
         f"sample={truth_text}, checks={checks}{COLOR_RESET}"
     )
     if bool(getattr(world, "_lite_gate_visible_false_confident_seen", False)):
@@ -6407,7 +6462,7 @@ def _result_lite_gate_detail(world, step):
         if not plain and not colored:
             return None
         token = "lite gatecheck:"
-        pink_token = f"{COLOR_PINK}lite{COLOR_RESET}{COLOR_GRAY} gatecheck:"
+        pink_token = f"{COLOR_BLUE_BRIGHT}lite gatecheck:{COLOR_RESET}"
         colored_text = str(colored).replace(token, pink_token, 1)
         return {
             "plain": plain,
@@ -6438,7 +6493,7 @@ def _result_lite_gate_detail(world, step):
 
     plain = "lite gatecheck: " + "; ".join(row_plain_parts)
     colored_text = (
-        f"{COLOR_WHITE}lite gatecheck: {COLOR_RESET}"
+        f"{COLOR_BLUE_BRIGHT}lite gatecheck:{COLOR_RESET} "
         + f"{COLOR_WHITE}; {COLOR_RESET}".join(row_colored_parts)
     )
     return {
@@ -8988,6 +9043,7 @@ def run_alignment_segment(
         score_effective,
         action_meta,
         action_index,
+        act_plan=None,
         settle=False,
         force_gap_switch=False,
     ):
@@ -9026,6 +9082,8 @@ def run_alignment_segment(
         switch_reassure_message_colored = None
         switch_snapshot_lines = None
         switch_snapshot_lines_colored = None
+        obs_target = None
+        obs_tol = None
         prev_type = str(prev_log_correction_type or "").strip().lower()
         switched_gap_type = bool(force_gap_switch) or (
             prev_type in {"distance", "x_axis", "y_axis"} and prev_type != correction_type
@@ -9055,6 +9113,8 @@ def run_alignment_segment(
 
         if correction_type == "distance":
             metric_name = "dist_err"
+            obs_target = dist_target
+            obs_tol = dist_tol
             try:
                 curr_err = float(dist_now) - float(dist_target)
                 curr_metric = abs(float(curr_err))
@@ -9130,6 +9190,8 @@ def run_alignment_segment(
                 axis_tol = x_tol
                 prev_log_axis_err = prev_log_x_err
                 axis_label = "x"
+            obs_target = axis_target
+            obs_tol = axis_tol
             try:
                 curr_err = float(axis_err_now)
                 curr_metric = abs(float(curr_err))
@@ -9265,8 +9327,6 @@ def run_alignment_segment(
                 ease_in_out_note = action_meta.get("anti_alias_note")
             if ease_in_out_note:
                 parts.append(str(ease_in_out_note))
-        if parts:
-            motor_details = f" {COLOR_GRAY}({', '.join(parts)}){COLOR_RESET}"
 
         trial_num = int(getattr(world, "loop_id", 0) or 0)
         active_step_label = normalize_step_label(step) or str(step or "ALIGN").strip().upper()
@@ -9281,6 +9341,66 @@ def run_alignment_segment(
             phase_base = f"{active_step_label}_ALIGN"
         phase_label = f"{phase_base}_SETTLE" if bool(settle) else phase_base
         line_prefix = f"{step_prefix}{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}]"
+
+        def _observation_text():
+            if curr_err is None:
+                return f"I see {metric_name}=unknown."
+            err_render = f"{COLOR_YELLOW}{float(curr_err):+.2f}{COLOR_RESET}"
+            target_num = _as_float(obs_target, None)
+            tol_num = _as_float(obs_tol, None)
+            if target_num is None:
+                return f"I see {metric_name}={err_render}."
+            target_text = (
+                f"{float(target_num):.2f}"
+                if metric_name == "dist_err"
+                else f"{float(target_num):+.2f}"
+            )
+            tol_text = f" ±{abs(float(tol_num)):.2f}" if tol_num is not None else ""
+            if metric_name == "dist_err":
+                if float(curr_err) > 0.0:
+                    relation = "farther than"
+                elif float(curr_err) < 0.0:
+                    relation = "closer than"
+                else:
+                    relation = "at"
+                if relation == "at":
+                    return f"I see {metric_name}={err_render} at our target={target_text}{tol_text}."
+                return f"I see {metric_name}={err_render} {relation} our target={target_text}{tol_text}."
+            if metric_name == "y_err":
+                if float(curr_err) > 0.0:
+                    relation = "above"
+                elif float(curr_err) < 0.0:
+                    relation = "below"
+                else:
+                    relation = "at"
+                if relation == "at":
+                    return f"I see {metric_name}={err_render} at our target={target_text}{tol_text}."
+                return f"I see {metric_name}={err_render} {relation} our target={target_text}{tol_text}."
+            if float(curr_err) > 0.0:
+                relation = "left"
+            elif float(curr_err) < 0.0:
+                relation = "right"
+            else:
+                relation = "at"
+            if relation == "at":
+                return f"I see {metric_name}={err_render} at our target={target_text}{tol_text}."
+            return f"I see {metric_name}={err_render} to the {relation} of our target={target_text}{tol_text}."
+
+        curve_note = None
+        if isinstance(act_plan, dict):
+            curve_name = str(act_plan.get("curve_name") or "").strip()
+            curve_value = _as_float(act_plan.get("curve_value_mm"), None)
+            if curve_name and curve_value is not None:
+                curve_note = (
+                    f"used our {curve_name} at "
+                    f"{COLOR_ORANGE_DARK}{float(curve_value):.2f}{COLOR_RESET}{COLOR_GRAY}"
+                )
+
+        detail_text = ", ".join(parts)
+        if curve_note:
+            detail_text = f"{detail_text}; {curve_note}" if detail_text else str(curve_note)
+        if detail_text:
+            motor_details = f" {COLOR_GRAY}({detail_text}){COLOR_RESET}"
 
         def _print_result_lite_gate_line():
             detail = _result_lite_gate_detail(world, step)
@@ -9328,11 +9448,11 @@ def run_alignment_segment(
                 # Gap-switch result observation already emitted above in canonical form.
                 comparison_message = None
                 comparison_message_colored = None
-        cmd_log = str(cmd).strip().lower()
+        cmd_log = str(cmd).strip().upper()
         print(
             f"{line_prefix}{COLOR_RESET} "
-            f"{metric_name}={metric_text} → "
-            f"{COLOR_ORANGE_BRIGHT}{cmd_log} {int(score_display)}%{COLOR_RESET}{motor_details}"
+            f"{_observation_text()}  "
+            f"{COLOR_ORANGE_BRIGHT}> {cmd_log} {int(score_display)}%{COLOR_RESET}{motor_details}"
         )
         if comparison_message:
             comparison_render = comparison_message_colored or comparison_message
@@ -10271,7 +10391,7 @@ def run_alignment_segment(
 
     def _format_exception_prefix_text():
         # Keep operator semantics consistent while styling only the exception token.
-        return f"[{COLOR_MAGENTA_BRIGHT}exception{COLOR_WHITE}]"
+        return f"{_step_number_prefix_text(step_key)}[{COLOR_MAGENTA_BRIGHT}exception{COLOR_WHITE}]"
 
     def _highlight_seen_true_text(saw_true):
         if bool(saw_true):
@@ -10330,6 +10450,12 @@ def run_alignment_segment(
                 )
             )
             y_axis_hold_start_logged = True
+            pause_after_exception(
+                robot,
+                world,
+                step,
+                reason="y-axis hold exception pause",
+            )
 
         local_gate_status = _align_local_gate_status_single_source(world, step)
         if _y_axis_hold_release_ready(local_gate_status):
@@ -10656,6 +10782,12 @@ def run_alignment_segment(
                     COLOR_MAGENTA_BRIGHT,
                 )
             )
+        pause_after_exception(
+            robot,
+            world,
+            step,
+            reason="post-success descend exception pause",
+        )
         true_down_streak = 0
         saw_true = False
         false_after_true_streak = 0
@@ -10807,6 +10939,12 @@ def run_alignment_segment(
                     f"goal={goal_text}, max={int(step_pre_desc_max_acts)}{speed_note}."
                 )
             )
+        pause_after_exception(
+            robot,
+            world,
+            step,
+            reason="pre-align descend exception pause",
+        )
         true_down_streak = 0
         saw_true = False
         false_after_true_streak = 0
@@ -10993,6 +11131,12 @@ def run_alignment_segment(
                     f"{'YES' if bool(step_post_mast_observe_between_acts) else 'NO'})."
                 )
             )
+        pause_after_exception(
+            robot,
+            world,
+            step,
+            reason="post-success mast exception pause",
+        )
 
         def _tail_pulse_wait_seconds(action_meta):
             # Non-queued transport may drop/override back-to-back timed commands.
@@ -11463,6 +11607,12 @@ def run_alignment_segment(
                     COLOR_MAGENTA_BRIGHT,
                 )
             )
+        pause_after_exception(
+            robot,
+            world,
+            step,
+            reason="forward stall exception pause",
+        )
         for idx in range(1, int(forward_stall_acts) + 1):
             if confirm_callback and not confirm_callback(world, vision):
                 return "confirm cancelled"
@@ -11590,6 +11740,12 @@ def run_alignment_segment(
                     COLOR_MAGENTA_BRIGHT,
                 )
             )
+        pause_after_exception(
+            robot,
+            world,
+            step,
+            reason="progress mast exception pause",
+        )
         for idx in range(1, int(progress_mast_acts) + 1):
             if confirm_callback and not confirm_callback(world, vision):
                 return True, "confirm cancelled"
@@ -11726,6 +11882,12 @@ def run_alignment_segment(
             return "skipped"
         attempts_this_call = int(attempts_remaining) if bool(near_dist_vis_continuous) else 1
         attempted_any = False
+        pause_after_exception(
+            robot,
+            world,
+            step,
+            reason="near-target visibility exception pause",
+        )
 
         for local_idx in range(1, int(attempts_this_call) + 1):
             attempt_idx = int(near_dist_vis_attempts) + 1
@@ -12339,6 +12501,12 @@ def run_alignment_segment(
                         COLOR_ORANGE_BRIGHT,
                     )
                 )
+            pause_after_exception(
+                robot,
+                world,
+                step,
+                reason="topmost crosshair exception pause",
+            )
 
             def _apply_motion_segments(cmd_local, speed_local, action_meta_local):
                 segments_local = []
@@ -12965,6 +13133,12 @@ def run_alignment_segment(
                     COLOR_MAGENTA_BRIGHT,
                 )
             )
+        pause_after_exception(
+            robot,
+            world,
+            step,
+            reason="startup action exception pause",
+        )
         for idx in range(1, int(startup_action_acts) + 1):
             if confirm_callback and not confirm_callback(world, vision):
                 return False, "confirm cancelled"
@@ -13754,6 +13928,7 @@ def run_alignment_segment(
                         score_effective=score_effective,
                         action_meta=action_meta,
                         action_index=align_action_idx,
+                        act_plan=act_plan,
                         settle=False,
                         force_gap_switch=force_gap_switch_after_recovery,
                     )
@@ -14182,6 +14357,7 @@ def run_alignment_segment(
                     score_effective=score_effective,
                     action_meta=action_meta,
                     action_index=settle_action_idx,
+                    act_plan=act_plan,
                     settle=True,
                 )
             action_detail = None
@@ -14346,6 +14522,12 @@ def replay_segment(
                     COLOR_MAGENTA_BRIGHT,
                 )
             )
+        pause_after_exception(
+            robot,
+            world,
+            step_key,
+            reason="search-turn follow-up exception pause",
+        )
         follow_speed = telemetry_robot_module.manual_speed_for_cmd(turn_followup_cmd, turn_followup_score)
         last_meta = None
         for idx in range(1, int(turn_followup_acts) + 1):
@@ -14606,6 +14788,12 @@ def replay_segment(
                     COLOR_MAGENTA_BRIGHT,
                 )
             )
+        pause_after_exception(
+            robot,
+            world,
+            step_key,
+            reason="ground-up replay exception pause",
+        )
         start_status = "start"
     else:
         start_status = wait_for_start_gates(
@@ -14704,6 +14892,12 @@ def replay_segment(
                                 COLOR_MAGENTA_BRIGHT,
                             )
                         )
+                    pause_after_exception(
+                        robot,
+                        world,
+                        step_key,
+                        reason="startup pre-action exception pause",
+                    )
                     for idx in range(1, int(startup_pre_acts) + 1):
                         if confirm_callback and not confirm_callback(world, vision):
                             if robot:
@@ -14744,6 +14938,12 @@ def replay_segment(
                             COLOR_MAGENTA_BRIGHT,
                         )
                     )
+                pause_after_exception(
+                    robot,
+                    world,
+                    step_key,
+                    reason="startup action exception pause",
+                )
                 for idx in range(1, int(startup_acts) + 1):
                     if confirm_callback and not confirm_callback(world, vision):
                         if robot:

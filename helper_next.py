@@ -411,6 +411,25 @@ def _axis_curve_motion_plan(axis: str, err_mm: float, *, fallback_score: int) ->
     return out
 
 
+def _curve_log_metadata(axis: str, curve_plan: Optional[dict]) -> dict:
+    axis_key = str(axis or "x").strip().lower()
+    if axis_key in {"dist", "distance"}:
+        curve_name = "distance curve"
+    elif axis_key == "y":
+        curve_name = "y-axis curve"
+    else:
+        curve_name = "x-axis curve"
+    if not isinstance(curve_plan, dict):
+        return {"curve_name": None, "curve_value_mm": None}
+    curve_value = _coerce_float(curve_plan.get("predicted_distance_mm"), None)
+    if curve_value is None:
+        curve_value = _coerce_float(curve_plan.get("gap_mm"), None)
+    return {
+        "curve_name": str(curve_name),
+        "curve_value_mm": (None if curve_value is None else float(curve_value)),
+    }
+
+
 def x_axis_curve_lookup_lines(sample_errors_mm=None) -> List[str]:
     lines = []
     calibration = helper_next2.load_axis_aruco_calibration("x")
@@ -1487,6 +1506,7 @@ def select_align_brick_next_act(
             "worst_metric": "xAxis_offset_abs",
             "ratio": float(x_ratio),
         }
+        x_candidate.update(_curve_log_metadata("x", x_curve_plan))
         recovery_fallback_candidates["x_axis"] = dict(x_candidate)
         if x_ratio > ratio_eps:
             candidates["x_axis"] = dict(x_candidate)
@@ -1553,6 +1573,7 @@ def select_align_brick_next_act(
             "worst_metric": "yAxis_offset_abs",
             "ratio": float(y_ratio),
         }
+        y_candidate.update(_curve_log_metadata("y", y_curve_plan))
         recovery_fallback_candidates["y_axis"] = dict(y_candidate)
         if y_ratio > ratio_eps:
             candidates["y_axis"] = dict(y_candidate)
@@ -1599,19 +1620,67 @@ def select_align_brick_next_act(
                 elif float(dist_val) < float(target_num):
                     dist_cmd = "b"
         if dist_cmd is not None:
+            dist_curve_err_mm = None
+            if target_num is not None:
+                try:
+                    dist_curve_err_mm = float(dist_val) - float(target_num)
+                except (TypeError, ValueError):
+                    dist_curve_err_mm = None
+            if dist_curve_err_mm is None and dist_gate_outside_mm is not None:
+                try:
+                    dist_curve_err_mm = abs(float(dist_gate_outside_mm))
+                except (TypeError, ValueError):
+                    dist_curve_err_mm = None
+                if dist_curve_err_mm is not None and str(dist_cmd) == "b":
+                    dist_curve_err_mm = -float(dist_curve_err_mm)
             dist_score_err_mm = dist_gate_outside_mm
             if dist_score_err_mm is None:
                 dist_score_err_mm = dist_err_mm
             score_float_dist = float(align_brick_dist_error_speed_score(dist_score_err_mm))
+            dist_curve_plan = None
+            if dist_curve_err_mm is not None:
+                dist_curve_plan = _axis_curve_motion_plan(
+                    "dist",
+                    float(dist_curve_err_mm),
+                    fallback_score=int(round(score_float_dist)),
+                )
             dist_candidate = {
-                "cmd": str(dist_cmd),
+                "cmd": (
+                    str(dist_curve_plan.get("cmd"))
+                    if isinstance(dist_curve_plan, dict) and dist_curve_plan.get("cmd") in ("f", "b")
+                    else str(dist_cmd)
+                ),
                 "correction_type": "distance",
-                "score": int(round(score_float_dist)),
-                "score_float": score_float_dist,
+                "score": (
+                    int(dist_curve_plan.get("score"))
+                    if isinstance(dist_curve_plan, dict) and dist_curve_plan.get("score") is not None
+                    else int(round(score_float_dist))
+                ),
+                "score_float": (
+                    float(dist_curve_plan.get("score"))
+                    if isinstance(dist_curve_plan, dict) and dist_curve_plan.get("score") is not None
+                    else score_float_dist
+                ),
+                "duration_override_ms": (
+                    int(dist_curve_plan.get("duration_override_ms"))
+                    if isinstance(dist_curve_plan, dict) and dist_curve_plan.get("duration_override_ms") is not None
+                    else None
+                ),
+                "predicted_distance_mm": (
+                    float(dist_curve_plan.get("predicted_distance_mm"))
+                    if isinstance(dist_curve_plan, dict) and dist_curve_plan.get("predicted_distance_mm") is not None
+                    else None
+                ),
+                "distance_equation": (
+                    str(dist_curve_plan.get("equation"))
+                    if isinstance(dist_curve_plan, dict) and dist_curve_plan.get("equation")
+                    else None
+                ),
                 "reason": "distance_alignment",
                 "worst_metric": "dist",
                 "ratio": float(d_ratio),
             }
+            dist_candidate.update(_curve_log_metadata("dist", dist_curve_plan))
             recovery_fallback_candidates["distance"] = dict(dist_candidate)
             if d_ratio > ratio_eps:
                 candidates["distance"] = dict(dist_candidate)
@@ -2167,6 +2236,16 @@ def select_align_brick_next_act(
         "gap_focus_cycle_count": int(max(0, gap_focus_cycle_count)),
         "gap_focus_cycle_switch": bool(gap_focus_cycle_switch),
         "gap_focus_cycle_only_one_remaining": bool(gap_focus_cycle_only_one_remaining),
+        "curve_name": (
+            str(chosen.get("curve_name")).strip()
+            if str(chosen.get("curve_name") or "").strip()
+            else None
+        ),
+        "curve_value_mm": (
+            None
+            if chosen.get("curve_value_mm") is None
+            else float(chosen.get("curve_value_mm"))
+        ),
         "exception_tech_debt_notes": (
             list(gap_rotation_tech_debt_notes) if isinstance(gap_rotation_tech_debt_notes, list) else []
         ),

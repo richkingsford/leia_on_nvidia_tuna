@@ -63,6 +63,8 @@ class TestTelemetryProcessSeatBrickProgressException(unittest.TestCase):
         print_lines = []
         update_calls = {"n": 0}
         gate_calls = {"n": 0}
+        sleep_calls = []
+        step_number = telemetry_process._step_number_for_label("SEAT_BRICK")
 
         def _fake_update_world(_world, _vision, log=True):
             _ = log
@@ -75,7 +77,7 @@ class TestTelemetryProcessSeatBrickProgressException(unittest.TestCase):
 
         def _fake_observe_success_gatecheck(*_args, **_kwargs):
             gate_calls["n"] += 1
-            if gate_calls["n"] >= 3:
+            if len(send_cmds) >= 4 and gate_calls["n"] >= 5:
                 return {"success_met": True, "hold_for_confirm": False}
             return {"success_met": False, "hold_for_confirm": False}
 
@@ -110,7 +112,7 @@ class TestTelemetryProcessSeatBrickProgressException(unittest.TestCase):
             telemetry_process.send_robot_command = _fake_send_robot_command
             telemetry_process.post_act_analysis = lambda *_a, **_k: None
             telemetry_process.telemetry_brick.success_gate_bounds = lambda *_a, **_k: {}
-            telemetry_process.time.sleep = lambda *_a, **_k: None
+            telemetry_process.time.sleep = lambda *args, **_k: sleep_calls.append(args[0] if args else None)
             builtins.print = lambda *args, **kwargs: print_lines.append(
                 " ".join(str(arg) for arg in args)
             )
@@ -142,14 +144,16 @@ class TestTelemetryProcessSeatBrickProgressException(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(reason, "success gate")
-        self.assertEqual(send_cmds, ["d", "d", "d", "d"])
+        self.assertEqual(send_cmds.count("d"), 4)
         self.assertTrue(
             any(
                 (telemetry_process.COLOR_MAGENTA_BRIGHT in line)
-                and ("[SEAT_BRICK EXCEPTION]" in line)
+                and (f"[step#{int(step_number)}]" in line)
+                and ("Triggered at" in line)
                 for line in print_lines
             )
         )
+        self.assertIn(5.0, sleep_calls)
 
 
 if __name__ == "__main__":

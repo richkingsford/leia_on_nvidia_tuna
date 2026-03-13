@@ -35,6 +35,42 @@ class _DummyWorld:
         }
         self.process_rules = {}
 
+    def update_from_motion(self, _evt):
+        return None
+
+
+class _AlignLogWorld:
+    def __init__(self):
+        self.process_rules = {
+            "ALIGN_BRICK": {
+                "start_gates": {
+                    "visible": {"min": True},
+                },
+                "success_gates": {
+                    "visible": {"min": True},
+                    "x_axis": {"target": -4.74, "tol": 1.40},
+                },
+            }
+        }
+        self.learned_rules = {}
+        self.wall_envelope = None
+        self.brick = {
+            "visible": True,
+            "dist": 48.0,
+            "angle": 0.0,
+            "x_axis": 2.89,
+            "offset_x": 2.89,
+            "y_axis": 0.0,
+            "confidence": 95.0,
+        }
+        self._frame_id = 0
+        self._success_confirm_frames = 0
+        self._success_confirm_progress = None
+        self._success_confirm_logged = False
+
+    def update_from_motion(self, _evt):
+        return None
+
 
 class TestTelemetryProcessActionDisplay(unittest.TestCase):
     def test_send_robot_command_records_display_from_logical_command(self):
@@ -230,6 +266,95 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
         self.assertFalse(isinstance(meta.get("segments"), list))
         self.assertEqual(len(robot.sent), 1)
         self.assertNotIn("EASE(", str(getattr(world, "_last_action_sent_display", "")))
+
+    def test_align_observe_act_log_uses_sentence_style_and_curve_note(self):
+        world = _AlignLogWorld()
+        robot = _DummyRobot()
+        print_lines = []
+        gate_calls = {"n": 0}
+
+        def _fake_update_world(_world, _vision, log=True):
+            _ = log
+            _world._frame_id = int(getattr(_world, "_frame_id", 0)) + 1
+
+        def _fake_observe_success_gatecheck(*_args, **_kwargs):
+            gate_calls["n"] += 1
+            if gate_calls["n"] >= 4:
+                return {"success_met": True, "hold_for_confirm": False}
+            return {"success_met": False, "hold_for_confirm": False}
+
+        def _fake_select_alignment_next_act(*_args, **_kwargs):
+            return {
+                "planner": "gap",
+                "cmd": "l",
+                "speed": 0.434,
+                "score": 20,
+                "reason": "x_axis_alignment",
+                "correction_type": "x_axis",
+                "duration_override_ms": 471,
+                "curve_name": "x-axis curve",
+                "curve_value_mm": 4.63,
+            }
+
+        def _fake_send_robot_command(_robot, _world, _step, cmd, *_args, **kwargs):
+            _ = kwargs
+            return {
+                "cmd_sent": str(cmd),
+                "score_effective": 20,
+                "pwm": 131,
+                "power": 0.434,
+                "duration_ms": 471,
+            }
+
+        with patch.object(telemetry_process, "wait_for_start_gates", return_value="start"), \
+             patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world), \
+             patch.object(telemetry_process, "observe_success_gatecheck", side_effect=_fake_observe_success_gatecheck), \
+             patch.object(telemetry_process.next_module, "select_alignment_next_act", side_effect=_fake_select_alignment_next_act), \
+             patch.object(telemetry_process, "send_robot_command", side_effect=_fake_send_robot_command), \
+             patch.object(telemetry_process, "run_full_gatecheck_after_act", return_value=False), \
+             patch.object(telemetry_process, "post_act_analysis", return_value=None), \
+             patch.object(telemetry_process.telemetry_brick, "success_gate_bounds", return_value={}), \
+             patch.object(telemetry_process.time, "sleep", return_value=None), \
+             patch(
+                 "builtins.print",
+                 side_effect=lambda *args, **kwargs: print_lines.append(" ".join(str(arg) for arg in args)),
+             ):
+            ok, reason = telemetry_process.run_alignment_segment(
+                segment={"events": []},
+                step="ALIGN_BRICK",
+                robot=robot,
+                vision=object(),
+                world=world,
+                steps=[],
+                raw_steps=[],
+                observer=None,
+                analysis_pause_s=0.0,
+                confirm_callback=None,
+                align_silent=False,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(reason, "success gate")
+        observe_line = next(
+            line for line in print_lines if "[T1.1 ALIGN]" in line and "I see x_err=" in line
+        )
+        step_number = telemetry_process._step_number_for_label("ALIGN_BRICK")
+        self.assertIn(f"[step#{int(step_number)}]", observe_line)
+        self.assertIn(
+            f"x_err={telemetry_process.COLOR_YELLOW}+7.63{telemetry_process.COLOR_RESET}",
+            observe_line,
+        )
+        self.assertIn("to the left of our target=-4.74 ±1.40.", observe_line)
+        self.assertIn(
+            f"{telemetry_process.COLOR_ORANGE_BRIGHT}> L 20%{telemetry_process.COLOR_RESET}",
+            observe_line,
+        )
+        self.assertIn("pwm=131, pwr=0.434, t=471ms; used our x-axis curve at ", observe_line)
+        self.assertIn(
+            f"{telemetry_process.COLOR_ORANGE_DARK}4.63{telemetry_process.COLOR_RESET}",
+            observe_line,
+        )
+        self.assertNotIn("mm", observe_line)
 
     def test_repeated_identical_act_guard_blocks_51st_send(self):
         world = _DummyWorld()

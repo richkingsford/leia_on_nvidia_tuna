@@ -19,6 +19,7 @@ from helper_gate_utils import metric_error
 
 DEFAULT_CURVE_FILE = Path(__file__).resolve().parent / "world_model_left_right_curve.json"
 DEFAULT_Y_CURVE_FILE = Path(__file__).resolve().parent / "world_model_up_down_curve.json"
+DEFAULT_DIST_CURVE_FILE = Path(__file__).resolve().parent / "world_model_forward_backward_curve.json"
 DEFAULT_CURVE_BINS_MM = (
     0.5,
     1.0,
@@ -115,19 +116,25 @@ def axis_cmd_for_error(axis: str, err_mm: float) -> Optional[str]:
     err = _float_or_none(err_mm)
     if err is None or abs(float(err)) <= 1e-9:
         return None
+    if axis_key in {"dist", "distance"}:
+        return "f" if float(err) > 0.0 else "b"
     if axis_key == "y":
         return "d" if float(err) > 0.0 else "u"
-    return "l" if float(err) > 0.0 else "r"
+    return "r" if float(err) > 0.0 else "l"
 
 
 def _axis_curve_file(axis: str) -> Path:
     axis_key = str(axis or "x").strip().lower()
+    if axis_key in {"dist", "distance"}:
+        return DEFAULT_DIST_CURVE_FILE
     return DEFAULT_Y_CURVE_FILE if axis_key == "y" else DEFAULT_CURVE_FILE
 
 
 def _axis_calibration_cmd_key(axis: str, cmd: str) -> str:
     axis_key = str(axis or "x").strip().lower()
     cmd_key = str(cmd or "").strip().lower()
+    if axis_key in {"dist", "distance"}:
+        return "f" if cmd_key == "f" else "b"
     if axis_key == "y":
         return "u" if cmd_key == "u" else "d"
     return "l" if cmd_key == "l" else "r"

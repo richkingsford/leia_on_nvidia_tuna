@@ -156,6 +156,8 @@ class TestSeatBrick2YAxisHoldException(unittest.TestCase):
         print_lines = []
         update_calls = {"n": 0}
         observe_calls = {"n": 0}
+        sent_cmds = []
+        step_number = telemetry_process._step_number_for_label("SEAT_BRICK2")
 
         def _fake_update_world(_world, _vision, log=True):
             _ = log
@@ -190,13 +192,24 @@ class TestSeatBrick2YAxisHoldException(unittest.TestCase):
                 "score": None,
             }
 
+        def _fake_send_robot_command(_robot, _world, _step, cmd, *_args, **kwargs):
+            sent_cmds.append((str(cmd), kwargs.get("speed_score")))
+            return {
+                "cmd_sent": str(cmd),
+                "score_effective": kwargs.get("speed_score"),
+                "power": 0.0,
+                "pwm": 0,
+                "duration_ms": 10,
+            }
+
         with patch.object(telemetry_process, "wait_for_start_gates", return_value="start"), \
              patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world), \
              patch.object(telemetry_process, "observe_success_gatecheck", side_effect=_fake_observe_success_gatecheck), \
              patch.object(telemetry_process.next_module, "select_alignment_next_act", side_effect=_fake_select_alignment_next_act), \
              patch.object(telemetry_process, "run_full_gatecheck_after_act", return_value=False), \
+             patch.object(telemetry_process, "send_robot_command", side_effect=_fake_send_robot_command), \
              patch.object(telemetry_process.telemetry_brick, "success_gate_bounds", return_value={}), \
-             patch.object(telemetry_process.time, "sleep", return_value=None), \
+             patch.object(telemetry_process.time, "sleep", return_value=None) as sleep_mock, \
              patch.object(
                  builtins,
                  "print",
@@ -218,22 +231,22 @@ class TestSeatBrick2YAxisHoldException(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(reason, "success gate")
-        self.assertGreaterEqual(len(planner_y_inputs), 3)
+        self.assertGreaterEqual(len(planner_y_inputs), 1)
         self.assertAlmostEqual(planner_y_inputs[0], 1.0, places=3)
-        self.assertAlmostEqual(planner_y_inputs[1], 1.0, places=3)
-        self.assertAlmostEqual(planner_y_inputs[2], 8.0, places=3)
+        self.assertGreaterEqual(len(sent_cmds), 1)
         self.assertTrue(
             any(
                 (telemetry_process.COLOR_MAGENTA_BRIGHT in line)
+                and (f"[step#{int(step_number)}]" in line)
                 and ("Y-axis hold active" in line)
                 for line in print_lines
             )
         )
         self.assertTrue(
             any(
-                (telemetry_process.COLOR_MAGENTA_BRIGHT in line)
-                and ("Y-axis hold released" in line)
-                for line in print_lines
+                abs(float(call.args[0]) - 5.0) < 1e-9
+                for call in sleep_mock.call_args_list
+                if call.args
             )
         )
 

@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -158,6 +159,35 @@ class TestHelperNextAlignTurnSpeed(unittest.TestCase):
         )
         self.assertEqual(analytics.get("worst_metric"), "dist")
         self.assertEqual(analytics.get("cmd"), "f")
+
+    def test_align_distance_uses_saved_duration_override_when_curve_available(self):
+        with patch.object(
+            helper_next,
+            "_axis_curve_motion_plan",
+            return_value={
+                "cmd": "f",
+                "score": 5,
+                "duration_override_ms": 380,
+                "predicted_distance_mm": 3.5,
+                "equation": "distance_mm = -1.94 + 0.013024 * duration_ms",
+            },
+        ) as mock_curve:
+            act = helper_next.select_align_brick_next_act(
+                process_rules=self._rules(),
+                learned_rules={},
+                step="ALIGN_BRICK",
+                x_axis_mm=-2.0,
+                y_axis_mm=0.0,
+                dist_mm=120.0,
+                visible=True,
+                duration_s=0.05,
+            )
+
+        self.assertEqual(act.get("worst_metric"), "dist")
+        self.assertEqual(act.get("cmd"), "f")
+        self.assertEqual(act.get("duration_override_ms"), 380)
+        self.assertEqual(act.get("score"), 5)
+        mock_curve.assert_any_call("dist", 40.0, fallback_score=5)
 
     def test_align_prioritizes_dist_when_gap_exceeds_150mm_even_if_x_axis_off(self):
         world = _DummyWorld(20.0, dist=300.0)

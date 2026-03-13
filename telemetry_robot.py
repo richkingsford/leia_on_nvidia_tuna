@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+import helper_xyz_coords
+
 # Speed/PWM tuning (single source of truth)
 MIN_PWM = 36
 MAX_PWM = 255
@@ -2085,6 +2087,8 @@ class WorldModel:
         self.turn_efficiency_r = TURN_EFFICIENCY.get("r", 100.0)
         
         self.action_history = collections.deque(maxlen=100)
+        helper_xyz_coords.ensure_workspace(self)
+        helper_xyz_coords.sync_from_world(self, reason="init", render=False)
 
     @property
     def step_state(self):
@@ -2119,6 +2123,7 @@ class WorldModel:
         brick_module.update_from_motion(self, event, delta)
         wall_module.update_from_motion(self, delta, self.wall_envelope)
         self.action_history.append(event)
+        helper_xyz_coords.update_from_motion(self, event=event, delta=delta)
 
     def get_recent_net_forward_mm(self, window_s=5.0):
         """
@@ -2180,6 +2185,7 @@ class WorldModel:
             floor_lift_quality=floor_lift_quality,
         )
         wall_module.update_from_vision(self, found, dist, angle, conf, self.wall_envelope)
+        helper_xyz_coords.sync_from_world(self, reason="vision")
 
     def get_scoop_corridor_limits(self, dist):
         brick_module = _brick_module()
@@ -2294,6 +2300,7 @@ class WorldModel:
         self.brick["held"] = False
         self.stability_count = 0
         self.last_visible_time = None
+        helper_xyz_coords.sync_from_world(self, reason="reset_mission", render=False)
         return self.step_state.value
 
     def to_dict(self):

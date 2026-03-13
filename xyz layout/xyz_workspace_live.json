@@ -1,0 +1,71 @@
+{
+  "updated_at": 1773424865.0771236,
+  "robot": {
+    "x_mm": 36.77514598690901,
+    "y_mm": -0.938891459746512,
+    "z_mm": 0.0,
+    "theta_deg": -2.0950610189317107,
+    "lift_mm": 4.101573533489724
+  },
+  "leia": {
+    "x_mm": 36.77514598690901,
+    "y_mm": -0.938891459746512,
+    "z_mm": 0.22729785361818777,
+    "theta_deg": -2.0950610189317107,
+    "label": "Leia"
+  },
+  "objects": {
+    "brick_supply": {
+      "name": "brick_supply",
+      "label": "Brick Supply",
+      "x_mm": 140.0,
+      "y_mm": 25.0,
+      "z_mm": 0.0,
+      "theta_deg": 0.0,
+      "count": null,
+      "confidence": null,
+      "visible": false,
+      "source": "default_layout_seed",
+      "last_seen_ts": null
+    },
+    "wall": {
+      "name": "wall",
+      "label": "Wall",
+      "x_mm": 122.11803412564863,
+      "y_mm": -26.808244248355464,
+      "z_mm": 0.0,
+      "theta_deg": 180.0,
+      "length_mm": 320.0,
+      "confidence": null,
+      "visible": true,
+      "valid": true,
+      "source": "ALIGN_BRICK",
+      "last_seen_ts": 1773424865.0661502
+    }
+  },
+  "held_brick": {
+    "held": false,
+    "length_mm": 44.0,
+    "width_mm": 22.0,
+    "height_mm": 22.0
+  },
+  "wall_reverse_plan": {
+    "ok": true,
+    "reason": "wall_not_behind",
+    "wall_behind_mm": 0.0,
+    "reverse_acts": 0,
+    "actions": [
+      {
+        "cmd": "l",
+        "reason": "turn_now"
+      }
+    ]
+  },
+  "last_visible_brick": {
+    "visible": true,
+    "dist_mm": 97.03810911786384,
+    "x_axis_mm": 12.78539253254542,
+    "y_axis_mm": 4.636728923376429,
+    "confidence": 94.1
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "source": "calibrate_dist",
+  "generated_at_iso_utc": "2026-03-13T14:43:27.522715Z",
+  "step": "ALIGN_BRICK",
+  "aruco_marker_calibration": {
+    "schema_version": 1,
+    "generated_at_iso_utc": "2026-03-13T14:43:27.522715Z",
+    "source": "calibrate_dist.py with ArucoBrickVision",
+    "note": "Linear placeholder equations for forward/backward distance motion using primary non-wrong-way trials from the 5% speed sweep.",
+    "fit_phase": "primary_non_wrong_way",
+    "speed_score_pct": 5,
+    "duration_range_ms": [
+      200,
+      400
+    ],
+    "reference_distance_mm": 125.6,
+    "observed_brick_distance_median_mm_all_trials": 125.77778902560988,
+    "observed_brick_distance_median_mm_fit_trials": 127.84425923211558,
+    "placeholder_rule_of_thumb": "Every 0.1s of duration gets us about 1.3mm of travel at 5% drive score near the brick.",
+    "recommended_single_duration_ms_repeat_aware": 380,
+    "combined_placeholder": {
+      "equation": "distance_mm = -1.9426 + 0.013024 * duration_ms",
+      "intercept_mm": -1.9426,
+      "slope_mm_per_ms": 0.013024,
+      "additional_distance_per_10ms_mm": 0.13024,
+      "additional_distance_per_100ms_mm": 1.3024
+    },
+    "by_cmd": {
+      "f": {
+        "command": "forward",
+        "description": "Forward distance correction (f command)",
+        "intercept_mm": -2.1849885665272897,
+        "slope_mm_per_ms": 0.013519354327641335,
+        "r_squared": 0.5938531362049823,
+        "residual_std_mm": 0.6793066732451888,
+        "motion_rate_mm_per_sec": 13.519354327641336,
+        "data_points": 21,
+        "equation": "distance_mm = -2.1850 + 0.013519 * duration_ms",
+        "additional_distance_per_10ms_mm": 0.13519354327641335,
+        "additional_distance_per_100ms_mm": 1.3519354327641334,
+        "repeatability_mean_abs_delta_mm": 0.5708275724524684,
+        "repeatability_median_abs_delta_mm": 0.37633861816141234,
+        "repeatability_max_abs_delta_mm": 2.0381454389995923
+      },
+      "b": {
+        "command": "backward",
+        "description": "Backward distance correction (b command)",
+        "intercept_mm": -1.7556956254935114,
+        "slope_mm_per_ms": 0.012692566900395724,
+        "r_squared": 0.7362698752631156,
+        "residual_std_mm": 0.48044182849539474,
+        "motion_rate_mm_per_sec": 12.692566900395724,
+        "data_points": 22,
+        "equation": "distance_mm = -1.7557 + 0.012693 * duration_ms",
+        "additional_distance_per_10ms_mm": 0.12692566900395725,
+        "additional_distance_per_100ms_mm": 1.2692566900395725,
+        "repeatability_mean_abs_delta_mm": 0.5243212041426323,
+        "repeatability_median_abs_delta_mm": 0.4755665280840091,
+        "repeatability_max_abs_delta_mm": 1.3501025254162045
+      }
+    }
+  }
+}
