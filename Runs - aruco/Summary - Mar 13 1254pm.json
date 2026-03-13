@@ -1,0 +1,33 @@
+{
+  "session": {
+    "started_at_ts": 1773427801.473,
+    "started_at_local": "2026-03-13 12:50:01",
+    "ended_at_ts": 1773428093.071,
+    "ended_at_local": "2026-03-13 12:54:53",
+    "duration_s": 291.597,
+    "active_vision_mode": "aruco"
+  },
+  "run_logs": [
+    "/home/richkingsford/cub-queso/Runs - aruco/Mar 13 1250pm.json"
+  ],
+  "step_completion_actions": {
+    "by_step": {},
+    "records": []
+  },
+  "counts": {
+    "cancelled_steps_total": 0,
+    "cancelled_steps_by_step": {},
+    "restarted_steps_total": 0,
+    "restarted_steps_auto_full_gatecheck_by_step": {},
+    "restarted_steps_manual_by_step": {}
+  },
+  "manual_hotkeys": {
+    "press_count_total": 0,
+    "press_count_by_hotkey": {},
+    "press_count_by_command": {},
+    "press_details": [],
+    "edit_count_total": 0,
+    "edit_count_by_hotkey": {},
+    "edit_details": []
+  }
+}

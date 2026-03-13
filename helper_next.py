@@ -392,41 +392,101 @@ def _y_axis_correction_cmd(y_err_mm: float) -> str:
 
 
 def _axis_curve_motion_plan(axis: str, err_mm: float, *, fallback_score: int) -> Optional[dict]:
-    plan = helper_next2.calibrated_axis_motion_for_error(axis=axis, err_mm=err_mm)
-    if not isinstance(plan, dict):
-        return None
+    # For small errors, skip the fixed-speed calibration and use the fallback score
+    # which is computed from the monotonic curve based on error magnitude
     try:
-        score = int(round(float(plan.get("score"))))
+        abs_err = abs(float(err_mm))
     except (TypeError, ValueError):
-        score = int(fallback_score)
-    try:
-        duration_override_ms = int(round(float(plan.get("duration_override_ms"))))
-    except (TypeError, ValueError):
-        return None
-    if duration_override_ms <= 0:
-        return None
-    out = dict(plan)
-    out["score"] = int(score)
-    out["duration_override_ms"] = int(duration_override_ms)
-    return out
+        abs_err = 0.0
+    
+    # Only use calibration for errors > 4mm; use curve-based scoring for smaller errors
+    if abs_err > 4.0:
+        plan = helper_next2.calibrated_axis_motion_for_error(axis=axis, err_mm=err_mm)
+        if isinstance(plan, dict):
+            try:
+                score = int(round(float(plan.get("score"))))
+            except (TypeError, ValueError):
+                score = int(fallback_score)
+            try:
+                duration_override_ms = int(round(float(plan.get("duration_override_ms"))))
+            except (TypeError, ValueError):
+                return None
+            if duration_override_ms > 0:
+                out = dict(plan)
+                out["score"] = int(score)
+                out["duration_override_ms"] = int(duration_override_ms)
+                return out
+    
+    # For small errors or if calibration unavailable, return None to use fallback
+    return None
 
 
-def _curve_log_metadata(axis: str, curve_plan: Optional[dict]) -> dict:
+def _curve_log_metadata(axis: str, curve_plan: Optional[dict], *, fallback_score: Optional[int] = None, err_mm: Optional[float] = None) -> dict:
     axis_key = str(axis or "x").strip().lower()
+    
+    # Build descriptive axis name
     if axis_key in {"dist", "distance"}:
-        curve_name = "distance curve"
+        axis_name = "distance"
     elif axis_key == "y":
-        curve_name = "y-axis curve"
+        axis_name = "y_axis"
     else:
-        curve_name = "x-axis curve"
+        axis_name = "x_axis"
+    
+    # If no curve plan, we're using monotonic curve with fallback score
     if not isinstance(curve_plan, dict):
-        return {"curve_name": None, "curve_value_mm": None}
+        if fallback_score is not None and err_mm is not None:
+            try:
+                abs_err = abs(float(err_mm))
+                curve_name = f"{axis_name} monotonic curve (error={abs_err:.2f}mm, score={int(fallback_score)}%)"
+                return {
+                    "curve_name": str(curve_name),
+                    "curve_value_mm": float(abs_err),
+                    "decision_source": "monotonic_curve",
+                }
+            except (TypeError, ValueError):
+                pass
+        return {
+            "curve_name": None,
+            "curve_value_mm": None,
+            "decision_source": "fallback",
+        }
+    
+    # Get reference distance and speed from the curve plan
+    ref_distance = _coerce_float(curve_plan.get("reference_distance_mm"), None)
+    speed_score = _coerce_float(curve_plan.get("speed_score_pct"), None)
+    source = str(curve_plan.get("source", "aruco_calibration")).strip().lower()
+    
+    # Build descriptive curve name based on source
+    if source == "aruco_calibration":
+        base_name = f"{axis_name} ArUco calibration"
+        if ref_distance is not None and speed_score is not None:
+            curve_name = f"{base_name} at {ref_distance:.0f}mm distance at {speed_score:.0f}% speed"
+        elif ref_distance is not None:
+            curve_name = f"{base_name} at {ref_distance:.0f}mm distance"
+        elif speed_score is not None:
+            curve_name = f"{base_name} at {speed_score:.0f}% speed"
+        else:
+            curve_name = base_name
+    else:
+        # Monotonic or other curve type
+        base_name = f"{axis_name} {source}"
+        if ref_distance is not None and speed_score is not None:
+            curve_name = f"{base_name} at {ref_distance:.0f}mm distance at {speed_score:.0f}% speed"
+        elif ref_distance is not None:
+            curve_name = f"{base_name} at {ref_distance:.0f}mm distance"
+        elif speed_score is not None:
+            curve_name = f"{base_name} at {speed_score:.0f}% speed"
+        else:
+            curve_name = base_name
+    
     curve_value = _coerce_float(curve_plan.get("predicted_distance_mm"), None)
     if curve_value is None:
         curve_value = _coerce_float(curve_plan.get("gap_mm"), None)
+    
     return {
         "curve_name": str(curve_name),
         "curve_value_mm": (None if curve_value is None else float(curve_value)),
+        "decision_source": str(source),
     }
 
 
@@ -1506,7 +1566,7 @@ def select_align_brick_next_act(
             "worst_metric": "xAxis_offset_abs",
             "ratio": float(x_ratio),
         }
-        x_candidate.update(_curve_log_metadata("x", x_curve_plan))
+        x_candidate.update(_curve_log_metadata("x", x_curve_plan, fallback_score=x_score_fallback, err_mm=x_err_mm))
         recovery_fallback_candidates["x_axis"] = dict(x_candidate)
         if x_ratio > ratio_eps:
             candidates["x_axis"] = dict(x_candidate)
@@ -1573,7 +1633,7 @@ def select_align_brick_next_act(
             "worst_metric": "yAxis_offset_abs",
             "ratio": float(y_ratio),
         }
-        y_candidate.update(_curve_log_metadata("y", y_curve_plan))
+        y_candidate.update(_curve_log_metadata("y", y_curve_plan, fallback_score=y_score_fallback, err_mm=y_err_mm))
         recovery_fallback_candidates["y_axis"] = dict(y_candidate)
         if y_ratio > ratio_eps:
             candidates["y_axis"] = dict(y_candidate)
@@ -1680,7 +1740,7 @@ def select_align_brick_next_act(
                 "worst_metric": "dist",
                 "ratio": float(d_ratio),
             }
-            dist_candidate.update(_curve_log_metadata("dist", dist_curve_plan))
+            dist_candidate.update(_curve_log_metadata("dist", dist_curve_plan, fallback_score=int(round(score_float_dist)), err_mm=dist_curve_err_mm))
             recovery_fallback_candidates["distance"] = dict(dist_candidate)
             if d_ratio > ratio_eps:
                 candidates["distance"] = dict(dist_candidate)

@@ -9,7 +9,7 @@
     "source": "calibrate_dist.py with ArucoBrickVision",
     "note": "Linear placeholder equations for forward/backward distance motion using primary non-wrong-way trials from the 5% speed sweep.",
     "fit_phase": "primary_non_wrong_way",
-    "speed_score_pct": 5,
+    "speed_score_pct": 1,
     "duration_range_ms": [
       200,
       400

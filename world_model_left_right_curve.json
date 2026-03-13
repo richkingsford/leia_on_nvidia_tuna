@@ -74,7 +74,7 @@
     "source": "calibrate_x.py with ArucoBrickVision",
     "note": "Linear placeholder equations for x-axis turn motion using primary non-wrong-way trials from the 20% speed sweep.",
     "fit_phase": "primary_non_wrong_way",
-    "speed_score_pct": 20,
+    "speed_score_pct": 1,
     "duration_range_ms": [
       250,
       500
