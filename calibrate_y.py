@@ -107,11 +107,11 @@ REOBSERVE_ROUNDS = 2
 RELAXED_OBSERVE_TIMEOUT_S = 2.8
 RECOVERY_MAX_INVERSE_ACTS = 5
 RECOVERY_OBSERVE_TIMEOUT_S = 1.0
-# Leave defaults None so we can create timestamped files inside the run folder
+# Leave defaults None so live JSON is explicit and plot PNG output stays opt-in.
 RESULTS_FILE_DEFAULT: str | None = None
 PLOT_FILE_DEFAULT: str | None = None
 
-# folder where calibration runs deposit live JSON & PNG files.
+# Folder where calibration runs deposit live files.
 RUN_DIR = Path("Runs - aruco")
 
 
@@ -119,12 +119,9 @@ def _cleanup_old_run_files():
     cleanup_old_run_files(
         preserve_live_files={
             "calibrate_x_live.json",
-            "calibrate_x_live.png",
             "calibrate_y_live.json",
-            "calibrate_y_live.png",
             "calibrate_dist_live.json",
-            "calibrate_dist_live.png",
-        }
+        },
     )
 
 
@@ -133,11 +130,8 @@ def _ensure_run_dir():
         run_dir=RUN_DIR,
         preserve_live_files={
             "calibrate_x_live.json",
-            "calibrate_x_live.png",
             "calibrate_y_live.json",
-            "calibrate_y_live.png",
             "calibrate_dist_live.json",
-            "calibrate_dist_live.png",
         },
     )
 
@@ -1687,18 +1681,15 @@ def main() -> int:
     parser.add_argument("--post-act-settle-s", type=float, default=POST_ACT_SETTLE_S, help=f"Extra wait after the act before re-observing (default: {POST_ACT_SETTLE_S}).")
     parser.add_argument("--seed", type=int, default=None, help="Optional RNG seed for repeatable durations.")
     parser.add_argument("--show-plot", action="store_true", help="Open an interactive Matplotlib window and update it after each trial.")
-    parser.add_argument("--plot-path", type=str, default=PLOT_FILE_DEFAULT, help=f"PNG file to rewrite after each trial (default: {PLOT_FILE_DEFAULT}).")
+    parser.add_argument("--plot-path", type=str, default=PLOT_FILE_DEFAULT, help="Optional PNG file to rewrite after each trial.")
     parser.add_argument("--results-file", type=str, default=RESULTS_FILE_DEFAULT, help="JSON output path (default: run-specific file in ./runs).")
     parser.add_argument("--reference-distance-mm", type=float, default=None, help="Assumed brick distance (mm) for this calibration set")
     parser.add_argument("--invert-y-axis", action="store_true", help="Invert u/d command mapping (test for command inversion issues)")
     args = parser.parse_args()
     _ensure_run_dir()
-    # Use live files in the Runs - aruco folder (overwrite previous results)
+    # Use a stable live JSON file in the Runs - aruco folder.
     if args.results_file is None:
         args.results_file = str(RUN_DIR / "calibrate_y_live.json")
-    if args.plot_path is None:
-        args.plot_path = str(RUN_DIR / "calibrate_y_live.png")
-
     try:
         cmd_mode = _normalize_cmd(args.cmd, allow_auto=True)
         center_fallback_cmd = _normalize_cmd(args.center_fallback_cmd, allow_auto=False)

@@ -58,6 +58,13 @@ class TestTelemetryProcessFindWall2Gates(unittest.TestCase):
         self.assertIn("xAxis_offset_abs", gates)
         self.assertIn("yAxis_offset_abs", gates)
 
+    def test_process_model_find_wall_has_no_start_ground_reset_exception(self):
+        model = telemetry_process.load_process_model()
+        steps = (model or {}).get("steps") if isinstance(model, dict) else {}
+        step_cfg = (steps or {}).get("FIND_WALL") if isinstance(steps, dict) else {}
+        self.assertIsInstance(step_cfg, dict)
+        self.assertNotIn("start_ground_reset_exception", step_cfg)
+
     def test_process_model_find_topmost_brick_does_not_require_stack_booleans(self):
         model = telemetry_process.load_process_model()
         steps = (model or {}).get("steps") if isinstance(model, dict) else {}
@@ -91,6 +98,47 @@ class TestTelemetryProcessFindWall2Gates(unittest.TestCase):
         self.assertIn("y_axis", gates)
         self.assertNotIn("yAxis_offset_abs", gates)
 
+    def test_process_model_find_wall2_startup_turn_and_ground_reset_config(self):
+        model = telemetry_process.load_process_model()
+        steps = (model or {}).get("steps") if isinstance(model, dict) else {}
+        step_cfg = (steps or {}).get("FIND_WALL2") if isinstance(steps, dict) else {}
+        startup_pre = (step_cfg or {}).get("startup_pre_action_exception") if isinstance(step_cfg, dict) else {}
+        ground_reset = (step_cfg or {}).get("start_ground_reset_exception") if isinstance(step_cfg, dict) else {}
+        search_cycle = (step_cfg or {}).get("search_visible_false_speed_cycle") if isinstance(step_cfg, dict) else {}
+
+        self.assertIsInstance(startup_pre, dict)
+        self.assertEqual(int(startup_pre.get("score") or 0), 1)
+        self.assertEqual(int(startup_pre.get("duration_override_ms") or 0), 1500)
+        self.assertFalse(bool(startup_pre.get("observe_between_acts", True)))
+
+        self.assertIsInstance(ground_reset, dict)
+        self.assertEqual(str(ground_reset.get("max_acts_from_height_source") or ""), "brick_supply_height")
+        self.assertEqual(int(ground_reset.get("max_acts_default") or 0), 5)
+        self.assertFalse(bool(ground_reset.get("observe_between_acts", True)))
+
+        self.assertIsInstance(search_cycle, dict)
+        self.assertEqual(int((search_cycle.get("command_scores") or {}).get("l") or 0), 20)
+        self.assertEqual(int((search_cycle.get("command_scores") or {}).get("b") or 0), 10)
+
+    def test_process_model_find_wall2_visible_tiers_use_fixed_two_percent_with_duration_override(self):
+        model = telemetry_process.load_process_model()
+        steps = (model or {}).get("steps") if isinstance(model, dict) else {}
+        step_cfg = (steps or {}).get("FIND_WALL2") if isinstance(steps, dict) else {}
+        visible_tiers = (step_cfg or {}).get("visible_only_speed_tiers") if isinstance(step_cfg, dict) else {}
+        self.assertIsInstance(visible_tiers, dict)
+        self.assertEqual(int(visible_tiers.get("normal") or 0), 2)
+        self.assertEqual(int(visible_tiers.get("standard") or 0), 2)
+        self.assertEqual(int(visible_tiers.get("fast") or 0), 2)
+        self.assertEqual(int(visible_tiers.get("duration_override_ms") or 0), 1500)
+
+    def test_process_model_seat_brick2_progress_mast_exception_uses_score_seven(self):
+        model = telemetry_process.load_process_model()
+        steps = (model or {}).get("steps") if isinstance(model, dict) else {}
+        step_cfg = (steps or {}).get("SEAT_BRICK2") if isinstance(steps, dict) else {}
+        progress_cfg = (step_cfg or {}).get("progress_mast_exception") if isinstance(step_cfg, dict) else {}
+        self.assertIsInstance(progress_cfg, dict)
+        self.assertEqual(int(progress_cfg.get("score") or 0), 7)
+
     def test_process_model_approach_vector_brick_supply_uses_tight_y_axis_tol(self):
         model = telemetry_process.load_process_model()
         steps = (model or {}).get("steps") if isinstance(model, dict) else {}
@@ -113,6 +161,24 @@ class TestTelemetryProcessFindWall2Gates(unittest.TestCase):
                 )
                 self.assertIsInstance(exception_cfg, dict)
                 self.assertIs(exception_cfg.get("complete_on_crosshair_drop"), True)
+
+    def test_process_model_find_topmost_brick_enables_bottom_discovery_phase(self):
+        model = telemetry_process.load_process_model()
+        steps = (model or {}).get("steps") if isinstance(model, dict) else {}
+        step_cfg = (steps or {}).get("FIND_TOPMOST_BRICK") if isinstance(steps, dict) else {}
+        exception_cfg = (
+            (step_cfg or {}).get("topmost_crosshair_exception")
+            if isinstance(step_cfg, dict)
+            else {}
+        )
+        bottom_cfg = (
+            (exception_cfg or {}).get("bottom_brick_discovery")
+            if isinstance(exception_cfg, dict)
+            else {}
+        )
+        self.assertIsInstance(bottom_cfg, dict)
+        self.assertIs(bottom_cfg.get("enabled"), True)
+        self.assertEqual(int(bottom_cfg.get("consecutive_no_required")), 1)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ import random
 import sys
 import threading
 import time
-import tty
+import ttyll
 import termios
 import statistics
 import subprocess
@@ -27,7 +27,7 @@ from helper_vision_config import (
     VISION_MODE_ARUCO as _VISION_MODE_ARUCO_GLOBAL,
     VISION_MODE_CYAN as _VISION_MODE_CYAN_GLOBAL,
 )
-from helper_micro_speed_adjust import micro_adjust_speed_score
+
 from helper_align_profile import load_align_profile, inject_align_profile_into_learned_rules
 from helper_next import (
     x_axis_curve_lookup_lines,
@@ -54,10 +54,13 @@ from telemetry_robot import (
 )
 from telemetry_process import (
     _result_lite_gate_detail,
+    apply_height_inventory_adjustment_from_step,
     apply_height_snapshot_from_step,
     build_motion_sequence,
     consume_auto_step_action_stats,
     compute_stream_gate_summary,
+    format_headline,
+    COLOR_MAGENTA_BRIGHT,
     format_success_gate_requirements,
     height_intel_step_begin_line,
     merge_motion_steps,
@@ -134,6 +137,7 @@ STREAM_HOST = _MANUAL_CONFIG.get("stream_host", "127.0.0.1")
 STREAM_PORT = int(_MANUAL_CONFIG.get("stream_port", 5000))
 STREAM_FPS = int(_MANUAL_CONFIG.get("stream_fps", 10))
 STREAM_JPEG_QUALITY = int(_MANUAL_CONFIG.get("stream_jpeg_quality", 85))
+STREAM_IMG_WIDTH = int(_MANUAL_CONFIG.get("stream_img_width", 1600))
 DEMOS_DIRS_BY_MODE = demos_dirs_by_mode()
 DEMOS_DIR = demos_dir_for_mode()
 PROCESS_MODEL_FILE = Path(__file__).resolve().parent / "world_model_process.json"
@@ -143,6 +147,11 @@ try:
 except (TypeError, ValueError):
     AUTO_CONTINUE_WAIT_S = 5.0
 AUTO_CONTINUE_WAIT_S = max(0.0, float(AUTO_CONTINUE_WAIT_S))
+try:
+    RUN_LOG_RETENTION_S = float(_MANUAL_CONFIG.get("run_log_retention_s", 3600.0))
+except (TypeError, ValueError):
+    RUN_LOG_RETENTION_S = 3600.0
+RUN_LOG_RETENTION_S = max(0.0, float(RUN_LOG_RETENTION_S))
 
 
 def _build_stream_success_gate_step_options():
@@ -441,6 +450,30 @@ def _runs_dir_for_vision_mode(mode):
     mode_norm = normalize_vision_mode(mode, fallback=_DEFAULT_VISION_MODE)
     suffix = "cyan" if mode_norm == VISION_MODE_CYAN else "aruco"
     return Path(__file__).resolve().parent / f"Runs - {suffix}"
+
+
+def _run_retention_dirs():
+    base_dir = Path(__file__).resolve().parent
+    return (
+        base_dir / "Runs - aruco",
+        base_dir / "Runs - cyan",
+    )
+
+
+def _cleanup_stale_run_logs(*, run_folders=None, cutoff_age_s=None):
+    folders = tuple(run_folders or _run_retention_dirs())
+    if cutoff_age_s is None:
+        cutoff_age_s = float(RUN_LOG_RETENTION_S)
+    try:
+        from helper_calibrate import cleanup_old_run_files
+
+        cleanup_old_run_files(
+            preserve_live_files=(),
+            run_folders=folders,
+            cutoff_age_s=float(cutoff_age_s),
+        )
+    except Exception:
+        pass
 
 
 def normalize_cyan_profile(value, fallback=CYAN_PROFILE_DEFAULT):
@@ -946,16 +979,6 @@ def _collect_lift_cam_h_samples(app_state, *, samples=4, timeout_s=1.5):
             cam_h_val = float(cam_h)
         except (TypeError, ValueError):
             cam_h_val = 0.0
-        floor_lift_mm = getattr(vision, "floor_lift_mm", None)
-        floor_lift_quality = getattr(vision, "floor_lift_quality", 0.0)
-        try:
-            floor_lift_mm = float(floor_lift_mm) if floor_lift_mm is not None else None
-        except (TypeError, ValueError):
-            floor_lift_mm = None
-        try:
-            floor_lift_quality = float(floor_lift_quality)
-        except (TypeError, ValueError):
-            floor_lift_quality = 0.0
         with app_state.lock:
             app_state.world.update_vision(
                 bool(found),
@@ -966,8 +989,6 @@ def _collect_lift_cam_h_samples(app_state, *, samples=4, timeout_s=1.5):
                 cam_h_val,
                 bool(brick_above),
                 bool(brick_below),
-                floor_lift_mm=floor_lift_mm,
-                floor_lift_quality=floor_lift_quality,
             )
         if bool(found) and conf_val >= float(LIFT_GROUND_PREFLIGHT_MIN_CONF) and cam_h_val > 0.0:
             vals.append(float(cam_h_val))
@@ -2057,14 +2078,7 @@ def _unique_json_path(folder, stem):
         index += 1
 
 
-def write_session_summary(app_state):
-    runs_dir = Path(getattr(app_state, "runs_dir", Path(__file__).resolve().parent))
-    runs_dir.mkdir(parents=True, exist_ok=True)
-    payload = _session_summary_payload(app_state)
-    summary_stem = f"Summary - {_pretty_run_timestamp()}"
-    summary_path = _unique_json_path(runs_dir, summary_stem)
-    summary_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    return summary_path, payload
+
 
 
 def log_session_summary(app_state):
@@ -2114,6 +2128,7 @@ def open_new_log(app_state):
             getattr(app_state, "demos_dir", Path(__file__).resolve().parent),
         )
     )
+    _cleanup_stale_run_logs()
     runs_dir.mkdir(parents=True, exist_ok=True)
     log_path = _unique_json_path(runs_dir, _pretty_run_timestamp())
     log_line(f"[SESSION] Recording Run Log to: {log_path}")
@@ -2606,6 +2621,10 @@ def run_auto_step(app_state, obj_enum):
             apply_height_snapshot_from_step(app_state.world, step_key, log=True)
         except Exception as exc:
             log_line(f"[HEIGHT INTEL] {step_key} snapshot skipped ({exc}).")
+        try:
+            apply_height_inventory_adjustment_from_step(app_state.world, step_key, log=True)
+        except Exception as exc:
+            log_line(f"[HEIGHT INTEL] {step_key} inventory adjustment skipped ({exc}).")
         auto_continue_plan = None
         with app_state.lock:
             app_state.last_auto_completed_step = obj_enum
@@ -3525,6 +3544,10 @@ def end_attempt(app_state, complete_step=True):
             apply_height_snapshot_from_step(app_state.world, obj_label, log=True)
         except Exception as exc:
             log_line(f"[HEIGHT INTEL] {obj_label} snapshot skipped ({exc}).")
+        try:
+            apply_height_inventory_adjustment_from_step(app_state.world, obj_label, log=True)
+        except Exception as exc:
+            log_line(f"[HEIGHT INTEL] {obj_label} inventory adjustment skipped ({exc}).")
         if complete_step:
             app_state.step_open = False
             app_state.open_step = None
@@ -3583,7 +3606,7 @@ class AppState:
         self.active_duration_ms = None
         self.active_pwm_override = None
         self.last_key_time = 0
-        self.micro_speed_state = {}
+
         self.hotkey_edit_target = None
         self.preflight_checked_hotkeys = set()
         self.preflight_running_hotkeys = set()
@@ -4747,16 +4770,6 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None, show_star
             brick_above=brick_above,
             brick_below=brick_below,
         )
-        floor_lift_mm = getattr(vision, "floor_lift_mm", None)
-        floor_lift_quality = getattr(vision, "floor_lift_quality", 0.0)
-        try:
-            floor_lift_mm = float(floor_lift_mm) if floor_lift_mm is not None else None
-        except (TypeError, ValueError):
-            floor_lift_mm = None
-        try:
-            floor_lift_quality = float(floor_lift_quality)
-        except (TypeError, ValueError):
-            floor_lift_quality = 0.0
         app_state.world.update_vision(
             snapshot["found"],
             snapshot["dist"],
@@ -4766,8 +4779,6 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None, show_star
             snapshot["cam_h"],
             snapshot["brick_above"],
             snapshot["brick_below"],
-            floor_lift_mm=floor_lift_mm,
-            floor_lift_quality=floor_lift_quality,
         )
         refresh_brick_telemetry(app_state, read_vision=False)
         
@@ -4777,60 +4788,7 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None, show_star
             speed = app_state.active_speed
             score = app_state.active_speed_score
 
-        brick = app_state.world.brick if isinstance(app_state.world.brick, dict) else {}
-        metric_x_mm = None
-        if brick.get("visible"):
-            metric_x_mm = brick.get("x_axis", brick.get("offset_x"))
 
-        turn_cmd = cmd if cmd in ("l", "r") else "l"
-        min_turn_pwm = None
-        try:
-            min_turn_pwm = int(telemetry_robot_module.baseline_pwm_floor_for_cmd(turn_cmd))
-        except Exception:
-            try:
-                min_turn_pwm = int(telemetry_robot_module.turn_pwm_floor())
-            except Exception:
-                min_turn_pwm = None
-
-        score_power_pwm_turn = None
-        try:
-            score_power_pwm_turn = telemetry_robot_module.score_power_pwm_for_cmd(turn_cmd)
-        except Exception:
-            score_power_pwm_turn = None
-        if not isinstance(score_power_pwm_turn, dict):
-            score_power_pwm_turn = getattr(telemetry_robot_module, "SCORE_POWER_PWM_TURN", None)
-        if not isinstance(score_power_pwm_turn, dict):
-            score_power_pwm_turn = telemetry_robot_module.SCORE_POWER_PWM
-
-        max_turn_pwm = None
-        try:
-            max_entry = score_power_pwm_turn.get(telemetry_robot_module.SPEED_SCORE_MAX)
-            if isinstance(max_entry, dict):
-                max_turn_pwm = int(max_entry.get("pwm"))
-        except Exception:
-            max_turn_pwm = None
-
-        adjust_msg = micro_adjust_speed_score(
-            app_state.micro_speed_state,
-            score_power_pwm=score_power_pwm_turn,
-            metric_value_mm=metric_x_mm,
-            active=bool(
-                cmd in ("l", "r")
-                and score == telemetry_robot_module.SPEED_SCORE_MIN
-                and speed > 0.0
-                and app_state.world.step_state == StepState.ALIGN_BRICK
-            ),
-            sequence_key=cmd,
-            acts=3,
-            threshold_mm=0.5,
-            increase_scale=1.01,
-            decrease_scale=0.99,
-            min_pwm=min_turn_pwm,
-            max_pwm=max_turn_pwm if max_turn_pwm is not None else telemetry_robot_module.MAX_PWM,
-            metric_label="x_axis",
-        )
-        if adjust_msg:
-            log_line(adjust_msg)
         # Manual pulses are one-shot and are integrated/logged at send time in
         # command_loop() using the actual returned duration/PWM.
         if not (cmd and speed > 0) and _demo_logging_active(app_state):
@@ -5053,6 +5011,17 @@ if __name__ == "__main__":
         )
 
     state = AppState(vision_mode=vision_mode)
+    
+    # User Request: Initialize with default expectations
+    setattr(state.world, "wall_height_bricks", 1)
+    setattr(state.world, "brick_supply_height_bricks", 5)
+    import telemetry_brick
+    setattr(state.world, "wall_height_mm", float(telemetry_brick.brick_count_to_height_mm(1)))
+    setattr(state.world, "brick_supply_height_mm", float(telemetry_brick.brick_count_to_height_mm(5)))
+    import helper_xyz_coords
+    helper_xyz_coords.sync_from_world(state.world, reason="init_default_heights")
+    print(format_headline(f"[EXCEPTION] Defaulting wall_height_bricks=1 and brick_supply_height_bricks=5 start states.", COLOR_MAGENTA_BRIGHT))
+
     _set_stream_state_vision_mode(state, vision_mode)
     _set_stream_state_cyan_profile(state, cyan_profile)
     _set_stream_state_cyan_visibility(state, _DEFAULT_CYAN_VISIBILITY)
@@ -5081,10 +5050,12 @@ if __name__ == "__main__":
                 port=STREAM_PORT,
                 fps=STREAM_FPS,
                 jpeg_quality=STREAM_JPEG_QUALITY,
+                img_width=STREAM_IMG_WIDTH,
                 vision_mode_options=STREAM_VISION_MODE_OPTIONS,
                 cyan_profile_options=CYAN_PROFILE_OPTIONS,
                 cyan_visibility_options=CYAN_VISIBILITY_OPTIONS,
                 success_gate_step_options=STREAM_SUCCESS_GATE_STEP_OPTIONS,
+                xyz_workspace_getter=lambda: getattr(state.world, "_xyz_workspace", None),
             )
         except Exception as exc:
             state.stream_enabled = False
@@ -5121,8 +5092,6 @@ if __name__ == "__main__":
         close_log(state, marker=None)
         try:
             log_session_summary(state)
-            summary_path, _summary_payload = write_session_summary(state)
-            log_line(f"[SESSION SUMMARY] Wrote {summary_path}")
         except Exception as exc:
-            log_line(f"[SESSION SUMMARY] Failed to write summary ({exc})")
+            log_line(f"[SESSION SUMMARY] Failed to log summary ({exc})")
         log_line("Shutdown complete.")

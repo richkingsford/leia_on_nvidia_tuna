@@ -91,7 +91,7 @@ DEFAULT_SPEED_MODEL = {
         "k": {"cmd": "d", "score": 1},
         "u": {"cmd": "u", "score": 50},
         "p": {"cmd": "u", "score": 100},
-        "l": {"cmd": "d", "score": 100},
+        "l": {"cmd": "d", "score": 25},
     },
     SPEED_MAP_KEY_DRIVE: {
         "1": {"power": 0.064, "pwm": 50},
@@ -1758,46 +1758,7 @@ def update_lift_from_vision(
     cam_h,
     brick_height,
     conf,
-    *,
-    floor_lift_mm=None,
-    floor_lift_quality=None,
 ):
-    try:
-        floor_quality = float(floor_lift_quality) if floor_lift_quality is not None else 0.0
-    except (TypeError, ValueError):
-        floor_quality = 0.0
-    try:
-        floor_mm = float(floor_lift_mm) if floor_lift_mm is not None else None
-    except (TypeError, ValueError):
-        floor_mm = None
-
-    floor_roi_plausible = bool(
-        floor_mm is not None
-        and floor_mm >= 0.0
-        and floor_quality >= 0.20
-    )
-    if floor_roi_plausible:
-        # Guard against sticky near-zero ROI readings that can freeze livestream
-        # lift telemetry while mast commands are moving the robot.
-        try:
-            current_lift = float(getattr(world, "lift_height", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            current_lift = 0.0
-        if floor_mm <= 1.0 and current_lift >= 20.0 and floor_quality < 0.95:
-            floor_roi_plausible = False
-
-    if floor_roi_plausible:
-        # Tiny ROI estimator gives an absolute-ish lift-from-floor proxy.
-        # Blend it conservatively into dead-reckoned lift to avoid jumps.
-        alpha = 0.20 if floor_quality >= 0.60 else 0.10
-        world.lift_height = max(
-            0.0,
-            ((1.0 - float(alpha)) * float(world.lift_height)) + (float(alpha) * float(floor_mm)),
-        )
-        world.lift_height_source = "tiny_roi_floor"
-        world.lift_height_quality = max(0.0, min(1.0, float(floor_quality)))
-        return
-
     if cam_h <= 0 or conf < 50:
         world.lift_height_source = "dead_reckon"
         world.lift_height_quality = 0.0
@@ -2088,7 +2049,7 @@ class WorldModel:
         
         self.action_history = collections.deque(maxlen=100)
         helper_xyz_coords.ensure_workspace(self)
-        helper_xyz_coords.sync_from_world(self, reason="init", render=False)
+        helper_xyz_coords.sync_from_world(self, reason="init")
 
     @property
     def step_state(self):
@@ -2160,8 +2121,7 @@ class WorldModel:
         cam_h=0,
         brick_above=False,
         brick_below=False,
-        floor_lift_mm=None,
-        floor_lift_quality=None,
+        raw_dist=None,
     ):
         brick_module = _brick_module()
         wall_module = _wall_module()
@@ -2175,14 +2135,13 @@ class WorldModel:
             cam_h,
             brick_above,
             brick_below,
+            raw_dist=raw_dist,
         )
         update_lift_from_vision(
             self,
             cam_h,
             brick_height,
             conf,
-            floor_lift_mm=floor_lift_mm,
-            floor_lift_quality=floor_lift_quality,
         )
         wall_module.update_from_vision(self, found, dist, angle, conf, self.wall_envelope)
         helper_xyz_coords.sync_from_world(self, reason="vision")
@@ -2300,7 +2259,7 @@ class WorldModel:
         self.brick["held"] = False
         self.stability_count = 0
         self.last_visible_time = None
-        helper_xyz_coords.sync_from_world(self, reason="reset_mission", render=False)
+        helper_xyz_coords.sync_from_world(self, reason="reset_mission")
         return self.step_state.value
 
     def to_dict(self):
@@ -2789,11 +2748,16 @@ def draw_telemetry_overlay(
         except (TypeError, ValueError):
             quality = 0.0
         quality = max(0.0, min(1.0, float(quality)))
-        if source == "tiny_roi_floor":
-            return f"{text} ({source} q{quality:.2f})"
         if source and source != "dead_reckon":
             return f"{text} ({source})"
         return text
+
+    def _height_bricks_text(value):
+        try:
+            bricks_val = int(round(float(value)))
+        except (TypeError, ValueError):
+            return "unknown"
+        return f"{int(max(0, bricks_val))} bricks"
 
     selected_metrics = _stream_overlay_metric_keys_for_step(
         wm.process_rules or {},

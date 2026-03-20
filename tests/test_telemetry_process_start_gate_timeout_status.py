@@ -101,6 +101,39 @@ class TestTelemetryProcessStartGateTimeoutStatus(unittest.TestCase):
         self.assertIn("start gates:", logged)
         self.assertIn("visible target=true state=", logged)
 
+    def test_wait_for_start_gates_position_brick_can_disable_timeout(self):
+        world = _DummyWorld()
+        world.process_rules["POSITION_BRICK"]["start_gate_timeout_s"] = None
+        fail_gate = telemetry_process.telemetry_brick.GateCheck(ok=False, reasons=["visible gate"])
+        ok_gate = telemetry_process.telemetry_brick.GateCheck(ok=True, reasons=[])
+        with patch.object(telemetry_process, "update_world_from_vision", return_value=None), \
+             patch.object(telemetry_process, "GATE_STABILITY_FRAMES", 1), \
+             patch.object(telemetry_process.time, "sleep", return_value=None), \
+             patch.object(telemetry_process.time, "time", side_effect=[100.0, 200.0, 201.0]), \
+             patch.object(
+                 telemetry_process.telemetry_brick,
+                 "evaluate_start_gates",
+                 side_effect=[fail_gate, ok_gate, ok_gate],
+             ), \
+             patch.object(
+                 telemetry_process.telemetry_wall,
+                 "evaluate_start_gates",
+                 side_effect=[fail_gate, ok_gate, ok_gate],
+             ), \
+             patch.object(
+                 telemetry_process.telemetry_robot_module,
+                 "evaluate_start_gates",
+                 side_effect=[fail_gate, ok_gate, ok_gate],
+             ):
+            status = telemetry_process.wait_for_start_gates(
+                world,
+                object(),
+                "POSITION_BRICK",
+                log=False,
+                allow_success=False,
+            )
+        self.assertEqual(status, "start")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -86,6 +86,14 @@ CENTER_SWITCH_MARGIN_PX = 18.0
 CENTER_PARTIAL_PENALTY = 2.0
 CENTER_AXIS_WEIGHT_X = 1.0
 CENTER_AXIS_WEIGHT_Y = 1.0
+PARTIAL_EDGE_MARGIN_PX = 1
+PARTIAL_COLOR_BGR = (0, 165, 255)
+PARTIAL_LABEL_TOP = "TOP HALF"
+PARTIAL_LABEL_BOTTOM = "BOTTOM HALF"
+PARTIAL_LABEL_VERTICAL = "TOP/BOTTOM"
+PARTIAL_LABEL_LEFT = "LEFT PARTIAL"
+PARTIAL_LABEL_RIGHT = "RIGHT PARTIAL"
+PARTIAL_LABEL_GENERIC = "PARTIAL"
 
 
 class BrickDetector:
@@ -139,6 +147,10 @@ class BrickDetector:
         self.last_primary_confidence = 0.0
         self.last_max_confidence = 0.0
         self.last_status = "idle"
+        self.last_partial_count = 0
+        self.last_partial_labels = []
+        self.last_primary_partial_kind = None
+        self.last_primary_partial_label = None
         # Keep debug view readable when low confidence rescue profiles are active.
         self.debug_show_all_candidates = False
         self.debug_max_boxes = 1
@@ -454,6 +466,89 @@ class BrickDetector:
         offset_y_px = float(center_y_px) - frame_center_y
         return (offset_y_px / float(self.focal_px)) * float(dist_mm)
 
+    def _clear_partial_state(self):
+        self.last_partial_count = 0
+        self.last_partial_labels = []
+        self.last_primary_partial_kind = None
+        self.last_primary_partial_label = None
+
+    def _partial_info_from_edges(self, *, left_touch, top_touch, right_touch, bottom_touch):
+        left_touch = bool(left_touch)
+        top_touch = bool(top_touch)
+        right_touch = bool(right_touch)
+        bottom_touch = bool(bottom_touch)
+        partial = bool(left_touch or top_touch or right_touch or bottom_touch)
+        kind = None
+        label = None
+        if partial:
+            # Prioritize top/bottom clipping because that is the most important
+            # operator signal when tracking stack halves in cyan mode.
+            if top_touch and not bottom_touch:
+                kind = "top_half"
+                label = PARTIAL_LABEL_TOP
+            elif bottom_touch and not top_touch:
+                kind = "bottom_half"
+                label = PARTIAL_LABEL_BOTTOM
+            elif top_touch and bottom_touch:
+                kind = "vertical_partial"
+                label = PARTIAL_LABEL_VERTICAL
+            elif left_touch and not right_touch:
+                kind = "left_partial"
+                label = PARTIAL_LABEL_LEFT
+            elif right_touch and not left_touch:
+                kind = "right_partial"
+                label = PARTIAL_LABEL_RIGHT
+            else:
+                kind = "partial"
+                label = PARTIAL_LABEL_GENERIC
+        return {
+            "partial": partial,
+            "kind": kind,
+            "label": label,
+            "edges": {
+                "left": left_touch,
+                "top": top_touch,
+                "right": right_touch,
+                "bottom": bottom_touch,
+            },
+        }
+
+    def _partial_info_for_crop_bbox(self, bx, by, bw, bh, crop_w, crop_h):
+        margin = int(max(0, PARTIAL_EDGE_MARGIN_PX))
+        return self._partial_info_from_edges(
+            left_touch=int(bx) <= margin,
+            top_touch=int(by) <= margin,
+            right_touch=int(bx + bw) >= int(crop_w) - margin,
+            bottom_touch=int(by + bh) >= int(crop_h) - margin,
+        )
+
+    def _partial_info_for_frame_box(self, x1, y1, x2, y2, frame_w, frame_h):
+        margin = int(max(0, PARTIAL_EDGE_MARGIN_PX))
+        return self._partial_info_from_edges(
+            left_touch=int(x1) <= margin,
+            top_touch=int(y1) <= margin,
+            right_touch=int(x2) >= int(frame_w) - margin,
+            bottom_touch=int(y2) >= int(frame_h) - margin,
+        )
+
+    def _set_partial_state(self, partial_items, *, primary_partial_kind=None, primary_partial_label=None):
+        labels = []
+        if isinstance(partial_items, list):
+            for item in partial_items:
+                if not isinstance(item, dict) or not bool(item.get("partial")):
+                    continue
+                label = str(item.get("label") or "").strip()
+                if label:
+                    labels.append(label)
+        self.last_partial_labels = labels
+        self.last_partial_count = len(labels)
+        self.last_primary_partial_kind = (
+            str(primary_partial_kind).strip() if primary_partial_kind else None
+        )
+        self.last_primary_partial_label = (
+            str(primary_partial_label).strip() if primary_partial_label else None
+        )
+
     def _smooth_angle(self, raw_angle, prev_angle):
         """
         Angle-aware EMA with jump clamping.
@@ -552,10 +647,14 @@ class BrickDetector:
             rect = cv2.minAreaRect(cnt)
             bx, by, bw, bh = cv2.boundingRect(cnt)
 
-            # Check if contour touches crop edge (partial brick)
-            partial = (bx <= 1 or by <= 1 or
-                       bx + bw >= crop.shape[1] - 1 or
-                       by + bh >= crop.shape[0] - 1)
+            partial_info = self._partial_info_for_crop_bbox(
+                bx,
+                by,
+                bw,
+                bh,
+                crop.shape[1],
+                crop.shape[0],
+            )
 
             # Offset from crop-space to frame-space
             cnt_frame = cnt.copy()
@@ -574,7 +673,10 @@ class BrickDetector:
                 "rect": rect_frame,
                 "bbox": (bx + x1, by + y1, bw, bh),
                 "area": area,
-                "partial": partial,
+                "partial": bool(partial_info.get("partial")),
+                "partial_kind": partial_info.get("kind"),
+                "partial_label": partial_info.get("label"),
+                "partial_edges": partial_info.get("edges") or {},
             })
 
         return bricks
@@ -859,6 +961,19 @@ class BrickDetector:
             brick_above, brick_below = self._stack_flags_from_individuals(
                 primary, all_hsv_bricks
             )
+            partial_bricks = [
+                {
+                    "partial": bool(b.get("partial")),
+                    "label": b.get("partial_label"),
+                }
+                for b in all_hsv_bricks
+                if isinstance(b, dict) and bool(b.get("partial"))
+            ]
+            self._set_partial_state(
+                partial_bricks,
+                primary_partial_kind=(primary.get("partial_kind") if isinstance(primary, dict) else None),
+                primary_partial_label=(primary.get("partial_label") if isinstance(primary, dict) and bool(primary.get("partial")) else None),
+            )
 
             if self.debug:
                 self._draw_debug_hsv(
@@ -915,10 +1030,30 @@ class BrickDetector:
                 brick_above = True
             elif other_cy > primary_cy + bbox_h * 0.5:
                 brick_below = True
+        box_partial_infos = []
+        for bx1, by1, bx2, by2, _bconf in bricks:
+            box_partial_infos.append(
+                self._partial_info_for_frame_box(bx1, by1, bx2, by2, w_frame, h_frame)
+            )
+        primary_partial_info = (
+            box_partial_infos[primary_idx]
+            if 0 <= int(primary_idx) < len(box_partial_infos)
+            else {}
+        )
+        self._set_partial_state(
+            box_partial_infos,
+            primary_partial_kind=(primary_partial_info.get("kind") if isinstance(primary_partial_info, dict) and bool(primary_partial_info.get("partial")) else None),
+            primary_partial_label=(primary_partial_info.get("label") if isinstance(primary_partial_info, dict) and bool(primary_partial_info.get("partial")) else None),
+        )
 
         if self.debug:
             ordered = [primary_box] + [box for idx, box in enumerate(bricks) if idx != primary_idx]
-            self._draw_debug(frame, ordered, angle, dist, offset_x, conf)
+            ordered_partial_infos = [box_partial_infos[primary_idx]] + [
+                box_partial_infos[idx]
+                for idx in range(len(bricks))
+                if idx != primary_idx
+            ]
+            self._draw_debug(frame, ordered, angle, dist, offset_x, conf, partial_infos=ordered_partial_infos)
 
         return (True, angle, dist, offset_x, conf_pct, cam_height,
                 brick_above, brick_below)
@@ -940,6 +1075,7 @@ class BrickDetector:
             self.log.warning("Frame capture failed")
             self.last_status = "camera read failed"
             self.last_primary_confidence = 0.0
+            self._clear_partial_state()
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
         self.raw_frame = frame.copy()
@@ -959,6 +1095,7 @@ class BrickDetector:
             self._center_lock_prev_center = None
             self.last_status = "searching"
             self.last_primary_confidence = 0.0
+            self._clear_partial_state()
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
         return self._process_bricks(frame, bricks)
@@ -985,12 +1122,13 @@ class BrickDetector:
             self._center_lock_prev_center = None
             self.last_status = "searching"
             self.last_primary_confidence = 0.0
+            self._clear_partial_state()
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
         # Use a copy so debug drawing doesn't mutate the caller's frame
         return self._process_bricks(frame.copy(), bricks)
 
-    def _draw_debug(self, frame, bricks, angle, dist, offset_x, conf):
+    def _draw_debug(self, frame, bricks, angle, dist, offset_x, conf, partial_infos=None):
         """Draw detection visualization on frame."""
         if self.debug_show_all_candidates:
             draw_boxes = list(bricks)
@@ -999,8 +1137,26 @@ class BrickDetector:
             draw_boxes = list(bricks[:max_boxes])
 
         for i, (x1, y1, x2, y2, c) in enumerate(draw_boxes):
-            color = (0, 255, 0) if i == 0 else (0, 200, 200)
+            partial_info = (
+                partial_infos[i]
+                if isinstance(partial_infos, list) and i < len(partial_infos)
+                else {}
+            )
+            is_partial = bool((partial_info or {}).get("partial"))
+            color = PARTIAL_COLOR_BGR if is_partial else ((0, 255, 0) if i == 0 else (0, 200, 200))
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            label = str((partial_info or {}).get("label") or "").strip()
+            if label:
+                text_y = max(18, int(y1) - 8)
+                cv2.putText(
+                    frame,
+                    label,
+                    (max(0, int(x1)), text_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    PARTIAL_COLOR_BGR,
+                    2,
+                )
 
             # Angle indicator
             cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
@@ -1023,19 +1179,37 @@ class BrickDetector:
         for x1, y1, x2, y2, c in yolo_bricks:
             cv2.rectangle(frame, (x1, y1), (x2, y2), (128, 128, 128), 1)
 
-        # Yellow contours for all HSV-segmented bricks
+        # Yellow contours for full HSV bricks; orange for partials.
         for b in hsv_bricks:
-            cv2.drawContours(frame, [b["contour"]], -1, (0, 255, 255), 1)
-            # Magenta rotated rectangle (minAreaRect)
+            is_primary = b is primary
+            is_partial = bool(b.get("partial"))
+            contour_color = PARTIAL_COLOR_BGR if is_partial else ((0, 255, 0) if is_primary else (0, 255, 255))
+            contour_thickness = 2 if is_primary else 1
+            cv2.drawContours(frame, [b["contour"]], -1, contour_color, contour_thickness)
+            # Keep rotated rectangles visible, but use orange for partials.
             box_pts = cv2.boxPoints(b["rect"])
             box_pts = np.intp(box_pts)
-            cv2.drawContours(frame, [box_pts], 0, (255, 0, 255), 1)
+            box_color = PARTIAL_COLOR_BGR if is_partial else (255, 0, 255)
+            cv2.drawContours(frame, [box_pts], 0, box_color, 1)
+            label = str(b.get("partial_label") or "").strip()
+            if label:
+                bx, by, _bw, _bh = b["bbox"]
+                text_y = max(18, int(by) - 8)
+                cv2.putText(
+                    frame,
+                    label,
+                    (max(0, int(bx)), text_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    PARTIAL_COLOR_BGR,
+                    2,
+                )
 
-        # Green thick contour + crosshair on selected primary brick
+        # Selected primary brick marker/crosshair.
         if primary:
-            cv2.drawContours(frame, [primary["contour"]], -1, (0, 255, 0), 2)
             pcx, pcy = primary["center_x"], primary["center_y"]
-            cv2.drawMarker(frame, (pcx, pcy), (0, 255, 0),
+            primary_color = PARTIAL_COLOR_BGR if bool(primary.get("partial")) else (0, 255, 0)
+            cv2.drawMarker(frame, (pcx, pcy), primary_color,
                            cv2.MARKER_CROSS, 15, 2)
 
             # Red angle line from primary brick center

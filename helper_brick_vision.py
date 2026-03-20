@@ -38,6 +38,8 @@ NOTCH_ROW_TOLERANCE_RATIO = 0.08
 NOTCH_ROW_MIN_REL = 0.2
 NOTCH_ROW_MAX_REL = 0.8
 NOTCH_ROW_MIN_SPAN_RATIO = 0.3
+STACK_X_OVERLAP_RATIO = 0.6
+STACK_Y_GAP_RATIO = 0.35
 
 class BrickDetector:
     def __init__(self, debug=True, save_folder=None, speed_optimize=False):
@@ -425,6 +427,30 @@ class BrickDetector:
         threshold = max(2, (len(self.stack_history) // 2) + 1)
         return above_votes >= threshold, below_votes >= threshold
 
+    def _stack_flags_from_candidates(self, selected, candidates):
+        if not selected or len(candidates) < 2:
+            return False, False
+
+        sel_x, sel_y = selected["center"]
+        _, _, bw, bh = selected["bbox"]
+        x_tol = max(10.0, float(bw) * STACK_X_OVERLAP_RATIO)
+        y_tol = max(10.0, float(bh) * STACK_Y_GAP_RATIO)
+
+        brick_above = False
+        brick_below = False
+        for cand in candidates:
+            if cand is selected:
+                continue
+            cand_x, cand_y = cand["center"]
+            if abs(float(cand_x) - float(sel_x)) > x_tol:
+                continue
+            if float(cand_y) < float(sel_y) - y_tol:
+                brick_above = True
+            elif float(cand_y) > float(sel_y) + y_tol:
+                brick_below = True
+
+        return brick_above, brick_below
+
     def get_notch_from_contour(self, mask, contour):
         # 1. Fit Rotated Rectangle
         rect = cv2.minAreaRect(contour)
@@ -670,21 +696,8 @@ class BrickDetector:
                 candidates,
                 key=lambda c: (c["center"][0] - center_x) ** 2 + (c["center"][1] - center_y) ** 2
             )
-            sel_y = selected["center"][1]
-            brick_above = any(c is not selected and c["center"][1] < sel_y for c in candidates)
-            brick_below = any(c is not selected and c["center"][1] > sel_y for c in candidates)
-            if not brick_above and not brick_below:
-                notch_y = self.detect_notch_row(v, selected["contour"])
-                if notch_y is not None:
-                    center_y = selected["center"][1]
-                    tol = selected["bbox"][3] * 0.08
-                    if abs(notch_y - center_y) <= tol:
-                        brick_above = True
-                        brick_below = True
-                    elif notch_y < center_y:
-                        brick_above = True
-                    else:
-                        brick_below = True
+            # Above/below must come from a separate detected brick in the same stack.
+            brick_above, brick_below = self._stack_flags_from_candidates(selected, candidates)
 
             if not self.speed_optimize:
                 palette = [

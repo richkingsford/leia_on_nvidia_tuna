@@ -121,6 +121,36 @@ class TestTelemetryBrickInCrosshairs(unittest.TestCase):
         )
         self.assertFalse(world.brick.get("inCrosshairs"))
 
+    def test_update_from_vision_records_raw_stack_flags(self):
+        world = _DummyWorld()
+        telemetry_brick.update_from_vision(
+            world,
+            found=True,
+            dist=100.0,
+            angle=0.0,
+            conf=90.0,
+            offset_x=0.0,
+            cam_h=0.0,
+            brick_above=True,
+            brick_below=False,
+        )
+        self.assertTrue(world.brick.get("brick_above_raw"))
+        self.assertFalse(world.brick.get("brick_below_raw"))
+
+        telemetry_brick.update_from_vision(
+            world,
+            found=False,
+            dist=0.0,
+            angle=0.0,
+            conf=0.0,
+            offset_x=0.0,
+            cam_h=0.0,
+            brick_above=False,
+            brick_below=True,
+        )
+        self.assertIsNone(world.brick.get("brick_above_raw"))
+        self.assertIsNone(world.brick.get("brick_below_raw"))
+
 
 if __name__ == "__main__":
     unittest.main()

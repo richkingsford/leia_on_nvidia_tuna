@@ -475,31 +475,17 @@ class TestTelemetryProcessAutoDiag(unittest.TestCase):
             joined,
         )
 
-    def test_align_result_observation_formatter_uses_single_canonical_better_shape(self):
+    def test_align_result_observation_formatter_suppresses_better_line_but_keeps_color(self):
         plain, colored, color = telemetry_process._format_align_result_observation(
             "dist_err",
             -9.25,
             -10.54,
         )
         self.assertEqual(color, telemetry_process.COLOR_GREEN)
-        self.assertEqual(
-            plain,
-            "Result: +1.29mm better than previous dist_err=-10.54mm",
-        )
-        self.assertIn(
-            f"{telemetry_process.COLOR_BLUE_BRIGHT}Result:{telemetry_process.COLOR_RESET}",
-            colored,
-        )
-        self.assertIn(
-            f"{telemetry_process.COLOR_GREEN}+1.29mm{telemetry_process.COLOR_RESET}",
-            colored,
-        )
-        self.assertNotIn(
-            f"{telemetry_process.COLOR_GREEN}+1.29mm better than previous",
-            colored,
-        )
+        self.assertIsNone(plain)
+        self.assertIsNone(colored)
 
-    def test_align_result_observation_formatter_uses_single_canonical_overshot_shape(self):
+    def test_align_result_observation_formatter_suppresses_overshot_line_but_keeps_color(self):
         plain, colored, color = telemetry_process._format_align_result_observation(
             "x_err",
             -0.80,
@@ -507,15 +493,8 @@ class TestTelemetryProcessAutoDiag(unittest.TestCase):
             overshot=True,
         )
         self.assertEqual(color, telemetry_process.COLOR_RED)
-        self.assertEqual(
-            plain,
-            "Result: overshot target; previous x_err=+0.92mm",
-        )
-        self.assertIn(
-            f"{telemetry_process.COLOR_BLUE_BRIGHT}Result:{telemetry_process.COLOR_RESET}",
-            colored,
-        )
-        self.assertNotIn("Result observation:", colored)
+        self.assertIsNone(plain)
+        self.assertIsNone(colored)
 
     def test_result_lite_gate_detail_uses_white_text_except_saw_value(self):
         world = _DummyWorld()

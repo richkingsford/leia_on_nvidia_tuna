@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="680" viewBox="0 0 980 680">
+<rect width="100%" height="100%" fill="#f4efe4" />
+<rect x="22" y="22" width="936" height="636" rx="24" fill="#f9f6ef" stroke="#d7d1c4" stroke-width="1.5" />
+<text x="490.0" y="54.0" text-anchor="middle" font-size="28" font-weight="900" fill="#233843">Bird's Eye View</text>
+<polygon points="399.7,448.7 491.5,448.7 491.5,540.5 399.7,540.5" fill="#c2523c" stroke="#7b2e1e" stroke-width="2.5" />
+<text x="445.6" y="448.6" text-anchor="middle" font-size="28" font-weight="600" fill="#7b2e1e">Wall</text>
+<text x="445.6" y="502.6" text-anchor="middle" font-size="22" font-weight="700" fill="#ffffff">1</text>
+<polygon points="185.4,234.4 93.6,234.4 93.6,142.6 185.4,142.6" fill="#63f2f7" stroke="#f3c548" stroke-width="4.5" />
+<text x="139.5" y="142.5" text-anchor="middle" font-size="36" font-weight="600" fill="#18494e">Supply</text>
+<text x="139.5" y="204.5" text-anchor="middle" font-size="44" font-weight="700" fill="#0d2b32">5</text>
+<line x1="546.1" y1="168.8" x2="139.5" y2="188.5" stroke="#7b7668" stroke-width="1.8" stroke-dasharray="8 7" />
+<g id="step-history">
+<polyline class="step-history-path" points="569.5,139.5 575.6,154.3 565.3,182.2 557.8,202.2" fill="none" stroke="#b7aea0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.85" />
+<circle class="step-history-dot" data-trend="unknown" cx="569.5" cy="139.5" r="2.0" fill="#7b7668" fill-opacity="0.60" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="further" cx="575.6" cy="154.3" r="6.0" fill="#d94841" fill-opacity="0.70" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="closer" cx="565.3" cy="182.2" r="6.0" fill="#2f9e44" fill-opacity="0.80" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="closer" cx="557.8" cy="202.2" r="6.0" fill="#2f9e44" fill-opacity="0.90" stroke="#f9f6ef" stroke-width="2" />
+</g>
+<g id="camera-glyph">
+<circle class="camera-dot" data-trend="closer" cx="546.1" cy="168.8" r="6.0" fill="#2f9e44" stroke="#233843" stroke-width="2.2" />
+</g>
+<text x="424.1" y="166.7" text-anchor="middle" font-size="16" font-weight="600" fill="#233843" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">239</text>
+<text x="445.6" y="552.6" text-anchor="middle" font-size="14" font-weight="500" fill="#5d676e" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">~201 to Wall</text>
+</svg>

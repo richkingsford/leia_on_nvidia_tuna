@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -21,6 +22,20 @@ class _DummyWorld:
 
 
 class TestTelemetryProcessFindBrickTurnSpeedPolicy(unittest.TestCase):
+    def test_world_model_find_brick_visible_false_search_turns_then_backs_off(self):
+        root = Path(__file__).resolve().parents[1]
+        process_model = json.loads((root / "world_model_process.json").read_text())
+        steps = (process_model.get("steps") or {}) if isinstance(process_model, dict) else {}
+        find_brick_cfg = (steps.get("FIND_BRICK") or {}) if isinstance(steps, dict) else {}
+        search_cfg = (
+            find_brick_cfg.get("search_visible_false_speed_cycle") or {}
+            if isinstance(find_brick_cfg, dict)
+            else {}
+        )
+
+        self.assertEqual(search_cfg.get("commands"), ["r", "b"])
+        self.assertEqual(int((search_cfg.get("command_scores") or {}).get("b") or 0), 10)
+
     def test_find_brick_turn_check_phase_caps_to_min_score(self):
         score = telemetry_process._apply_find_brick_turn_speed_policy(
             "FIND_BRICK",
@@ -118,6 +133,28 @@ class TestTelemetryProcessFindBrickTurnSpeedPolicy(unittest.TestCase):
         self.assertEqual(int(tier2.get("score") or 0), telemetry_robot.normalize_speed_score(25))
         self.assertEqual(tier9.get("label"), "fast")
         self.assertEqual(int(tier9.get("score") or 0), telemetry_robot.normalize_speed_score(25))
+
+    def test_visible_only_replay_speed_tier_includes_duration_override(self):
+        world = _DummyWorld(
+            process_rules={
+                "EXIT_WALL": {
+                    "success_gates": {"visible": {"min": False}},
+                    "visible_only_speed_tiers": {
+                        "enabled": True,
+                        "normal": 2,
+                        "standard": 2,
+                        "fast": 2,
+                        "duration_override_ms": 1500,
+                    },
+                }
+            }
+        )
+
+        tier = telemetry_process._visible_only_replay_speed_tier(world, "EXIT_WALL", cmd="r")
+
+        self.assertIsInstance(tier, dict)
+        self.assertEqual(int(tier.get("score") or 0), telemetry_robot.normalize_speed_score(2))
+        self.assertEqual(int(tier.get("duration_override_ms") or 0), 1500)
 
     def test_auto_action_detail_text_appends_context_note(self):
         detail = telemetry_process.auto_action_detail_text(
@@ -234,6 +271,29 @@ class TestTelemetryProcessFindBrickTurnSpeedPolicy(unittest.TestCase):
         self.assertEqual(score, 6)
         self.assertIsNone(note)
 
+    def test_find_wall2_height_intel_replay_phase_stays_disabled(self):
+        model = telemetry_process.load_process_model()
+        steps = (model or {}).get("steps") if isinstance(model, dict) else {}
+        world = _DummyWorld(process_rules=steps or {}, visible=False)
+        world.wall_height_bricks = 3
+        world.wall_height_mm = 132.0
+        world.brick_supply_height_bricks = 7
+        world.brick_supply_height_mm = 308.0
+
+        cmd, score, note, used = telemetry_process._apply_height_intel_replay_override(
+            world,
+            "FIND_WALL2",
+            "l",
+            6,
+            phase="replay",
+            log=False,
+        )
+
+        self.assertFalse(used)
+        self.assertEqual(cmd, "l")
+        self.assertEqual(score, 6)
+        self.assertIsNone(note)
+
     def test_apply_height_snapshot_from_step_updates_supply_height(self):
         world = _DummyWorld(
             process_rules={
@@ -260,6 +320,64 @@ class TestTelemetryProcessFindBrickTurnSpeedPolicy(unittest.TestCase):
         self.assertEqual(int(result.get("bricks") or 0), 2)
         self.assertEqual(int(world.brick_supply_height_bricks or 0), 2)
         self.assertAlmostEqual(float(world.brick_supply_height_mm or 0.0), 88.0, places=3)
+
+    def test_apply_height_inventory_adjustment_from_step_decrements_supply_height(self):
+        world = _DummyWorld(
+            process_rules={
+                "ELEVATE_BRICK": {
+                    "height_inventory_adjustment": {
+                        "enabled": True,
+                        "target": "brick_supply_height",
+                        "bricks_delta": -1,
+                        "min_bricks": 0,
+                        "max_bricks": 20,
+                    }
+                }
+            }
+        )
+        world.brick_supply_height_bricks = 7
+        world.brick_supply_height_mm = 308.0
+
+        result = telemetry_process.apply_height_inventory_adjustment_from_step(
+            world,
+            "ELEVATE_BRICK",
+            log=False,
+        )
+
+        self.assertTrue(bool(result.get("applied")))
+        self.assertEqual(int(result.get("previous_bricks") or 0), 7)
+        self.assertEqual(int(result.get("bricks") or 0), 6)
+        self.assertEqual(int(world.brick_supply_height_bricks or 0), 6)
+        self.assertAlmostEqual(float(world.brick_supply_height_mm or 0.0), 264.0, places=3)
+
+    def test_apply_height_inventory_adjustment_from_step_increments_wall_height(self):
+        world = _DummyWorld(
+            process_rules={
+                "RETREAT": {
+                    "height_inventory_adjustment": {
+                        "enabled": True,
+                        "target": "wall_height",
+                        "bricks_delta": 1,
+                        "min_bricks": 0,
+                        "max_bricks": 20,
+                    }
+                }
+            }
+        )
+        world.wall_height_bricks = 4
+        world.wall_height_mm = 176.0
+
+        result = telemetry_process.apply_height_inventory_adjustment_from_step(
+            world,
+            "RETREAT",
+            log=False,
+        )
+
+        self.assertTrue(bool(result.get("applied")))
+        self.assertEqual(int(result.get("previous_bricks") or 0), 4)
+        self.assertEqual(int(result.get("bricks") or 0), 5)
+        self.assertEqual(int(world.wall_height_bricks or 0), 5)
+        self.assertAlmostEqual(float(world.wall_height_mm or 0.0), 220.0, places=3)
 
 
 if __name__ == "__main__":

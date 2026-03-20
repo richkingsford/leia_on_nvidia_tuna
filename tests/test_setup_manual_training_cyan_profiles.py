@@ -104,6 +104,10 @@ class TestSetupManualTrainingCyanProfiles(unittest.TestCase):
             "config2_no_erosion",
         )
         self.assertEqual(
+            setup_manual_training.normalize_cyan_profile("default"),
+            "config2_no_erosion",
+        )
+        self.assertEqual(
             setup_manual_training.normalize_cyan_profile("8"),
             "config8_responsive",
         )
@@ -115,6 +119,10 @@ class TestSetupManualTrainingCyanProfiles(unittest.TestCase):
             setup_manual_training.normalize_markerless_profile("balanced"),
             "config1_defaults",
         )
+
+    def test_cyan_profile_default_constant_uses_config2(self):
+        self.assertEqual(setup_manual_training.CYAN_PROFILE_DEFAULT, "config2_no_erosion")
+        self.assertEqual(setup_manual_training._DEFAULT_CYAN_PROFILE, "config2_no_erosion")
 
     def test_cyan_stream_state_getter_accepts_legacy_markerless_key(self):
         app = _DummyApp()
@@ -160,6 +168,32 @@ class TestSetupManualTrainingCyanProfiles(unittest.TestCase):
         self.assertFalse(applied)
         self.assertEqual(runtime, {"smooth_alpha": 0.10})
         self.assertEqual(vision.calls, [])
+
+    def test_cyan_stream_debug_lines_include_orange_partial_summary(self):
+        app = _DummyApp()
+        app.stream_state["vision_mode"] = setup_manual_training.VISION_MODE_CYAN
+
+        class _Vision:
+            model_path = "/tmp/brick_yolo_v4.onnx"
+            last_status = "target locked (HSV)"
+            last_raw_prediction_count = 8
+            last_candidate_count = 3
+            last_nms_count = 2
+            last_primary_confidence = 0.91
+            last_max_confidence = 0.97
+            conf_threshold = 0.15
+            _smooth_alpha = 0.20
+            input_size = 640
+            last_partial_labels = ["TOP HALF", "BOTTOM HALF"]
+            last_primary_partial_label = "TOP HALF"
+
+        lines = setup_manual_training.cyan_stream_debug_lines(app, _Vision())
+
+        self.assertEqual(len(lines), 4)
+        self.assertEqual(lines[-1][1], (0, 165, 255))
+        self.assertIn("PRIMARY TOP HALF", lines[-1][0])
+        self.assertIn("TOP HALF x1", lines[-1][0])
+        self.assertIn("BOTTOM HALF x1", lines[-1][0])
 
 
 if __name__ == "__main__":

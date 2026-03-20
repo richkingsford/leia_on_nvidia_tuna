@@ -11,6 +11,7 @@ import setup_manual_training
 
 class _DummyApp:
     def __init__(self):
+        self.lock = threading.Lock()
         self.stream_state = {
             "lock": threading.Lock(),
             "step_success_seq": 0,

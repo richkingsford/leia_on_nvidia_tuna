@@ -95,40 +95,6 @@ class ArucoBrickVision:
         self.last_pose = None
         self.last_found_ts_mono = 0.0
 
-        # Tiny ROI lift estimator (low-cost fallback when marker-based lift is unreliable).
-        env_tiny_lift_enabled = str(os.getenv("ARUCO_TINY_ROI_LIFT_ENABLED", "1")).strip().lower()
-        self.tiny_roi_lift_enabled = bool(env_tiny_lift_enabled not in {"0", "false", "no", "off"})
-        self.tiny_roi_lift_interval = max(1, int(os.getenv("ARUCO_TINY_ROI_LIFT_INTERVAL", "3") or 3))
-        self.tiny_roi_lift_max_features = max(8, int(os.getenv("ARUCO_TINY_ROI_LIFT_MAX_FEATURES", "32") or 32))
-        self.tiny_roi_lift_roi_h_pct = max(0.08, min(0.40, float(os.getenv("ARUCO_TINY_ROI_LIFT_ROI_H_PCT", "0.18") or 0.18)))
-        self.tiny_roi_lift_roi_w_pct = max(0.20, min(1.00, float(os.getenv("ARUCO_TINY_ROI_LIFT_ROI_W_PCT", "0.50") or 0.50)))
-        self.tiny_roi_lift_quality_min = max(
-            0.10,
-            min(0.95, float(os.getenv("ARUCO_TINY_ROI_LIFT_QUALITY_MIN", "0.35") or 0.35)),
-        )
-        self.tiny_roi_lift_deadband_px = max(
-            0.02,
-            float(os.getenv("ARUCO_TINY_ROI_LIFT_DEADBAND_PX", "0.12") or 0.12),
-        )
-        self.tiny_roi_lift_max_step_mm = max(
-            0.5,
-            float(os.getenv("ARUCO_TINY_ROI_LIFT_MAX_STEP_MM", "12.0") or 12.0),
-        )
-
-        mm_per_px = float(os.getenv("ARUCO_TINY_ROI_LIFT_MM_PER_PX", "1.0") or 1.0)
-        self._tiny_roi_calib_mm_per_px = max(0.05, abs(float(mm_per_px)))
-        self._tiny_roi_calib_sign = -1.0 if float(mm_per_px) < 0.0 else 1.0
-
-        self._tiny_roi_frame_idx = 0
-        self._tiny_roi_prev = None
-        self._tiny_roi_prev_pts = None
-        self._tiny_roi_last_cam_h = None
-
-        self.floor_lift_mm = 0.0
-        self.floor_lift_quality = 0.0
-        self.floor_lift_ok = False
-        self.floor_lift_age_frames = 999999
-
     def _build_aruco_params(self, loose: bool) -> cv2.aruco.DetectorParameters:
         params = cv2.aruco.DetectorParameters()
 
@@ -410,6 +376,278 @@ class ArucoBrickVision:
         ) * float(score_pass)
         return max(0.0, min(100.0, round(float(score) * 100.0, 1)))
 
+    def _draw_debug_marker_candidates(
+        self,
+        frame: np.ndarray,
+        gray: np.ndarray,
+        corners,
+        rejected,
+    ) -> int:
+        self.debug_frame = frame.copy()
+
+        def _norm_pts(quad):
+            try:
+                pts = np.asarray(quad, dtype=np.float32)
+            except Exception:
+                return None
+            if pts.ndim == 3 and pts.shape[0] == 1:
+                pts = pts[0]
+            if pts.ndim != 2 or pts.shape[1] != 2 or pts.shape[0] < 4:
+                return None
+            return pts
+
+        def _bbox_overlap_frac(box_a, box_b):
+            ax, ay, aw, ah = box_a
+            bx, by, bw, bh = box_b
+            ax2 = ax + max(0, aw)
+            ay2 = ay + max(0, ah)
+            bx2 = bx + max(0, bw)
+            by2 = by + max(0, bh)
+            ix1 = max(ax, bx)
+            iy1 = max(ay, by)
+            ix2 = min(ax2, bx2)
+            iy2 = min(ay2, by2)
+            iw = max(0, ix2 - ix1)
+            ih = max(0, iy2 - iy1)
+            inter = float(iw * ih)
+            area_a = float(max(1, aw) * max(1, ah))
+            return inter / area_a if area_a > 0 else 0.0
+
+        def _draw_poly(pts, color, thickness=2):
+            poly = np.round(pts).astype(np.int32).reshape((-1, 1, 2))
+            cv2.polylines(self.debug_frame, [poly], True, color, int(thickness), cv2.LINE_AA)
+
+        def _order_quad(pts):
+            if pts is None:
+                return None
+            pts = np.asarray(pts, dtype=np.float32)
+            if pts.ndim != 2 or pts.shape[0] < 4 or pts.shape[1] != 2:
+                return None
+            pts4 = pts[:4].copy()
+            s = pts4.sum(axis=1)
+            d = (pts4[:, 1] - pts4[:, 0])
+            ordered = np.zeros((4, 2), dtype=np.float32)
+            ordered[0] = pts4[np.argmin(s)]  # top-left
+            ordered[2] = pts4[np.argmax(s)]  # bottom-right
+            ordered[1] = pts4[np.argmin(d)]  # top-right
+            ordered[3] = pts4[np.argmax(d)]  # bottom-left
+            return ordered
+
+        def _marker_like_bw_partial(pts):
+            # Strengthen orange highlights using the known ArUco structure:
+            # square-ish, high contrast, black/white only, dark outer border,
+            # and multiple binary transitions through the interior pattern.
+            try:
+                quad = _order_quad(pts)
+                if quad is None:
+                    return False
+                warp_n = 56
+                dst = np.array(
+                    [[0, 0], [warp_n - 1, 0], [warp_n - 1, warp_n - 1], [0, warp_n - 1]],
+                    dtype=np.float32,
+                )
+                M = cv2.getPerspectiveTransform(quad, dst)
+                patch = cv2.warpPerspective(gray, M, (warp_n, warp_n), flags=cv2.INTER_LINEAR)
+                if patch is None or patch.size == 0:
+                    return False
+
+                p5, p95 = np.percentile(patch, (5, 95))
+                if float(p95 - p5) < 40.0:
+                    return False
+
+                _thr, bw = cv2.threshold(patch, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                bw01 = (bw > 0).astype(np.uint8)
+                white_frac = float(np.mean(bw01))
+                if not (0.08 <= white_frac <= 0.92):
+                    return False
+
+                inner_m = max(4, int(warp_n // 6))
+                if (warp_n - 2 * inner_m) <= 4:
+                    return False
+                inner = bw01[inner_m:warp_n - inner_m, inner_m:warp_n - inner_m]
+                inner_white = float(np.mean(inner))
+                if not (0.05 <= inner_white <= 0.95):
+                    return False
+
+                t = max(2, int(warp_n // 10))
+                border_black = [
+                    1.0 - float(np.mean(bw01[:t, :])),
+                    1.0 - float(np.mean(bw01[-t:, :])),
+                    1.0 - float(np.mean(bw01[:, :t])),
+                    1.0 - float(np.mean(bw01[:, -t:])),
+                ]
+                dark_sides = sum(1 for v in border_black if v >= 0.55)
+                ring_mask = np.zeros_like(bw01, dtype=np.uint8)
+                ring_mask[:t, :] = 1
+                ring_mask[-t:, :] = 1
+                ring_mask[:, :t] = 1
+                ring_mask[:, -t:] = 1
+                ring_black_ratio = 1.0 - float(np.mean(bw01[ring_mask == 1]))
+                if ring_black_ratio < 0.45 and dark_sides < 2:
+                    return False
+
+                row = bw01[warp_n // 2, :]
+                col = bw01[:, warp_n // 2]
+                transitions = int(np.count_nonzero(row[1:] != row[:-1])) + int(
+                    np.count_nonzero(col[1:] != col[:-1])
+                )
+                if transitions < 4:
+                    return False
+
+                return True
+            except Exception:
+                return False
+
+        possible_marker_hits = 0
+        confirmed_contours = []
+        confirmed_bboxes = []
+        confirmed_short_sides = []
+
+        if corners is not None:
+            for quad in corners:
+                pts = _norm_pts(quad)
+                if pts is None:
+                    continue
+                _draw_poly(pts, (0, 255, 0), thickness=2)
+                confirmed_contours.append(pts.reshape((-1, 1, 2)).astype(np.float32))
+                confirmed_bboxes.append(cv2.boundingRect(np.round(pts).astype(np.int32)))
+                rect = cv2.minAreaRect(pts)
+                rw, rh = rect[1]
+                if rw > 0 and rh > 0:
+                    confirmed_short_sides.append(float(min(rw, rh)))
+
+        if self.debug_rejected_candidates and rejected is not None:
+            h, w = frame.shape[:2]
+            frame_area = float(max(1, h * w))
+            min_area_px = max(40.0, frame_area * 0.00005)
+            max_area_px = frame_area * 0.25
+            ref_short_side = float(np.median(confirmed_short_sides)) if confirmed_short_sides else None
+
+            for quad in rejected:
+                pts = _norm_pts(quad)
+                if pts is None:
+                    continue
+
+                area = abs(float(cv2.contourArea(pts)))
+                if area < min_area_px or area > max_area_px:
+                    continue
+
+                rect = cv2.minAreaRect(pts)
+                (cx, cy), (rw, rh), _ = rect
+                if rw <= 0 or rh <= 0:
+                    continue
+                short_side = float(min(rw, rh))
+                long_side = float(max(rw, rh))
+                if short_side < 6.0:
+                    continue
+                if ref_short_side is not None and short_side < max(6.0, ref_short_side * 0.18):
+                    continue
+
+                aspect = long_side / max(short_side, 1e-3)
+                if aspect > 2.4:
+                    continue
+
+                rect_area = float(rw * rh)
+                if rect_area <= 1.0:
+                    continue
+                fill_ratio = area / rect_area
+                if fill_ratio < 0.45:
+                    continue
+                if not _marker_like_bw_partial(pts):
+                    continue
+
+                center_pt = (float(cx), float(cy))
+                inside_confirmed = False
+                for contour in confirmed_contours:
+                    try:
+                        if cv2.pointPolygonTest(contour, center_pt, False) >= 0:
+                            inside_confirmed = True
+                            break
+                    except Exception:
+                        continue
+                if inside_confirmed:
+                    continue
+
+                cand_bbox = cv2.boundingRect(np.round(pts).astype(np.int32))
+                if any(_bbox_overlap_frac(cand_bbox, box) > 0.35 for box in confirmed_bboxes):
+                    continue
+
+                box_pts = cv2.boxPoints(rect)
+                _draw_poly(box_pts, (0, 165, 255), thickness=2)
+                possible_marker_hits += 1
+
+        return possible_marker_hits
+
+    def _stack_flags_from_verified_markers(
+        self,
+        best_marker: Optional[BrickPose],
+        poses: List[BrickPose],
+    ) -> Tuple[bool, bool]:
+        if best_marker is None:
+            return False, False
+
+        best_mcx = best_mcy = None
+        best_size_px = None
+        if best_marker.corners is not None:
+            best_mcx = float(np.mean(best_marker.corners[:, 0]))
+            best_mcy = float(np.mean(best_marker.corners[:, 1]))
+            best_size_px = float(np.linalg.norm(best_marker.corners[0] - best_marker.corners[2]) / 1.414)
+        focal = float(self.camera_matrix[0, 0]) if self.camera_matrix is not None else 0.0
+        best_dist_mm = max(1e-3, float(best_marker.position[2]))
+        expected_shift_px = (focal * (self.BRICK_H / best_dist_mm)) if focal > 0 else 0.0
+
+        brick_above = False
+        brick_below = False
+
+        for pose in poses:
+            if pose is best_marker:
+                continue
+            dz_signed = float(pose.position[2] - best_marker.position[2])
+            dz = abs(dz_signed)
+            dy = float(pose.position[1] - best_marker.position[1])
+            dx = abs(float(pose.position[0] - best_marker.position[0]))
+            yz_sep = float(np.hypot(dy, dz_signed))
+
+            stack_like_3d = (
+                dx < 35.0 and
+                20.0 < yz_sep < 90.0 and
+                dz < 85.0
+            )
+
+            idy_px = None
+            stack_like_img = True
+            if pose.corners is not None and best_mcx is not None and best_mcy is not None:
+                mcx = float(np.mean(pose.corners[:, 0]))
+                mcy = float(np.mean(pose.corners[:, 1]))
+                idx_px = abs(mcx - best_mcx)
+                idy_px = float(best_mcy - mcy)
+
+                size_px = float(np.linalg.norm(pose.corners[0] - pose.corners[2]) / 1.414)
+                ref_size_px = max(best_size_px or 0.0, size_px, 1.0)
+                lateral_tol_px = max(12.0, ref_size_px * 1.25)
+                min_vertical_shift_px = max(8.0, ref_size_px * 0.35)
+                max_vertical_shift_px = max(ref_size_px * 4.5, expected_shift_px * 2.0, 40.0)
+                stack_like_img = (
+                    idx_px <= lateral_tol_px and
+                    min_vertical_shift_px <= abs(idy_px) <= max_vertical_shift_px
+                )
+
+            if not (stack_like_3d and stack_like_img):
+                continue
+
+            if idy_px is not None:
+                if idy_px > 0:
+                    brick_above = True
+                elif idy_px < 0:
+                    brick_below = True
+            else:
+                if dy < 0:
+                    brick_above = True
+                elif dy > 0:
+                    brick_below = True
+
+        return brick_above, brick_below
+
     def _marker_like_quad_score(self, gray: np.ndarray, pts: np.ndarray) -> Optional[float]:
         # Fast heuristic score for "this looks like a black/white square marker quad".
         quad = self._order_quad_pts(pts)
@@ -600,191 +838,6 @@ class ArucoBrickVision:
         ], dtype=np.float32)
         self.dist_coeffs = np.zeros((5, 1), dtype=np.float32)
 
-    def _tiny_roi_bounds(self, gray: np.ndarray):
-        if gray is None:
-            return None
-        h, w = gray.shape[:2]
-        if h <= 0 or w <= 0:
-            return None
-        roi_h = max(24, int(round(float(h) * float(self.tiny_roi_lift_roi_h_pct))))
-        roi_w = max(48, int(round(float(w) * float(self.tiny_roi_lift_roi_w_pct))))
-        roi_h = min(int(h), int(roi_h))
-        roi_w = min(int(w), int(roi_w))
-        x0 = max(0, int((w - roi_w) // 2))
-        y0 = max(0, int(h - roi_h))
-        x1 = min(int(w), int(x0 + roi_w))
-        y1 = min(int(h), int(y0 + roi_h))
-        if x1 <= x0 or y1 <= y0:
-            return None
-        return x0, y0, x1, y1
-
-    def _tiny_roi_extract(self, gray: np.ndarray):
-        bounds = self._tiny_roi_bounds(gray)
-        if bounds is None:
-            return None, None
-        x0, y0, x1, y1 = bounds
-        roi = gray[y0:y1, x0:x1]
-        if roi is None or roi.size <= 0:
-            return None, None
-        roi = cv2.GaussianBlur(roi, (3, 3), 0)
-        return roi, bounds
-
-    def _update_tiny_roi_lift(self, gray: np.ndarray, pose: BrickPose):
-        try:
-            self.floor_lift_age_frames = max(0, int(self.floor_lift_age_frames)) + 1
-        except Exception:
-            self.floor_lift_age_frames = 1
-        if not bool(self.tiny_roi_lift_enabled):
-            self.floor_lift_quality = 0.0
-            self.floor_lift_ok = False
-            return
-        if gray is None:
-            self.floor_lift_quality = 0.0
-            self.floor_lift_ok = False
-            return
-
-        self._tiny_roi_frame_idx = int(self._tiny_roi_frame_idx) + 1
-        roi_now, bounds = self._tiny_roi_extract(gray)
-        if roi_now is None:
-            self.floor_lift_quality = 0.0
-            self.floor_lift_ok = False
-            self._tiny_roi_prev = None
-            self._tiny_roi_prev_pts = None
-            return
-
-        if bool(pose.found) and float(pose.confidence) >= 60.0:
-            try:
-                self._tiny_roi_last_cam_h = float(pose.position[1])
-            except Exception:
-                pass
-
-        if self._tiny_roi_prev is None:
-            self._tiny_roi_prev = roi_now
-            self._tiny_roi_prev_pts = None
-            self.floor_lift_quality = 0.0
-            self.floor_lift_ok = False
-            return
-
-        if (int(self._tiny_roi_frame_idx) % int(self.tiny_roi_lift_interval)) != 0:
-            self.floor_lift_quality = max(0.0, float(self.floor_lift_quality) * 0.92)
-            self.floor_lift_ok = bool(self.floor_lift_quality >= float(self.tiny_roi_lift_quality_min))
-            return
-
-        prev = self._tiny_roi_prev
-        pts_prev = self._tiny_roi_prev_pts
-        if pts_prev is None or len(pts_prev) < 8:
-            pts_prev = cv2.goodFeaturesToTrack(
-                prev,
-                maxCorners=int(self.tiny_roi_lift_max_features),
-                qualityLevel=0.02,
-                minDistance=5,
-                blockSize=5,
-            )
-        if pts_prev is None or len(pts_prev) < 6:
-            self.floor_lift_quality = 0.0
-            self.floor_lift_ok = False
-            self._tiny_roi_prev = roi_now
-            self._tiny_roi_prev_pts = None
-            return
-
-        next_pts, st, err = cv2.calcOpticalFlowPyrLK(
-            prev,
-            roi_now,
-            pts_prev,
-            None,
-            winSize=(15, 15),
-            maxLevel=2,
-            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 0.03),
-        )
-        if next_pts is None or st is None:
-            self.floor_lift_quality = 0.0
-            self.floor_lift_ok = False
-            self._tiny_roi_prev = roi_now
-            self._tiny_roi_prev_pts = None
-            return
-
-        st_mask = (st.reshape(-1) == 1)
-        if err is not None:
-            try:
-                err_mask = (err.reshape(-1) <= 25.0)
-                st_mask = np.logical_and(st_mask, err_mask)
-            except Exception:
-                pass
-        if int(np.count_nonzero(st_mask)) < 6:
-            self.floor_lift_quality = 0.0
-            self.floor_lift_ok = False
-            self._tiny_roi_prev = roi_now
-            self._tiny_roi_prev_pts = None
-            return
-
-        good_prev = pts_prev.reshape(-1, 2)[st_mask]
-        good_next = next_pts.reshape(-1, 2)[st_mask]
-        disp = good_next - good_prev
-        dy = disp[:, 1]
-        med_dy = float(np.median(dy))
-        mad = float(np.median(np.abs(dy - med_dy)))
-        inlier_mask = np.abs(dy - med_dy) <= max(0.25, (2.5 * mad))
-        if int(np.count_nonzero(inlier_mask)) < 5:
-            self.floor_lift_quality = 0.0
-            self.floor_lift_ok = False
-            self._tiny_roi_prev = roi_now
-            self._tiny_roi_prev_pts = None
-            return
-
-        dy_in = dy[inlier_mask]
-        med_dy = float(np.median(dy_in))
-        mad_in = float(np.median(np.abs(dy_in - med_dy)))
-
-        feature_score = min(
-            1.0,
-            float(len(dy_in)) / max(8.0, float(self.tiny_roi_lift_max_features)),
-        )
-        coherence_score = 1.0 / (1.0 + max(0.0, float(mad_in)))
-        quality = max(0.0, min(1.0, float(feature_score * coherence_score)))
-        self.floor_lift_quality = float(quality)
-        self.floor_lift_ok = bool(quality >= float(self.tiny_roi_lift_quality_min))
-        self.floor_lift_age_frames = 0
-
-        if bool(pose.found) and float(pose.confidence) >= 60.0:
-            try:
-                cam_h_now = float(pose.position[1])
-            except Exception:
-                cam_h_now = None
-            cam_h_prev = self._tiny_roi_last_cam_h
-            if (
-                cam_h_now is not None
-                and cam_h_prev is not None
-                and abs(med_dy) >= float(self.tiny_roi_lift_deadband_px)
-            ):
-                delta_cam_h = float(cam_h_now) - float(cam_h_prev)
-                if abs(delta_cam_h) >= 0.4:
-                    est_mm_per_px = float(delta_cam_h) / float(med_dy)
-                    if 0.05 <= abs(est_mm_per_px) <= 20.0:
-                        self._tiny_roi_calib_mm_per_px = (
-                            (0.9 * float(self._tiny_roi_calib_mm_per_px))
-                            + (0.1 * abs(float(est_mm_per_px)))
-                        )
-                        self._tiny_roi_calib_sign = -1.0 if float(est_mm_per_px) < 0.0 else 1.0
-            if cam_h_now is not None:
-                self._tiny_roi_last_cam_h = float(cam_h_now)
-
-        if abs(med_dy) >= float(self.tiny_roi_lift_deadband_px) and quality >= 0.2:
-            delta_mm = (
-                float(med_dy)
-                * float(self._tiny_roi_calib_mm_per_px)
-                * float(self._tiny_roi_calib_sign)
-            )
-            delta_mm = max(
-                -float(self.tiny_roi_lift_max_step_mm),
-                min(float(self.tiny_roi_lift_max_step_mm), float(delta_mm)),
-            )
-            self.floor_lift_mm = max(0.0, float(self.floor_lift_mm) + float(delta_mm))
-
-        self._tiny_roi_prev = roi_now
-        self._tiny_roi_prev_pts = good_next[inlier_mask].reshape(-1, 1, 2).astype(np.float32)
-
-        # Keep tiny-ROI lift estimation telemetry-only. Do not draw ROI overlays on stream.
-
     def read(self):
         if self.cap is None or not self.cap.isOpened():
             self.init_camera()
@@ -802,7 +855,6 @@ class ArucoBrickVision:
         self.raw_frame = frame.copy()
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         pose = self.process(frame, gray=gray)
-        self._update_tiny_roi_lift(gray, pose)
         self.current_frame = self.debug_frame if self.debug_frame is not None else frame
         
         if not pose.found:
@@ -831,204 +883,10 @@ class ArucoBrickVision:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         corners, ids, rejected = self._detect_markers_with_fallback(gray)
         corners, ids = self._filter_target_marker_detections(corners, ids)
-        # Count of orange "possible marker" candidates drawn this frame.
-        # Keep this defined regardless of debug mode so downstream stack logic
-        # never references an undefined local.
-        possible_marker_hits = 0
 
         if self.debug:
-            self.debug_frame = frame.copy()
-            # Removed drawDetectedMarkers (dots)
-            def _norm_pts(quad):
-                try:
-                    pts = np.asarray(quad, dtype=np.float32)
-                except Exception:
-                    return None
-                if pts.ndim == 3 and pts.shape[0] == 1:
-                    pts = pts[0]
-                if pts.ndim != 2 or pts.shape[1] != 2 or pts.shape[0] < 4:
-                    return None
-                return pts
-
-            def _bbox_overlap_frac(box_a, box_b):
-                ax, ay, aw, ah = box_a
-                bx, by, bw, bh = box_b
-                ax2 = ax + max(0, aw)
-                ay2 = ay + max(0, ah)
-                bx2 = bx + max(0, bw)
-                by2 = by + max(0, bh)
-                ix1 = max(ax, bx)
-                iy1 = max(ay, by)
-                ix2 = min(ax2, bx2)
-                iy2 = min(ay2, by2)
-                iw = max(0, ix2 - ix1)
-                ih = max(0, iy2 - iy1)
-                inter = float(iw * ih)
-                area_a = float(max(1, aw) * max(1, ah))
-                return inter / area_a if area_a > 0 else 0.0
-
-            def _draw_poly(pts, color, thickness=2):
-                poly = np.round(pts).astype(np.int32).reshape((-1, 1, 2))
-                cv2.polylines(self.debug_frame, [poly], True, color, int(thickness), cv2.LINE_AA)
-
-            def _order_quad(pts):
-                if pts is None:
-                    return None
-                pts = np.asarray(pts, dtype=np.float32)
-                if pts.ndim != 2 or pts.shape[0] < 4 or pts.shape[1] != 2:
-                    return None
-                pts4 = pts[:4].copy()
-                s = pts4.sum(axis=1)
-                d = (pts4[:, 1] - pts4[:, 0])
-                ordered = np.zeros((4, 2), dtype=np.float32)
-                ordered[0] = pts4[np.argmin(s)]  # top-left
-                ordered[2] = pts4[np.argmax(s)]  # bottom-right
-                ordered[1] = pts4[np.argmin(d)]  # top-right
-                ordered[3] = pts4[np.argmax(d)]  # bottom-left
-                return ordered
-
-            def _marker_like_bw_partial(pts):
-                # Strengthen orange highlights using the known ArUco structure:
-                # square-ish, high contrast, black/white only, dark outer border,
-                # and multiple binary transitions through the interior pattern.
-                try:
-                    quad = _order_quad(pts)
-                    if quad is None:
-                        return False
-                    warp_n = 56
-                    dst = np.array(
-                        [[0, 0], [warp_n - 1, 0], [warp_n - 1, warp_n - 1], [0, warp_n - 1]],
-                        dtype=np.float32,
-                    )
-                    M = cv2.getPerspectiveTransform(quad, dst)
-                    patch = cv2.warpPerspective(gray, M, (warp_n, warp_n), flags=cv2.INTER_LINEAR)
-                    if patch is None or patch.size == 0:
-                        return False
-
-                    p5, p95 = np.percentile(patch, (5, 95))
-                    if float(p95 - p5) < 40.0:
-                        return False
-
-                    _thr, bw = cv2.threshold(patch, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                    bw01 = (bw > 0).astype(np.uint8)
-                    white_frac = float(np.mean(bw01))
-                    if not (0.08 <= white_frac <= 0.92):
-                        return False
-
-                    inner_m = max(4, int(warp_n // 6))
-                    if (warp_n - 2 * inner_m) <= 4:
-                        return False
-                    inner = bw01[inner_m:warp_n - inner_m, inner_m:warp_n - inner_m]
-                    inner_white = float(np.mean(inner))
-                    if not (0.05 <= inner_white <= 0.95):
-                        return False
-
-                    t = max(2, int(warp_n // 10))
-                    border_black = [
-                        1.0 - float(np.mean(bw01[:t, :])),
-                        1.0 - float(np.mean(bw01[-t:, :])),
-                        1.0 - float(np.mean(bw01[:, :t])),
-                        1.0 - float(np.mean(bw01[:, -t:])),
-                    ]
-                    dark_sides = sum(1 for v in border_black if v >= 0.55)
-                    ring_mask = np.zeros_like(bw01, dtype=np.uint8)
-                    ring_mask[:t, :] = 1
-                    ring_mask[-t:, :] = 1
-                    ring_mask[:, :t] = 1
-                    ring_mask[:, -t:] = 1
-                    ring_black_ratio = 1.0 - float(np.mean(bw01[ring_mask == 1]))
-                    if ring_black_ratio < 0.45 and dark_sides < 2:
-                        return False
-
-                    row = bw01[warp_n // 2, :]
-                    col = bw01[:, warp_n // 2]
-                    transitions = int(np.count_nonzero(row[1:] != row[:-1])) + int(np.count_nonzero(col[1:] != col[:-1]))
-                    if transitions < 4:
-                        return False
-
-                    return True
-                except Exception:
-                    return False
-
-            confirmed_contours = []
-            confirmed_bboxes = []
-            confirmed_short_sides = []
-
-            if corners is not None:
-                for quad in corners:
-                    pts = _norm_pts(quad)
-                    if pts is None:
-                        continue
-                    _draw_poly(pts, (0, 255, 0), thickness=2)  # bright green
-                    confirmed_contours.append(pts.reshape((-1, 1, 2)).astype(np.float32))
-                    confirmed_bboxes.append(cv2.boundingRect(np.round(pts).astype(np.int32)))
-                    rect = cv2.minAreaRect(pts)
-                    rw, rh = rect[1]
-                    if rw > 0 and rh > 0:
-                        confirmed_short_sides.append(float(min(rw, rh)))
-
-            # This pass is expensive when many rejected quads are present.
-            # Keep it opt-in so control loops stay responsive by default.
-            if self.debug_rejected_candidates and rejected is not None:
-                h, w = frame.shape[:2]
-                frame_area = float(max(1, h * w))
-                min_area_px = max(40.0, frame_area * 0.00005)
-                max_area_px = frame_area * 0.25
-                ref_short_side = float(np.median(confirmed_short_sides)) if confirmed_short_sides else None
-
-                for quad in rejected:
-                    pts = _norm_pts(quad)
-                    if pts is None:
-                        continue
-
-                    area = abs(float(cv2.contourArea(pts)))
-                    if area < min_area_px or area > max_area_px:
-                        continue
-
-                    rect = cv2.minAreaRect(pts)
-                    (cx, cy), (rw, rh), _ = rect
-                    if rw <= 0 or rh <= 0:
-                        continue
-                    short_side = float(min(rw, rh))
-                    long_side = float(max(rw, rh))
-                    if short_side < 6.0:
-                        continue
-                    if ref_short_side is not None and short_side < max(6.0, ref_short_side * 0.18):
-                        # Suppress tiny rejected quads inside a confirmed marker (cell artifacts).
-                        continue
-
-                    aspect = long_side / max(short_side, 1e-3)
-                    if aspect > 2.4:
-                        continue
-
-                    rect_area = float(rw * rh)
-                    if rect_area <= 1.0:
-                        continue
-                    fill_ratio = area / rect_area
-                    if fill_ratio < 0.45:
-                        continue
-                    if not _marker_like_bw_partial(pts):
-                        continue
-
-                    center_pt = (float(cx), float(cy))
-                    inside_confirmed = False
-                    for contour in confirmed_contours:
-                        try:
-                            if cv2.pointPolygonTest(contour, center_pt, False) >= 0:
-                                inside_confirmed = True
-                                break
-                        except Exception:
-                            continue
-                    if inside_confirmed:
-                        continue
-
-                    cand_bbox = cv2.boundingRect(np.round(pts).astype(np.int32))
-                    if any(_bbox_overlap_frac(cand_bbox, box) > 0.35 for box in confirmed_bboxes):
-                        continue
-
-                    box_pts = cv2.boxPoints(rect)
-                    _draw_poly(box_pts, (0, 165, 255), thickness=2)  # bright orange
-                    possible_marker_hits += 1
+            # Debug-only count of orange candidates; stack booleans must ignore it.
+            self._draw_debug_marker_candidates(frame, gray, corners, rejected)
 
         best_marker = None
         
@@ -1074,71 +932,12 @@ class ArucoBrickVision:
 
             # Detect stacking
             if best_marker:
-                best_mcx = best_mcy = None
-                best_size_px = None
-                if best_marker.corners is not None:
-                    best_mcx = float(np.mean(best_marker.corners[:, 0]))
-                    best_mcy = float(np.mean(best_marker.corners[:, 1]))
-                    best_size_px = float(np.linalg.norm(best_marker.corners[0] - best_marker.corners[2]) / 1.414)
+                best_marker.brickAbove, best_marker.brickBelow = self._stack_flags_from_verified_markers(
+                    best_marker,
+                    poses,
+                )
                 focal = float(self.camera_matrix[0, 0]) if self.camera_matrix is not None else 0.0
                 best_dist_mm = max(1e-3, float(best_marker.position[2]))
-                expected_shift_px = (focal * (self.BRICK_H / best_dist_mm)) if focal > 0 else 0.0
-
-                # 1. Check verified markers
-                verified_stack_hits = 0
-                for pose in poses:
-                    # Compare against the selected center-most marker instance.
-                    # Marker IDs can repeat across bricks, so ID equality is not a safe
-                    # way to skip only the reference brick.
-                    if pose is best_marker:
-                        continue
-                    dz_signed = float(pose.position[2] - best_marker.position[2])
-                    dz = abs(dz_signed)
-                    dy = float(pose.position[1] - best_marker.position[1])
-                    dx = abs(float(pose.position[0] - best_marker.position[0]))
-                    yz_sep = float(np.hypot(dy, dz_signed))
-
-                    # In low-camera / pitched views, the 48mm brick-height offset rotates into
-                    # both camera Y and Z. Use the combined YZ separation instead of only dy.
-                    stack_like_3d = (
-                        dx < 35.0 and
-                        20.0 < yz_sep < 90.0 and
-                        dz < 85.0
-                    )
-
-                    mcx = mcy = None
-                    idx_px = idy_px = None
-                    stack_like_img = True
-                    if pose.corners is not None and best_mcx is not None and best_mcy is not None:
-                        mcx = float(np.mean(pose.corners[:, 0]))
-                        mcy = float(np.mean(pose.corners[:, 1]))
-                        idx_px = abs(mcx - best_mcx)
-                        idy_px = float(best_mcy - mcy)  # positive => other marker is above
-
-                        size_px = float(np.linalg.norm(pose.corners[0] - pose.corners[2]) / 1.414)
-                        ref_size_px = max(best_size_px or 0.0, size_px, 1.0)
-                        lateral_tol_px = max(12.0, ref_size_px * 1.25)
-                        min_vertical_shift_px = max(8.0, ref_size_px * 0.35)
-                        # Keep a wide upper bound because camera pitch compresses/expands
-                        # apparent vertical spacing in image space.
-                        max_vertical_shift_px = max(ref_size_px * 4.5, expected_shift_px * 2.0, 40.0)
-                        stack_like_img = (
-                            idx_px <= lateral_tol_px and
-                            min_vertical_shift_px <= abs(idy_px) <= max_vertical_shift_px
-                        )
-
-                    if stack_like_3d and stack_like_img:
-                        verified_stack_hits += 1
-                        if idy_px is not None:
-                            if idy_px > 0:
-                                best_marker.brickAbove = True
-                            elif idy_px < 0:
-                                best_marker.brickBelow = True
-                        else:
-                            if dy < 0:
-                                best_marker.brickAbove = True
-                            elif dy > 0:
-                                best_marker.brickBelow = True
 
                 # 2. Check rejected markers for partial bricks
                 # Disabled for stack booleans: `brickAbove` / `brickBelow` should reflect
@@ -1236,12 +1035,6 @@ class ArucoBrickVision:
                             best_marker.brickAbove = True
                         if rejected_below_best is not None and not best_marker.brickBelow:
                             best_marker.brickBelow = True
-
-                # Operator intent: if we are drawing at least one orange "possible
-                # marker" candidate this frame, treat stack-above/below raw flags as true.
-                if possible_marker_hits > 0:
-                    best_marker.brickAbove = True
-                    best_marker.brickBelow = True
 
         if best_marker:
             if self.last_pose:

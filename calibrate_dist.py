@@ -178,12 +178,9 @@ def _cleanup_old_run_files():
     cleanup_old_run_files(
         preserve_live_files={
             "calibrate_x_live.json",
-            "calibrate_x_live.png",
             "calibrate_y_live.json",
-            "calibrate_y_live.png",
             "calibrate_dist_live.json",
-            "calibrate_dist_live.png",
-        }
+        },
     )
 
 
@@ -192,11 +189,8 @@ def _ensure_run_dir():
         run_dir=RUN_DIR,
         preserve_live_files={
             "calibrate_x_live.json",
-            "calibrate_x_live.png",
             "calibrate_y_live.json",
-            "calibrate_y_live.png",
             "calibrate_dist_live.json",
-            "calibrate_dist_live.png",
         },
     )
 
@@ -1297,7 +1291,7 @@ def main() -> int:
     parser.add_argument("--observe-timeout-s", type=float, default=OBSERVE_TIMEOUT_S)
     parser.add_argument("--post-act-settle-s", type=float, default=POST_ACT_SETTLE_S)
     parser.add_argument("--show-plot", action="store_true")
-    parser.add_argument("--plot-path", type=str, default=PLOT_FILE_DEFAULT)
+    parser.add_argument("--plot-path", type=str, default=PLOT_FILE_DEFAULT, help="Optional PNG file to rewrite after each trial.")
     parser.add_argument("--results-file", type=str, default=RESULTS_FILE_DEFAULT)
     parser.add_argument("--reference-distance-mm", type=float, default=None)
     parser.add_argument(
@@ -1316,9 +1310,6 @@ def main() -> int:
 
     if args.results_file is None:
         args.results_file = str(RUN_DIR / "calibrate_dist_live.json")
-    if args.plot_path is None:
-        args.plot_path = str(RUN_DIR / "calibrate_dist_live.png")
-
     results_path = Path(args.results_file)
     plot_path = Path(args.plot_path) if args.plot_path else None
     trials_requested = None if args.trials is None else max(1, int(args.trials))

@@ -2,6 +2,25 @@
     "lite_gate_check": {
         "default_unique_smoothed_frames": 1
     },
+    "workspace": {
+        "step_target_ranges": [
+            {
+                "min_step": 1,
+                "max_step": 2,
+                "target": "wall"
+            },
+            {
+                "min_step": 3,
+                "max_step": 9,
+                "target": "brick_supply"
+            },
+            {
+                "min_step": 10,
+                "max_step": 16,
+                "target": "wall"
+            }
+        ]
+    },
     "steps": {
         "FIND_WALL": {
             "height_intelligence": {
@@ -21,19 +40,6 @@
                 "score": 1,
                 "cooldown_s": 0.6
             },
-            "start_ground_reset_exception": {
-                "enabled": true,
-                "operator_log_reminder": "Exception active: startup ground reset using tiny_roi_floor lift estimate.",
-                "command": "d",
-                "score": 100,
-                "min_acts": 2,
-                "max_acts": 4,
-                "observe_between_acts": false,
-                "ground_level_lift_mm_goal": 50.0,
-                "require_tiny_roi_floor": true,
-                "fail_on_unconfirmed": true,
-                "run_after_startup_action": true
-            },
             "success_gates": {
                 "visible": {
                     "min": true
@@ -47,23 +53,6 @@
                 "normal": 2,
                 "standard": 6,
                 "fast": 25
-            },
-            "search_turn_followup_exception": {
-                "enabled": true,
-                "operator_log_reminder": "Exception hack: after each turn while searching for the brick stack, pulse BACK 20%.",
-                "trigger_cmds": [
-                    "l",
-                    "r"
-                ],
-                "command": "b",
-                "score": 20,
-                "acts": 1,
-                "phases": [
-                    "demo",
-                    "replay",
-                    "settle",
-                    "tail"
-                ]
             },
             "success_gates": {
                 "visible": {
@@ -81,12 +70,10 @@
                 "start_with_high": true,
                 "commands": [
                     "r",
-                    "r",
-                    "r",
                     "b"
                 ],
                 "command_scores": {
-                    "b": 30
+                    "b": 10
                 }
             },
             "align_policy": {
@@ -132,23 +119,6 @@
                 "visible": {
                     "min": true
                 }
-            },
-            "success_gates": {
-                "visible": {
-                    "min": true
-                },
-                "angle_abs": {
-                    "target": 4.29,
-                    "tol": 6.95
-                },
-                "x_axis": {
-                    "target": -8.26,
-                    "tol": 25.95
-                },
-                "y_axis": {
-                    "target": -11.12,
-                    "tol": 6.57
-                }
             }
         },
         "FIND_TOPMOST_BRICK": {
@@ -163,7 +133,7 @@
             "height_snapshot": {
                 "enabled": true,
                 "target": "brick_supply_height",
-                "source": "lift_height",
+                "source": "brick_supply_height",
                 "min_bricks": 1,
                 "max_bricks": 20
             },
@@ -174,11 +144,30 @@
             "topmost_crosshair_exception": {
                 "enabled": true,
                 "ground_up_level2_enabled": true,
-                "operator_log_reminder": "Exception active: mast-only stack-height detection (mast UP 100% with level2 inCrosshairs confirmation).",
+                "operator_log_reminder": "Exception active: mast-down bottom discovery, then mast-up stack-height detection (level2 inCrosshairs confirmation).",
                 "ground_reset_enabled": false,
+                "bottom_brick_discovery": {
+                    "enabled": true,
+                    "command": "d",
+                    "score": 100,
+                    "max_acts": 24,
+                    "consecutive_no_required": 1,
+                    "require_visible_for_confirm": true,
+                    "reset_on_skipped_observation": true,
+                    "fail_on_skipped_observation": false,
+                    "confidence_gates_observation": false
+                },
                 "mast_up_command": "u",
                 "mast_up_score": 100,
                 "mast_up_max_acts": 32,
+                "crosshair_stack_band_count": {
+                    "enabled": true,
+                    "method": "brick_gap_bands",
+                    "target": "brick_supply_height",
+                    "min_bricks": 1,
+                    "max_bricks": 20,
+                    "initial_bricks": 2
+                },
                 "false_up_acts_required": 4,
                 "false_confirm_frames": 3,
                 "consecutive_no_required": 4,
@@ -208,6 +197,9 @@
                 "focus_x_first_x_gap_gt_mm": 2.0,
                 "focus_dist_first_dist_gap_gt_mm": 150.0,
                 "focus_dist_first_x_gap_lt_mm": 5.0,
+                "metric_direction_overrides": {
+                    "dist": "band"
+                },
                 "dist_score_mode": "dist_error_bands",
                 "turn_score_mode": "x_axis_one_shot_curve",
                 "slow_fast_mm_scale": 1.0,
@@ -230,7 +222,7 @@
                     },
                     "dist": {
                         "target": 115.49,
-                        "tol": 1.5
+                        "tol": 2.3
                     }
                 },
                 "cyan": {
@@ -251,19 +243,19 @@
                 },
                 "dist": {
                     "target": 115.49,
-                    "tol": 1.5
+                    "tol": 2.3
                 }
             },
             "pre_align_descend": {
                 "enabled": true,
                 "command": "d",
                 "score": 100,
-                "score_after_seen_true": 1,
+                "score_after_seen_true": 2,
                 "confirm_frames": 3,
                 "require_consistent_observation": true,
                 "consistent_observation_max_checks": 100,
                 "completion_mode": "true_then_false_streak",
-                "false_after_true_down_acts_required": 2,
+                "false_after_true_down_acts_required": 1,
                 "true_down_acts_required": 3,
                 "exclude_when_active_steps": [
                     "FIND_TOPMOST_BRICK_WALL"
@@ -309,6 +301,9 @@
                 "target_lock_acquire_timeout_s": 0.35,
                 "target_lock_center_x_worse_margin_mm": 1.5,
                 "target_lock_center_y_worse_margin_mm": 2.0,
+                "in_crosshairs_continuity_guard_enabled": true,
+                "in_crosshairs_continuity_guard_confirm_frames": 1,
+                "in_crosshairs_continuity_guard_reverse_max_acts": 3,
                 "gap_rotation_enabled": true,
                 "gap_rotation_chunk_min_mm": 3.0,
                 "gap_rotation_chunk_max_mm": 6.0,
@@ -337,16 +332,16 @@
                     "min": true
                 },
                 "xAxis_offset_abs": {
-                    "target": -4.74,
+                    "target": -0.09,
                     "tol": 1.4
                 },
                 "yAxis_offset_abs": {
-                    "target": 2.5,
-                    "tol": 1.5
+                    "target": -0.57,
+                    "tol": 2.3
                 },
                 "dist": {
-                    "target": 105.63,
-                    "tol": 1.5
+                    "target": 91.97,
+                    "tol": 2.3
                 }
             }
         },
@@ -365,24 +360,17 @@
                 "score": 1,
                 "acts": 4,
                 "min_start_to_target_gap_mm": 1.0
-            },
-            "success_gates": {
-                "visible": {
-                    "min": true
-                },
-                "dist": {
-                    "target": 48.0,
-                    "tol": 1.5
-                }
             }
         },
         "ELEVATE_BRICK": {
-            "success_gates": {
-                "visible": {
-                    "min": false
-                }
+            "height_inventory_adjustment": {
+                "enabled": true,
+                "target": "brick_supply_height",
+                "bricks_delta": -1,
+                "min_bricks": 0,
+                "max_bricks": 20
             },
-            "start_gates": {
+            "success_gates": {
                 "visible": {
                     "min": true
                 }
@@ -395,39 +383,45 @@
             },
             "start_ground_reset_exception": {
                 "enabled": true,
-                "operator_log_reminder": "Exception active: startup ground reset using tiny_roi_floor lift estimate.",
                 "command": "d",
                 "score": 100,
                 "min_acts": 2,
-                "max_acts": 12,
+                "max_acts": 5,
+                "max_acts_from_height_source": "brick_supply_height",
+                "max_acts_default": 5,
                 "ground_level_lift_mm_goal": 50.0,
-                "require_tiny_roi_floor": true,
+                "observe_between_acts": true,
                 "fail_on_unconfirmed": false,
                 "run_after_startup_action": true
             },
             "scan_direction": "l",
             "search_visible_false_speed_cycle": {
                 "enabled": true,
-                "high_score": 25,
-                "low_score": 25,
+                "high_score": 20,
+                "low_score": 10,
+                "command_scores": {
+                    "l": 20,
+                    "b": 10
+                },
                 "start_with_high": true,
                 "commands": [
                     "l",
                     "b"
-                ]
+                ],
+                "start_cmd_index": 0
             },
             "startup_pre_action_exception": {
                 "enabled": true,
-                "operator_log_reminder": "Exception active: before startup hard-left scan, pulse BACK 50% x5.",
-                "command": "b",
-                "score": 50,
-                "acts": 5,
+                "operator_log_reminder": "Exception active: before startup hard-left scan, slow left turn L 1% for 1500ms.",
+                "command": "l",
+                "score": 1,
+                "acts": 1,
+                "duration_override_ms": 1500,
                 "observe_between_acts": false,
                 "pause_s": 0.0
             },
-            "operator_exception_reminder": "Exception active: startup hard-left scan x7.",
             "startup_action_exception": {
-                "enabled": true,
+                "enabled": false,
                 "command": "l",
                 "score": 100,
                 "acts": 7,
@@ -437,28 +431,13 @@
             "visible_only_speed_tiers": {
                 "enabled": true,
                 "normal": 2,
-                "standard": 6,
-                "fast": 25
-            },
-            "search_turn_followup_exception": {
-                "enabled": true,
-                "operator_log_reminder": "Exception hack: after each LEFT turn while searching for wall2, pulse BACK 25%.",
-                "trigger_cmds": [
-                    "l"
-                ],
-                "command": "b",
-                "score": 25,
-                "acts": 1,
-                "phases": [
-                    "demo",
-                    "replay",
-                    "settle",
-                    "tail"
-                ]
+                "standard": 2,
+                "fast": 2,
+                "duration_override_ms": 1500
             },
             "height_intelligence": {
-                "enabled": true,
-                "source": "wall_height",
+                "enabled": false,
+                "source": "brick_supply_height",
                 "apply_when_visible_false": true,
                 "apply_on_cmds": [
                     "l",
@@ -474,10 +453,19 @@
                 "cooldown_s": 0.6,
                 "phase_overrides": {
                     "tail": {
-                        "score": 100,
-                        "allow_uncapped_score": true,
-                        "burst_acts": 8,
-                        "observe_between_acts": false
+                        "enabled": true,
+                        "apply_on_cmds": [
+                            "d"
+                        ],
+                        "low_bricks_max": 20,
+                        "high_bricks_min": 999,
+                        "low_cmd": "d",
+                        "high_cmd": "d",
+                        "score": 20,
+                        "burst_acts_from_source": true,
+                        "observe_between_acts": false,
+                        "skip_success_gates": true,
+                        "complete_after_burst": true
                     }
                 }
             },
@@ -494,19 +482,6 @@
             "start_gates": {
                 "visible": {
                     "min": true
-                }
-            },
-            "success_gates": {
-                "visible": {
-                    "min": true
-                },
-                "angle_abs": {
-                    "target": 1.02,
-                    "tol": 1.18
-                },
-                "xAxis_offset_abs": {
-                    "target": -5.94,
-                    "tol": 1.4
                 }
             }
         },
@@ -649,15 +624,11 @@
                 "acts": 3,
                 "observe_between_acts": false,
                 "pause_s": 0.0
-            },
-            "start_gates": {
-                "visible": {
-                    "min": true
-                }
             }
         },
         "POSITION_BRICK": {
             "controller": "align",
+            "start_gate_timeout_s": null,
             "lock_success_gates": true,
             "align_policy": {
                 "hold_when_not_visible": true,
@@ -693,16 +664,11 @@
                 },
                 "yAxis_offset_abs": {
                     "target": 7.74,
-                    "tol": 1.5
+                    "tol": 2.3
                 },
                 "dist": {
                     "target": 111.45,
-                    "tol": 1.5
-                }
-            },
-            "start_gates": {
-                "visible": {
-                    "min": true
+                    "tol": 2.3
                 }
             }
         },
@@ -715,13 +681,13 @@
             },
             "progress_mast_exception": {
                 "enabled": true,
-                "operator_log_reminder": "Exception active: at 75%-away then 50%-away dist checkpoints, lower mast D 10% x2, then continue.",
+                "operator_log_reminder": "Exception active: at 75%-away then 50%-away dist checkpoints, lower mast D 7% x2, then continue.",
                 "trigger_progress_fractions": [
                     0.25,
                     0.5
                 ],
                 "command": "d",
-                "score": 10,
+                "score": 7,
                 "acts": 2,
                 "min_start_to_target_gap_mm": 4.0
             },
@@ -765,27 +731,17 @@
                 "acts": 4,
                 "observe_between_acts": false,
                 "pause_s": 0.0
-            },
-            "success_gates": {
-                "visible": {
-                    "min": true
-                },
-                "x_axis": {
-                    "target": -3.5,
-                    "tol": 1.5
-                },
-                "y_axis": {
-                    "target": 1.0,
-                    "tol": 2.5
-                },
-                "dist": {
-                    "target": 48.0,
-                    "tol": 1.5
-                }
             }
         },
         "RETREAT": {
             "controller": "align",
+            "height_inventory_adjustment": {
+                "enabled": true,
+                "target": "wall_height",
+                "bricks_delta": 1,
+                "min_bricks": 0,
+                "max_bricks": 20
+            },
             "lock_success_gates": true,
             "aruco_confidence_gate": false,
             "align_policy": {
@@ -797,6 +753,19 @@
                 "slow_fast_mm_scale": 1.0,
                 "auto_speed_hard_cap_exempt": true
             },
+            "post_success_bottom_discovery": {
+                "enabled": true,
+                "operator_log_reminder": "Exception active: after RETREAT success, lower until brickBelow=NO, just like step 5.",
+                "command": "d",
+                "score": 100,
+                "max_acts": 24,
+                "consecutive_no_required": 1,
+                "require_visible_for_confirm": true,
+                "reset_on_skipped_observation": true,
+                "fail_on_skipped_observation": false,
+                "fail_on_unconfirmed": true,
+                "confidence_gates_observation": false
+            },
             "success_gates": {
                 "visible": {
                     "min": true
@@ -804,11 +773,6 @@
                 "dist": {
                     "target": 124.69,
                     "tol": 12.3
-                }
-            },
-            "start_gates": {
-                "visible": {
-                    "min": true
                 }
             }
         }

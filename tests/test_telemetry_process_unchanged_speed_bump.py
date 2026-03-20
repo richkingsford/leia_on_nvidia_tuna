@@ -97,6 +97,7 @@ class TestTelemetryProcessUnchangedSpeedBump(unittest.TestCase):
         self.assertIsInstance(act, dict)
         self.assertEqual(act.get("reason"), "lite_fail_fallback_dist")
         self.assertEqual(act.get("cmd"), "b")
+        self.assertEqual(act.get("score"), 1)
 
 
 if __name__ == "__main__":

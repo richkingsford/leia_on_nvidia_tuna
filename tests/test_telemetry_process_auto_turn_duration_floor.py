@@ -107,6 +107,27 @@ class TestTelemetryProcessAutoTurnDurationFloor(unittest.TestCase):
             telemetry_robot.SPEED_SCORE_DURATION_MS = orig_duration
             telemetry_robot.refresh_speed_model_baseline()
 
+    def test_auto_turn_duration_override_is_literal(self):
+        robot = _DummyRobot()
+
+        meta = telemetry_process.send_robot_command(
+            robot,
+            world=None,
+            step="FIND_WALL2",
+            cmd="l",
+            speed=0.0,
+            speed_score=3,
+            auto_mode=True,
+            duration_override_ms=5000,
+        )
+
+        self.assertIsInstance(meta, dict)
+        self.assertTrue(robot.sent)
+        cmd, _pwm, duration_ms = robot.sent[-1]
+        self.assertEqual(cmd, "l")
+        self.assertEqual(int(duration_ms), 5000)
+        self.assertEqual(int(meta.get("duration_ms") or 0), 5000)
+
 
 if __name__ == "__main__":
     unittest.main()

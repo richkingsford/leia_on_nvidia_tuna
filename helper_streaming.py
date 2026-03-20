@@ -159,6 +159,7 @@ def start_stream_server(
     markerless_visibility_key="markerless_visibility",
     success_gate_step_options=None,
     success_gate_step_key="success_gate_step",
+    xyz_workspace_getter=None,
 ):
     def _port_available(host, port):
         host_raw = "" if host is None else str(host).strip()
@@ -341,6 +342,7 @@ def start_stream_server(
             success_gate_step_getter=success_gate_step_getter,
             success_gate_step_setter=success_gate_step_setter,
             success_gate_step_options=normalized_success_gate_step_options,
+            xyz_workspace_getter=xyz_workspace_getter,
         )
         server.start()
         try:

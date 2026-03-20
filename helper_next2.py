@@ -275,12 +275,14 @@ def calibrated_axis_motion_profile(
 
     raw_duration_ms = (float(gap_abs_mm) - float(intercept)) / float(slope)
     clamped_to = None
+    duration_bounded_ms = float(raw_duration_ms)
     if raw_duration_ms < float(min_duration_ms):
         clamped_to = "min"
+        duration_bounded_ms = float(min_duration_ms)
     elif raw_duration_ms > float(max_duration_ms):
         clamped_to = "max"
-    duration_override_ms = int(round(_clamp(raw_duration_ms, min_duration_ms, max_duration_ms)))
-    duration_override_ms = max(int(min_duration_ms), min(int(max_duration_ms), int(duration_override_ms)))
+        duration_bounded_ms = float(max_duration_ms)
+    duration_override_ms = int(round(float(duration_bounded_ms)))
     predicted_distance_mm = float(intercept) + float(slope) * float(duration_override_ms)
 
     return {

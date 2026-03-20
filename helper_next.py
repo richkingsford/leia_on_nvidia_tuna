@@ -303,7 +303,10 @@ def align_brick_dist_error_speed_score(dist_error_mm: float) -> float:
     try:
         error_mm = abs(float(dist_error_mm))
     except (TypeError, ValueError):
-        return 1.0  # Default to minimal score on error
+        return 1.0
+    
+    if _gap_safe_score(error_mm):
+        return float(SPEED_SCORE_MIN)
     
     # Use banded lookup: find first band where error_mm < upper_bound
     for upper_bound, score in ALIGN_BRICK_DIST_ERROR_SCORE_BANDS:
@@ -318,6 +321,59 @@ def align_brick_dist_error_speed_score(dist_error_mm: float) -> float:
     return float(ALIGN_BRICK_DIST_ERROR_SCORE_BANDS[-1][1]) if ALIGN_BRICK_DIST_ERROR_SCORE_BANDS else 1.0
 
 
+# HARD RULE: Gap < 8mm MUST use 1% speed — ALL axes, ALL correction types.
+# This is the SINGLE SOURCE constant. Enforced by _enforce_gap_safety_score().
+ALIGN_SAFETY_GAP_MM = 8.0
+
+# Keep old name as alias so any external references don't break.
+ALIGN_TURN_SAFETY_GAP_MM = ALIGN_SAFETY_GAP_MM
+
+
+def _gap_safe_score(gap_mm):
+    """Return True if gap is below the safety threshold."""
+    try:
+        return abs(float(gap_mm)) < ALIGN_SAFETY_GAP_MM
+    except (TypeError, ValueError):
+        return True
+
+
+def _enforce_gap_safety_score(gap_mm, score, *, correction_type=None, cmd=None, silent=False):
+    """
+    SINGLE-SOURCE safety net: gap < 8mm → 1% speed, no exceptions.
+
+    Every scoring function already returns SPEED_SCORE_MIN for gaps < 8mm,
+    so this should never fire. If it does, an upstream scoring function is
+    broken and needs fixing.
+
+    silent=True suppresses the warning (used for display/analytics paths
+    that don't drive motors).
+
+    Returns (clamped_score, was_clamped).
+    """
+    try:
+        gap = abs(float(gap_mm))
+    except (TypeError, ValueError):
+        gap = 0.0
+    try:
+        orig_score = int(score)
+    except (TypeError, ValueError):
+        orig_score = int(SPEED_SCORE_MIN)
+    if gap < ALIGN_SAFETY_GAP_MM and orig_score > int(SPEED_SCORE_MIN):
+        if not silent:
+            print(
+                f"\n{'!'*72}\n"
+                f"  BUG: GAP SAFETY NET CAUGHT A VIOLATION\n"
+                f"  Rule: gap < {ALIGN_SAFETY_GAP_MM}mm → {int(SPEED_SCORE_MIN)}% speed\n"
+                f"  Violation: gap={gap:.2f}mm, requested score={orig_score}%\n"
+                f"  Correction: {correction_type or 'unknown'}, cmd={cmd or '?'}\n"
+                f"  This means an upstream scoring function is broken!\n"
+                f"  Action: CLAMPED score {orig_score}% → {int(SPEED_SCORE_MIN)}%\n"
+                f"{'!'*72}\n"
+            )
+        return int(SPEED_SCORE_MIN), True
+    return orig_score, False
+
+
 def align_brick_x_axis_one_shot_score(x_err_mm: float) -> int:
     """
     Compute ALIGN_BRICK one-shot turn score from x-axis error magnitude.
@@ -329,6 +385,9 @@ def align_brick_x_axis_one_shot_score(x_err_mm: float) -> int:
         gap_mm = abs(float(x_err_mm))
     except (TypeError, ValueError):
         gap_mm = 0.0
+
+    if _gap_safe_score(gap_mm):
+        return int(SPEED_SCORE_MIN)
 
     max_err = max(1e-6, float(ALIGN_BRICK_X_AXIS_CURVE_MAX_ERR_MM))
     ratio = max(0.0, min(1.0, float(gap_mm) / float(max_err)))
@@ -367,6 +426,9 @@ def align_brick_y_axis_one_shot_score(y_err_mm: float) -> int:
     except (TypeError, ValueError):
         gap_mm = 0.0
 
+    if _gap_safe_score(gap_mm):
+        return int(SPEED_SCORE_MIN)
+
     for upper_bound, score in ALIGN_BRICK_Y_AXIS_ERROR_SCORE_BANDS:
         try:
             if float(gap_mm) < float(upper_bound):
@@ -381,6 +443,34 @@ def align_brick_y_axis_one_shot_score(y_err_mm: float) -> int:
     return int(SPEED_SCORE_MIN)
 
 
+def align_gap_correction_speed_score(correction_type, gap_mm, *, cmd=None) -> int:
+    """
+    Return the shared micro-adjust speed score for a correction type.
+
+    This keeps lite-fallback nudges on the same scoring path as the normal
+    align planners, including the hard rule that any gap under 8mm must be 1%.
+    """
+    corr_key = str(correction_type or "").strip().lower()
+    if corr_key == "distance":
+        base_score = int(round(float(align_brick_dist_error_speed_score(gap_mm))))
+        cmd_key = str(cmd or "f").strip().lower() or "f"
+    elif corr_key == "y_axis":
+        base_score = int(align_brick_y_axis_one_shot_score(gap_mm))
+        cmd_key = str(cmd or "u").strip().lower() or "u"
+    else:
+        base_score = int(align_brick_x_axis_one_shot_score(gap_mm))
+        cmd_key = str(cmd or "l").strip().lower() or "l"
+        corr_key = "x_axis"
+    score, _clamped = _enforce_gap_safety_score(
+        gap_mm,
+        base_score,
+        correction_type=corr_key,
+        cmd=cmd_key,
+        silent=True,
+    )
+    return int(score)
+
+
 def _x_axis_correction_cmd(x_err_mm: float) -> str:
     cmd = helper_next2.axis_cmd_for_error("x", x_err_mm)
     return str(cmd or ("l" if float(_coerce_float(x_err_mm, 0.0) or 0.0) > 0.0 else "r"))
@@ -392,13 +482,58 @@ def _y_axis_correction_cmd(y_err_mm: float) -> str:
 
 
 def _axis_curve_motion_plan(axis: str, err_mm: float, *, fallback_score: int) -> Optional[dict]:
+    axis_key = str(axis or "").strip().lower()
     # For small errors, skip the fixed-speed calibration and use the fallback score
     # which is computed from the monotonic curve based on error magnitude
     try:
         abs_err = abs(float(err_mm))
     except (TypeError, ValueError):
         abs_err = 0.0
-    
+
+    # HARD SAFETY RULE: gap < 8mm must never get an override speed or duration
+    # from this function.  Return None so the caller uses the banded 1% score.
+    if abs_err < ALIGN_SAFETY_GAP_MM:
+        return None
+
+    # Forward/back distance correction should stay tied to the real calibrated
+    # chassis response rather than the nominal score percentage. Sparse drive
+    # score anchors can make interpolated low scores effectively indistinguishable
+    # from 1%, which is what caused auto forward pulses to underperform here.
+    if axis_key in {"dist", "distance"}:
+        plan = helper_next2.calibrated_axis_motion_for_error(axis=axis_key, err_mm=err_mm)
+        if isinstance(plan, dict):
+            try:
+                duration_override_ms = int(round(float(plan.get("duration_override_ms"))))
+            except (TypeError, ValueError):
+                duration_override_ms = None
+            if duration_override_ms is not None and duration_override_ms > 0:
+                out = dict(plan)
+                try:
+                    out["score"] = int(round(float(plan.get("score"))))
+                except (TypeError, ValueError):
+                    out["score"] = int(fallback_score)
+                out["duration_override_ms"] = int(duration_override_ms)
+                return out
+
+    # If error is above 8mm, use adaptive micro-scaling with fixed duration
+    if abs_err >= 8.0:
+        # Linear interpolation: 2% at 9mm, 20% at 100mm
+        # t = (abs_err - 9) / (100 - 9)
+        # score = 2 + t * (20 - 2)
+        raw_score = 2.0 + (abs_err - 9.0) * (18.0 / 91.0)
+        score = int(round(max(2.0, min(20.0, raw_score))))
+        
+        return {
+            "axis": axis,
+            "cmd": helper_next2.axis_cmd_for_error(axis, err_mm),
+            "gap_mm": float(abs_err),
+            "score": int(score),
+            "speed_score_pct": float(score),
+            "duration_override_ms": 250,
+            "predicted_distance_mm": None,
+            "source": "adaptive_micro_scale",
+        }
+
     # Only use calibration for errors > 4mm; use curve-based scoring for smaller errors
     if abs_err > 4.0:
         plan = helper_next2.calibrated_axis_motion_for_error(axis=axis, err_mm=err_mm)
@@ -528,11 +663,15 @@ def x_axis_curve_lookup_lines(sample_errors_mm=None) -> List[str]:
         right_plan = _axis_curve_motion_plan("x", -float(x_err_mm), fallback_score=int(align_brick_x_axis_one_shot_score(x_err_mm)))
         if not isinstance(left_plan, dict) or not isinstance(right_plan, dict):
             continue
+        l_pred = left_plan.get("predicted_distance_mm")
+        l_pred_txt = f"{float(l_pred):.2f}mm" if l_pred is not None else "N/A"
+        r_pred = right_plan.get("predicted_distance_mm")
+        r_pred_txt = f"{float(r_pred):.2f}mm" if r_pred is not None else "N/A"
         lines.append(
             "[ALIGN_CURVE] "
             f"|x_err|={float(x_err_mm):>4.1f}mm -> "
-            f"L({int(left_plan['score']):>2d}%, t={int(left_plan['duration_override_ms'])}ms, pred={float(left_plan['predicted_distance_mm']):.2f}mm) "
-            f"R({int(right_plan['score']):>2d}%, t={int(right_plan['duration_override_ms'])}ms, pred={float(right_plan['predicted_distance_mm']):.2f}mm)"
+            f"L({int(left_plan['score']):>2d}%, t={int(left_plan['duration_override_ms'])}ms, pred={l_pred_txt}) "
+            f"R({int(right_plan['score']):>2d}%, t={int(right_plan['duration_override_ms'])}ms, pred={r_pred_txt})"
         )
     return lines
 
@@ -1200,6 +1339,23 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
     if not bool(align_policy.get("auto_speed_hard_cap_exempt")):
         speed_score = min(int(speed_score), int(AUTO_SPEED_SCORE_HARD_MAX))
 
+    # SINGLE-SOURCE gap safety rule: gap < 8mm → 1% speed for ALL axes.
+    # Silent here — this is the analytics/display path, not the auto-step path.
+    if cmd is not None:
+        if cmd in ("f", "b"):
+            safety_gap = max(0.0, float(mm_errors.get("dist", 0.0) or 0.0))
+            safety_corr = "distance"
+        elif cmd in ("l", "r"):
+            safety_gap = max(0.0, float(mm_errors.get("xAxis_offset_abs", 0.0) or 0.0))
+            safety_corr = "x_axis"
+        else:
+            safety_gap = 0.0
+            safety_corr = "unknown"
+        speed_score, _clamped = _enforce_gap_safety_score(
+            safety_gap, speed_score, correction_type=safety_corr, cmd=cmd,
+            silent=True,
+        )
+
     if cmd:
         speed = manual_speed_for_cmd(cmd, speed_score)
     else:
@@ -1541,6 +1697,14 @@ def select_align_brick_next_act(
     candidates = {}
     recovery_fallback_candidates = {}
 
+    # CRITICAL RULE: If an axis is already inside its success gate ("in the green"),
+    # it is DISQUALIFIED from being selected as the most egregious gap.
+    # We MUST NOT take another action on a solved axis, as this risks knocking it
+    # out of the green. This is the single most important rule for stable convergence.
+    x_is_green = bool(x_required and x_ratio <= ratio_eps)
+    y_is_green = bool(y_required and y_err_mm is not None and y_ratio <= ratio_eps)
+    d_is_green = bool(d_required and dist_val is not None and d_ratio <= ratio_eps)
+
     if x_required:
         x_score_fallback = int(align_brick_x_axis_one_shot_score(x_err_mm))
         x_curve_plan = _axis_curve_motion_plan("x", x_err_mm, fallback_score=x_score_fallback)
@@ -1568,7 +1732,8 @@ def select_align_brick_next_act(
         }
         x_candidate.update(_curve_log_metadata("x", x_curve_plan, fallback_score=x_score_fallback, err_mm=x_err_mm))
         recovery_fallback_candidates["x_axis"] = dict(x_candidate)
-        if x_ratio > ratio_eps:
+        # DISQUALIFY x_axis if it's already in the green (inside success gate)
+        if x_ratio > ratio_eps and not x_is_green:
             candidates["x_axis"] = dict(x_candidate)
 
     if angle_required:
@@ -1635,7 +1800,8 @@ def select_align_brick_next_act(
         }
         y_candidate.update(_curve_log_metadata("y", y_curve_plan, fallback_score=y_score_fallback, err_mm=y_err_mm))
         recovery_fallback_candidates["y_axis"] = dict(y_candidate)
-        if y_ratio > ratio_eps:
+        # DISQUALIFY y_axis if it's already in the green (inside success gate)
+        if y_ratio > ratio_eps and not y_is_green:
             candidates["y_axis"] = dict(y_candidate)
 
     if d_required and dist_val is not None:
@@ -1742,7 +1908,8 @@ def select_align_brick_next_act(
             }
             dist_candidate.update(_curve_log_metadata("dist", dist_curve_plan, fallback_score=int(round(score_float_dist)), err_mm=dist_curve_err_mm))
             recovery_fallback_candidates["distance"] = dict(dist_candidate)
-            if d_ratio > ratio_eps:
+            # DISQUALIFY distance if it's already in the green (inside success gate)
+            if d_ratio > ratio_eps and not d_is_green:
                 candidates["distance"] = dict(dist_candidate)
 
     dist_priority_cheat_active = False
@@ -2171,14 +2338,14 @@ def select_align_brick_next_act(
                 float(
                     _coerce_float(
                         align_policy.get("gap_focus_max_cycles_before_switch"),
-                        10,
+                        3,
                     )
                     or 0.0
                 )
             )
         )
     except (TypeError, ValueError):
-        gap_focus_cycle_cap = 10
+        gap_focus_cycle_cap = 3
     if gap_focus_cycle_cap < 1:
         gap_focus_cycle_cap = 0
 
@@ -2268,6 +2435,19 @@ def select_align_brick_next_act(
     # Single-solution rule for gap micro-adjustments: keep the score selected by
     # this gap planner (x/dist/y one-shot logic). Do not override from the generic
     # analytics planner, which can create a second conflicting path across steps.
+
+    # SINGLE-SOURCE gap safety rule: gap < 8mm → 1% speed for ALL axes.
+    if prod_cmd is not None:
+        corr_key = str(correction_type or "").strip().lower()
+        if corr_key == "distance":
+            safety_gap = float(dist_err_mm)
+        elif corr_key == "y_axis":
+            safety_gap = abs(float(y_err_mm)) if y_err_mm is not None else 0.0
+        else:
+            safety_gap = abs(float(x_err_mm))
+        score_int, _clamped = _enforce_gap_safety_score(
+            safety_gap, score_int, correction_type=correction_type, cmd=prod_cmd,
+        )
 
     return {
         "cmd": prod_cmd,

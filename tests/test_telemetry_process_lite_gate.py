@@ -104,7 +104,7 @@ class TestTelemetryProcessLiteGate(unittest.TestCase):
         all_steps.update(str(name) for name in wall_steps.keys())
         self.assertTrue(bool(all_steps))
 
-        telemetry_process.apply_lite_gate_check_config({"default_unique_smoothed_frames": 3, "steps": {}})
+        telemetry_process.apply_lite_gate_check_config({"default_unique_smoothed_frames": 1, "steps": {}})
         for step_name in sorted(all_steps):
             frames = telemetry_process.lite_gate_unique_frames(step_name)
             self.assertIsNotNone(frames, step_name)
@@ -198,8 +198,8 @@ class TestTelemetryProcessLiteGate(unittest.TestCase):
         ok, _ = telemetry_process.evaluate_gate_status(world, "FIND_BRICK")
         self.assertTrue(ok)
         self.assertEqual(world._gatecheck_mode, "traditional")
-        self.assertEqual(world._gatecheck_lite_required, 3)
-        self.assertEqual(world._gatecheck_lite_collected, 3)
+        self.assertEqual(world._gatecheck_lite_required, 1)
+        self.assertEqual(world._gatecheck_lite_collected, 1)
 
     def test_full_gate_tracker_does_not_start_before_first_post_lite_success_sample(self):
         world = _DummyWorld()
@@ -563,16 +563,16 @@ class TestTelemetryProcessLiteGate(unittest.TestCase):
         world.brick.update(
             {
                 "visible": True,
-                "dist": 148.6,
-                "x_axis": -6.0,
-                "offset_x": -6.0,
+                "dist": 154.6,
+                "x_axis": -6.2,
+                "offset_x": -6.2,
                 "confidence": 95.0,
             }
         )
         world._smoothed_frame_history = [
-            {"frame_id": 31, "visible": True, "dist": 148.6, "x_axis": -6.0, "offset_x": -6.0, "confidence": 95.0},
-            {"frame_id": 32, "visible": True, "dist": 148.6, "x_axis": -6.0, "offset_x": -6.0, "confidence": 95.0},
-            {"frame_id": 33, "visible": True, "dist": 148.6, "x_axis": -6.0, "offset_x": -6.0, "confidence": 95.0},
+            {"frame_id": 31, "visible": True, "dist": 154.6, "x_axis": -6.2, "offset_x": -6.2, "confidence": 95.0},
+            {"frame_id": 32, "visible": True, "dist": 154.6, "x_axis": -6.2, "offset_x": -6.2, "confidence": 95.0},
+            {"frame_id": 33, "visible": True, "dist": 154.6, "x_axis": -6.2, "offset_x": -6.2, "confidence": 95.0},
         ]
 
         ok, _ = telemetry_process.evaluate_gate_status(world, "BRICK_LOCK")
@@ -593,16 +593,16 @@ class TestTelemetryProcessLiteGate(unittest.TestCase):
         world.brick.update(
             {
                 "visible": True,
-                "dist": 148.6,
-                "x_axis": -6.0,
-                "offset_x": -6.0,
+                "dist": 154.6,
+                "x_axis": -6.2,
+                "offset_x": -6.2,
                 "confidence": 95.0,
             }
         )
         world._smoothed_frame_history = [
-            {"frame_id": 41, "visible": True, "dist": 148.6, "x_axis": -6.0, "offset_x": -6.0, "confidence": 95.0},
-            {"frame_id": 42, "visible": True, "dist": 148.6, "x_axis": -6.0, "offset_x": -6.0, "confidence": 95.0},
-            {"frame_id": 43, "visible": True, "dist": 148.6, "x_axis": -6.0, "offset_x": -6.0, "confidence": 95.0},
+            {"frame_id": 41, "visible": True, "dist": 154.6, "x_axis": -6.2, "offset_x": -6.2, "confidence": 95.0},
+            {"frame_id": 42, "visible": True, "dist": 154.6, "x_axis": -6.2, "offset_x": -6.2, "confidence": 95.0},
+            {"frame_id": 43, "visible": True, "dist": 154.6, "x_axis": -6.2, "offset_x": -6.2, "confidence": 95.0},
         ]
 
         tracker = telemetry_process.new_success_tracker("BRICK_LOCK", world.process_rules)
@@ -654,7 +654,7 @@ class TestTelemetryProcessLiteGate(unittest.TestCase):
 
         self.assertFalse(bool(result.get("effective_success_ok")))
         self.assertFalse(bool(result.get("success_met")))
-        self.assertTrue(bool(result.get("hold_for_confirm")))
+        self.assertFalse(bool(result.get("hold_for_confirm")))
 
     def test_result_lite_gate_detail_uses_equal_for_pass_and_not_equal_for_fail(self):
         telemetry_process.apply_lite_gate_check_config({"default_unique_smoothed_frames": 3})
@@ -668,14 +668,14 @@ class TestTelemetryProcessLiteGate(unittest.TestCase):
             }
         }
         world._smoothed_frame_history = [
-            {"frame_id": 51, "visible": True, "dist": 148.6, "x_axis": -6.0, "offset_x": -6.0, "confidence": 95.0},
-            {"frame_id": 52, "visible": True, "dist": 148.6, "x_axis": -6.0, "offset_x": -6.0, "confidence": 95.0},
-            {"frame_id": 53, "visible": True, "dist": 148.6, "x_axis": -6.0, "offset_x": -6.0, "confidence": 95.0},
+            {"frame_id": 51, "visible": True, "dist": 154.6, "x_axis": -6.2, "offset_x": -6.2, "confidence": 95.0},
+            {"frame_id": 52, "visible": True, "dist": 154.6, "x_axis": -6.2, "offset_x": -6.2, "confidence": 95.0},
+            {"frame_id": 53, "visible": True, "dist": 154.6, "x_axis": -6.2, "offset_x": -6.2, "confidence": 95.0},
         ]
         detail_pass = telemetry_process._result_lite_gate_detail(world, "BRICK_LOCK")
         plain_pass = str((detail_pass or {}).get("plain") or "")
-        self.assertIn("xAxis_offset_abs (-6.0mm)=-6.2+/-4.0", plain_pass)
-        self.assertIn("dist (148.6mm)=154.6+/-4.0", plain_pass)
+        self.assertIn("xAxis_offset_abs (gate -6.2+/-4.0 saw -6.2mm)", plain_pass)
+        self.assertIn("dist (gate 154.6+/-4.0 saw 154.6mm)", plain_pass)
 
         world._smoothed_frame_history = [
             {"frame_id": 61, "visible": True, "dist": 170.0, "x_axis": -6.0, "offset_x": -6.0, "confidence": 95.0},
@@ -684,8 +684,8 @@ class TestTelemetryProcessLiteGate(unittest.TestCase):
         ]
         detail_fail = telemetry_process._result_lite_gate_detail(world, "BRICK_LOCK")
         plain_fail = str((detail_fail or {}).get("plain") or "")
-        self.assertIn("xAxis_offset_abs (-6.0mm)=-6.2+/-4.0", plain_fail)
-        self.assertIn("dist (170.0mm)!=154.6+/-4.0", plain_fail)
+        self.assertIn("xAxis_offset_abs (gate -6.2+/-4.0 saw -6.0mm)", plain_fail)
+        self.assertIn("dist (gate 154.6+/-4.0 saw 170.0mm)", plain_fail)
 
 
 if __name__ == "__main__":

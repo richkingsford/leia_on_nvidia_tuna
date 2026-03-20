@@ -70,6 +70,7 @@ class StreamServer:
         success_gate_step_setter: Optional[Callable[[str], None]] = None,
         success_gate_step_options: Optional[list] = None,
         gong_file_path: Optional[str] = None,
+        xyz_workspace_getter: Optional[Callable[[], Optional[dict]]] = None,
     ):
         self.frame_provider = frame_provider
         self.text_provider = text_provider
@@ -119,6 +120,7 @@ class StreamServer:
         self.success_gate_step_options = self._normalize_options(success_gate_step_options)
         self._success_gate_step_allowed = {value for value, _label in self.success_gate_step_options}
         self.gong_file_path = Path(gong_file_path) if gong_file_path is not None else Path(DEFAULT_GONG_FILE)
+        self.xyz_workspace_getter = xyz_workspace_getter
         self._stop = threading.Event()
         self._thread = None
         self._startup_error = None
@@ -194,6 +196,55 @@ class StreamServer:
         def gong_audio():
             if self.gong_file_path.exists() and self.gong_file_path.is_file():
                 return send_file(str(self.gong_file_path), mimetype="audio/mpeg")
+            return ("", 404)
+
+        @self.app.route("/xyz_workspace_live.svg")
+        def xyz_workspace_live():
+            if self.xyz_workspace_getter:
+                try:
+                    state = self.xyz_workspace_getter()
+                except Exception:
+                    state = None
+                from helper_xyz_coords import render_workspace_svg
+                svg_data = render_workspace_svg(state)
+                response = Response(svg_data, mimetype="image/svg+xml")
+                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
+                return response
+            
+            # fallback local lookup
+            svg_path = Path(__file__).resolve().parent / "xyz layout" / "xyz_workspace_live.svg"
+            if svg_path.exists() and svg_path.is_file():
+                response = send_file(str(svg_path), mimetype="image/svg+xml")
+                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
+                return response
+            return ("", 404)
+
+        @self.app.route("/xyz_mast_live.svg")
+        def xyz_mast_live():
+            if self.xyz_workspace_getter:
+                try:
+                    state = self.xyz_workspace_getter()
+                except Exception:
+                    state = None
+                from helper_xyz_coords import render_mast_svg
+                svg_data = render_mast_svg(state)
+                response = Response(svg_data, mimetype="image/svg+xml")
+                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
+                return response
+
+            mast_svg_path = Path(__file__).resolve().parent / "xyz layout" / "mast_view.svg"
+            if mast_svg_path.exists() and mast_svg_path.is_file():
+                response = send_file(str(mast_svg_path), mimetype="image/svg+xml")
+                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
+                return response
             return ("", 404)
 
         @self.app.route("/__shutdown_stream_server__", methods=["POST"])
@@ -400,17 +451,35 @@ class StreamServer:
         raise TimeoutError(f"Stream server not reachable at {connect_url}.") from last_error
 
     def _index_html(self):
+        xyz_refresh_ms = 250
         width_attr = f' width="{self.img_width}"' if self.img_width else ""
-        layout_img_width_attr = ""
+        xyz_width_attr = width_attr
+        camera_width_attr = width_attr
+        layout_xyz_img_width_attr = ""
+        layout_camera_img_width_attr = camera_width_attr
         if self.img_width:
             try:
-                # 3-pane layout uses a reduced camera view; bump it ~30% from the
-                # previous 40% scale while keeping panes compact on smaller screens.
+                xyz_width = max(160, int(round(float(self.img_width) * 0.85)))
+            except (TypeError, ValueError):
+                xyz_width = None
+            if xyz_width:
+                xyz_width_attr = f' width="{int(xyz_width)}"'
+            try:
+                camera_width = max(160, int(round(float(self.img_width) * 0.5)))
+            except (TypeError, ValueError):
+                camera_width = None
+            if camera_width:
+                camera_width_attr = f' width="{int(camera_width)}"'
+            try:
+                # 3-pane layout keeps the bird's-eye view readable while fitting
+                # between the telemetry and footer sidebars.
                 layout_width = max(160, int(round(float(self.img_width) * 0.52)))
             except (TypeError, ValueError):
                 layout_width = None
             if layout_width:
-                layout_img_width_attr = f' width="{int(layout_width)}"'
+                layout_xyz_img_width_attr = f' width="{max(160, int(round(float(layout_width) * 0.85)))}"'
+                layout_camera_width = max(120, int(round(float(layout_width) * 0.5)))
+                layout_camera_img_width_attr = f' width="{int(layout_camera_width)}"'
         header_html = f"<h1>{self.header}</h1>" if self.header else ""
         footer_panel_html = f"<div class='footer-panel'>{self.footer}</div>" if self.footer else ""
         footer_below_html = (
@@ -721,9 +790,12 @@ class StreamServer:
                 f"</head><body{body_controls_class}>"
                 f"{header_html}"
                 f"{controls_html}"
-                f"<div class='stream'><img src='/video_feed'{width_attr}></div>"
+                f"<div class='xyz-layout-container' style='margin-top: 12px; display: flex; justify-content: center;'><div class='stream' style='background: white;'><img id='xyzLayout' src='/xyz_workspace_live.svg'{xyz_width_attr}></div></div>"
+                f"<div class='xyz-layout-container' style='margin-top: 12px; display: flex; justify-content: center;'><div class='stream' style='background: white;'><img id='mastLayout' src='/xyz_mast_live.svg'{xyz_width_attr}></div></div>"
+                f"<div class='stream' style='margin-top: 12px;'><img src='/video_feed'{camera_width_attr}></div>"
                 f"{footer_below_html}"
                 f"{controls_script}"
+                f"<script>setInterval(() => {{ const xyz = document.getElementById('xyzLayout'); if(xyz) xyz.src = '/xyz_workspace_live.svg?t=' + Date.now(); const mast = document.getElementById('mastLayout'); if(mast) mast.src = '/xyz_mast_live.svg?t=' + Date.now(); }}, {int(xyz_refresh_ms)});</script>"
                 "</body></html>"
             )
         return (
@@ -801,7 +873,11 @@ class StreamServer:
             "<div id='celebrationFlash' class='celebration-flash'><div id='celebrationFlashLabel' class='celebration-flash-label'>STEP ACHIEVED</div></div>"
             "<div class='layout'>"
             "<div class='sidebar'><div id='telemetry' class='telemetry'></div></div>"
-            f"<div class='stream'><img id='videoFeed' src='/video_feed?sid={html.escape(self._instance_id, quote=True)}'{layout_img_width_attr or width_attr}></div>"
+            f"<div style='display: flex; flex-direction: column; gap: 12px; align-items: center;'>"
+            f"<div class='stream' style='background: white;'><img id='xyzLayout' src='/xyz_workspace_live.svg'{layout_xyz_img_width_attr or xyz_width_attr}></div>"
+            f"<div class='stream' style='background: white;'><img id='mastLayout' src='/xyz_mast_live.svg'{layout_xyz_img_width_attr or xyz_width_attr}></div>"
+            f"<div class='stream'><img id='videoFeed' src='/video_feed?sid={html.escape(self._instance_id, quote=True)}'{layout_camera_img_width_attr or camera_width_attr}></div>"
+            f"</div>"
             f"{footer_sidebar_html}"
             "</div>"
             "<script>"
@@ -940,6 +1016,7 @@ class StreamServer:
             "};"
             "setInterval(refresh, 100);"
             "refresh();"
+            f"setInterval(() => {{ const xyz = document.getElementById('xyzLayout'); if(xyz) xyz.src = '/xyz_workspace_live.svg?t=' + Date.now(); const mast = document.getElementById('mastLayout'); if(mast) mast.src = '/xyz_mast_live.svg?t=' + Date.now(); }}, {int(xyz_refresh_ms)});"
             "</script>"
             f"{controls_script}"
             "</body></html>"

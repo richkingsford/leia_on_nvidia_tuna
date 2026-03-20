@@ -910,6 +910,39 @@ class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
         self.assertEqual(plan.get("correction_type"), "distance", plan)
         self.assertEqual(plan.get("cmd"), "f", plan)
 
+    def test_gap_planner_align_brick_uses_band_distance_curve_below_target(self):
+        process_rules = {
+            "ALIGN_BRICK": {
+                "align_policy": {
+                    "metric_direction_overrides": {
+                        "dist": "band",
+                    },
+                },
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": -4.74, "tol": 1.4},
+                    "yAxis_offset_abs": {"target": 2.5, "tol": 1.5},
+                    "dist": {"target": 107.63, "tol": 1.5},
+                },
+            }
+        }
+        plan = helper_next.select_alignment_next_act(
+            process_rules=process_rules,
+            learned_rules={},
+            step="ALIGN_BRICK",
+            x_axis_mm=-4.74,
+            y_axis_mm=2.5,
+            dist_mm=103.01,
+            visible=True,
+            angle_deg=0.0,
+            duration_s=0.05,
+        )
+        self.assertEqual(plan.get("planner"), "gap", plan)
+        self.assertEqual(plan.get("correction_type"), "distance", plan)
+        self.assertEqual(plan.get("cmd"), "b", plan)
+        self.assertEqual(int(plan.get("score") or 0), 1, plan)
+        self.assertIn("distance monotonic curve", str(plan.get("curve_name") or ""))
+        self.assertAlmostEqual(float(plan.get("curve_value_mm") or 0.0), 4.62, places=2)
+
     def test_gap_planner_dist_priority_cheat_forces_distance_choice(self):
         process_rules = {
             "BRICK_LOCK": {

@@ -72,6 +72,49 @@ class _AlignLogWorld:
         return None
 
 
+class _AlignHoldLogWorld:
+    def __init__(self):
+        self.process_rules = {
+            "ALIGN_BRICK": {
+                "start_gates": {
+                    "visible": {"min": True},
+                },
+                "success_gates": {
+                    "visible": {"min": True},
+                    "xAxis_offset_abs": {"target": -4.74, "tol": 1.40},
+                    "yAxis_offset_abs": {"target": 2.50, "tol": 1.50},
+                    "dist": {"target": 105.63, "tol": 1.50},
+                },
+                "y_axis_hold_offset_exception": {
+                    "enabled": True,
+                    "operator_log_reminder": "Exception active: keep y-axis hold at +4mm above final target until x/dist are settled, then finish the descent.",
+                    "hold_offset_mm": 4.0,
+                    "release_when_metrics_within_tol": ["x_axis", "dist"],
+                    "release_confirm_frames": 2,
+                },
+            }
+        }
+        self.learned_rules = {}
+        self.wall_envelope = None
+        self.brick = {
+            "visible": True,
+            "dist": 117.5,
+            "angle": 0.0,
+            "x_axis": -5.2,
+            "offset_x": -5.2,
+            "y_axis": 2.72,
+            "offset_y": 2.72,
+            "confidence": 95.0,
+        }
+        self._frame_id = 0
+        self._success_confirm_frames = 0
+        self._success_confirm_progress = None
+        self._success_confirm_logged = False
+
+    def update_from_motion(self, _evt):
+        return None
+
+
 class TestTelemetryProcessActionDisplay(unittest.TestCase):
     def test_send_robot_command_records_display_from_logical_command(self):
         world = _DummyWorld()
@@ -355,6 +398,90 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
             observe_line,
         )
         self.assertNotIn("mm", observe_line)
+
+    def test_align_y_hold_log_uses_hold_target_for_y_axis_action(self):
+        world = _AlignHoldLogWorld()
+        robot = _DummyRobot()
+        print_lines = []
+        gate_calls = {"n": 0}
+
+        def _fake_update_world(_world, _vision, log=True):
+            _ = log
+            _world._frame_id = int(getattr(_world, "_frame_id", 0) or 0) + 1
+            _world.brick["visible"] = True
+            _world.brick["x_axis"] = -5.2
+            _world.brick["offset_x"] = -5.2
+            _world.brick["dist"] = 117.5
+            _world.brick["y_axis"] = 2.72
+            _world.brick["offset_y"] = 2.72
+
+        def _fake_observe_success_gatecheck(*_args, **_kwargs):
+            gate_calls["n"] += 1
+            if gate_calls["n"] >= 4:
+                return {"success_met": True, "hold_for_confirm": False}
+            return {"success_met": False, "hold_for_confirm": False}
+
+        def _fake_select_alignment_next_act(*_args, **_kwargs):
+            return {
+                "planner": "gap",
+                "cmd": "u",
+                "speed": 0.018,
+                "score": 1,
+                "reason": "y_axis_alignment",
+                "correction_type": "y_axis",
+                "curve_name": "y_axis monotonic curve (error=3.78mm, score=1%)",
+                "curve_value_mm": 3.78,
+                "y_err_mm": -3.78,
+            }
+
+        def _fake_send_robot_command(_robot, _world, _step, cmd, *_args, **_kwargs):
+            return {
+                "cmd_sent": str(cmd),
+                "score_effective": 1,
+                "pwm": 40,
+                "power": 0.018,
+                "duration_ms": 300,
+            }
+
+        with patch.object(telemetry_process, "wait_for_start_gates", return_value="start"), \
+             patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world), \
+             patch.object(telemetry_process, "observe_success_gatecheck", side_effect=_fake_observe_success_gatecheck), \
+             patch.object(telemetry_process.next_module, "select_alignment_next_act", side_effect=_fake_select_alignment_next_act), \
+             patch.object(telemetry_process, "send_robot_command", side_effect=_fake_send_robot_command), \
+             patch.object(telemetry_process, "run_full_gatecheck_after_act", return_value=False), \
+             patch.object(telemetry_process, "post_act_analysis", return_value=None), \
+             patch.object(telemetry_process.telemetry_brick, "success_gate_bounds", return_value={}), \
+             patch.object(telemetry_process.time, "sleep", return_value=None), \
+             patch(
+                 "builtins.print",
+                 side_effect=lambda *args, **kwargs: print_lines.append(" ".join(str(arg) for arg in args)),
+             ):
+            ok, reason = telemetry_process.run_alignment_segment(
+                segment={"events": []},
+                step="ALIGN_BRICK",
+                robot=robot,
+                vision=object(),
+                world=world,
+                steps=[],
+                raw_steps=[],
+                observer=None,
+                analysis_pause_s=0.0,
+                confirm_callback=None,
+                align_silent=False,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(reason, "success gate")
+        observe_line = next(
+            line for line in print_lines if "[T1.1 ALIGN]" in line and "I see y_err=" in line
+        )
+        self.assertIn("below our hold target=+6.50", observe_line)
+        self.assertIn("(success target=+2.50", observe_line)
+        self.assertIn(
+            f"{telemetry_process.COLOR_ORANGE_BRIGHT}> U 1%{telemetry_process.COLOR_RESET}",
+            observe_line,
+        )
+        self.assertNotIn("above our target=+2.50", observe_line)
 
     def test_repeated_identical_act_guard_blocks_51st_send(self):
         world = _DummyWorld()

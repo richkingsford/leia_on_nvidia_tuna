@@ -31,6 +31,14 @@ class TestHelperNextAlignTurnSpeed(unittest.TestCase):
             }
         }
 
+    def test_align_gap_correction_speed_score_clamps_distance_gap_below_8mm_to_1pct(self):
+        score = helper_next.align_gap_correction_speed_score("distance", 3.75, cmd="b")
+        self.assertEqual(score, telemetry_robot.normalize_speed_score(1))
+
+    def test_align_gap_correction_speed_score_clamps_x_axis_gap_below_8mm_to_1pct(self):
+        score = helper_next.align_gap_correction_speed_score("x_axis", 4.8, cmd="l")
+        self.assertEqual(score, telemetry_robot.normalize_speed_score(1))
+
     def test_align_turn_uses_1pct_when_x_axis_gap_below_1p5mm(self):
         world = _DummyWorld(-0.6)
         analytics = helper_next.compute_alignment_analytics(
@@ -188,6 +196,28 @@ class TestHelperNextAlignTurnSpeed(unittest.TestCase):
         self.assertEqual(act.get("duration_override_ms"), 380)
         self.assertEqual(act.get("score"), 5)
         mock_curve.assert_any_call("dist", 40.0, fallback_score=5)
+
+    def test_dist_axis_curve_motion_plan_prefers_calibrated_distance_profile_for_large_gap(self):
+        calibrated = {
+            "axis": "dist",
+            "cmd": "f",
+            "gap_mm": 20.0,
+            "score": 1,
+            "speed_score_pct": 1.0,
+            "duration_override_ms": 400,
+            "predicted_distance_mm": 3.2,
+            "source": "aruco_marker_calibration",
+        }
+
+        with patch.object(
+            helper_next.helper_next2,
+            "calibrated_axis_motion_for_error",
+            return_value=calibrated,
+        ) as mock_calibrated:
+            plan = helper_next._axis_curve_motion_plan("dist", 20.0, fallback_score=5)
+
+        self.assertEqual(plan, calibrated)
+        mock_calibrated.assert_called_once_with(axis="dist", err_mm=20.0)
 
     def test_align_prioritizes_dist_when_gap_exceeds_150mm_even_if_x_axis_off(self):
         world = _DummyWorld(20.0, dist=300.0)

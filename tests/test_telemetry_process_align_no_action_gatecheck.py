@@ -809,6 +809,110 @@ class TestTelemetryProcessAlignNoActionGatecheck(unittest.TestCase):
         self.assertEqual(sent_scores[:2], [20, 5])
         self.assertEqual(planner_calls["n"], 0)
 
+    def test_find_brick_invisible_search_turns_then_backs_off(self):
+        world = _DummyWorld()
+        world.process_rules = {
+            "FIND_BRICK": {
+                "scan_direction": "r",
+                "search_visible_false_speed_cycle": {
+                    "enabled": True,
+                    "high_score": 25,
+                    "low_score": 25,
+                    "start_with_high": True,
+                    "commands": ["r", "b"],
+                    "command_scores": {"b": 10},
+                },
+                "success_gates": {
+                    "visible": {"min": True},
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 6.0},
+                    "yAxis_offset_abs": {"target": 0.0, "tol": 6.0},
+                },
+            }
+        }
+        world.brick = {
+            "visible": False,
+            "dist": 120.0,
+            "angle": 0.0,
+            "offset_x": 0.0,
+            "offset_y": 0.0,
+            "x_axis": 0.0,
+            "y_axis": 0.0,
+            "confidence": 90.0,
+        }
+        world._frame_id = 0
+        robot = _DummyRobot()
+        sent_cmds = []
+        sent_scores = []
+        planner_calls = {"n": 0}
+        gate_calls = {"n": 0}
+
+        def _fake_update_world(_world, _vision, log=True):
+            _ = log
+            _world._frame_id = int(getattr(_world, "_frame_id", 0) or 0) + 1
+
+        def _fake_send_robot_command(*args, **_kwargs):
+            sent_cmds.append(str(args[3]))
+            sent_scores.append(int(_kwargs.get("speed_score") or 0))
+            return {}
+
+        def _fake_run_full_gatecheck(*_args, **_kwargs):
+            gate_calls["n"] += 1
+            return gate_calls["n"] >= 2
+
+        orig_wait = telemetry_process.wait_for_start_gates
+        orig_update = telemetry_process.update_world_from_vision
+        orig_observe = telemetry_process.observe_success_gatecheck
+        orig_select = telemetry_process.next_module.select_alignment_next_act
+        orig_run_full = telemetry_process.run_full_gatecheck_after_act
+        orig_send = telemetry_process.send_robot_command
+        orig_success_bounds = telemetry_process.telemetry_brick.success_gate_bounds
+        orig_sleep = telemetry_process.time.sleep
+        try:
+            telemetry_process.wait_for_start_gates = lambda *_a, **_k: "start"
+            telemetry_process.update_world_from_vision = _fake_update_world
+            telemetry_process.observe_success_gatecheck = (
+                lambda *_a, **_k: {"success_met": False, "hold_for_confirm": False}
+            )
+
+            def _planner_should_not_run(*_a, **_k):
+                planner_calls["n"] += 1
+                raise AssertionError("planner should not run before FIND_BRICK is visible")
+
+            telemetry_process.next_module.select_alignment_next_act = _planner_should_not_run
+            telemetry_process.run_full_gatecheck_after_act = _fake_run_full_gatecheck
+            telemetry_process.send_robot_command = _fake_send_robot_command
+            telemetry_process.telemetry_brick.success_gate_bounds = lambda *_a, **_k: {}
+            telemetry_process.time.sleep = lambda *_a, **_k: None
+
+            ok, reason = telemetry_process.run_alignment_segment(
+                segment={"events": []},
+                step="FIND_BRICK",
+                robot=robot,
+                vision=object(),
+                world=world,
+                steps=[],
+                raw_steps=[],
+                observer=None,
+                analysis_pause_s=0.0,
+                confirm_callback=None,
+                align_silent=True,
+            )
+        finally:
+            telemetry_process.wait_for_start_gates = orig_wait
+            telemetry_process.update_world_from_vision = orig_update
+            telemetry_process.observe_success_gatecheck = orig_observe
+            telemetry_process.next_module.select_alignment_next_act = orig_select
+            telemetry_process.run_full_gatecheck_after_act = orig_run_full
+            telemetry_process.send_robot_command = orig_send
+            telemetry_process.telemetry_brick.success_gate_bounds = orig_success_bounds
+            telemetry_process.time.sleep = orig_sleep
+
+        self.assertTrue(ok)
+        self.assertEqual(reason, "success gate")
+        self.assertEqual(sent_cmds[:2], ["r", "b"])
+        self.assertEqual(sent_scores[:2], [25, 10])
+        self.assertEqual(planner_calls["n"], 0)
+
     def test_find_wall2_no_action_invisible_scans_left_then_aligns_later(self):
         world = _DummyWorld()
         world.process_rules = {
@@ -1804,11 +1908,117 @@ class TestTelemetryProcessAlignNoActionGatecheck(unittest.TestCase):
         self.assertEqual(gatecheck_calls, [1])
         self.assertEqual(send_calls, [])
         self.assertGreaterEqual(robot.stop_calls, 1)
-        self.assertTrue(
-            any(
-                stage == "action" and cmd is None and speed == 0.0 and reason == "gatecheck hold"
-                for stage, cmd, speed, reason in observer_events
+
+    def test_align_action_waits_for_post_act_settle_before_gatecheck(self):
+        world = _DummyWorld()
+        world.process_rules = {
+            "SEAT_BRICK2": {
+                "align_policy": {
+                    "target_lock_enabled": False,
+                },
+                "success_gates": {
+                    "visible": {"min": True},
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 1.0},
+                    "yAxis_offset_abs": {"target": 0.0, "tol": 1.5},
+                    "dist": {"target": 48.0, "tol": 4.0},
+                },
+                "start_gates": {
+                    "visible": {"min": True},
+                },
+            }
+        }
+        robot = _DummyRobot()
+        order = []
+
+        def _fake_update_world(_world, _vision, log=True):
+            _ = log
+            _world._frame_id = int(getattr(_world, "_frame_id", 0) or 0) + 1
+
+        def _fake_planner(*_args, **_kwargs):
+            return {
+                "planner": "gap",
+                "cmd": "f",
+                "score": 1,
+                "speed": 0.0,
+                "reason": "distance_alignment",
+                "correction_type": "distance",
+            }
+
+        def _fake_send_robot_command(*_args, **_kwargs):
+            order.append("send")
+            return {"duration_ms": 700}
+
+        def _fake_wait_for_frame_settle(_world, _vision, frames, log=False):
+            _ = log
+            order.append(f"wait:{int(frames)}")
+
+        def _fake_run_full_gatecheck(*_args, **_kwargs):
+            order.append("gatecheck")
+            return True
+
+        orig_wait = telemetry_process.wait_for_start_gates
+        orig_update = telemetry_process.update_world_from_vision
+        orig_observe = telemetry_process.observe_success_gatecheck
+        orig_pre_action = telemetry_process.pre_action_success_observation
+        orig_select = telemetry_process.next_module.select_alignment_next_act
+        orig_send = telemetry_process.send_robot_command
+        orig_run_full = telemetry_process.run_full_gatecheck_after_act
+        orig_wait_frames = telemetry_process.wait_for_frame_settle
+        orig_success_bounds = telemetry_process.telemetry_brick.success_gate_bounds
+        orig_sleep = telemetry_process.time.sleep
+        try:
+            telemetry_process.wait_for_start_gates = lambda *_a, **_k: "start"
+            telemetry_process.update_world_from_vision = _fake_update_world
+            telemetry_process.observe_success_gatecheck = (
+                lambda *_a, **_k: {"success_met": False, "hold_for_confirm": False}
             )
+            telemetry_process.pre_action_success_observation = (
+                lambda *_a, **_k: {"success_met": False, "hold_for_confirm": False}
+            )
+            telemetry_process.next_module.select_alignment_next_act = _fake_planner
+            telemetry_process.send_robot_command = _fake_send_robot_command
+            telemetry_process.run_full_gatecheck_after_act = _fake_run_full_gatecheck
+            telemetry_process.wait_for_frame_settle = _fake_wait_for_frame_settle
+            telemetry_process.telemetry_brick.success_gate_bounds = lambda *_a, **_k: {}
+            telemetry_process.time.sleep = lambda *_a, **_k: None
+
+            ok, reason = telemetry_process.run_alignment_segment(
+                segment={"events": []},
+                step="SEAT_BRICK2",
+                robot=robot,
+                vision=object(),
+                world=world,
+                steps=[],
+                raw_steps=[],
+                observer=None,
+                analysis_pause_s=0.0,
+                confirm_callback=None,
+                align_silent=True,
+            )
+        finally:
+            telemetry_process.wait_for_start_gates = orig_wait
+            telemetry_process.update_world_from_vision = orig_update
+            telemetry_process.observe_success_gatecheck = orig_observe
+            telemetry_process.pre_action_success_observation = orig_pre_action
+            telemetry_process.next_module.select_alignment_next_act = orig_select
+            telemetry_process.send_robot_command = orig_send
+            telemetry_process.run_full_gatecheck_after_act = orig_run_full
+            telemetry_process.wait_for_frame_settle = orig_wait_frames
+            telemetry_process.telemetry_brick.success_gate_bounds = orig_success_bounds
+            telemetry_process.time.sleep = orig_sleep
+
+        self.assertTrue(ok)
+        self.assertEqual(reason, "success gate")
+        expected_wait_frames = telemetry_process._frames_from_seconds(
+            0.7,
+            telemetry_process.POST_ACT_PAUSE_FRAMES,
+        )
+        self.assertEqual(order[0], "send")
+        self.assertIn(f"wait:{int(expected_wait_frames)}", order)
+        self.assertEqual(order[-1], "gatecheck")
+        self.assertLess(
+            order.index(f"wait:{int(expected_wait_frames)}"),
+            order.index("gatecheck"),
         )
 
 

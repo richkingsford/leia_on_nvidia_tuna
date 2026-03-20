@@ -13,7 +13,7 @@ ALIGN_CONFIDENCE_MIN = 25.0
 VISIBILITY_LOST_GRACE_S = 0.5
 VISIBLE_FALSE_CONFIDENT_FRAMES_REQUIRED = 3
 VISIBLE_FALSE_CONFIDENT_MAX_SAMPLES = 6
-BRICK_SMOOTH_FRAMES = 3
+BRICK_SMOOTH_FRAMES = 2
 BRICK_SMOOTH_OUTLIER_MM = 12.0
 BRICK_SMOOTH_OUTLIER_DEG = 6.0
 VISIBLE_FALSE_GRACE_S_BY_STEP = {
@@ -399,6 +399,8 @@ def metric_value(brick, metric):
     if metric in Y_AXIS_GATE_METRICS:
         return brick.get("y_axis", brick.get("offset_y", 0.0))
     if metric == "dist":
+        if "raw_dist" in brick:
+            return brick.get("raw_dist", 0.0)
         return brick.get("dist", 0.0)
     if metric == "visible":
         return 1.0 if brick.get("visible") else 0.0
@@ -1056,19 +1058,25 @@ def update_from_motion(world, event, delta):
     return
 
 
-def update_from_vision(world, found, dist, angle, conf, offset_x=0, cam_h=0, brick_above=False, brick_below=False):
+def update_from_vision(world, found, dist, angle, conf, offset_x=0, cam_h=0, brick_above=False, brick_below=False, raw_dist=None):
     # `cam_h` is the marker's vertical offset relative to the camera center (same
     # camera-space axis used for lift calibration). Alias it into brick telemetry
     # as `offset_y` / `y_axis` for recording and step-4 alignment.
     offset_y = float(cam_h)
     world.brick["visible"] = bool(found)
     world.brick["dist"] = float(dist)
+    if raw_dist is not None:
+        world.brick["raw_dist"] = float(raw_dist)
+    else:
+        world.brick.pop("raw_dist", None)
     world.brick["angle"] = float(angle)
     world.brick["confidence"] = float(conf)
     world.brick["offset_x"] = float(offset_x)
     world.brick["x_axis"] = float(offset_x)
     world.brick["offset_y"] = float(offset_y)
     world.brick["y_axis"] = float(offset_y)
+    world.brick["brick_above_raw"] = None if not bool(found) else bool(brick_above)
+    world.brick["brick_below_raw"] = None if not bool(found) else bool(brick_below)
     world.brick["inCrosshairs"] = compute_in_crosshairs_for_step(
         world,
         found,

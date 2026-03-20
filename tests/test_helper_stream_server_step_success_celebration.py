@@ -9,6 +9,50 @@ from helper_stream_server import StreamServer
 
 
 class TestHelperStreamServerStepSuccessCelebration(unittest.TestCase):
+    def test_index_html_places_birdseye_above_half_size_camera_in_text_layout(self):
+        server = StreamServer(
+            frame_provider=lambda: None,
+            text_provider=lambda: [{"text": "line1"}],
+            img_width=1000,
+        )
+
+        html = server._index_html()
+
+        self.assertLess(html.index("id='xyzLayout'"), html.index("id='mastLayout'"))
+        self.assertLess(html.index("id='mastLayout'"), html.index("id='videoFeed'"))
+        self.assertIn("id='xyzLayout' src='/xyz_workspace_live.svg' width=\"442\"", html)
+        self.assertIn("id='mastLayout' src='/xyz_mast_live.svg' width=\"442\"", html)
+        self.assertRegex(html, r"id='videoFeed' src='/video_feed\?sid=[^']+' width=\"260\"")
+        self.assertIn("/xyz_mast_live.svg", html)
+        self.assertIn("}, 250);", html)
+
+    def test_index_html_places_birdseye_above_half_size_camera_without_text_layout(self):
+        server = StreamServer(
+            frame_provider=lambda: None,
+            img_width=1000,
+        )
+
+        html = server._index_html()
+
+        self.assertLess(html.index("id='xyzLayout'"), html.index("id='mastLayout'"))
+        self.assertLess(html.index("id='mastLayout'"), html.index("img src='/video_feed'"))
+        self.assertIn("id='xyzLayout' src='/xyz_workspace_live.svg' width=\"850\"", html)
+        self.assertIn("id='mastLayout' src='/xyz_mast_live.svg' width=\"850\"", html)
+        self.assertIn("img src='/video_feed' width=\"500\"", html)
+        self.assertIn("}, 250);</script>", html)
+
+    def test_mast_svg_route_serves_live_svg(self):
+        server = StreamServer(
+            frame_provider=lambda: None,
+            xyz_workspace_getter=lambda: None,
+        )
+        client = server.app.test_client()
+        response = client.get("/xyz_mast_live.svg")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("image/svg+xml", str(response.content_type))
+        self.assertIn("<svg", response.get_data(as_text=True))
+        response.close()
+
     def test_text_endpoint_includes_step_success_payload_from_dict_provider(self):
         server = StreamServer(
             frame_provider=lambda: None,

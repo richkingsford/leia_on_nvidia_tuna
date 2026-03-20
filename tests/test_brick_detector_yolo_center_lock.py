@@ -32,6 +32,10 @@ class TestBrickDetectorYoloCenterLock(unittest.TestCase):
         det.debug = False
         det.last_status = "idle"
         det.last_primary_confidence = 0.0
+        det.last_partial_count = 0
+        det.last_partial_labels = []
+        det.last_primary_partial_kind = None
+        det.last_primary_partial_label = None
         return det
 
     def test_select_center_brick_prefers_closest_xy_center(self):
@@ -84,6 +88,23 @@ class TestBrickDetectorYoloCenterLock(unittest.TestCase):
         # offset_x should be centered box -> ~0
         self.assertAlmostEqual(result[3], 0.0, places=6)
         self.assertAlmostEqual(result[4], 60.0, places=6)
+
+    def test_partial_info_prioritizes_top_and_bottom_edges(self):
+        det = self._detector_stub()
+
+        top_info = BrickDetector._partial_info_for_crop_bbox(det, 0, 0, 30, 20, 60, 60)
+        bottom_info = BrickDetector._partial_info_for_crop_bbox(det, 10, 40, 30, 20, 60, 60)
+        left_info = BrickDetector._partial_info_for_crop_bbox(det, 0, 10, 20, 20, 60, 60)
+
+        self.assertTrue(bool(top_info.get("partial")))
+        self.assertEqual(top_info.get("kind"), "top_half")
+        self.assertEqual(top_info.get("label"), "TOP HALF")
+        self.assertTrue(bool(bottom_info.get("partial")))
+        self.assertEqual(bottom_info.get("kind"), "bottom_half")
+        self.assertEqual(bottom_info.get("label"), "BOTTOM HALF")
+        self.assertTrue(bool(left_info.get("partial")))
+        self.assertEqual(left_info.get("kind"), "left_partial")
+        self.assertEqual(left_info.get("label"), "LEFT PARTIAL")
 
 
 if __name__ == "__main__":
