@@ -17,15 +17,15 @@ _MODE_ALIASES = {
 }
 
 DEFAULT_VISION_MODEL = {
-    "active_mode": VISION_MODE_ARUCO,
+    "active_mode": VISION_MODE_CYAN,
     "demos_by_mode": {
         VISION_MODE_ARUCO: "demos - aruco",
-        VISION_MODE_CYAN: "demos - cyan",
+        VISION_MODE_CYAN: "Cyan demos",
     },
 }
 
 
-def normalize_vision_mode(value, fallback=VISION_MODE_ARUCO):
+def normalize_vision_mode(value, fallback=VISION_MODE_CYAN):
     key = str(value or "").strip().lower()
     mode = _MODE_ALIASES.get(key)
     if mode:
@@ -34,7 +34,7 @@ def normalize_vision_mode(value, fallback=VISION_MODE_ARUCO):
     mode = _MODE_ALIASES.get(fb)
     if mode:
         return mode
-    return VISION_MODE_ARUCO
+    return VISION_MODE_CYAN
 
 
 def load_vision_model(path=VISION_MODEL_FILE):
@@ -65,7 +65,7 @@ def load_vision_model(path=VISION_MODEL_FILE):
 
 def active_vision_mode(path=VISION_MODEL_FILE):
     cfg = load_vision_model(path=path)
-    return normalize_vision_mode(cfg.get("active_mode"), fallback=VISION_MODE_ARUCO)
+    return normalize_vision_mode(cfg.get("active_mode"), fallback=VISION_MODE_CYAN)
 
 
 def demos_dir_for_mode(mode=None, *, path=VISION_MODEL_FILE):
@@ -80,6 +80,12 @@ def demos_dir_for_mode(mode=None, *, path=VISION_MODEL_FILE):
     demos_dir = Path(demo_path_raw)
     if not demos_dir.is_absolute():
         demos_dir = Path(__file__).resolve().parent / demos_dir
+    # Compatibility fallback: support both historical "demos - cyan" and
+    # operator-facing "Cyan demos" naming for cyan mode datasets.
+    if not demos_dir.exists() and mode_norm == VISION_MODE_CYAN:
+        legacy_cyan_dir = Path(__file__).resolve().parent / "demos - cyan"
+        if legacy_cyan_dir.exists():
+            return legacy_cyan_dir
     # Compatibility fallback for environments still using the legacy `demos/`
     # folder and no mode-specific directories yet.
     if not demos_dir.exists() and mode_norm == VISION_MODE_ARUCO and LEGACY_DEMOS_DIR.exists():

@@ -379,15 +379,15 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(reason, "success gate")
         observe_line = next(
-            line for line in print_lines if "[T1.1 ALIGN]" in line and "I see x_err=" in line
+            line for line in print_lines if "[T1.1 ALIGN]" in line and "I'm xAxis_offset=" in line
         )
         step_number = telemetry_process._step_number_for_label("ALIGN_BRICK")
         self.assertIn(f"[step#{int(step_number)}]", observe_line)
         self.assertIn(
-            f"x_err={telemetry_process.COLOR_YELLOW}+7.63{telemetry_process.COLOR_RESET}",
+            f"I'm xAxis_offset=2.89 Δ{telemetry_process.COLOR_YELLOW}+7.63{telemetry_process.COLOR_RESET}",
             observe_line,
         )
-        self.assertIn("to the left of our target=-4.74 ±1.40.", observe_line)
+        self.assertIn("to the right of our target of -4.74+/-1.40.", observe_line)
         self.assertIn(
             f"{telemetry_process.COLOR_ORANGE_BRIGHT}> L 20%{telemetry_process.COLOR_RESET}",
             observe_line,

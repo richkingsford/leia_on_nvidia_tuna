@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -23,6 +24,13 @@ class _DummyWorld:
             "brickAbove": None,
             "brickBelow": None,
         }
+        self.x = 0.0
+        self.y = 0.0
+        self.theta = 0.0
+        self.lift_height = 0.0
+        self.height_mm = 145.0
+        self.step_state = None
+        self.wall = {"origin": None, "valid": False}
 
     def update_vision(
         self,
@@ -99,6 +107,13 @@ class TestTelemetryProcessCyanVisibilityFallback(unittest.TestCase):
         telemetry_process.update_world_from_vision(world, vision, log=False)
         self.assertEqual(getattr(world, "_vision_backend", None), "aruco")
         self.assertFalse(bool(world.brick.get("visible")))
+
+    def test_low_confidence_fallback_path_still_syncs_xyz_workspace(self):
+        world = _DummyWorld()
+        vision = _DummyCyanVision(conf=3.0, found=True)
+        with mock.patch.object(telemetry_process.helper_xyz_coords, "sync_from_world") as sync_mock:
+            telemetry_process.update_world_from_vision(world, vision, log=False)
+        sync_mock.assert_called_once_with(world, reason="vision")
 
 
 if __name__ == "__main__":

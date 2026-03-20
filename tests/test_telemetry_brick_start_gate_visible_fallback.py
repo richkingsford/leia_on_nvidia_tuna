@@ -78,6 +78,60 @@ class TestTelemetryBrickStartGateVisibleFallback(unittest.TestCase):
         self.assertFalse(check.ok)
         self.assertIn("visible gate", check.reasons)
 
+    def test_smoothed_snapshot_x_axis_matches_world_sign_convention(self):
+        world = _DummyWorld()
+        world._brick_frame_buffer = [
+            {
+                "found": True,
+                "conf": 90.0,
+                "dist": 120.0,
+                "angle": 0.0,
+                "offset_x": 8.0,
+                "offset_y": 0.0,
+                "cam_h": 0.0,
+                "brick_above": False,
+                "brick_below": False,
+            },
+            {
+                "found": True,
+                "conf": 92.0,
+                "dist": 121.0,
+                "angle": 0.0,
+                "offset_x": 10.0,
+                "offset_y": 0.0,
+                "cam_h": 0.0,
+                "brick_above": False,
+                "brick_below": False,
+            },
+            {
+                "found": True,
+                "conf": 93.0,
+                "dist": 119.5,
+                "angle": 0.0,
+                "offset_x": 9.0,
+                "offset_y": 0.0,
+                "cam_h": 0.0,
+                "brick_above": False,
+                "brick_below": False,
+            },
+            {
+                "found": True,
+                "conf": 91.0,
+                "dist": 120.5,
+                "angle": 0.0,
+                "offset_x": 9.0,
+                "offset_y": 0.0,
+                "cam_h": 0.0,
+                "brick_above": False,
+                "brick_below": False,
+            },
+        ]
+
+        snapshot = telemetry_brick.smoothed_brick_snapshot(world)
+
+        self.assertAlmostEqual(float(snapshot["x_axis"]), -9.0, places=3)
+        self.assertAlmostEqual(float(snapshot["offset_x"]), -9.0, places=3)
+
 
 if __name__ == "__main__":
     unittest.main()

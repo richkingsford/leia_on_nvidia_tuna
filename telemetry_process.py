@@ -6463,6 +6463,8 @@ def update_world_from_vision(world, vision, log=True):
         world._cyan_raw_fallback_confidence_min = None
 
     found, angle, dist, offset_x, conf, cam_h, brick_above, brick_below = vision.read()
+    vision_applied_to_world = False
+
     def _update_world_vision_safe(
         found_val,
         dist_val,
@@ -6473,6 +6475,7 @@ def update_world_from_vision(world, vision, log=True):
         brick_above_val,
         brick_below_val,
     ):
+        nonlocal vision_applied_to_world
         try:
             world.update_vision(
                 found_val,
@@ -6484,6 +6487,7 @@ def update_world_from_vision(world, vision, log=True):
                 brick_above_val,
                 brick_below_val,
             )
+            vision_applied_to_world = True
         except TypeError:
             world.update_vision(
                 found_val,
@@ -6495,6 +6499,7 @@ def update_world_from_vision(world, vision, log=True):
                 brick_above_val,
                 brick_below_val,
             )
+            vision_applied_to_world = True
     if dist == -1:
         found = False
         angle = 0.0
@@ -6662,6 +6667,11 @@ def update_world_from_vision(world, vision, log=True):
         # Track every fresh frame's final brick snapshot, including visible=false,
         # so lite precheck can advance on disappearance-style success gates.
         _record_smoothed_frame_snapshot(world)
+    if not bool(vision_applied_to_world):
+        # Some fallback paths update world.brick directly (without world.update_vision).
+        # Keep Bird/Mast views live by syncing xyz state on those frames too.
+        if all(hasattr(world, attr) for attr in ("x", "y", "theta")):
+            helper_xyz_coords.sync_from_world(world, reason="vision")
     update_stream_frame(world, vision)
 
 
@@ -10194,11 +10204,17 @@ def run_alignment_segment(
 
         def _observation_text():
             if curr_err is None:
+                if metric_name == "x_err":
+                    return "I'm xAxis_offset=unknown."
                 return f"I see {metric_name}=unknown."
             err_render = f"{COLOR_YELLOW}{float(curr_err):+.2f}{COLOR_RESET}"
             target_num = _as_float(obs_target, None)
             tol_num = _as_float(obs_tol, None)
             if target_num is None:
+                if metric_name == "x_err":
+                    current_num = _as_float(curr_abs_val, None)
+                    current_text = "unknown" if current_num is None else f"{float(current_num):.2f}"
+                    return f"I'm xAxis_offset={current_text} Δ{err_render}."
                 return f"I see {metric_name}={err_render}."
             target_text = (
                 f"{float(target_num):.2f}"
@@ -10206,6 +10222,7 @@ def run_alignment_segment(
                 else f"{float(target_num):+.2f}"
             )
             tol_text = f" ±{abs(float(tol_num)):.2f}" if tol_num is not None else ""
+            tol_text_operator = f"+/-{abs(float(tol_num)):.2f}" if tol_num is not None else ""
             if metric_name == "dist_err":
                 if float(curr_err) > 0.0:
                     relation = "farther than"
@@ -10226,6 +10243,24 @@ def run_alignment_segment(
                 if relation == "at":
                     return f"I see {metric_name}={err_render} at our {obs_target_label}={target_text}{tol_text}{obs_target_note}."
                 return f"I see {metric_name}={err_render} {relation} our {obs_target_label}={target_text}{tol_text}{obs_target_note}."
+            if metric_name == "x_err":
+                current_num = _as_float(curr_abs_val, None)
+                current_text = "unknown" if current_num is None else f"{float(current_num):.2f}"
+                if float(curr_err) > 0.0:
+                    relation = "to the right of"
+                elif float(curr_err) < 0.0:
+                    relation = "to the left of"
+                else:
+                    relation = "at"
+                if relation == "at":
+                    return (
+                        f"I'm xAxis_offset={current_text} Δ{err_render} at our "
+                        f"{obs_target_label} of {target_text}{tol_text_operator}{obs_target_note}."
+                    )
+                return (
+                    f"I'm xAxis_offset={current_text} Δ{err_render} {relation} our "
+                    f"{obs_target_label} of {target_text}{tol_text_operator}{obs_target_note}."
+                )
             if float(curr_err) > 0.0:
                 relation = "left"
             elif float(curr_err) < 0.0:
@@ -12742,6 +12777,7 @@ def run_alignment_segment(
     micro_adjust_focus_latched_true = False
     in_crosshairs_continuity_latched_true = False
     last_micro_adjust_act = None
+    setattr(world, "_xyz_micro_adjust_phase", False)
 
     def _correction_type_for_cmd_value(cmd_value):
         cmd_key = str(cmd_value or "").strip().lower()
@@ -14974,6 +15010,7 @@ def run_alignment_segment(
         _log_gap_rotation_tech_debt_act(world, step, act_plan, align_silent=align_silent, settle=False)
         planner_name = str(act_plan.get("planner") or "").strip().lower()
         use_micro_align_gap_planner = planner_name == "gap"
+        setattr(world, "_xyz_micro_adjust_phase", bool(use_micro_align_gap_planner))
         cmd = act_plan.get("cmd")
         speed = act_plan.get("speed") or 0.0
         cmd_reason = act_plan.get("reason") or "align"
@@ -15731,6 +15768,7 @@ def run_alignment_segment(
         _log_gap_rotation_tech_debt_act(world, step, act_plan, align_silent=align_silent, settle=True)
         planner_name = str(act_plan.get("planner") or "").strip().lower()
         use_micro_align_gap_planner = planner_name == "gap"
+        setattr(world, "_xyz_micro_adjust_phase", bool(use_micro_align_gap_planner))
         cmd = act_plan.get("cmd")
         speed = act_plan.get("speed") or 0.0
         cmd_reason = act_plan.get("reason") or "align"

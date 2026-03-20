@@ -29,6 +29,7 @@ import numpy as np
 import math
 import os
 import logging
+import time
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -79,6 +80,10 @@ HSV_MIN_AREA_RATIO = 0.05       # Min 5% of YOLO bbox area = real brick
 HSV_CYAN_COVERAGE_MIN = 0.08    # Need 8% cyan coverage to engage HSV path
 STACK_X_OVERLAP_RATIO = 0.6     # Same-column tolerance for above/below
 STACK_Y_GAP_RATIO = 0.35        # Vertical gap threshold for above/below
+# Reject cyan candidates whose contour shape is nowhere near expected
+# brick face/top aspect ratios. Kept broad to allow perspective distortion.
+BRICK_SHAPE_REL_ERROR_MAX = 0.75
+BRICK_SHAPE_FILL_RATIO_MIN = 0.28
 
 # Cyan-target experiment: stabilize selection around centerpoint.
 CENTER_LOCK_RADIUS_RATIO = 0.18
@@ -207,6 +212,11 @@ class BrickDetector:
         self._prev_offset = None
         self._prev_offset_y = None
         self._smooth_alpha = 0.3  # EMA weight for new values (lower = smoother)
+
+        # Camera read failure log throttling to avoid console spam.
+        self._camera_read_fail_count = 0
+        self._last_camera_read_fail_log_at = 0.0
+        self._camera_read_fail_log_interval_s = 2.0
 
     def set_runtime_tuning(self, confidence=None, smoothing_alpha=None,
                            nms_threshold=None, focal_px=None,
@@ -647,6 +657,25 @@ class BrickDetector:
             rect = cv2.minAreaRect(cnt)
             bx, by, bw, bh = cv2.boundingRect(cnt)
 
+            # Shape gate: ignore cyan blobs that are not brick-like.
+            if bw <= 0 or bh <= 0:
+                continue
+            fill_ratio = float(area) / float(max(1, bw * bh))
+            if fill_ratio < BRICK_SHAPE_FILL_RATIO_MIN:
+                continue
+            rw, rh = rect[1]
+            if rw <= 0.0 or rh <= 0.0:
+                continue
+            aspect = float(max(rw, rh) / max(1e-6, min(rw, rh)))
+            expected_aspects = (
+                float(BRICK_WIDTH_MM / BRICK_HEIGHT_MM),
+                float(BRICK_WIDTH_MM / BRICK_DEPTH_MM),
+                float(BRICK_HEIGHT_MM / BRICK_DEPTH_MM),
+            )
+            rel_err = min(abs(aspect - exp) / max(1e-6, exp) for exp in expected_aspects)
+            if rel_err > BRICK_SHAPE_REL_ERROR_MAX:
+                continue
+
             partial_info = self._partial_info_for_crop_bbox(
                 bx,
                 by,
@@ -1072,11 +1101,28 @@ class BrickDetector:
         """
         ret, frame = self.cap.read()
         if not ret or frame is None:
-            self.log.warning("Frame capture failed")
+            self._camera_read_fail_count += 1
+            now_s = time.monotonic()
+            if (
+                self._camera_read_fail_count == 1
+                or (now_s - self._last_camera_read_fail_log_at) >= self._camera_read_fail_log_interval_s
+            ):
+                self.log.warning(
+                    "Frame capture failed (consecutive=%d)",
+                    self._camera_read_fail_count,
+                )
+                self._last_camera_read_fail_log_at = now_s
             self.last_status = "camera read failed"
             self.last_primary_confidence = 0.0
             self._clear_partial_state()
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+
+        if self._camera_read_fail_count > 0:
+            self.log.info(
+                "Frame capture recovered after %d consecutive failures",
+                self._camera_read_fail_count,
+            )
+            self._camera_read_fail_count = 0
 
         self.raw_frame = frame.copy()
         self.current_frame = frame.copy()
@@ -1172,28 +1218,74 @@ class BrickDetector:
 
         self.current_frame = frame
 
+    def _ordered_rect_points(self, rect):
+        pts = cv2.boxPoints(rect)
+        pts = np.asarray(pts, dtype=np.float32)
+        sums = pts.sum(axis=1)
+        diffs = np.diff(pts, axis=1).reshape(-1)
+        ordered = np.zeros((4, 2), dtype=np.float32)
+        ordered[0] = pts[np.argmin(sums)]
+        ordered[2] = pts[np.argmax(sums)]
+        ordered[1] = pts[np.argmin(diffs)]
+        ordered[3] = pts[np.argmax(diffs)]
+        return ordered
+
+    def _rect_segment_name(self, p0, p1, center):
+        midpoint = (np.asarray(p0, dtype=np.float32) + np.asarray(p1, dtype=np.float32)) * 0.5
+        dx = float(midpoint[0] - center[0])
+        dy = float(midpoint[1] - center[1])
+        if abs(dx) >= abs(dy):
+            return "right" if dx >= 0.0 else "left"
+        return "bottom" if dy >= 0.0 else "top"
+
+    def _draw_primary_face_outline(self, frame, primary):
+        if not isinstance(primary, dict):
+            return
+        rect = primary.get("rect")
+        if not rect:
+            return
+
+        points = self._ordered_rect_points(rect)
+        center = np.asarray(rect[0], dtype=np.float32)
+        is_partial = bool(primary.get("partial"))
+        edges = primary.get("partial_edges") or {}
+        outline_color = PARTIAL_COLOR_BGR if is_partial else (0, 255, 0)
+        outline_thickness = 3 if is_partial else 2
+
+        visible_segments = []
+        for idx in range(4):
+            p0 = points[idx]
+            p1 = points[(idx + 1) % 4]
+            segment_name = self._rect_segment_name(p0, p1, center)
+            if is_partial and bool(edges.get(segment_name)):
+                continue
+            visible_segments.append((p0, p1))
+
+        if not visible_segments:
+            visible_segments = [
+                (points[idx], points[(idx + 1) % 4])
+                for idx in range(4)
+            ]
+
+        for p0, p1 in visible_segments:
+            start = tuple(np.intp(np.round(p0)))
+            end = tuple(np.intp(np.round(p1)))
+            cv2.line(frame, start, end, outline_color, outline_thickness, cv2.LINE_AA)
+
     def _draw_debug_hsv(self, frame, yolo_bricks, hsv_bricks, primary,
                         angle, dist, offset_x, conf):
         """Draw enhanced debug visualization for HSV-segmented bricks."""
-        # Gray thin-line YOLO boxes (reference)
-        for x1, y1, x2, y2, c in yolo_bricks:
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (128, 128, 128), 1)
+        # Only highlight the selected brick nearest the crosshairs.
+        if primary:
+            self._draw_primary_face_outline(frame, primary)
+            pcx, pcy = primary["center_x"], primary["center_y"]
+            primary_color = PARTIAL_COLOR_BGR if bool(primary.get("partial")) else (0, 255, 0)
+            cv2.drawMarker(frame, (pcx, pcy), primary_color,
+                           cv2.MARKER_CROSS, 15, 2)
 
-        # Yellow contours for full HSV bricks; orange for partials.
-        for b in hsv_bricks:
-            is_primary = b is primary
-            is_partial = bool(b.get("partial"))
-            contour_color = PARTIAL_COLOR_BGR if is_partial else ((0, 255, 0) if is_primary else (0, 255, 255))
-            contour_thickness = 2 if is_primary else 1
-            cv2.drawContours(frame, [b["contour"]], -1, contour_color, contour_thickness)
-            # Keep rotated rectangles visible, but use orange for partials.
-            box_pts = cv2.boxPoints(b["rect"])
-            box_pts = np.intp(box_pts)
-            box_color = PARTIAL_COLOR_BGR if is_partial else (255, 0, 255)
-            cv2.drawContours(frame, [box_pts], 0, box_color, 1)
-            label = str(b.get("partial_label") or "").strip()
+            label = str(primary.get("partial_label") or "").strip()
             if label:
-                bx, by, _bw, _bh = b["bbox"]
+                bx, by, _bw, _bh = primary["bbox"]
                 text_y = max(18, int(by) - 8)
                 cv2.putText(
                     frame,
@@ -1204,13 +1296,6 @@ class BrickDetector:
                     PARTIAL_COLOR_BGR,
                     2,
                 )
-
-        # Selected primary brick marker/crosshair.
-        if primary:
-            pcx, pcy = primary["center_x"], primary["center_y"]
-            primary_color = PARTIAL_COLOR_BGR if bool(primary.get("partial")) else (0, 255, 0)
-            cv2.drawMarker(frame, (pcx, pcy), primary_color,
-                           cv2.MARKER_CROSS, 15, 2)
 
             # Red angle line from primary brick center
             _, _, bw, bh = primary["bbox"]

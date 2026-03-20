@@ -284,13 +284,17 @@ def smoothed_brick_snapshot(world):
     avg, _, _ = _filtered_brick_frame_average(buffer)
     if avg is None:
         return brick
+    # Keep smoothed snapshot x-axis semantics identical to WorldModel.update_vision.
+    # update_vision currently normalizes detector x by negating it (traditional number
+    # line: left negative, right positive), so gates/logs and livestream overlay agree.
+    normalized_offset_x = -float(avg.get("offset_x", 0.0))
     return {
         "visible": bool(avg.get("found")),
         "dist": float(avg.get("dist", 0.0)),
         "angle": float(avg.get("angle", 0.0)),
         "confidence": float(avg.get("conf", 0.0)),
-        "offset_x": float(avg.get("offset_x", 0.0)),
-        "x_axis": float(avg.get("offset_x", 0.0)),
+        "offset_x": normalized_offset_x,
+        "x_axis": normalized_offset_x,
         "offset_y": float(avg.get("offset_y", avg.get("cam_h", 0.0))),
         "y_axis": float(avg.get("offset_y", avg.get("cam_h", 0.0))),
         # Use the confirmed stack flags from the world state so higher-level gate checks

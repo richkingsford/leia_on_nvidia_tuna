@@ -182,6 +182,15 @@ class HelperXyzCoordsTests(unittest.TestCase):
         self.assertIn('data-trend="closer"', svg)
         self.assertIn('data-trend="further"', svg)
 
+    def test_render_workspace_svg_hides_camera_dot_during_micro_adjust_phase(self):
+        world = _DummyWorld()
+        state = helper_xyz_coords.sync_from_world(world, render=False)
+        state["micro_adjust_phase"] = True
+
+        svg = helper_xyz_coords.render_workspace_svg(state)
+
+        self.assertNotIn('class="camera-dot"', svg)
+
     def test_render_mast_svg_shows_y_axis_history_and_current_camera(self):
         world = _DummyWorld()
         world.wall_height_bricks = 1

@@ -82,10 +82,10 @@ DEFAULT_SPEED_MODEL = {
         "t": {"cmd": "f", "score": 100},
         "g": {"cmd": "b", "score": 100},
         "q": {"cmd": "l", "score": 1},
-        "a": {"cmd": "l", "score": 50},
+        "a": {"cmd": "l", "score": 25},
         "z": {"cmd": "l", "score": 100},
         "e": {"cmd": "r", "score": 1},
-        "d": {"cmd": "r", "score": 50},
+        "d": {"cmd": "r", "score": 25},
         "c": {"cmd": "r", "score": 100},
         "o": {"cmd": "u", "score": 1},
         "k": {"cmd": "d", "score": 1},
@@ -2125,13 +2125,20 @@ class WorldModel:
     ):
         brick_module = _brick_module()
         wall_module = _wall_module()
+        # Global x-axis convention: normal number line.
+        # Turning camera left (brick appears further right in frame) should
+        # decrease x-axis; turning right should increase x-axis.
+        try:
+            normalized_offset_x = -float(offset_x)
+        except (TypeError, ValueError):
+            normalized_offset_x = 0.0
         brick_height = brick_module.update_from_vision(
             self,
             found,
             dist,
             angle,
             conf,
-            offset_x,
+            normalized_offset_x,
             cam_h,
             brick_above,
             brick_below,

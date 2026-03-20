@@ -268,6 +268,7 @@ def _default_workspace_state(*, render_enabled: bool) -> dict:
         "history": [],
         "history_step_seq": 0,
         "history_step_name": None,
+        "micro_adjust_phase": False,
     }
 
 
@@ -471,6 +472,7 @@ def _sync_known_objects(state: dict, world) -> None:
     if wall_height_mm is None and wall_count is not None:
         wall_height_mm = float(wall_count) * float(DEFAULT_STACK_HEIGHT_MM)
     wall["height_mm"] = None if wall_height_mm is None else float(max(0.0, wall_height_mm))
+    state["micro_adjust_phase"] = bool(getattr(world, "_xyz_micro_adjust_phase", False))
 
 
 def _mark_active_target_visible(state: dict) -> None:
@@ -1113,6 +1115,40 @@ def _current_step_mast_history(state: dict) -> list[dict]:
     return filtered
 
 
+def _all_motion_history(state: dict) -> list[dict]:
+    history = state.get("history") or []
+    filtered = []
+    for entry in history:
+        if not isinstance(entry, dict) or entry.get("type") != "motion":
+            continue
+        action_type = str(entry.get("action_type") or "").strip().lower()
+        if action_type in {"mast_up", "mast_down"}:
+            continue
+        x_mm = _coerce_float(entry.get("x_mm"), None)
+        y_mm = _coerce_float(entry.get("y_mm"), None)
+        if x_mm is None or y_mm is None:
+            continue
+        filtered.append(entry)
+    return filtered
+
+
+def _all_mast_history(state: dict) -> list[dict]:
+    history = state.get("history") or []
+    filtered = []
+    for entry in history:
+        if not isinstance(entry, dict):
+            continue
+        action_type = str(entry.get("action_type") or "").strip().lower()
+        y_axis_mm = _coerce_float(entry.get("y_axis_mm"), None)
+        camera_height_mm = _coerce_float(entry.get("camera_height_mm"), None)
+        if camera_height_mm is None:
+            continue
+        if action_type not in {"mast_up", "mast_down"} and y_axis_mm is None:
+            continue
+        filtered.append(entry)
+    return filtered
+
+
 def _mast_history_trend(previous_entry: dict | None, entry: dict) -> str:
     if not isinstance(previous_entry, dict):
         return "unknown"
@@ -1135,6 +1171,7 @@ def render_workspace_svg(state: dict | None) -> str:
     active_target = snapshot.get("active_target") or {}
     active_name = active_target.get("object_name")
     step_history = _current_step_motion_history(snapshot)
+    dot_history = _all_motion_history(snapshot)
     
     svg_parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{SVG_WIDTH}" height="{SVG_HEIGHT}" viewBox="0 0 {SVG_WIDTH} {SVG_HEIGHT}">',
@@ -1145,7 +1182,7 @@ def render_workspace_svg(state: dict | None) -> str:
     # Add title at top
     tx = SVG_WIDTH * 0.5
     ty = 54.0
-    svg_parts.append(f'<text x="{tx:.1f}" y="{ty:.1f}" text-anchor="middle" font-size="28" font-weight="900" fill="#233843">Bird\'s Eye View</text>')
+    svg_parts.append(f'<text x="{tx:.1f}" y="{ty:.1f}" text-anchor="middle" font-size="28" font-weight="900" fill="#233843">Bird View</text>')
 
     wall = snapshot["objects"]["wall"]
     wall_cx = float(wall.get("x_mm", 0.0))
@@ -1190,29 +1227,12 @@ def render_workspace_svg(state: dict | None) -> str:
 
     robot = snapshot["robot"]
     target_obj = (snapshot.get("objects") or {}).get(active_name) if active_name in {"wall", "brick_supply"} else None
-    if isinstance(target_obj, dict):
-        ax, ay = project(float(robot.get("x_mm", 0.0)), float(robot.get("y_mm", 0.0)))
-        bx, by = project(float(target_obj.get("x_mm", 0.0)), float(target_obj.get("y_mm", 0.0)))
-        svg_parts.append(
-            f'<line x1="{ax:.1f}" y1="{ay:.1f}" x2="{bx:.1f}" y2="{by:.1f}" stroke="#7b7668" stroke-width="1.8" stroke-dasharray="8 7" />'
-        )
     current_trend = "unknown"
     current_dot_color = "#2c6fbb"
-    if step_history:
-        svg_parts.append('<g id="step-history">')
-        history_points = [
-            project(float(entry.get("x_mm", 0.0)), float(entry.get("y_mm", 0.0)))
-            for entry in step_history
-        ]
-        if len(history_points) >= 2:
-            svg_parts.append(
-                f'<polyline class="step-history-path" points="{_polygon_points(history_points)}" '
-                'fill="none" stroke="#b7aea0" stroke-width="2.4" stroke-linecap="round" '
-                'stroke-linejoin="round" opacity="0.85" />'
-            )
+    if dot_history:
         previous_entry = None
-        history_count = len(step_history)
-        for idx, entry in enumerate(step_history):
+        history_count = len(dot_history)
+        for idx, entry in enumerate(dot_history):
             trend = _step_history_trend(previous_entry, entry)
             color = _step_history_color(trend)
             hx, hy = project(float(entry.get("x_mm", 0.0)), float(entry.get("y_mm", 0.0)))
@@ -1226,6 +1246,18 @@ def render_workspace_svg(state: dict | None) -> str:
             previous_entry = entry
             current_trend = trend
             current_dot_color = color
+    if step_history:
+        svg_parts.append('<g id="step-history">')
+        history_points = [
+            project(float(entry.get("x_mm", 0.0)), float(entry.get("y_mm", 0.0)))
+            for entry in step_history
+        ]
+        if len(history_points) >= 2:
+            svg_parts.append(
+                f'<polyline class="step-history-path" points="{_polygon_points(history_points)}" '
+                'fill="none" stroke="#b7aea0" stroke-width="2.4" stroke-linecap="round" '
+                'stroke-linejoin="round" opacity="0.85" />'
+            )
         svg_parts.append("</g>")
     hx, hy = _heading_vector(float(robot.get("theta_deg", 0.0)))
     camera_x = float(robot.get("x_mm", 0.0))
@@ -1233,13 +1265,15 @@ def render_workspace_svg(state: dict | None) -> str:
     stem_tail_x = camera_x - hx * float(ROBOT_NOSE_TO_TAIL_MM)
     stem_tail_y = camera_y - hy * float(ROBOT_NOSE_TO_TAIL_MM)
     stem_x2, stem_y2 = project(camera_x, camera_y)
-    dot_radius = max(6.0, 13.0 * scale / 100.0)
-    svg_parts.append('<g id="camera-glyph">')
-    svg_parts.append(
-        f'<circle class="camera-dot" data-trend="{current_trend}" cx="{stem_x2:.1f}" cy="{stem_y2:.1f}" '
-        f'r="{dot_radius:.1f}" fill="{current_dot_color}" stroke="#233843" stroke-width="2.2" />'
-    )
-    svg_parts.append("</g>")
+    hide_camera_dot = bool(snapshot.get("micro_adjust_phase", False))
+    if not hide_camera_dot:
+        dot_radius = max(3.0, 6.0 * scale / 100.0)
+        svg_parts.append('<g id="camera-glyph">')
+        svg_parts.append(
+            f'<circle class="camera-dot" data-trend="{current_trend}" cx="{stem_x2:.1f}" cy="{stem_y2:.1f}" '
+            f'r="{dot_radius:.1f}" fill="{current_dot_color}" stroke="#233843" stroke-width="2.2" />'
+        )
+        svg_parts.append("</g>")
     
     # Add distance displays
     robot_x = float(robot.get("x_mm", 0.0))
@@ -1301,6 +1335,7 @@ def render_workspace_svg(state: dict | None) -> str:
 def render_mast_svg(state: dict | None) -> str:
     snapshot = _deepcopy(state or _default_workspace_state(render_enabled=False))
     mast_history = _current_step_mast_history(snapshot)
+    mast_dot_history = _all_mast_history(snapshot)
     objects = snapshot.get("objects") or {}
     supply = objects.get("brick_supply") or {}
     wall = objects.get("wall") or {}
@@ -1391,6 +1426,25 @@ def render_mast_svg(state: dict | None) -> str:
 
     current_trend = "unknown"
     current_dot_color = "#2c6fbb"
+    if mast_dot_history:
+        previous_entry = None
+        history_count = len(mast_dot_history)
+        for idx, entry in enumerate(mast_dot_history):
+            trend = _mast_history_trend(previous_entry, entry)
+            color = _step_history_color(trend)
+            hx = project_y_axis_mm(_coerce_float(entry.get("y_axis_mm"), None))
+            hy = project_height(float(_coerce_float(entry.get("camera_height_mm"), 0.0) or 0.0))
+            radius = _history_dot_radius(idx, history_count)
+            opacity = 0.5 + 0.4 * ((float(idx) + 1.0) / float(history_count))
+            svg_parts.append(
+                f'<circle class="mast-history-dot" data-trend="{trend}" cx="{hx:.1f}" cy="{hy:.1f}" '
+                f'r="{radius:.1f}" fill="{color}" fill-opacity="{opacity:.2f}" '
+                'stroke="#f9f6ef" stroke-width="2" />'
+            )
+            previous_entry = entry
+            current_trend = trend
+            current_dot_color = color
+
     if mast_history:
         svg_parts.append('<g id="mast-history">')
         history_points = [
@@ -1406,23 +1460,6 @@ def render_mast_svg(state: dict | None) -> str:
                 'fill="none" stroke="#b7aea0" stroke-width="2.4" stroke-linecap="round" '
                 'stroke-linejoin="round" opacity="0.85" />'
             )
-        previous_entry = None
-        history_count = len(mast_history)
-        for idx, entry in enumerate(mast_history):
-            trend = _mast_history_trend(previous_entry, entry)
-            color = _step_history_color(trend)
-            hx = project_y_axis_mm(_coerce_float(entry.get("y_axis_mm"), None))
-            hy = project_height(float(_coerce_float(entry.get("camera_height_mm"), 0.0) or 0.0))
-            radius = _history_dot_radius(idx, history_count)
-            opacity = 0.5 + 0.4 * ((float(idx) + 1.0) / float(history_count))
-            svg_parts.append(
-                f'<circle class="mast-history-dot" data-trend="{trend}" cx="{hx:.1f}" cy="{hy:.1f}" '
-                f'r="{radius:.1f}" fill="{color}" fill-opacity="{opacity:.2f}" '
-                'stroke="#f9f6ef" stroke-width="2" />'
-            )
-            previous_entry = entry
-            current_trend = trend
-            current_dot_color = color
         svg_parts.append("</g>")
 
     current_camera_x = project_y_axis_mm(current_y_axis_mm)

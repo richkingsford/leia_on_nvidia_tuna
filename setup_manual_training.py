@@ -5,7 +5,7 @@ import random
 import sys
 import threading
 import time
-import ttyll
+import tty
 import termios
 import statistics
 import subprocess
@@ -181,7 +181,7 @@ if not _DEFAULT_STREAM_SUCCESS_GATE_STEP:
     _DEFAULT_STREAM_SUCCESS_GATE_STEP = "ALIGN_BRICK"
 
 CTRL_HELP_LINE = (
-    "[CTRL] Drive: W/S 50%, R/F 1%, T/G 100%. Turn: A/D 50%, Q/E 1%, Z/C 100%. "
+    "[CTRL] Drive: W/S 50%, R/F 1%, T/G 100%. Turn: A/D 25%, Q/E 1%, Z/C 100%. "
     "Lift: O/K 1%, U 50%, P/L 100%. F action, ':' command, m auto, y edit hotkey vars, 1 trash log, Q quit"
 )
 EASE_IN_OUT_HOTKEYS = frozenset({"t", "g", "z", "c"})
@@ -339,8 +339,8 @@ def hotkey_uses_ease_in_out(hotkey):
 
 _DEFAULT_VISION_MODE = normalize_vision_mode(
     _world_model_active_vision_mode()
-    or _MANUAL_CONFIG.get("brick_vision", VISION_MODE_ARUCO),
-    fallback=VISION_MODE_ARUCO,
+    or _MANUAL_CONFIG.get("brick_vision", VISION_MODE_CYAN),
+    fallback=VISION_MODE_CYAN,
 )
 _DEFAULT_CYAN_PROFILE = str(
     _MANUAL_CONFIG.get(

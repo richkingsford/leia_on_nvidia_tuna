@@ -120,7 +120,10 @@ def axis_cmd_for_error(axis: str, err_mm: float) -> Optional[str]:
         return "f" if float(err) > 0.0 else "b"
     if axis_key == "y":
         return "d" if float(err) > 0.0 else "u"
-    return "r" if float(err) > 0.0 else "l"
+    # Traditional number-line x semantics: negative is left, positive is right.
+    # If current x is greater than target (positive error), turn left to reduce x.
+    # If current x is less than target (negative error), turn right to increase x.
+    return "l" if float(err) > 0.0 else "r"
 
 
 def _axis_curve_file(axis: str) -> Path:

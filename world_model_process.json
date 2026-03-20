@@ -119,6 +119,23 @@
                 "visible": {
                     "min": true
                 }
+            },
+            "success_gates": {
+                "visible": {
+                    "min": true
+                },
+                "angle_abs": {
+                    "target": 89.01,
+                    "tol": 0.07
+                },
+                "x_axis": {
+                    "target": 2.83,
+                    "tol": 2.3
+                },
+                "y_axis": {
+                    "target": 1.62,
+                    "tol": 2.3
+                }
             }
         },
         "FIND_TOPMOST_BRICK": {
@@ -238,12 +255,12 @@
             },
             "success_gates": {
                 "xAxis_offset_abs": {
-                    "target": -3.86,
-                    "tol": 1.4
+                    "target": -3.2,
+                    "tol": 4.0
                 },
                 "dist": {
-                    "target": 115.49,
-                    "tol": 2.3
+                    "target": 97.15,
+                    "tol": 4.0
                 }
             },
             "pre_align_descend": {
@@ -312,11 +329,6 @@
                 "gap_rotation_force_recovery_switch": true,
                 "gap_rotation_tech_debt_logging": true
             },
-            "start_gates": {
-                "visible": {
-                    "min": true
-                }
-            },
             "y_axis_hold_offset_exception": {
                 "enabled": true,
                 "operator_log_reminder": "Exception active: keep y-axis hold at +4mm above final target until x/dist are settled, then finish the descent.",
@@ -327,20 +339,25 @@
                 ],
                 "release_confirm_frames": 2
             },
+            "start_gates": {
+                "visible": {
+                    "min": true
+                }
+            },
             "success_gates": {
                 "visible": {
                     "min": true
                 },
                 "xAxis_offset_abs": {
-                    "target": -0.09,
+                    "target": 6.54,
                     "tol": 1.4
                 },
                 "yAxis_offset_abs": {
-                    "target": -0.57,
+                    "target": 4.92,
                     "tol": 2.3
                 },
                 "dist": {
-                    "target": 91.97,
+                    "target": 135.17,
                     "tol": 2.3
                 }
             }
@@ -360,6 +377,15 @@
                 "score": 1,
                 "acts": 4,
                 "min_start_to_target_gap_mm": 1.0
+            },
+            "success_gates": {
+                "visible": {
+                    "min": true
+                },
+                "dist": {
+                    "target": 58.85,
+                    "tol": 2.3
+                }
             }
         },
         "ELEVATE_BRICK": {
@@ -591,16 +617,16 @@
             },
             "success_gates": {
                 "xAxis_offset_abs": {
-                    "target": -2.94,
-                    "tol": 1.4
+                    "target": -3.2,
+                    "tol": 4.0
                 },
                 "yAxis_offset_abs": {
-                    "target": 7.74,
+                    "target": 2.0,
                     "tol": 3.0
                 },
                 "dist": {
-                    "target": 120.0,
-                    "tol": 4.34
+                    "target": 97.15,
+                    "tol": 4.0
                 }
             },
             "pre_align_descend": {
