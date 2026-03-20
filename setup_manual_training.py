@@ -32,11 +32,6 @@ from helper_align_profile import load_align_profile, inject_align_profile_into_l
 from helper_next import (
     x_axis_curve_lookup_lines,
 )
-from helper_mini_align_calibrate import (
-    MINI_TRIALS_DEFAULT as MINI_X_AXIS_TRIALS_DEFAULT,
-    RUN_LOG_FILE_DEFAULT as MINI_X_AXIS_LOG_DEFAULT,
-    run_mini_x_axis_calibration,
-)
 from helper_mini_hotkey_motion_calibrate import (
     RUN_LOG_FILE_DEFAULT as MINI_HOTKEY_MOTION_LOG_DEFAULT,
     run_mini_hotkey_motion_calibration,
@@ -384,26 +379,6 @@ _MARKERLESS_VISIBILITY_ALIASES = _CYAN_VISIBILITY_ALIASES
 _DEFAULT_MARKERLESS_PROFILE = _DEFAULT_CYAN_PROFILE
 _DEFAULT_MARKERLESS_VISIBILITY = _DEFAULT_CYAN_VISIBILITY
 
-AUTO_MINI_X_AXIS_ENABLED = bool(_MANUAL_CONFIG.get("auto_mini_x_axis_enabled", True))
-AUTO_MINI_X_AXIS_STEPS = {"ALIGN_BRICK", "POSITION_BRICK"}
-try:
-    AUTO_MINI_X_AXIS_TRIALS = int(_MANUAL_CONFIG.get("auto_mini_x_axis_trials", MINI_X_AXIS_TRIALS_DEFAULT))
-except (TypeError, ValueError):
-    AUTO_MINI_X_AXIS_TRIALS = int(MINI_X_AXIS_TRIALS_DEFAULT)
-AUTO_MINI_X_AXIS_TRIALS = max(1, int(AUTO_MINI_X_AXIS_TRIALS))
-try:
-    AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS = float(_MANUAL_CONFIG.get("auto_mini_x_axis_min_interval_hours", 12.0))
-except (TypeError, ValueError):
-    AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS = 12.0
-AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS = max(0.0, float(AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS))
-AUTO_MINI_X_AXIS_LOG = Path(_MANUAL_CONFIG.get("auto_mini_x_axis_log", str(MINI_X_AXIS_LOG_DEFAULT)))
-try:
-    AUTO_MINI_X_AXIS_DISCOVERY_CHANCE = float(
-        _MANUAL_CONFIG.get("auto_mini_x_axis_discovery_chance", 0.05)
-    )
-except (TypeError, ValueError):
-    AUTO_MINI_X_AXIS_DISCOVERY_CHANCE = 0.05
-AUTO_MINI_X_AXIS_DISCOVERY_CHANCE = max(0.0, min(1.0, float(AUTO_MINI_X_AXIS_DISCOVERY_CHANCE)))
 AUTO_PREFLIGHT_HOTKEY_MOTION_ENABLED = bool(_MANUAL_CONFIG.get("auto_preflight_hotkey_motion_enabled", True))
 AUTO_PREFLIGHT_HOTKEY_MOTION_LOG = Path(
     _MANUAL_CONFIG.get("auto_preflight_hotkey_motion_log", str(MINI_HOTKEY_MOTION_LOG_DEFAULT))
@@ -429,7 +404,6 @@ AUTO_ALIGN_MINI_VISIBILITY_RECOVERY_MAX_ACTS = int(
 AUTO_ALIGN_MINI_VISIBILITY_RECOVERY_TIMEOUT_S = float(
     _MANUAL_CONFIG.get("auto_align_mini_visibility_recovery_timeout_s", 5.0)
 )
-
 
 def _vision_mode_cli_value(mode):
     mode_norm = normalize_vision_mode(mode)
@@ -2230,41 +2204,6 @@ def run_auto_step(app_state, obj_enum):
     print("\n" * 5, end="")
     log_line(f"[AUTO] Attempting {step_key}...")
     reset_repeat_act_guard(app_state.world, app_state.robot)
-    mini_x_axis_ran = False
-
-    if step_key in AUTO_MINI_X_AXIS_STEPS:
-        if not AUTO_MINI_X_AXIS_ENABLED:
-            log_line(f"[AUTO] {step_key} mini x-axis calibration disabled by config.")
-        elif app_state.robot is None or app_state.vision is None:
-            log_line(f"[AUTO] {step_key} mini x-axis calibration skipped (robot/vision unavailable).")
-        else:
-            run_chance = float(AUTO_MINI_X_AXIS_DISCOVERY_CHANCE)
-            roll = float(random.random())
-            if roll >= run_chance:
-                log_line(
-                    f"[AUTO] {step_key} mini x-axis calibration skipped "
-                    f"(random gate roll={roll:.3f}, chance={run_chance * 100.0:.1f}%)."
-                )
-            else:
-                mini_x_axis_ran = True
-                mini_result = run_mini_x_axis_calibration(
-                    robot=app_state.robot,
-                    vision=app_state.vision,
-                    step_key=step_key,
-                    trials=AUTO_MINI_X_AXIS_TRIALS,
-                    log_path=AUTO_MINI_X_AXIS_LOG,
-                    min_interval_hours=AUTO_MINI_X_AXIS_MIN_INTERVAL_HOURS,
-                    log_fn=log_line,
-                )
-                if not bool(mini_result.get("ok")):
-                    log_line(
-                        f"[AUTO] {step_key} mini x-axis calibration failed; continuing with demo replay "
-                        f"({mini_result.get('error')})."
-                    )
-                with app_state.lock:
-                    app_state.brick_frame_buffer = []
-    if mini_x_axis_ran and step_key == "ALIGN_BRICK":
-        run_align_mini_visibility_recovery(app_state, step_key=step_key)
 
     logs = load_demo_logs(app_state.demos_dir)
     update_process_model_from_demos(logs, PROCESS_MODEL_FILE)
@@ -3614,7 +3553,6 @@ class AppState:
         self.lift_ground_preflight_running = False
         self.lift_ground_preflight_cam_h = None
         self.lift_ground_preflight_time = 0.0
-        
         # Job Status
         self.job_success = False
         self.job_success_timer = 0

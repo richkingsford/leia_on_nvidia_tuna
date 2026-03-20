@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-helper_next2.py
----------------
-Lean axis alignment helper. Provides a monotonic error -> turn intensity
-curve and utilities to fit, score, and select one-shot alignment actions
-for both x (left/right) and y (up/down) axes.
+helper_close_gaps.py
+--------------------
+Lean gap-closing helper. Provides monotonic error->intensity utilities,
+axis calibration lookups, and shared x/y/dist micro-adjust scoring helpers.
 """
 from __future__ import annotations
 
@@ -16,6 +15,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from helper_demo_log_utils import normalize_step_label
 from helper_gate_utils import metric_error
+from telemetry_robot import SPEED_SCORE_MAX, SPEED_SCORE_MIN
 
 DEFAULT_CURVE_FILE = Path(__file__).resolve().parent / "world_model_left_right_curve.json"
 DEFAULT_Y_CURVE_FILE = Path(__file__).resolve().parent / "world_model_up_down_curve.json"
@@ -793,3 +793,199 @@ def curve_is_usable(stats: Optional[dict]) -> bool:
     if median_improvement is not None and float(median_improvement) > 0.0:
         return True
     return bool(median_abs_err <= 12.0 and negative_rate < 0.5)
+
+
+# Distance error bands for ALIGN_BRICK micro-adjustments.
+ALIGN_BRICK_DIST_ERROR_SCORE_BANDS = (
+    (2.0, 1.0),
+    (3.0, 1.5),
+    (4.0, 2.0),
+    (5.0, 2.5),
+    (6.0, 3.0),
+    (8.0, 4.0),
+    (1000.0, 5.0),
+)
+
+ALIGN_BRICK_X_AXIS_CURVE_ALPHA = 1.67
+ALIGN_BRICK_X_AXIS_CURVE_CAP = 24.78
+ALIGN_BRICK_X_AXIS_CURVE_MAX_ERR_MM = 22.0
+ALIGN_BRICK_X_AXIS_ONESHOT_MIN_SCORE = 1
+ALIGN_BRICK_X_AXIS_ONESHOT_MAX_SCORE = 25
+ALIGN_BRICK_Y_AXIS_ERROR_SCORE_BANDS = (
+    (3.0, 1),
+    (5.0, 2),
+    (8.0, 3),
+    (12.0, 4),
+    (18.0, 5),
+    (26.0, 7),
+    (1000.0, 9),
+)
+
+# Hard rule: any gap under 8mm must run at 1%.
+ALIGN_SAFETY_GAP_MM = 8.0
+ALIGN_TURN_SAFETY_GAP_MM = ALIGN_SAFETY_GAP_MM
+
+
+def align_brick_dist_error_speed_score(dist_error_mm: float) -> float:
+    try:
+        error_mm = abs(float(dist_error_mm))
+    except (TypeError, ValueError):
+        return 1.0
+    if gap_safe_score(error_mm):
+        return float(SPEED_SCORE_MIN)
+    for upper_bound, score in ALIGN_BRICK_DIST_ERROR_SCORE_BANDS:
+        try:
+            if error_mm < float(upper_bound):
+                return float(score)
+        except (TypeError, ValueError):
+            continue
+    return float(ALIGN_BRICK_DIST_ERROR_SCORE_BANDS[-1][1]) if ALIGN_BRICK_DIST_ERROR_SCORE_BANDS else 1.0
+
+
+def gap_safe_score(gap_mm):
+    try:
+        return abs(float(gap_mm)) < ALIGN_SAFETY_GAP_MM
+    except (TypeError, ValueError):
+        return True
+
+
+def enforce_gap_safety_score(gap_mm, score, *, correction_type=None, cmd=None, silent=False):
+    try:
+        gap = abs(float(gap_mm))
+    except (TypeError, ValueError):
+        gap = 0.0
+    try:
+        orig_score = int(score)
+    except (TypeError, ValueError):
+        orig_score = int(SPEED_SCORE_MIN)
+    if gap < ALIGN_SAFETY_GAP_MM and orig_score > int(SPEED_SCORE_MIN):
+        if not silent:
+            print(
+                f"\n{'!'*72}\n"
+                f"  BUG: GAP SAFETY NET CAUGHT A VIOLATION\n"
+                f"  Rule: gap < {ALIGN_SAFETY_GAP_MM}mm -> {int(SPEED_SCORE_MIN)}% speed\n"
+                f"  Violation: gap={gap:.2f}mm, requested score={orig_score}%\n"
+                f"  Correction: {correction_type or 'unknown'}, cmd={cmd or '?'}\n"
+                f"  This means an upstream scoring function is broken!\n"
+                f"  Action: CLAMPED score {orig_score}% -> {int(SPEED_SCORE_MIN)}%\n"
+                f"{'!'*72}\n"
+            )
+        return int(SPEED_SCORE_MIN), True
+    return orig_score, False
+
+
+def align_brick_x_axis_one_shot_score(x_err_mm: float) -> int:
+    try:
+        gap_mm = abs(float(x_err_mm))
+    except (TypeError, ValueError):
+        gap_mm = 0.0
+    if gap_safe_score(gap_mm):
+        return int(SPEED_SCORE_MIN)
+    max_err = max(1e-6, float(ALIGN_BRICK_X_AXIS_CURVE_MAX_ERR_MM))
+    ratio = max(0.0, min(1.0, float(gap_mm) / float(max_err)))
+    curved = float(ratio) ** float(ALIGN_BRICK_X_AXIS_CURVE_ALPHA)
+    raw = int(round(1.0 + (float(ALIGN_BRICK_X_AXIS_CURVE_CAP) - 1.0) * curved))
+    return int(max(int(ALIGN_BRICK_X_AXIS_ONESHOT_MIN_SCORE), min(int(raw), int(ALIGN_BRICK_X_AXIS_ONESHOT_MAX_SCORE))))
+
+
+def align_brick_y_axis_one_shot_score(y_err_mm: float) -> int:
+    try:
+        gap_mm = abs(float(y_err_mm))
+    except (TypeError, ValueError):
+        gap_mm = 0.0
+    if gap_safe_score(gap_mm):
+        return int(SPEED_SCORE_MIN)
+    for upper_bound, score in ALIGN_BRICK_Y_AXIS_ERROR_SCORE_BANDS:
+        try:
+            if float(gap_mm) < float(upper_bound):
+                return int(max(int(SPEED_SCORE_MIN), min(int(round(float(score))), int(SPEED_SCORE_MAX))))
+        except (TypeError, ValueError):
+            continue
+    return int(SPEED_SCORE_MIN)
+
+
+def align_gap_correction_speed_score(correction_type, gap_mm, *, cmd=None) -> int:
+    corr_key = str(correction_type or "").strip().lower()
+    if corr_key == "distance":
+        base_score = int(round(float(align_brick_dist_error_speed_score(gap_mm))))
+        cmd_key = str(cmd or "f").strip().lower() or "f"
+    elif corr_key == "y_axis":
+        base_score = int(align_brick_y_axis_one_shot_score(gap_mm))
+        cmd_key = str(cmd or "u").strip().lower() or "u"
+    else:
+        base_score = int(align_brick_x_axis_one_shot_score(gap_mm))
+        cmd_key = str(cmd or "l").strip().lower() or "l"
+        corr_key = "x_axis"
+    score, _clamped = enforce_gap_safety_score(
+        gap_mm,
+        base_score,
+        correction_type=corr_key,
+        cmd=cmd_key,
+        silent=True,
+    )
+    return int(score)
+
+
+def x_axis_correction_cmd(x_err_mm: float) -> str:
+    cmd = axis_cmd_for_error("x", x_err_mm)
+    return str(cmd or ("l" if float(_coerce_float(x_err_mm, 0.0) or 0.0) > 0.0 else "r"))
+
+
+def y_axis_correction_cmd(y_err_mm: float) -> str:
+    cmd = axis_cmd_for_error("y", y_err_mm)
+    return str(cmd or ("d" if float(_coerce_float(y_err_mm, 0.0) or 0.0) > 0.0 else "u"))
+
+
+def axis_curve_motion_plan(axis: str, err_mm: float, *, fallback_score: int) -> Optional[dict]:
+    axis_key = str(axis or "").strip().lower()
+    try:
+        abs_err = abs(float(err_mm))
+    except (TypeError, ValueError):
+        abs_err = 0.0
+    if abs_err < ALIGN_SAFETY_GAP_MM:
+        return None
+    if axis_key in {"dist", "distance"}:
+        plan = calibrated_axis_motion_for_error(axis=axis_key, err_mm=err_mm)
+        if isinstance(plan, dict):
+            try:
+                duration_override_ms = int(round(float(plan.get("duration_override_ms"))))
+            except (TypeError, ValueError):
+                duration_override_ms = None
+            if duration_override_ms is not None and duration_override_ms > 0:
+                out = dict(plan)
+                try:
+                    out["score"] = int(round(float(plan.get("score"))))
+                except (TypeError, ValueError):
+                    out["score"] = int(fallback_score)
+                out["duration_override_ms"] = int(duration_override_ms)
+                return out
+    if abs_err >= 8.0:
+        raw_score = 2.0 + (abs_err - 9.0) * (18.0 / 91.0)
+        score = int(round(max(2.0, min(20.0, raw_score))))
+        return {
+            "axis": axis,
+            "cmd": axis_cmd_for_error(axis, err_mm),
+            "gap_mm": float(abs_err),
+            "score": int(score),
+            "speed_score_pct": float(score),
+            "duration_override_ms": 250,
+            "predicted_distance_mm": None,
+            "source": "adaptive_micro_scale",
+        }
+    if abs_err > 4.0:
+        plan = calibrated_axis_motion_for_error(axis=axis, err_mm=err_mm)
+        if isinstance(plan, dict):
+            try:
+                score = int(round(float(plan.get("score"))))
+            except (TypeError, ValueError):
+                score = int(fallback_score)
+            try:
+                duration_override_ms = int(round(float(plan.get("duration_override_ms"))))
+            except (TypeError, ValueError):
+                return None
+            if duration_override_ms > 0:
+                out = dict(plan)
+                out["score"] = int(score)
+                out["duration_override_ms"] = int(duration_override_ms)
+                return out
+    return None

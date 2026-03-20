@@ -210,7 +210,7 @@ class TestHelperNextAlignTurnSpeed(unittest.TestCase):
         }
 
         with patch.object(
-            helper_next.helper_next2,
+            helper_next.helper_close_gaps,
             "calibrated_axis_motion_for_error",
             return_value=calibrated,
         ) as mock_calibrated:

@@ -1491,7 +1491,7 @@ class TestGroundUpLevel2Transition(unittest.TestCase):
         self.assertEqual(str(result.get("reason")), "success gate + level2")
         self.assertEqual(sent_cmds.count("u"), 1)
 
-    def test_find_topmost_brick_crosshair_drop_counts_one_cycle_when_multiple_no_required(self):
+    def test_find_topmost_brick_crosshair_drop_counts_one_cycle_when_two_no_required(self):
         world = _DummyWorld()
         world.process_rules = {
             "FIND_TOPMOST_BRICK": {
@@ -1505,8 +1505,8 @@ class TestGroundUpLevel2Transition(unittest.TestCase):
                     "mast_up_command": "u",
                     "mast_up_score": 100,
                     "mast_up_max_acts": 6,
-                    "false_up_acts_required": 4,
-                    "consecutive_no_required": 4,
+                    "false_up_acts_required": 2,
+                    "consecutive_no_required": 2,
                     "false_confirm_frames": 1,
                     "level2_use_full_gatecheck": False,
                     "complete_on_crosshair_drop": True,
@@ -1519,7 +1519,7 @@ class TestGroundUpLevel2Transition(unittest.TestCase):
         world.brick["inCrosshairs"] = True
         world.brick["visible"] = True
 
-        sequence = [False, False, False, False]
+        sequence = [False, False]
 
         def _fake_update_world_from_vision(world_obj, vision_obj, log=True):
             _ = (vision_obj, log)
@@ -1559,14 +1559,12 @@ class TestGroundUpLevel2Transition(unittest.TestCase):
 
         self.assertTrue(bool(result.get("success")))
         self.assertEqual(str(result.get("reason")), "success gate + level2")
-        self.assertEqual(sent_cmds.count("u"), 4)
+        self.assertEqual(sent_cmds.count("u"), 2)
         cycle_lines = [line for line in print_lines if "level2 success gate check=" in line]
-        self.assertEqual(len(cycle_lines), 4)
-        self.assertIn("level2 success gate check=1/4", cycle_lines[0])
+        self.assertEqual(len(cycle_lines), 2)
+        self.assertIn("level2 success gate check=1/2", cycle_lines[0])
         self.assertIn("crosshair_drop=YES", cycle_lines[0])
-        self.assertIn("level2 success gate check=2/4", cycle_lines[1])
-        self.assertIn("level2 success gate check=3/4", cycle_lines[2])
-        self.assertIn("level2 success gate check=4/4", cycle_lines[3])
+        self.assertIn("level2 success gate check=2/2", cycle_lines[1])
 
 
 if __name__ == "__main__":

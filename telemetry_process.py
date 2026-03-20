@@ -15043,23 +15043,20 @@ def run_alignment_segment(
             and planned_corr_type
             and planned_corr_type in active_disqualify_types
         ):
+            disq_text = ", ".join(sorted(active_disqualify_types))
             if not align_silent:
-                disq_text = ", ".join(sorted(active_disqualify_types))
                 print(
                     format_headline(
                         (
                             f"[RECOVERY] planner picked disqualified gap type '{planned_corr_type}' "
-                            f"(disqualified: {disq_text}); holding one loop before re-plan."
+                            f"(disqualified: {disq_text}); hard failing."
                         ),
-                        COLOR_ORANGE_BRIGHT,
+                        COLOR_RED,
                     )
                 )
-            cmd = None
-            speed = 0.0
-            speed_score = None
-            cmd_reason = f"recovery_disqualify_hold_{planned_corr_type}"
-            planned_corr_type = None
-            active_disqualify_types = set()
+            if robot:
+                robot.stop()
+            return False, f"planner_disqualified_gap_type_{planned_corr_type}"
         if (
             use_micro_align_gap_planner
             and active_disqualify_types
@@ -15790,23 +15787,20 @@ def run_alignment_segment(
             and planned_corr_type
             and planned_corr_type in active_disqualify_types
         ):
+            disq_text = ", ".join(sorted(active_disqualify_types))
             if not align_silent:
-                disq_text = ", ".join(sorted(active_disqualify_types))
                 print(
                     format_headline(
                         (
                             f"[RECOVERY] planner picked disqualified gap type '{planned_corr_type}' "
-                            f"(disqualified: {disq_text}); holding one settle loop before re-plan."
+                            f"(disqualified: {disq_text}); hard failing."
                         ),
-                        COLOR_ORANGE_BRIGHT,
+                        COLOR_RED,
                     )
                 )
-            cmd = None
-            speed = 0.0
-            speed_score = None
-            cmd_reason = f"recovery_disqualify_hold_{planned_corr_type}"
-            planned_corr_type = None
-            active_disqualify_types = set()
+            if robot:
+                robot.stop()
+            return False, f"planner_disqualified_gap_type_{planned_corr_type}"
         if (
             use_micro_align_gap_planner
             and active_disqualify_types

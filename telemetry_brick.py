@@ -13,6 +13,7 @@ ALIGN_CONFIDENCE_MIN = 25.0
 VISIBILITY_LOST_GRACE_S = 0.5
 VISIBLE_FALSE_CONFIDENT_FRAMES_REQUIRED = 3
 VISIBLE_FALSE_CONFIDENT_MAX_SAMPLES = 6
+VISIBLE_FALSE_CONFIDENT_MAX_AGE_S = 0.5
 BRICK_SMOOTH_FRAMES = 2
 BRICK_SMOOTH_OUTLIER_MM = 12.0
 BRICK_SMOOTH_OUTLIER_DEG = 6.0
@@ -793,6 +794,7 @@ def _recent_confident_visible_hits(
     min_confidence=gate_utils.VISIBLE_FALSE_FAIL_CONFIDENCE_MIN,
     required_frames=VISIBLE_FALSE_CONFIDENT_FRAMES_REQUIRED,
     max_samples=VISIBLE_FALSE_CONFIDENT_MAX_SAMPLES,
+    max_age_s=VISIBLE_FALSE_CONFIDENT_MAX_AGE_S,
 ):
     try:
         required = max(1, int(required_frames or 1))
@@ -808,6 +810,12 @@ def _recent_confident_visible_hits(
     if not source:
         return False
 
+    try:
+        max_age = max(0.0, float(max_age_s or 0.0))
+    except (TypeError, ValueError):
+        max_age = float(VISIBLE_FALSE_CONFIDENT_MAX_AGE_S)
+    now_s = float(time.time())
+
     hits = 0
     scanned = 0
     for frame in reversed(list(source)):
@@ -815,6 +823,19 @@ def _recent_confident_visible_hits(
             break
         if not isinstance(frame, dict):
             continue
+
+        if max_age > 0.0:
+            stamp = frame.get("timestamp")
+            if stamp is None:
+                stamp = frame.get("stamp")
+            if stamp is not None:
+                try:
+                    age_s = max(0.0, now_s - float(stamp))
+                except (TypeError, ValueError):
+                    age_s = None
+                if age_s is not None and age_s > max_age:
+                    break
+
         scanned += 1
 
         found_raw = frame.get("found")

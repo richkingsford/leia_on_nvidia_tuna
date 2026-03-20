@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-import helper_next2
+import helper_close_gaps
 from helper_demo_log_utils import extract_attempt_segments, load_demo_logs, normalize_step_label
 from helper_vision_config import demos_dir_for_mode
 from telemetry_robot import (
@@ -472,13 +472,11 @@ def align_gap_correction_speed_score(correction_type, gap_mm, *, cmd=None) -> in
 
 
 def _x_axis_correction_cmd(x_err_mm: float) -> str:
-    cmd = helper_next2.axis_cmd_for_error("x", x_err_mm)
-    return str(cmd or ("l" if float(_coerce_float(x_err_mm, 0.0) or 0.0) > 0.0 else "r"))
+    return str(helper_close_gaps.x_axis_correction_cmd(x_err_mm))
 
 
 def _y_axis_correction_cmd(y_err_mm: float) -> str:
-    cmd = helper_next2.axis_cmd_for_error("y", y_err_mm)
-    return str(cmd or ("d" if float(_coerce_float(y_err_mm, 0.0) or 0.0) > 0.0 else "u"))
+    return str(helper_close_gaps.y_axis_correction_cmd(y_err_mm))
 
 
 def _axis_curve_motion_plan(axis: str, err_mm: float, *, fallback_score: int) -> Optional[dict]:
@@ -500,7 +498,7 @@ def _axis_curve_motion_plan(axis: str, err_mm: float, *, fallback_score: int) ->
     # score anchors can make interpolated low scores effectively indistinguishable
     # from 1%, which is what caused auto forward pulses to underperform here.
     if axis_key in {"dist", "distance"}:
-        plan = helper_next2.calibrated_axis_motion_for_error(axis=axis_key, err_mm=err_mm)
+        plan = helper_close_gaps.calibrated_axis_motion_for_error(axis=axis_key, err_mm=err_mm)
         if isinstance(plan, dict):
             try:
                 duration_override_ms = int(round(float(plan.get("duration_override_ms"))))
@@ -525,7 +523,7 @@ def _axis_curve_motion_plan(axis: str, err_mm: float, *, fallback_score: int) ->
         
         return {
             "axis": axis,
-            "cmd": helper_next2.axis_cmd_for_error(axis, err_mm),
+            "cmd": helper_close_gaps.axis_cmd_for_error(axis, err_mm),
             "gap_mm": float(abs_err),
             "score": int(score),
             "speed_score_pct": float(score),
@@ -536,7 +534,7 @@ def _axis_curve_motion_plan(axis: str, err_mm: float, *, fallback_score: int) ->
 
     # Only use calibration for errors > 4mm; use curve-based scoring for smaller errors
     if abs_err > 4.0:
-        plan = helper_next2.calibrated_axis_motion_for_error(axis=axis, err_mm=err_mm)
+        plan = helper_close_gaps.calibrated_axis_motion_for_error(axis=axis, err_mm=err_mm)
         if isinstance(plan, dict):
             try:
                 score = int(round(float(plan.get("score"))))
@@ -627,7 +625,7 @@ def _curve_log_metadata(axis: str, curve_plan: Optional[dict], *, fallback_score
 
 def x_axis_curve_lookup_lines(sample_errors_mm=None) -> List[str]:
     lines = []
-    calibration = helper_next2.load_axis_aruco_calibration("x")
+    calibration = helper_close_gaps.load_axis_aruco_calibration("x")
     bins = sample_errors_mm or ALIGN_BRICK_X_AXIS_CURVE_BINS_MM
     if not isinstance(calibration, dict):
         lines.append("[ALIGN_CURVE] Single-source x-axis turn curve loaded:")

@@ -185,9 +185,9 @@
                     "max_bricks": 20,
                     "initial_bricks": 2
                 },
-                "false_up_acts_required": 4,
+                "false_up_acts_required": 2,
                 "false_confirm_frames": 3,
-                "consecutive_no_required": 4,
+                "consecutive_no_required": 2,
                 "complete_on_crosshair_drop": true,
                 "level2_require_visible_for_confirm": false,
                 "level2_fail_on_skipped_observation": false,

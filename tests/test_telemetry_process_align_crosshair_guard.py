@@ -156,14 +156,14 @@ class TestTelemetryProcessAlignCrosshairGuard(unittest.TestCase):
 
         return ok, reason, send_cmds, print_lines
 
-    def test_align_brick_crosshair_guard_reverses_last_three_acts_and_blocks_retry(self):
+    def test_align_brick_crosshair_guard_hard_fails_if_planner_repeats_disqualified_gap_type(self):
         ok, reason, send_cmds, print_lines = self._run_align_crosshair_case(
             [_gap_plan("l", 12, "x_axis")],
             require_retry_block=True,
         )
 
-        self.assertTrue(ok)
-        self.assertEqual(reason, "success gate")
+        self.assertFalse(ok)
+        self.assertEqual(reason, "planner_disqualified_gap_type_x_axis")
         self.assertEqual(send_cmds, ["l", "l", "l", "r", "r", "r"])
         self.assertTrue(
             any(
@@ -176,6 +176,13 @@ class TestTelemetryProcessAlignCrosshairGuard(unittest.TestCase):
             any(
                 "post-recovery disqualified gap types" in line
                 and "x_axis" in line
+                for line in print_lines
+            )
+        )
+        self.assertTrue(
+            any(
+                "planner picked disqualified gap type 'x_axis'" in line
+                and "hard failing" in line
                 for line in print_lines
             )
         )

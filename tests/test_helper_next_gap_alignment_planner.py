@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import helper_next
-import helper_next2
+import helper_close_gaps
 
 
 class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
@@ -398,7 +398,7 @@ class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
         self.assertEqual(plan.get("correction_type"), "x_axis", plan)
         self.assertIn(plan.get("cmd"), ("l", "r"), plan)
 
-    def test_gap_planner_keeps_its_own_curve_profile_instead_of_analytics_override(self):
+    def test_gap_planner_keeps_its_own_gap_speed_instead_of_analytics_override(self):
         process_rules = {
             "BRICK_LOCK_WALL": {
                 "success_gates": {
@@ -429,19 +429,14 @@ class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
         finally:
             helper_next.compute_alignment_decision = orig
 
-        expected_profile = helper_next2.calibrated_axis_motion_for_error(axis="x", err_mm=x_err_mm)
         self.assertEqual(plan.get("correction_type"), "x_axis", plan)
-        self.assertIsNotNone(expected_profile)
         self.assertEqual(plan.get("cmd"), "l", plan)
-        self.assertEqual(int(plan.get("score") or 0), int(expected_profile["score"]), plan)
-        self.assertEqual(
-            int(plan.get("duration_override_ms") or 0),
-            int(expected_profile["duration_override_ms"]),
-            plan,
-        )
+        # The gap planner owns micro speed selection here; analytics score=1 must not override it.
+        self.assertGreaterEqual(int(plan.get("score") or 0), 2, plan)
+        self.assertEqual(int(plan.get("duration_override_ms") or 0), 250, plan)
         self.assertNotEqual(int(plan.get("score") or 0), 1, plan)
 
-    def test_gap_planner_uses_y_curve_duration_override_when_available(self):
+    def test_gap_planner_keeps_conservative_y_score_for_small_gap(self):
         process_rules = {
             "ALIGN_BRICK": {
                 "success_gates": {
@@ -462,16 +457,10 @@ class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
             duration_s=0.05,
         )
 
-        expected_profile = helper_next2.calibrated_axis_motion_for_error(axis="y", err_mm=6.0)
-        self.assertIsNotNone(expected_profile)
         self.assertEqual(plan.get("correction_type"), "y_axis", plan)
         self.assertEqual(plan.get("cmd"), "d", plan)
-        self.assertEqual(int(plan.get("score") or 0), int(expected_profile["score"]), plan)
-        self.assertEqual(
-            int(plan.get("duration_override_ms") or 0),
-            int(expected_profile["duration_override_ms"]),
-            plan,
-        )
+        self.assertEqual(int(plan.get("score") or 0), 1, plan)
+        self.assertIsNone(plan.get("duration_override_ms"), plan)
 
     def test_gap_planner_dist_only_step_does_not_invent_x_gap(self):
         process_rules = {

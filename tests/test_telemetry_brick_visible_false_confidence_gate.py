@@ -1,4 +1,5 @@
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -115,6 +116,28 @@ class TestTelemetryBrickVisibleFalseConfidenceGate(unittest.TestCase):
 
         self.assertFalse(check.ok)
         self.assertIn("visible gate", check.reasons)
+
+    def test_visible_false_gate_ignores_stale_confident_history(self):
+        world = _DummyWorld()
+        world.brick["visible"] = False
+        world.brick["confidence"] = 0.0
+        now = time.time()
+        world._raw_brick_visibility_history = [
+            {"frame_id": 1, "timestamp": now - 1.20, "found": True, "conf": 90.0},
+            {"frame_id": 2, "timestamp": now - 1.10, "found": True, "conf": 92.0},
+            {"frame_id": 3, "timestamp": now - 1.00, "found": True, "conf": 95.0},
+            {"frame_id": 4, "timestamp": now - 0.05, "found": False, "conf": 0.0},
+        ]
+        process_rules = {"EXIT_WALL": {"success_gates": {"visible": {"min": False}}}}
+
+        check = telemetry_brick.evaluate_success_gates(
+            world,
+            "EXIT_WALL",
+            learned_rules={},
+            process_rules=process_rules,
+        )
+
+        self.assertTrue(check.ok, msg=check.reason_str())
 
     def test_visible_true_gate_remains_strict(self):
         world = _DummyWorld()

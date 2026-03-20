@@ -549,6 +549,34 @@ class TestTelemetryProcessLiteGate(unittest.TestCase):
         self.assertEqual(world._gatecheck_mode, "lite")
         self.assertTrue(bool(getattr(world, "_lite_gate_visible_false_confident_seen", False)))
 
+    def test_lite_visible_false_gate_ignores_stale_confident_raw_history(self):
+        telemetry_process.apply_lite_gate_check_config({"default_unique_smoothed_frames": 3})
+        world = _DummyWorld()
+        now = time.time()
+        world.last_visible_time = None
+        world.process_rules = {
+            "EXIT_WALL": {
+                "success_gates": {
+                    "visible": {"min": False},
+                }
+            }
+        }
+        world._smoothed_frame_history = [
+            {"frame_id": 31, "visible": False, "confidence": 0.0},
+            {"frame_id": 32, "visible": False, "confidence": 0.0},
+            {"frame_id": 33, "visible": False, "confidence": 0.0},
+        ]
+        world._raw_brick_visibility_history = [
+            {"frame_id": 29, "timestamp": now - 1.20, "found": True, "conf": 90.0},
+            {"frame_id": 30, "timestamp": now - 1.10, "found": True, "conf": 92.0},
+            {"frame_id": 31, "timestamp": now - 1.00, "found": True, "conf": 95.0},
+            {"frame_id": 33, "timestamp": now - 0.05, "found": False, "conf": 0.0},
+        ]
+
+        ok, _ = telemetry_process.evaluate_gate_status(world, "EXIT_WALL")
+        self.assertTrue(ok)
+        self.assertFalse(bool(getattr(world, "_lite_gate_visible_false_confident_seen", False)))
+
     def test_lite_gate_dist_target_tol_matches_runtime_directional_truth(self):
         telemetry_process.apply_lite_gate_check_config({"default_unique_smoothed_frames": 3})
         world = _DummyWorld()
