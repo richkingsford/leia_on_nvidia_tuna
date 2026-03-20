@@ -11,10 +11,10 @@ Same interface as the original BrickDetector:
                brick_above, brick_below)
 
 Usage:
-    # In autobuild.py, replace:
+    # In your runtime script, replace:
     #   from helper_brick_vision import BrickDetector
     # with:
-    #   from brick_detector_yolo import BrickDetector
+    #   from helper_brick_detector_yolo import BrickDetector
 
 Dependencies:
     pip install opencv-contrib-python numpy
@@ -53,12 +53,8 @@ DEFAULT_FRAME_H = 480
 FOCAL_PX_REF = 580.0
 FOCAL_REF_WIDTH = 640.0
 
-# YOLO model path (relative to this file) — prefers newest available
-MODEL_PATH_V4 = Path(__file__).resolve().parent / "brick_yolo_v4.onnx"
-MODEL_PATH_V3 = Path(__file__).resolve().parent / "brick_yolo_v3.onnx"
-MODEL_PATH_V2 = Path(__file__).resolve().parent / "brick_yolo_v2.onnx"
-MODEL_PATH = (MODEL_PATH_V4 if MODEL_PATH_V4.exists() else
-              MODEL_PATH_V3 if MODEL_PATH_V3.exists() else MODEL_PATH_V2)
+# YOLO model path (relative to this file) — scenario-2 runtime uses v4 only
+MODEL_PATH = Path(__file__).resolve().parent / "brick_yolo_v4.onnx"
 
 # Detection confidence threshold
 CONF_THRESHOLD = 0.15
@@ -107,7 +103,7 @@ class BrickDetector:
     BrickDetector in helper_brick_vision.py.
 
     Provides the same read() interface expected by telemetry_brick.py
-    and autobuild.py.
+    and runtime training/orchestration scripts.
 
     Uses OpenCV DNN with an ONNX-exported YOLOv8-nano model — no
     PyTorch or ultralytics required at runtime.
@@ -137,7 +133,7 @@ class BrickDetector:
         if not mpath.exists():
             raise FileNotFoundError(
                 f"YOLO ONNX model not found at {mpath}. "
-                f"Place brick_yolo_v3.onnx (or brick_yolo_v2.onnx) next to this script."
+                f"Place brick_yolo_v4.onnx next to this script."
             )
         self.net = cv2.dnn.readNetFromONNX(str(mpath))
         self.log.info("Loaded YOLO ONNX model from %s", mpath)
@@ -895,7 +891,7 @@ class BrickDetector:
     def _stack_flags_from_individuals(self, primary, all_bricks):
         """
         Determine above/below flags using individual brick positions.
-        Reuses the proven pattern from OLD/vision_brick_color.py:252-271.
+        Uses the legacy-proven center-overlap and vertical-gap heuristic.
         """
         if not primary or len(all_bricks) < 2:
             return False, False

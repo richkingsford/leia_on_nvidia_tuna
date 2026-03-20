@@ -19,7 +19,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
-from helper_calibrate import (
+from .helper_calibrate import (
     CalibrationLivePlot,
     build_linear_duration_schedule,
     build_payload as build_shared_payload,
@@ -39,7 +39,7 @@ from helper_robot_control import Robot
 from helper_vision_leia import LeiaVision
 
 try:
-    from brick_detector_yolo import BrickDetector as YoloBrickDetector
+    from helper_brick_detector_yolo import BrickDetector as YoloBrickDetector
 except ImportError:
     YoloBrickDetector = None
 

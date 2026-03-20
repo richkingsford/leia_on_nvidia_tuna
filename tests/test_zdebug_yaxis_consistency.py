@@ -1,6 +1,10 @@
 import unittest
+import sys
+from pathlib import Path
 
-import zdebug_Yaxis_consistency as yconsistency
+sys.path.append(str(Path(__file__).resolve().parents[1] / "debug"))
+
+import debug_Yaxis_consistency as yconsistency
 
 
 class YAxisConsistencyTests(unittest.TestCase):

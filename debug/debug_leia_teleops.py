@@ -17,7 +17,7 @@ from flask import Flask, Response
 
 # Import our capabilities
 from helper_robot_control import Robot
-from helper_brick_vision import BrickDetector
+from helper_brick_detector_yolo import BrickDetector
 from telemetry_robot import WorldModel, TelemetryLogger, MotionEvent, StepState, draw_telemetry_overlay
 
 # --- CONFIG ---

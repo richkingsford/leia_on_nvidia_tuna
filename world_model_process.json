@@ -125,16 +125,16 @@
                     "min": true
                 },
                 "angle_abs": {
-                    "target": 89.01,
-                    "tol": 0.07
+                    "target": 4.29,
+                    "tol": 6.95
                 },
                 "x_axis": {
-                    "target": 2.83,
-                    "tol": 2.3
+                    "target": -8.26,
+                    "tol": 25.95
                 },
                 "y_axis": {
-                    "target": 1.62,
-                    "tol": 2.3
+                    "target": -11.12,
+                    "tol": 6.57
                 }
             }
         },
@@ -255,12 +255,12 @@
             },
             "success_gates": {
                 "xAxis_offset_abs": {
-                    "target": -3.2,
-                    "tol": 4.0
+                    "target": -3.86,
+                    "tol": 1.4
                 },
                 "dist": {
-                    "target": 97.15,
-                    "tol": 4.0
+                    "target": 115.49,
+                    "tol": 2.3
                 }
             },
             "pre_align_descend": {
@@ -349,15 +349,15 @@
                     "min": true
                 },
                 "xAxis_offset_abs": {
-                    "target": 6.54,
+                    "target": -4.74,
                     "tol": 1.4
                 },
                 "yAxis_offset_abs": {
-                    "target": 4.92,
+                    "target": 2.5,
                     "tol": 2.3
                 },
                 "dist": {
-                    "target": 135.17,
+                    "target": 107.63,
                     "tol": 2.3
                 }
             }
@@ -383,7 +383,7 @@
                     "min": true
                 },
                 "dist": {
-                    "target": 58.85,
+                    "target": 48.0,
                     "tol": 2.3
                 }
             }
@@ -397,6 +397,11 @@
                 "max_bricks": 20
             },
             "success_gates": {
+                "visible": {
+                    "min": false
+                }
+            },
+            "start_gates": {
                 "visible": {
                     "min": true
                 }
@@ -438,11 +443,11 @@
             },
             "startup_pre_action_exception": {
                 "enabled": true,
-                "operator_log_reminder": "Exception active: before startup hard-left scan, slow left turn L 1% for 1500ms.",
+                "operator_log_reminder": "Exception active: before startup hard-left scan, slow left turn L 1% for 500ms.",
                 "command": "l",
                 "score": 1,
                 "acts": 1,
-                "duration_override_ms": 1500,
+                "duration_override_ms": 500,
                 "observe_between_acts": false,
                 "pause_s": 0.0
             },
@@ -508,6 +513,19 @@
             "start_gates": {
                 "visible": {
                     "min": true
+                }
+            },
+            "success_gates": {
+                "visible": {
+                    "min": true
+                },
+                "angle_abs": {
+                    "target": 1.02,
+                    "tol": 1.18
+                },
+                "xAxis_offset_abs": {
+                    "target": -5.94,
+                    "tol": 1.4
                 }
             }
         },
@@ -617,16 +635,16 @@
             },
             "success_gates": {
                 "xAxis_offset_abs": {
-                    "target": -3.2,
-                    "tol": 4.0
+                    "target": -2.94,
+                    "tol": 1.4
                 },
                 "yAxis_offset_abs": {
-                    "target": 2.0,
+                    "target": 7.74,
                     "tol": 3.0
                 },
                 "dist": {
-                    "target": 97.15,
-                    "tol": 4.0
+                    "target": 120.0,
+                    "tol": 4.34
                 }
             },
             "pre_align_descend": {
@@ -650,6 +668,11 @@
                 "acts": 3,
                 "observe_between_acts": false,
                 "pause_s": 0.0
+            },
+            "start_gates": {
+                "visible": {
+                    "min": true
+                }
             }
         },
         "POSITION_BRICK": {
@@ -695,6 +718,11 @@
                 "dist": {
                     "target": 111.45,
                     "tol": 2.3
+                }
+            },
+            "start_gates": {
+                "visible": {
+                    "min": true
                 }
             }
         },
@@ -757,6 +785,23 @@
                 "acts": 4,
                 "observe_between_acts": false,
                 "pause_s": 0.0
+            },
+            "success_gates": {
+                "visible": {
+                    "min": true
+                },
+                "x_axis": {
+                    "target": -3.5,
+                    "tol": 2.3
+                },
+                "y_axis": {
+                    "target": 1.0,
+                    "tol": 3.3
+                },
+                "dist": {
+                    "target": 48.0,
+                    "tol": 2.3
+                }
             }
         },
         "RETREAT": {
@@ -799,6 +844,11 @@
                 "dist": {
                     "target": 124.69,
                     "tol": 12.3
+                }
+            },
+            "start_gates": {
+                "visible": {
+                    "min": true
                 }
             }
         }

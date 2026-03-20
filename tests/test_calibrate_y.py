@@ -4,7 +4,7 @@ import unittest
 from collections import deque
 from unittest.mock import Mock, patch
 
-import calibrate_y
+from calibration import helper_calibrate_y as calibrate_y
 
 
 class CalibrateYTests(unittest.TestCase):

@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-import calibrate_x
+from calibration import helper_calibrate_x as calibrate_x
 
 
 class CalibrateXTests(unittest.TestCase):

@@ -6,7 +6,7 @@ import numpy as np
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from brick_detector_yolo import BrickDetector
+from helper_brick_detector_yolo import BrickDetector
 
 
 class TestBrickDetectorYoloCenterLock(unittest.TestCase):

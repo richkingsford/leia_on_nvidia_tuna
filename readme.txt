@@ -4,7 +4,7 @@ Manual camera sweep utility for the dot-seeking robot prototype.
 
 * Python 3.9+
 * `pip install opencv-python numpy pyserial`
-* Arduino-compatible continuous servo setup wired the same way as the original project (pin 5 handled by `robot_controller/servo.py`).
+* Arduino-compatible continuous servo setup wired the same way as the original project (archived reference implementation at `OLD/robot_controller/servo.py`).
 
 ## Manual sweep capture (main.py)
 
@@ -35,11 +35,8 @@ The image is written next to `main.py`. Use this before the full sweep to make s
 
 ## Annotating saved photos
 
-If you need to draw circles/labels around colored dots after capturing, use the helpers in `robot_controller/vision.py`. For example, inside a Python shell:
+If you need to draw circles/labels around colored dots after capturing, use the archived helpers in `OLD/robot_controller/vision.py`.
 
-```python
-from robot_controller.vision import annotate_photo_directory
-annotate_photo_directory("photos", "annotated")
-```
+To run those helpers directly, either restore the package to the repository root or copy the helper functions into your current workflow.
 
-This produces annotated copies in the `annotated` folder. Adjust HSV ranges in `robot_controller/vision.py` if your lighting conditions differ.
+Those helpers produce annotated copies in the `annotated` folder. Adjust HSV ranges in `OLD/robot_controller/vision.py` if your lighting conditions differ.

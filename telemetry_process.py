@@ -10224,6 +10224,8 @@ def run_alignment_segment(
             tol_text = f" ±{abs(float(tol_num)):.2f}" if tol_num is not None else ""
             tol_text_operator = f"+/-{abs(float(tol_num)):.2f}" if tol_num is not None else ""
             if metric_name == "dist_err":
+                current_num = _as_float(curr_abs_val, None)
+                current_text = "unknown" if current_num is None else f"{float(current_num):.2f}"
                 if float(curr_err) > 0.0:
                     relation = "farther than"
                 elif float(curr_err) < 0.0:
@@ -10231,8 +10233,14 @@ def run_alignment_segment(
                 else:
                     relation = "at"
                 if relation == "at":
-                    return f"I see {metric_name}={err_render} at our {obs_target_label}={target_text}{tol_text}{obs_target_note}."
-                return f"I see {metric_name}={err_render} {relation} our {obs_target_label}={target_text}{tol_text}{obs_target_note}."
+                    return (
+                        f"I see dist={current_text} Δ{err_render} at our "
+                        f"{obs_target_label}={target_text}{tol_text}{obs_target_note}."
+                    )
+                return (
+                    f"I see dist={current_text} Δ{err_render} {relation} our "
+                    f"{obs_target_label}={target_text}{tol_text}{obs_target_note}."
+                )
             if metric_name == "y_err":
                 if float(curr_err) > 0.0:
                     relation = "above"

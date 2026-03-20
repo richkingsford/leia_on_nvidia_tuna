@@ -3,8 +3,11 @@ import numpy as np
 import os
 import time
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 from collections import deque
+
+
+CameraSource = Union[int, str]
 
 @dataclass
 class BrickPose:
@@ -772,11 +775,18 @@ class ArucoBrickVision:
             return None
         return self._order_quad_pts(best[1])
 
-    def _candidate_camera_indices(self, preferred_index: Optional[int]) -> List[int]:
-        candidates: List[int] = []
+    def _candidate_camera_sources(self, preferred_index: Optional[int]) -> List[CameraSource]:
+        candidates: List[CameraSource] = []
 
         if preferred_index is not None:
             candidates.append(int(preferred_index))
+
+        env_source = str(os.getenv("LEIA_CAMERA_SOURCE", "")).strip()
+        if env_source:
+            try:
+                candidates.append(int(env_source))
+            except ValueError:
+                candidates.append(env_source)
 
         env_index = os.getenv("LEIA_CAMERA_INDEX")
         if env_index:
@@ -786,17 +796,23 @@ class ArucoBrickVision:
                 pass
 
         candidates.extend([0, 1, 2, 3])
+        candidates.extend(["/dev/video0", "/dev/video1", "/dev/video2", "/dev/video3"])
 
-        deduped: List[int] = []
-        for idx in candidates:
-            if idx not in deduped:
-                deduped.append(idx)
+        deduped: List[CameraSource] = []
+        for source in candidates:
+            if source not in deduped:
+                deduped.append(source)
         return deduped
 
-    def _open_camera(self, index: int, width: int, height: int):
-        backend_pref = cv2.CAP_V4L2 if hasattr(cv2, "CAP_V4L2") else cv2.CAP_ANY
-        for backend in (backend_pref, cv2.CAP_ANY):
-            cap = cv2.VideoCapture(index, backend)
+    def _open_camera(self, source: CameraSource, width: int, height: int):
+        backends = []
+        if hasattr(cv2, "CAP_V4L2"):
+            backends.append(cv2.CAP_V4L2)
+        if hasattr(cv2, "CAP_GSTREAMER"):
+            backends.append(cv2.CAP_GSTREAMER)
+        backends.append(cv2.CAP_ANY)
+        for backend in backends:
+            cap = cv2.VideoCapture(source, backend)
             if cap is not None and cap.isOpened():
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
@@ -804,9 +820,26 @@ class ArucoBrickVision:
                 return cap
             if cap is not None:
                 cap.release()
-            if backend == cv2.CAP_ANY:
-                break
         return None
+
+    def _log_camera_open_failure(self, tried_sources: List[CameraSource]):
+        print(f"[VISION] Unable to open camera. Tried sources: {tried_sources}", flush=True)
+        existing_nodes = [p for p in ("/dev/video0", "/dev/video1", "/dev/video2", "/dev/video3") if os.path.exists(p)]
+        if existing_nodes:
+            print(f"[VISION] Detected camera nodes: {existing_nodes}", flush=True)
+        else:
+            print("[VISION] No /dev/video* nodes detected. Check camera connection.", flush=True)
+        env_source = str(os.getenv("LEIA_CAMERA_SOURCE", "")).strip()
+        env_index = str(os.getenv("LEIA_CAMERA_INDEX", "")).strip()
+        if env_source or env_index:
+            print(
+                f"[VISION] Env camera overrides: LEIA_CAMERA_SOURCE='{env_source}', LEIA_CAMERA_INDEX='{env_index}'",
+                flush=True,
+            )
+        print(
+            "[VISION] Hint: ensure no other app or previous training run is still using the camera device.",
+            flush=True,
+        )
 
     def init_camera(self, width: int = 640, height: int = 480, camera_index: Optional[int] = None):
         if self.cap is None or not self.cap.isOpened():
@@ -814,19 +847,19 @@ class ArucoBrickVision:
                 self.cap.release()
                 self.cap = None
 
-            tried_indices: List[int] = []
-            for idx in self._candidate_camera_indices(camera_index):
-                tried_indices.append(idx)
-                cap = self._open_camera(idx, width, height)
+            tried_sources: List[CameraSource] = []
+            for source in self._candidate_camera_sources(camera_index):
+                tried_sources.append(source)
+                cap = self._open_camera(source, width, height)
                 if cap is not None and cap.isOpened():
                     self.cap = cap
-                    self.camera_index = idx
+                    self.camera_index = source
                     break
 
             if self.cap is None or not self.cap.isOpened():
                 self.cap = None
                 self.camera_index = None
-                print(f"[VISION] Unable to open camera. Tried indices: {tried_indices}", flush=True)
+                self._log_camera_open_failure(tried_sources)
 
         # Approximate camera matrix if none provided
         focal_length = width

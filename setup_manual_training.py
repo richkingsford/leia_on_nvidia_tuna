@@ -17,7 +17,7 @@ from helper_demo_log_utils import load_demo_logs, normalize_step_label, prune_lo
 from helper_gate_utils import format_gatecheck_stream_lines, load_process_steps
 from helper_streaming import start_stream_server
 from helper_vision_aruco import ArucoBrickVision
-from brick_detector_yolo import BrickDetector as YoloBrickDetector
+from helper_brick_detector_yolo import BrickDetector as YoloBrickDetector
 from helper_manual_config import load_manual_training_config
 from helper_vision_config import (
     active_vision_mode as _world_model_active_vision_mode,
@@ -53,10 +53,12 @@ from telemetry_robot import (
     quantize_speed,
 )
 from telemetry_process import (
+    CONTROL_DT,
     _result_lite_gate_detail,
     apply_height_inventory_adjustment_from_step,
     apply_height_snapshot_from_step,
     build_motion_sequence,
+    collect_segments,
     consume_auto_step_action_stats,
     compute_stream_gate_summary,
     format_headline,
@@ -65,22 +67,20 @@ from telemetry_process import (
     height_intel_step_begin_line,
     merge_motion_steps,
     nominal_actions_from_events,
+    replay_segment,
     reset_auto_step_action_stats,
     reset_repeat_act_guard,
+    select_demo_segment,
     send_robot_command,
     send_robot_command_pwm,
     step_requires_start_gates,
+    update_process_model_from_demos,
+    update_world_from_vision,
 )
-from autobuild import (
-    collect_segments,
-    CONTROL_DT,
+from helper_gatecheck_runtime import (
     format_gate_lines,
     load_process_model,
-    replay_segment,
     refresh_autobuild_config,
-    select_demo_segment,
-    update_world_from_vision,
-    update_process_model_from_demos,
 )
 import telemetry_brick
 
@@ -339,8 +339,8 @@ def hotkey_uses_ease_in_out(hotkey):
 
 _DEFAULT_VISION_MODE = normalize_vision_mode(
     _world_model_active_vision_mode()
-    or _MANUAL_CONFIG.get("brick_vision", VISION_MODE_CYAN),
-    fallback=VISION_MODE_CYAN,
+    or _MANUAL_CONFIG.get("brick_vision", VISION_MODE_ARUCO),
+    fallback=VISION_MODE_ARUCO,
 )
 _DEFAULT_CYAN_PROFILE = str(
     _MANUAL_CONFIG.get(
@@ -465,7 +465,7 @@ def _cleanup_stale_run_logs(*, run_folders=None, cutoff_age_s=None):
     if cutoff_age_s is None:
         cutoff_age_s = float(RUN_LOG_RETENTION_S)
     try:
-        from helper_calibrate import cleanup_old_run_files
+        from calibration.helper_calibrate import cleanup_old_run_files
 
         cleanup_old_run_files(
             preserve_live_files=(),

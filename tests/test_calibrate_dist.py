@@ -1,6 +1,6 @@
 import unittest
 
-import calibrate_dist
+from calibration import helper_calibrate_dist as calibrate_dist
 
 
 class CalibrateDistTests(unittest.TestCase):

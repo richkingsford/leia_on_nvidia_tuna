@@ -4,8 +4,8 @@
 Unified Camera Setup and Testing Utility.
 1. Finds attached video devices (`/dev/video*`).
 2. Tests opening them and verifies resolution capabilities.
-3. Saves debug snapshots to `~/leia/debug_snaps`.
-4. Tests write permissions and folder creation.
+3. Saves debug snapshots in the current workspace as `zdebug_*.jpg`.
+4. Tests write permissions in the current workspace.
 """
 
 import cv2
@@ -16,7 +16,7 @@ import time
 import argparse
 
 # --- CONFIG ---
-SAVE_FOLDER = os.path.join(os.getcwd(), "debug_captures")
+SAVE_FOLDER = os.getcwd()
 
 def find_cameras():
     """Finds all /dev/video* devices."""
@@ -71,7 +71,7 @@ def test_camera(device_path_or_idx):
 
     if ret and frame is not None:
         # Save Frame
-        filename = f"cam_{idx}_test.jpg"
+        filename = f"zdebug_cam_{idx}_test.jpg"
         full_path = os.path.join(SAVE_FOLDER, filename)
         
         cv2.putText(frame, f"CAM {idx}: {width}x{height}", (20, 50), 
@@ -86,18 +86,10 @@ def test_camera(device_path_or_idx):
         print("[FAIL] Captured frame was empty.")
 
 def check_filesystem():
-    """Verifies output directory exists and is writable."""
+    """Verifies the workspace directory is writable."""
     print(f"\n--- Checking Filesystem ---")
     print(f"Target: {SAVE_FOLDER}")
-    
-    if not os.path.exists(SAVE_FOLDER):
-        try:
-            os.makedirs(SAVE_FOLDER)
-            print(f"[OK] Created directory.")
-        except OSError as e:
-            print(f"[CRITICAL] Failed to create directory: {e}")
-            sys.exit(1)
-    
+
     # Test Write
     test_file = os.path.join(SAVE_FOLDER, ".write_test")
     try:

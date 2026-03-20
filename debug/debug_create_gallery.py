@@ -2,15 +2,14 @@
 import os
 import glob
 
-GALLERY_FILE = "debug_captures/index.html"
-IMAGE_DIR = "debug_captures"
+GALLERY_FILE = "zdebug_gallery.html"
+IMAGE_GLOB = "zdebug_*.jpg"
 
 def create_gallery():
-    if not os.path.exists(IMAGE_DIR):
-        print(f"Error: Directory '{IMAGE_DIR}' not found. Run lay_bricks.py first.")
+    images = sorted(glob.glob(IMAGE_GLOB))
+    if not images:
+        print(f"Error: No files matched '{IMAGE_GLOB}' in {os.getcwd()}.")
         return
-
-    images = sorted(glob.glob(os.path.join(IMAGE_DIR, "*.jpg")))
     
     html = """
     <!DOCTYPE html>
@@ -27,7 +26,7 @@ def create_gallery():
         </style>
     </head>
     <body>
-        <h1>Debug Captures</h1>
+        <h1>zdebug Captures</h1>
         <div class="grid">
     """
     

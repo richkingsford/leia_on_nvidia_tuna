@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 from flask import Flask, Response
 from helper_robot_control import Robot
-from helper_brick_vision import BrickDetector
+from helper_brick_detector_yolo import BrickDetector
 from telemetry_robot import WorldModel, MotionEvent, draw_telemetry_overlay, manual_key_action, speed_power_pwm_for_cmd
 from telemetry_process import send_robot_command
 

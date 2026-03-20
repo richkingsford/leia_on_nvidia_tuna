@@ -10,7 +10,7 @@ Same interface as the original BrickDetector:
               brick_above, brick_below)
 
 Usage:
-    # In autobuild.py or any consumer, replace:
+    # In any consumer script, replace:
     #   from helper_brick_vision import BrickDetector
     # with:
     #   from helper_brick_vision_grabcut import BrickDetector
@@ -25,7 +25,7 @@ import logging
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Import the core detector from brick_detector.py (same directory or parent)
+# Import the core detector from helper_brick_detector.py (same directory or parent)
 # ---------------------------------------------------------------------------
 import sys
 
@@ -33,7 +33,7 @@ _BRICK_DETECTOR_DIR = str(Path(__file__).resolve().parent.parent)
 if _BRICK_DETECTOR_DIR not in sys.path:
     sys.path.insert(0, _BRICK_DETECTOR_DIR)
 
-from brick_detector import (
+from helper_brick_detector import (
     BrickDetector as _CoreDetector,
     DetectorConfig as _CoreConfig,
     BrickDetection,
@@ -61,7 +61,7 @@ class BrickDetector:
     BrickDetector in helper_brick_vision.py.
 
     Provides the same read() interface expected by telemetry_brick.py
-    and autobuild.py.
+    and runtime training/orchestration scripts.
     """
 
     def __init__(self, debug=True, save_folder=None, speed_optimize=False):

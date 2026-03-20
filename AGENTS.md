@@ -13,7 +13,6 @@
 - Generalized/reusable logic belongs in `helper*` files and must remain step-agnostic by default.
 - Step-specific behavior in helpers is prohibited unless explicitly approved by human leadership and documented as an exception with rationale.
 - Step-custom details (for example: start gates, success gates, metric directions, speed policies, focus thresholds) must live in world model JSON files, not hardcoded helper branches.
-- `setup_manual_training.py` is a key file but must not contain robot behavior logic (use helpers).
-- `autobuild.py` is a key file but must not contain robot behavior logic (use helpers).
+- `setup_manual_training.py` is the primary runner and must not contain robot behavior logic (use helpers).
 - Minimize duplicate code.
 - Exceptions and overrides are a last resort; use only when necessary and explain why.
