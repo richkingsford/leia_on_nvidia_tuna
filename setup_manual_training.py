@@ -323,7 +323,7 @@ _VISION_MODE_ALIASES = {
 }
 
 
-def normalize_vision_mode(value, fallback=VISION_MODE_ARUCO):
+def normalize_vision_mode(value, fallback=VISION_MODE_CYAN):
     return _normalize_vision_mode_global(value, fallback=fallback)
 
 
@@ -334,8 +334,8 @@ def hotkey_uses_ease_in_out(hotkey):
 
 _DEFAULT_VISION_MODE = normalize_vision_mode(
     _world_model_active_vision_mode()
-    or _MANUAL_CONFIG.get("brick_vision", VISION_MODE_ARUCO),
-    fallback=VISION_MODE_ARUCO,
+    or _MANUAL_CONFIG.get("brick_vision", VISION_MODE_CYAN),
+    fallback=VISION_MODE_CYAN,
 )
 _DEFAULT_CYAN_PROFILE = str(
     _MANUAL_CONFIG.get(
@@ -4098,7 +4098,7 @@ def _set_stream_state_vision_mode(app_state, mode):
     if not stream_state:
         return
     lock = stream_state.get("lock")
-    mode_norm = normalize_vision_mode(mode, fallback=VISION_MODE_ARUCO)
+    mode_norm = normalize_vision_mode(mode, fallback=VISION_MODE_CYAN)
     if lock is None:
         stream_state["vision_mode"] = mode_norm
         return

@@ -99,8 +99,8 @@ PROCESS_SUCCESS_METRICS_BY_STEP = {
     "APPROACH_VECTOR_BRICK_SUPPLY": ("visible", "angle_abs", "x_axis", "y_axis"),
     "FIND_TOPMOST_BRICK": ("inCrosshairs",),
     "FIND_TOPMOST_BRICK_WALL": ("inCrosshairs",),
-    "BRICK_LOCK": ("xAxis_offset_abs", "dist"),
-    "BRICK_LOCK_WALL": ("xAxis_offset_abs", "yAxis_offset_abs", "dist"),
+    "BRICK_LOCK": ("visible",),
+    "BRICK_LOCK_WALL": ("visible",),
     "ALIGN_BRICK": ("visible", "xAxis_offset_abs", "yAxis_offset_abs", "dist"),
     "SEAT_BRICK": ("visible", "dist"),
     "SEAT_BRICK2": ("visible", "dist", "x_axis", "y_axis"),
@@ -10746,12 +10746,23 @@ def run_alignment_segment(
         min(int(MAX_SPEED_SCORE), int(_as_int(step_post_desc_cfg.get("score"), 100))),
     )
     step_post_desc_completion_mode = str(step_post_desc_cfg.get("completion_mode") or "true_streak").strip().lower()
-    if step_post_desc_completion_mode not in ("true_streak", "true_then_false_streak"):
+    if step_post_desc_completion_mode not in ("true_streak", "true_then_false_streak", "y_axis_target"):
         step_post_desc_completion_mode = "true_streak"
     step_post_desc_true_required = max(1, int(_as_int(step_post_desc_cfg.get("true_down_acts_required"), 3)))
     step_post_desc_false_after_true_required = max(
         1,
         int(_as_int(step_post_desc_cfg.get("false_after_true_down_acts_required"), 2)),
+    )
+    step_post_desc_y_axis_target = float(
+        _as_float(
+            step_post_desc_cfg.get("target_y_axis"),
+            _as_float(step_post_desc_cfg.get("target"), 0.0),
+        )
+        or 0.0
+    )
+    step_post_desc_y_axis_tol = max(
+        0.0,
+        float(_as_float(step_post_desc_cfg.get("target_tol"), _as_float(step_post_desc_cfg.get("tol"), 0.0))),
     )
     if step_post_desc_enabled:
         step_post_desc_max_acts = max(
@@ -10761,6 +10772,18 @@ def run_alignment_segment(
     else:
         step_post_desc_max_acts = 0
     step_pre_desc_cfg = step_rules.get("pre_align_descend") if isinstance(step_rules, dict) else {}
+    step_post_follow_cfg = step_rules.get("post_success_follow_through") if isinstance(step_rules, dict) else {}
+    if not isinstance(step_post_follow_cfg, dict):
+        step_post_follow_cfg = {}
+    step_post_follow_enabled = bool(step_post_follow_cfg.get("enabled", False))
+    step_post_follow_cmd = str(step_post_follow_cfg.get("command") or "d").strip().lower()
+    if step_post_follow_cmd not in ("d", "u"):
+        step_post_follow_cmd = "d"
+    step_post_follow_score = max(
+        int(telemetry_robot_module.SPEED_SCORE_MIN),
+        min(int(MAX_SPEED_SCORE), int(_as_int(step_post_follow_cfg.get("score"), 25))),
+    )
+    step_post_follow_acts = max(0, int(_as_int(step_post_follow_cfg.get("acts"), 0)))
     if not isinstance(step_pre_desc_cfg, dict):
         step_pre_desc_cfg = {}
     step_pre_desc_enabled = bool(step_pre_desc_cfg.get("enabled", False))
@@ -10865,7 +10888,7 @@ def run_alignment_segment(
         step_pre_desc_cfg.get("consistent_observation_require_non_wait", True)
     )
     step_pre_desc_completion_mode = str(step_pre_desc_cfg.get("completion_mode") or "true_streak").strip().lower()
-    if step_pre_desc_completion_mode not in ("true_streak", "true_then_false_streak"):
+    if step_pre_desc_completion_mode not in ("true_streak", "true_then_false_streak", "visible_true_streak"):
         step_pre_desc_completion_mode = "true_streak"
     step_pre_desc_seek_below_top_raw = step_pre_desc_cfg.get("seek_below_top_enabled")
     if step_pre_desc_seek_below_top_raw is not None:
@@ -10875,6 +10898,15 @@ def run_alignment_segment(
             else "true_streak"
         )
     step_pre_desc_true_required = max(1, int(_as_int(step_pre_desc_cfg.get("true_down_acts_required"), 3)))
+    step_pre_desc_visible_true_required = max(
+        1,
+        int(
+            _as_int(
+                step_pre_desc_cfg.get("visible_true_required"),
+                1,
+            )
+        ),
+    )
     step_pre_desc_false_after_true_required = max(
         1,
         int(_as_int(step_pre_desc_cfg.get("false_after_true_down_acts_required"), 2)),
@@ -11360,6 +11392,24 @@ def run_alignment_segment(
             return
         print(f"{COLOR_WHITE}{_format_exception_prefix_text()} {body_text}{COLOR_RESET}")
 
+    def _read_post_desc_y_axis():
+        brick_local = getattr(world, "brick", {}) or {}
+        y_raw = brick_local.get("y_axis")
+        if y_raw is None:
+            y_raw = brick_local.get("offset_y")
+        y_num = _as_float(y_raw, None)
+        return None if y_num is None else float(y_num)
+
+    def _read_post_desc_visible():
+        brick_local = getattr(world, "brick", {}) or {}
+        v_now = brick_local.get("visible")
+        if v_now is None:
+            return None
+        try:
+            return bool(v_now)
+        except Exception:
+            return None
+
     def _y_axis_hold_release_ready(local_gate_status):
         if not isinstance(local_gate_status, dict):
             return False
@@ -11839,6 +11889,15 @@ def run_alignment_segment(
                 goal_text = (
                     f"inCrosshairs=YES then NO x{int(step_post_desc_false_after_true_required)}"
                 )
+            elif step_post_desc_completion_mode == "y_axis_target":
+                if float(step_post_desc_y_axis_tol) > 0.0:
+                    goal_text = (
+                        f"y_axis={float(step_post_desc_y_axis_target):+.2f}mm +/-{float(step_post_desc_y_axis_tol):.2f}mm"
+                    )
+                elif str(step_post_desc_cmd) == "d":
+                    goal_text = f"y_axis<={float(step_post_desc_y_axis_target):+.2f}mm"
+                else:
+                    goal_text = f"y_axis>={float(step_post_desc_y_axis_target):+.2f}mm"
             else:
                 goal_text = f"inCrosshairs=YES x{int(step_post_desc_true_required)}"
             print(
@@ -11851,17 +11910,57 @@ def run_alignment_segment(
                     COLOR_MAGENTA_BRIGHT,
                 )
             )
-        pause_after_exception(
-            robot,
-            world,
-            step,
-            reason="post-success descend exception pause",
-        )
+        if step_post_desc_completion_mode != "y_axis_target":
+            pause_after_exception(
+                robot,
+                world,
+                step,
+                reason="post-success descend exception pause",
+            )
         true_down_streak = 0
         saw_true = False
         false_after_true_streak = 0
         done = False
+        last_y_axis_now = _read_post_desc_y_axis()
         for idx in range(1, int(step_post_desc_max_acts) + 1):
+            gate_done = False
+            progress_text = ""
+            if step_post_desc_completion_mode == "y_axis_target":
+                y_axis_now = _read_post_desc_y_axis()
+                visible_now = _read_post_desc_visible()
+                if y_axis_now is None:
+                    y_axis_now = last_y_axis_now
+                last_y_axis_now = y_axis_now
+                if y_axis_now is not None:
+                    if float(step_post_desc_y_axis_tol) > 0.0:
+                        gate_done = abs(float(y_axis_now) - float(step_post_desc_y_axis_target)) <= float(step_post_desc_y_axis_tol)
+                    elif str(step_post_desc_cmd) == "d":
+                        gate_done = float(y_axis_now) <= float(step_post_desc_y_axis_target)
+                    else:
+                        gate_done = float(y_axis_now) >= float(step_post_desc_y_axis_target)
+                progress_text = (
+                    "y_axis=WAIT"
+                    if y_axis_now is None
+                    else f"y_axis={float(y_axis_now):+.2f}mm"
+                )
+                if not align_silent:
+                    gate_word = f"{COLOR_GREEN}PASS{COLOR_RESET}" if bool(gate_done) else f"{COLOR_RED}FAIL{COLOR_RESET}"
+                    next_action = "STOP" if bool(gate_done) else f"{str(step_post_desc_cmd).upper()} {int(step_post_desc_score)}%"
+                    visible_text = (
+                        "WAIT"
+                        if visible_now is None
+                        else ("YES" if bool(visible_now) else "NO")
+                    )
+                    _print_exception_line(
+                        (
+                            f"[{step_key}] Post-success descend pulse "
+                            f"{int(idx)}/{int(step_post_desc_max_acts)}: "
+                            f"visible={visible_text}, {progress_text}, gate={gate_word}, next={next_action}."
+                        )
+                    )
+                if gate_done:
+                    done = True
+                    break
             if confirm_callback and not confirm_callback(world, vision):
                 return {"enabled": True, "success": False, "reason": "confirm cancelled"}
             if observer:
@@ -11880,6 +11979,33 @@ def run_alignment_segment(
             if observer:
                 observer("frame", world, vision, None, None, None)
                 observer("action", world, vision, step_post_desc_cmd, post_desc_speed, "post_success_descend")
+            if step_post_desc_completion_mode == "y_axis_target":
+                last_y_axis_now = _read_post_desc_y_axis()
+                visible_now = _read_post_desc_visible()
+                if last_y_axis_now is not None:
+                    if float(step_post_desc_y_axis_tol) > 0.0:
+                        done = abs(float(last_y_axis_now) - float(step_post_desc_y_axis_target)) <= float(step_post_desc_y_axis_tol)
+                    elif str(step_post_desc_cmd) == "d":
+                        done = float(last_y_axis_now) <= float(step_post_desc_y_axis_target)
+                    else:
+                        done = float(last_y_axis_now) >= float(step_post_desc_y_axis_target)
+                if bool(done):
+                    if not align_silent:
+                        gate_word = f"{COLOR_GREEN}PASS{COLOR_RESET}"
+                        visible_text = (
+                            "WAIT"
+                            if visible_now is None
+                            else ("YES" if bool(visible_now) else "NO")
+                        )
+                        _print_exception_line(
+                            (
+                                f"[{step_key}] Post-success descend pulse "
+                                f"{int(idx)}/{int(step_post_desc_max_acts)}: "
+                                f"visible={visible_text}, y_axis={float(last_y_axis_now):+.2f}mm, gate={gate_word}, next=STOP."
+                            )
+                        )
+                    break
+                continue
             crosshair_now = _read_post_desc_crosshair()
             if crosshair_now is True:
                 true_down_streak = int(true_down_streak) + 1
@@ -11889,7 +12015,6 @@ def run_alignment_segment(
                 true_down_streak = 0
                 if bool(saw_true):
                     false_after_true_streak = int(false_after_true_streak) + 1
-            gate_done = False
             if step_post_desc_completion_mode == "true_then_false_streak":
                 gate_done = bool(saw_true) and int(false_after_true_streak) >= int(step_post_desc_false_after_true_required)
                 progress_text = (
@@ -11921,6 +12046,10 @@ def run_alignment_segment(
                 fail_reason = (
                     f"post-success descend could not confirm inCrosshairs=YES then NO x{int(step_post_desc_false_after_true_required)}"
                 )
+            elif step_post_desc_completion_mode == "y_axis_target":
+                fail_reason = (
+                    f"post-success descend could not reach y_axis {float(step_post_desc_y_axis_target):+.2f}mm"
+                )
             else:
                 fail_reason = f"post-success descend could not confirm inCrosshairs=YES x{int(step_post_desc_true_required)}"
             if not align_silent:
@@ -11939,6 +12068,63 @@ def run_alignment_segment(
                 )
             )
         return {"enabled": True, "success": True, "reason": "post-success descend pass"}
+
+    def _run_step_post_success_follow_through():
+        if not bool(step_post_follow_enabled) or int(step_post_follow_acts) <= 0:
+            return {"enabled": False, "success": True, "reason": "disabled"}
+        follow_speed = telemetry_robot_module.manual_speed_for_cmd(step_post_follow_cmd, step_post_follow_score)
+        if not align_silent:
+            print(
+                format_headline(
+                    (
+                        f"[EXCEPTION] [{step_key}] Post-success follow-through start: "
+                        f"{str(step_post_follow_cmd).upper()} {int(step_post_follow_score)}%, "
+                        f"acts={int(step_post_follow_acts)}."
+                    ),
+                    COLOR_MAGENTA_BRIGHT,
+                )
+            )
+        for idx in range(1, int(step_post_follow_acts) + 1):
+            if confirm_callback and not confirm_callback(world, vision):
+                return {"enabled": True, "success": False, "reason": "confirm cancelled"}
+            if observer:
+                observer("analysis", world, vision, step_post_follow_cmd, follow_speed, "post_success_follow_through")
+            follow_action_meta = send_robot_command(
+                robot,
+                world,
+                step,
+                step_post_follow_cmd,
+                follow_speed,
+                speed_score=step_post_follow_score,
+                auto_mode=True,
+            )
+            post_act_analysis(world, vision, step=step, log=not align_silent, include_pause=False)
+            update_world_from_vision(world, vision, log=not align_silent)
+            if observer:
+                observer("frame", world, vision, None, None, None)
+                observer("action", world, vision, step_post_follow_cmd, follow_speed, "post_success_follow_through")
+            follow_duration_ms = None
+            if isinstance(follow_action_meta, dict):
+                follow_duration_ms = _as_int(
+                    follow_action_meta.get("duration_ms"),
+                    _as_int(follow_action_meta.get("duration_model_ms"), None),
+                )
+            follow_settle_s = float(CONTROL_DT)
+            if follow_duration_ms is not None and int(follow_duration_ms) > 0:
+                follow_settle_s = max(float(CONTROL_DT), float(follow_duration_ms) / 1000.0)
+            if not align_silent:
+                print(
+                    format_headline(
+                        (
+                            f"[EXCEPTION] [{step_key}] Post-success follow-through pulse "
+                            f"{int(idx)}/{int(step_post_follow_acts)}: "
+                            f"{str(step_post_follow_cmd).upper()} {int(step_post_follow_score)}%."
+                        ),
+                        COLOR_MAGENTA_BRIGHT,
+                    )
+                )
+            time.sleep(follow_settle_s)
+        return {"enabled": True, "success": True, "reason": "post-success follow-through complete"}
 
     def _run_step_pre_align_descend():
         nonlocal step_pre_desc_run_once
@@ -11975,6 +12161,8 @@ def run_alignment_segment(
                 goal_text = (
                     f"inCrosshairs=YES then NO x{int(step_pre_desc_false_after_true_required)}"
                 )
+            elif step_pre_desc_completion_mode == "visible_true_streak":
+                goal_text = f"visible=YES x{int(step_pre_desc_visible_true_required)}"
             else:
                 goal_text = f"inCrosshairs=YES x{int(step_pre_desc_true_required)}"
             speed_note = ""
@@ -12015,6 +12203,7 @@ def run_alignment_segment(
             reason="pre-align descend exception pause",
         )
         true_down_streak = 0
+        visible_true_streak = 0
         saw_true = False
         false_after_true_streak = 0
         seen_true_downshift_logged = False
@@ -12087,6 +12276,10 @@ def run_alignment_segment(
                 true_down_streak = 0
                 if bool(saw_true):
                     false_after_true_streak = int(false_after_true_streak) + 1
+            if bool(visible_now):
+                visible_true_streak = int(visible_true_streak) + 1
+            else:
+                visible_true_streak = 0
             gate_done = False
             if step_pre_desc_completion_mode == "true_then_false_streak":
                 gate_done = bool(saw_true) and int(false_after_true_streak) >= int(step_pre_desc_false_after_true_required)
@@ -12094,10 +12287,16 @@ def run_alignment_segment(
                     f"{_highlight_seen_true_text(saw_true)}, "
                     f"{_highlight_false_after_true_text(false_after_true_streak, step_pre_desc_false_after_true_required)}"
                 )
+            elif step_pre_desc_completion_mode == "visible_true_streak":
+                gate_done = int(visible_true_streak) >= int(step_pre_desc_visible_true_required)
+                progress_text = f"visible-streak={int(visible_true_streak)}/{int(step_pre_desc_visible_true_required)}"
             else:
                 gate_done = int(true_down_streak) >= int(step_pre_desc_true_required)
                 progress_text = f"true-streak={int(true_down_streak)}/{int(step_pre_desc_true_required)}"
-            pulse_score = int(step_pre_desc_score_after_seen_true) if bool(saw_true) else int(step_pre_desc_score)
+            if step_pre_desc_completion_mode == "visible_true_streak":
+                pulse_score = int(step_pre_desc_score)
+            else:
+                pulse_score = int(step_pre_desc_score_after_seen_true) if bool(saw_true) else int(step_pre_desc_score)
             y_axis_curve_score = None
             y_axis_curve_raw = None
             y_axis_curve_clamped = None
@@ -12201,12 +12400,19 @@ def run_alignment_segment(
                 true_down_streak = 0
                 if bool(saw_true):
                     false_after_true_streak = int(false_after_true_streak) + 1
+            if bool(boundary_visible_now):
+                visible_true_streak = int(visible_true_streak) + 1
+            else:
+                visible_true_streak = 0
             if step_pre_desc_completion_mode == "true_then_false_streak":
                 gate_done = bool(saw_true) and int(false_after_true_streak) >= int(step_pre_desc_false_after_true_required)
                 progress_text = (
                     f"{_highlight_seen_true_text(saw_true)}, "
                     f"{_highlight_false_after_true_text(false_after_true_streak, step_pre_desc_false_after_true_required)}"
                 )
+            elif step_pre_desc_completion_mode == "visible_true_streak":
+                gate_done = int(visible_true_streak) >= int(step_pre_desc_visible_true_required)
+                progress_text = f"visible-streak={int(visible_true_streak)}/{int(step_pre_desc_visible_true_required)}"
             else:
                 gate_done = int(true_down_streak) >= int(step_pre_desc_true_required)
                 progress_text = f"true-streak={int(true_down_streak)}/{int(step_pre_desc_true_required)}"
@@ -12232,6 +12438,10 @@ def run_alignment_segment(
             if step_pre_desc_completion_mode == "true_then_false_streak":
                 fail_reason = (
                     f"pre-align descend could not confirm inCrosshairs=YES then NO x{int(step_pre_desc_false_after_true_required)}"
+                )
+            elif step_pre_desc_completion_mode == "visible_true_streak":
+                fail_reason = (
+                    f"pre-align descend could not confirm visible=YES x{int(step_pre_desc_visible_true_required)}"
                 )
             else:
                 fail_reason = f"pre-align descend could not confirm inCrosshairs=YES x{int(step_pre_desc_true_required)}"
@@ -12655,6 +12865,11 @@ def run_alignment_segment(
             if robot:
                 robot.stop()
             return False, str((post_desc_result or {}).get("reason") or "post-success descend failed")
+        post_follow_result = _run_step_post_success_follow_through()
+        if bool((post_follow_result or {}).get("enabled")) and not bool((post_follow_result or {}).get("success")):
+            if robot:
+                robot.stop()
+            return False, str((post_follow_result or {}).get("reason") or "post-success follow-through failed")
         post_bottom_result = _run_step_post_success_bottom_discovery()
         if bool((post_bottom_result or {}).get("enabled")) and not bool((post_bottom_result or {}).get("success")):
             if robot:

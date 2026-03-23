@@ -17,7 +17,7 @@ _MODE_ALIASES = {
 }
 
 DEFAULT_VISION_MODEL = {
-    "active_mode": VISION_MODE_ARUCO,
+    "active_mode": VISION_MODE_CYAN,
     "demos_by_mode": {
         VISION_MODE_ARUCO: "demos - aruco",
         VISION_MODE_CYAN: "Cyan demos",
@@ -25,7 +25,7 @@ DEFAULT_VISION_MODEL = {
 }
 
 
-def normalize_vision_mode(value, fallback=VISION_MODE_ARUCO):
+def normalize_vision_mode(value, fallback=VISION_MODE_CYAN):
     key = str(value or "").strip().lower()
     mode = _MODE_ALIASES.get(key)
     if mode:
@@ -65,7 +65,7 @@ def load_vision_model(path=VISION_MODEL_FILE):
 
 def active_vision_mode(path=VISION_MODEL_FILE):
     cfg = load_vision_model(path=path)
-    return normalize_vision_mode(cfg.get("active_mode"), fallback=VISION_MODE_ARUCO)
+    return normalize_vision_mode(cfg.get("active_mode"), fallback=VISION_MODE_CYAN)
 
 
 def demos_dir_for_mode(mode=None, *, path=VISION_MODEL_FILE):

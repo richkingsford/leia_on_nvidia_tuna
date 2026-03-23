@@ -125,16 +125,16 @@
                     "min": true
                 },
                 "angle_abs": {
-                    "target": 4.29,
-                    "tol": 6.95
+                    "target": 89.01,
+                    "tol": 0.07
                 },
                 "x_axis": {
-                    "target": -8.26,
-                    "tol": 25.95
+                    "target": 2.83,
+                    "tol": 2.3
                 },
                 "y_axis": {
-                    "target": -11.12,
-                    "tol": 6.57
+                    "target": 1.62,
+                    "tol": 2.3
                 }
             }
         },
@@ -230,41 +230,13 @@
                 "target_lock_center_x_worse_margin_mm": 1.5,
                 "target_lock_center_y_worse_margin_mm": 2.0
             },
-            "lock_success_gates": true,
-            "locked_success_gates_by_mode": {
-                "aruco": {
-                    "xAxis_offset_abs": {
-                        "target": -3.86,
-                        "tol": 1.4
-                    },
-                    "dist": {
-                        "target": 115.49,
-                        "tol": 2.3
-                    }
-                },
-                "cyan": {
-                    "xAxis_offset_abs": {
-                        "target": -3.2,
-                        "tol": 4.0
-                    },
-                    "dist": {
-                        "target": 97.15,
-                        "tol": 4.0
-                    }
-                }
-            },
             "success_gates": {
-                "xAxis_offset_abs": {
-                    "target": -3.86,
-                    "tol": 1.4
-                },
-                "dist": {
-                    "target": 115.49,
-                    "tol": 2.3
+                "visible": {
+                    "min": true
                 }
             },
             "pre_align_descend": {
-                "enabled": true,
+                "enabled": false,
                 "command": "d",
                 "score": 100,
                 "score_after_seen_true": 2,
@@ -283,13 +255,19 @@
                 "max_acts": 32
             },
             "post_success_descend": {
-                "enabled": false,
+                "enabled": true,
+                "command": "d",
+                "score": 1,
+                "completion_mode": "y_axis_target",
+                "target_y_axis": 2,
+                "tol": 0,
+                "max_acts": 120
+            },
+            "post_success_follow_through": {
+                "enabled": true,
                 "command": "d",
                 "score": 100,
-                "completion_mode": "true_then_false_streak",
-                "false_after_true_down_acts_required": 2,
-                "true_down_acts_required": 3,
-                "max_acts": 32
+                "acts": 3
             },
             "start_gates": {
                 "visible": {
@@ -349,15 +327,15 @@
                     "min": true
                 },
                 "xAxis_offset_abs": {
-                    "target": -4.74,
+                    "target": 6.54,
                     "tol": 1.4
                 },
                 "yAxis_offset_abs": {
-                    "target": 2.5,
+                    "target": 4.92,
                     "tol": 2.3
                 },
                 "dist": {
-                    "target": 107.63,
+                    "target": 135.17,
                     "tol": 2.3
                 }
             }
@@ -383,7 +361,7 @@
                     "min": true
                 },
                 "dist": {
-                    "target": 48.0,
+                    "target": 58.85,
                     "tol": 2.3
                 }
             }
@@ -397,11 +375,6 @@
                 "max_bricks": 20
             },
             "success_gates": {
-                "visible": {
-                    "min": false
-                }
-            },
-            "start_gates": {
                 "visible": {
                     "min": true
                 }
@@ -443,11 +416,11 @@
             },
             "startup_pre_action_exception": {
                 "enabled": true,
-                "operator_log_reminder": "Exception active: before startup hard-left scan, slow left turn L 1% for 500ms.",
+                "operator_log_reminder": "Exception active: before startup hard-left scan, slow left turn L 1% for 1500ms.",
                 "command": "l",
                 "score": 1,
                 "acts": 1,
-                "duration_override_ms": 500,
+                "duration_override_ms": 1500,
                 "observe_between_acts": false,
                 "pause_s": 0.0
             },
@@ -514,19 +487,6 @@
                 "visible": {
                     "min": true
                 }
-            },
-            "success_gates": {
-                "visible": {
-                    "min": true
-                },
-                "angle_abs": {
-                    "target": 1.02,
-                    "tol": 1.18
-                },
-                "xAxis_offset_abs": {
-                    "target": -5.94,
-                    "tol": 1.4
-                }
             }
         },
         "FIND_TOPMOST_BRICK_WALL": {
@@ -577,6 +537,7 @@
         "BRICK_LOCK_WALL": {
             "controller": "align",
             "require_start_gates": false,
+            "full_gatecheck_max_attempts": 100,
             "align_policy": {
                 "hold_when_not_visible": true,
                 "x_axis_tol_far_scale": 6.0,
@@ -585,6 +546,9 @@
                 "focus_x_first_x_gap_gt_mm": 2.0,
                 "focus_dist_first_dist_gap_gt_mm": 150.0,
                 "focus_dist_first_x_gap_lt_mm": 5.0,
+                "metric_direction_overrides": {
+                    "dist": "band"
+                },
                 "dist_score_mode": "dist_error_bands",
                 "turn_score_mode": "x_axis_one_shot_curve",
                 "slow_fast_mm_scale": 1.0,
@@ -596,80 +560,41 @@
                 "target_lock_hold_bad_frames": 2,
                 "target_lock_acquire_timeout_s": 0.35,
                 "target_lock_center_x_worse_margin_mm": 1.5,
-                "target_lock_center_y_worse_margin_mm": 2.0,
-                "micro_adjust_crosshair_guard_enabled": true,
-                "micro_adjust_crosshair_guard_block_cmds": [
-                    "d"
-                ]
-            },
-            "lock_success_gates": true,
-            "locked_success_gates_by_mode": {
-                "aruco": {
-                    "xAxis_offset_abs": {
-                        "target": -2.94,
-                        "tol": 1.4
-                    },
-                    "yAxis_offset_abs": {
-                        "target": 7.74,
-                        "tol": 3.0
-                    },
-                    "dist": {
-                        "target": 120.0,
-                        "tol": 4.34
-                    }
-                },
-                "cyan": {
-                    "xAxis_offset_abs": {
-                        "target": -3.2,
-                        "tol": 4.0
-                    },
-                    "yAxis_offset_abs": {
-                        "target": 2.0,
-                        "tol": 3.0
-                    },
-                    "dist": {
-                        "target": 97.15,
-                        "tol": 4.0
-                    }
-                }
-            },
-            "success_gates": {
-                "xAxis_offset_abs": {
-                    "target": -2.94,
-                    "tol": 1.4
-                },
-                "yAxis_offset_abs": {
-                    "target": 7.74,
-                    "tol": 3.0
-                },
-                "dist": {
-                    "target": 120.0,
-                    "tol": 4.34
-                }
+                "target_lock_center_y_worse_margin_mm": 2.0
             },
             "pre_align_descend": {
                 "enabled": true,
                 "command": "d",
                 "score": 100,
-                "score_when_visible": 1,
-                "score_after_seen_true": 1,
-                "confirm_frames": 3,
-                "require_consistent_observation": true,
+                "score_after_seen_true": 2,
+                "confirm_frames": 1,
+                "require_consistent_observation": false,
+                "consistent_observation_require_non_wait": false,
                 "consistent_observation_max_checks": 100,
-                "completion_mode": "true_streak",
-                "true_down_acts_required": 1,
+                "completion_mode": "visible_true_streak",
+                "visible_true_required": 1,
+                "false_after_true_down_acts_required": 1,
+                "true_down_acts_required": 3,
+                "exclude_when_active_steps": [],
+                "exclude_when_active_step_numbers": [],
                 "max_acts": 32
             },
-            "post_success_mast_exception": {
-                "enabled": true,
-                "operator_log_reminder": "Exception active: after BRICK_LOCK_WALL gate pass, run U 50% x3 with no observations.",
-                "command": "u",
-                "score": 50,
-                "acts": 3,
-                "observe_between_acts": false,
-                "pause_s": 0.0
+            "post_success_descend": {
+                "enabled": false,
+                "command": "d",
+                "score": 1,
+                "completion_mode": "y_axis_target",
+                "target_y_axis": 2,
+                "tol": 0,
+                "max_acts": 120
             },
-            "start_gates": {
+            "post_success_follow_through": {
+                "enabled": true,
+                "command": "d",
+                "score": 100,
+                "acts": 3
+            },
+            "success_gates": {
                 "visible": {
                     "min": true
                 }
@@ -718,11 +643,6 @@
                 "dist": {
                     "target": 111.45,
                     "tol": 2.3
-                }
-            },
-            "start_gates": {
-                "visible": {
-                    "min": true
                 }
             }
         },
@@ -785,23 +705,6 @@
                 "acts": 4,
                 "observe_between_acts": false,
                 "pause_s": 0.0
-            },
-            "success_gates": {
-                "visible": {
-                    "min": true
-                },
-                "x_axis": {
-                    "target": -3.5,
-                    "tol": 2.3
-                },
-                "y_axis": {
-                    "target": 1.0,
-                    "tol": 3.3
-                },
-                "dist": {
-                    "target": 48.0,
-                    "tol": 2.3
-                }
             }
         },
         "RETREAT": {
@@ -844,11 +747,6 @@
                 "dist": {
                     "target": 124.69,
                     "tol": 12.3
-                }
-            },
-            "start_gates": {
-                "visible": {
-                    "min": true
                 }
             }
         }

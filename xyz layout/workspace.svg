@@ -2,15 +2,12 @@
 <rect width="100%" height="100%" fill="#f4efe4" />
 <rect x="22" y="22" width="936" height="636" rx="24" fill="#f9f6ef" stroke="#d7d1c4" stroke-width="1.5" />
 <text x="490.0" y="54.0" text-anchor="middle" font-size="28" font-weight="900" fill="#233843">Bird View</text>
-<polygon points="432.9,432.9 534.3,432.9 534.3,534.3 432.9,534.3" fill="#c2523c" stroke="#7b2e1e" stroke-width="2.5" />
+<polygon points="432.9,432.9 534.3,432.9 534.3,534.3 432.9,534.3" fill="#d4a090" stroke="#7b2e1e" stroke-width="2.5" />
 <text x="483.6" y="437.6" text-anchor="middle" font-size="28" font-weight="600" fill="#7b2e1e">Wall</text>
 <text x="483.6" y="491.6" text-anchor="middle" font-size="22" font-weight="700" fill="#ffffff">1</text>
 <polygon points="196.4,196.4 95.0,196.4 95.0,95.0 196.4,95.0" fill="#63f2f7" stroke="#f3c548" stroke-width="4.5" />
 <text x="145.7" y="99.7" text-anchor="middle" font-size="36" font-weight="600" fill="#18494e">Supply</text>
-<text x="145.7" y="161.7" text-anchor="middle" font-size="44" font-weight="700" fill="#0d2b32">5</text>
-<circle class="step-history-dot" data-trend="unknown" cx="355.6" cy="152.6" r="6.0" fill="#7b7668" fill-opacity="0.90" stroke="#f9f6ef" stroke-width="2" />
-<g id="step-history">
-</g>
-<text x="289.0" y="142.3" text-anchor="middle" font-size="16" font-weight="600" fill="#233843" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">109</text>
-<text x="483.6" y="541.6" text-anchor="middle" font-size="14" font-weight="500" fill="#5d676e" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">~190 to Wall</text>
+<text x="145.7" y="161.7" text-anchor="middle" font-size="44" font-weight="700" fill="#0d2b32">3</text>
+<text x="232.1" y="258.8" text-anchor="middle" font-size="16" font-weight="600" fill="#233843" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">113</text>
+<text x="483.6" y="541.6" text-anchor="middle" font-size="14" font-weight="500" fill="#5d676e" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">~144 to Wall</text>
 </svg>

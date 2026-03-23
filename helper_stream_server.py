@@ -93,7 +93,7 @@ class StreamServer:
         self.vision_mode_setter = vision_mode_setter
         self.vision_mode_options = self._normalize_options(vision_mode_options)
         if (self.vision_mode_getter is not None or self.vision_mode_setter is not None) and not self.vision_mode_options:
-            self.vision_mode_options = [("aruco", "AruCo Markers"), ("cyan", "Cyan Bricks")]
+            self.vision_mode_options = [("cyan", "Cyan Bricks"), ("aruco", "AruCo Markers")]
         self._vision_mode_allowed = {value for value, _label in self.vision_mode_options}
         if cyan_profile_getter is None:
             cyan_profile_getter = markerless_profile_getter

@@ -336,6 +336,112 @@ class TestTelemetryProcessPostSuccessDescend(unittest.TestCase):
             )
         )
 
+    def test_brick_lock_wall_runs_pre_align_descend_from_invisible_topmost_wall_handoff(self):
+        world = _DummyWorld(max_acts=4, pre_enabled=False, post_enabled=False)
+        world.process_rules["BRICK_LOCK_WALL"] = {
+            "success_gates": {
+                "visible": {"min": True},
+            },
+            "pre_align_descend": {
+                "enabled": True,
+                "command": "d",
+                "score": 100,
+                "score_after_seen_true": 2,
+                "confirm_frames": 1,
+                "require_consistent_observation": False,
+                "consistent_observation_require_non_wait": False,
+                "consistent_observation_max_checks": 4,
+                "completion_mode": "visible_true_streak",
+                "visible_true_required": 1,
+                "false_after_true_down_acts_required": 1,
+                "max_acts": 4,
+                "exclude_when_active_steps": [],
+                "exclude_when_active_step_numbers": [],
+            },
+            "post_success_descend": {
+                "enabled": False,
+            },
+        }
+        world.step_state = telemetry_process.telemetry_robot_module.StepState.FIND_TOPMOST_BRICK_WALL
+        world.brick["visible"] = False
+        world.brick["inCrosshairs"] = None
+        robot = _DummyRobot()
+        send_cmds = []
+        print_lines = []
+
+        descend_states = [
+            {"visible": False, "inCrosshairs": None},
+            {"visible": True, "inCrosshairs": None},
+        ]
+
+        def _fake_update_world_from_vision(world_obj, _vision_obj, log=True, **_kwargs):
+            _ = log
+            if descend_states:
+                next_state = descend_states.pop(0)
+                world_obj.brick["visible"] = bool(next_state.get("visible"))
+                world_obj.brick["inCrosshairs"] = next_state.get("inCrosshairs")
+            world_obj._frame_id = int(getattr(world_obj, "_frame_id", 0) or 0) + 1
+
+        def _fake_send_robot_command(_robot, _world, _step, cmd, *_args, **_kwargs):
+            send_cmds.append(str(cmd))
+            return {
+                "cmd_sent": str(cmd),
+                "score_effective": int(_kwargs.get("speed_score") or 0),
+                "power": 0.0,
+                "pwm": 0,
+                "duration_ms": 10,
+            }
+
+        with patch.object(telemetry_process, "wait_for_start_gates", return_value="start"), \
+             patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world_from_vision), \
+             patch.object(
+                 telemetry_process,
+                 "observe_success_gatecheck",
+                 return_value={"success_met": True, "hold_for_confirm": False},
+             ), \
+             patch.object(telemetry_process, "send_robot_command", side_effect=_fake_send_robot_command), \
+             patch.object(telemetry_process, "post_act_analysis", side_effect=_fake_update_world_from_vision), \
+             patch.object(telemetry_process.telemetry_brick, "success_gate_bounds", return_value={}), \
+             patch.object(telemetry_process.time, "sleep", return_value=None), \
+             patch.object(
+                 builtins,
+                 "print",
+                 side_effect=lambda *args, **kwargs: print_lines.append(" ".join(str(arg) for arg in args)),
+             ):
+            ok, reason = telemetry_process.run_alignment_segment(
+                segment={"events": []},
+                step="BRICK_LOCK_WALL",
+                robot=robot,
+                vision=object(),
+                world=world,
+                steps=[],
+                raw_steps=[],
+                observer=None,
+                analysis_pause_s=0.0,
+                confirm_callback=None,
+                align_silent=False,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(reason, "success gate")
+        self.assertGreaterEqual(len(send_cmds), 1)
+        self.assertTrue(all(cmd == "d" for cmd in send_cmds))
+        self.assertTrue(
+            any(
+                "[BRICK_LOCK_WALL] Pre-align descend pulse" in line
+                and "visible=NO" in line
+                and "inCrosshairs=WAIT" in line
+                for line in print_lines
+            )
+        )
+        self.assertFalse(
+            any(
+                "Pre-align descend skipped: excluded while active step is #12 FIND_TOPMOST_BRICK_WALL."
+                in line
+                for line in print_lines
+            )
+        )
+
     def test_brick_lock_runs_post_success_descend_and_logs_clean_gate_words(self):
         world = _DummyWorld(max_acts=4)
         robot = _DummyRobot()
@@ -467,6 +573,265 @@ class TestTelemetryProcessPostSuccessDescend(unittest.TestCase):
             any(
                 "[EXCEPTION] [BRICK_LOCK] Post-success descend complete: gate=" in line
                 and telemetry_process.COLOR_RED in line
+                for line in print_lines
+            )
+        )
+
+    def test_brick_lock_post_success_descend_reaches_y_axis_target_without_pause(self):
+        world = _DummyWorld(max_acts=4)
+        world.process_rules["BRICK_LOCK"]["post_success_descend"] = {
+            "enabled": True,
+            "command": "d",
+            "score": 1,
+            "completion_mode": "y_axis_target",
+            "target_y_axis": 2,
+            "tol": 0,
+            "max_acts": 4,
+        }
+        world.brick["y_axis"] = 4.0
+        robot = _DummyRobot()
+        send_cmds = []
+        print_lines = []
+        y_axis_sequence = [4.0, 3.0, 2.0]
+
+        def _fake_update_world_from_vision(world_obj, _vision_obj, log=True, **_kwargs):
+            _ = log
+            if y_axis_sequence:
+                world_obj.brick["y_axis"] = y_axis_sequence.pop(0)
+            world_obj.brick["visible"] = True
+            world_obj._frame_id = int(getattr(world_obj, "_frame_id", 0) or 0) + 1
+
+        def _fake_send_robot_command(_robot, _world, _step, cmd, *_args, **kwargs):
+            send_cmds.append((str(cmd), int(kwargs.get("speed_score") or 0)))
+            return {
+                "cmd_sent": str(cmd),
+                "score_effective": int(kwargs.get("speed_score") or 0),
+                "power": 0.0,
+                "pwm": 0,
+                "duration_ms": 10,
+            }
+
+        with patch.object(telemetry_process, "wait_for_start_gates", return_value="start"), \
+             patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world_from_vision), \
+             patch.object(
+                 telemetry_process,
+                 "observe_success_gatecheck",
+                 return_value={"success_met": True, "hold_for_confirm": False},
+             ), \
+             patch.object(telemetry_process, "send_robot_command", side_effect=_fake_send_robot_command), \
+             patch.object(telemetry_process, "post_act_analysis", return_value=None), \
+             patch.object(telemetry_process, "pause_after_exception") as mock_pause, \
+             patch.object(telemetry_process.telemetry_brick, "success_gate_bounds", return_value={}), \
+             patch.object(telemetry_process.time, "sleep", return_value=None) as mock_sleep, \
+             patch.object(
+                 builtins,
+                 "print",
+                 side_effect=lambda *args, **kwargs: print_lines.append(" ".join(str(arg) for arg in args)),
+             ):
+            ok, reason = telemetry_process.run_alignment_segment(
+                segment={"events": []},
+                step="BRICK_LOCK",
+                robot=robot,
+                vision=object(),
+                world=world,
+                steps=[],
+                raw_steps=[],
+                observer=None,
+                analysis_pause_s=0.0,
+                confirm_callback=None,
+                align_silent=False,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(reason, "success gate")
+        self.assertEqual(send_cmds, [("d", 1), ("d", 1)])
+        mock_pause.assert_not_called()
+        mock_sleep.assert_not_called()
+        self.assertTrue(
+            any(
+                "Post-success descend start" in line
+                and "D 1%" in line
+                and "goal=y_axis<=+2.00mm" in line
+                for line in print_lines
+            )
+        )
+        self.assertTrue(
+            any(
+                "Post-success descend pulse" in line
+                and "visible=YES" in line
+                and "y_axis=+3.00mm" in line
+                and "next=D 1%" in line
+                for line in print_lines
+            )
+        )
+        self.assertTrue(
+            any(
+                "Post-success descend pulse" in line
+                and "visible=YES" in line
+                and "y_axis=+2.00mm" in line
+                and "gate=" in line
+                and "next=STOP" in line
+                for line in print_lines
+            )
+        )
+
+    def test_brick_lock_post_success_descend_y_axis_target_failure_fails_step(self):
+        world = _DummyWorld(max_acts=2)
+        world.process_rules["BRICK_LOCK"]["post_success_descend"] = {
+            "enabled": True,
+            "command": "d",
+            "score": 1,
+            "completion_mode": "y_axis_target",
+            "target_y_axis": 2,
+            "tol": 0,
+            "max_acts": 2,
+        }
+        world.brick["y_axis"] = 4.0
+        robot = _DummyRobot()
+        send_cmds = []
+        print_lines = []
+        y_axis_sequence = [4.0, 3.5, 3.0]
+
+        def _fake_update_world_from_vision(world_obj, _vision_obj, log=True, **_kwargs):
+            _ = log
+            if y_axis_sequence:
+                world_obj.brick["y_axis"] = y_axis_sequence.pop(0)
+            world_obj.brick["visible"] = True
+            world_obj._frame_id = int(getattr(world_obj, "_frame_id", 0) or 0) + 1
+
+        def _fake_send_robot_command(_robot, _world, _step, cmd, *_args, **kwargs):
+            send_cmds.append((str(cmd), int(kwargs.get("speed_score") or 0)))
+            return {
+                "cmd_sent": str(cmd),
+                "score_effective": int(kwargs.get("speed_score") or 0),
+                "power": 0.0,
+                "pwm": 0,
+                "duration_ms": 10,
+            }
+
+        with patch.object(telemetry_process, "wait_for_start_gates", return_value="start"), \
+             patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world_from_vision), \
+             patch.object(
+                 telemetry_process,
+                 "observe_success_gatecheck",
+                 return_value={"success_met": True, "hold_for_confirm": False},
+             ), \
+             patch.object(telemetry_process, "send_robot_command", side_effect=_fake_send_robot_command), \
+             patch.object(telemetry_process, "post_act_analysis", return_value=None), \
+             patch.object(telemetry_process, "pause_after_exception") as mock_pause, \
+             patch.object(telemetry_process.telemetry_brick, "success_gate_bounds", return_value={}), \
+             patch.object(telemetry_process.time, "sleep", return_value=None) as mock_sleep, \
+             patch.object(
+                 builtins,
+                 "print",
+                 side_effect=lambda *args, **kwargs: print_lines.append(" ".join(str(arg) for arg in args)),
+             ):
+            ok, reason = telemetry_process.run_alignment_segment(
+                segment={"events": []},
+                step="BRICK_LOCK",
+                robot=robot,
+                vision=object(),
+                world=world,
+                steps=[],
+                raw_steps=[],
+                observer=None,
+                analysis_pause_s=0.0,
+                confirm_callback=None,
+                align_silent=False,
+            )
+
+        self.assertFalse(ok)
+        self.assertIn("post-success descend could not reach y_axis +2.00mm", reason)
+        self.assertEqual(send_cmds, [("d", 1), ("d", 1)])
+        mock_pause.assert_not_called()
+        mock_sleep.assert_not_called()
+        self.assertTrue(
+            any(
+                "Post-success descend pulse" in line
+                and "visible=YES" in line
+                and "y_axis=+3.50mm" in line
+                and "next=D 1%" in line
+                for line in print_lines
+            )
+        )
+        self.assertTrue(
+            any(
+                "[EXCEPTION] [BRICK_LOCK] Post-success descend complete: gate=" in line
+                and telemetry_process.COLOR_RED in line
+                for line in print_lines
+            )
+        )
+
+    def test_brick_lock_post_success_follow_through_sends_three_pulses(self):
+        world = _DummyWorld(max_acts=2, post_enabled=False)
+        world.process_rules["BRICK_LOCK"]["post_success_follow_through"] = {
+            "enabled": True,
+            "command": "d",
+            "score": 100,
+            "acts": 3,
+        }
+        robot = _DummyRobot()
+        send_cmds = []
+        print_lines = []
+
+        def _fake_update_world_from_vision(world_obj, _vision_obj, log=True, **_kwargs):
+            _ = log
+            world_obj.brick["visible"] = True
+            world_obj._frame_id = int(getattr(world_obj, "_frame_id", 0) or 0) + 1
+
+        def _fake_send_robot_command(_robot, _world, _step, cmd, *_args, **kwargs):
+            send_cmds.append((str(cmd), int(kwargs.get("speed_score") or 0)))
+            return {
+                "cmd_sent": str(cmd),
+                "score_effective": int(kwargs.get("speed_score") or 0),
+                "power": 0.0,
+                "pwm": 0,
+                "duration_ms": 284,
+            }
+
+        with patch.object(telemetry_process, "wait_for_start_gates", return_value="start"), \
+             patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world_from_vision), \
+             patch.object(
+                 telemetry_process,
+                 "observe_success_gatecheck",
+                 return_value={"success_met": True, "hold_for_confirm": False},
+             ), \
+             patch.object(telemetry_process, "send_robot_command", side_effect=_fake_send_robot_command), \
+             patch.object(telemetry_process, "post_act_analysis", return_value=None), \
+             patch.object(telemetry_process.telemetry_brick, "success_gate_bounds", return_value={}), \
+             patch.object(telemetry_process.time, "sleep", return_value=None) as mock_sleep, \
+             patch.object(
+                 builtins,
+                 "print",
+                 side_effect=lambda *args, **kwargs: print_lines.append(" ".join(str(arg) for arg in args)),
+             ):
+            ok, reason = telemetry_process.run_alignment_segment(
+                segment={"events": []},
+                step="BRICK_LOCK",
+                robot=robot,
+                vision=object(),
+                world=world,
+                steps=[],
+                raw_steps=[],
+                observer=None,
+                analysis_pause_s=0.0,
+                confirm_callback=None,
+                align_silent=False,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(reason, "success gate")
+        self.assertEqual(send_cmds, [("d", 100), ("d", 100), ("d", 100)])
+        self.assertGreaterEqual(mock_sleep.call_count, 3)
+        self.assertTrue(
+            any(
+                "Post-success follow-through pulse 1/3: D 100%." in line
+                for line in print_lines
+            )
+        )
+        self.assertTrue(
+            any(
+                "Post-success follow-through pulse 3/3: D 100%." in line
                 for line in print_lines
             )
         )
