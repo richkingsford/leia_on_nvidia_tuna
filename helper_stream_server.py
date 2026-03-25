@@ -1264,8 +1264,9 @@ class StreamServer:
         svg_w = 260.0
         svg_h = 140.0
         pad = 16.0
+        shape_offset_y = 5.0
         usable_w = svg_w - (2.0 * pad)
-        usable_h = svg_h - (2.0 * pad)
+        usable_h = svg_h - (2.0 * pad) - shape_offset_y
         scale = min(usable_w / span_x, usable_h / span_y)
 
         def map_x(x_val):
@@ -1273,7 +1274,7 @@ class StreamServer:
 
         def map_y(y_val):
             # World-model Y is positive-up; SVG Y is positive-down.
-            return pad + ((max_y - float(y_val)) * scale)
+            return pad + shape_offset_y + ((max_y - float(y_val)) * scale)
 
         polygon_points = " ".join(f"{map_x(x):.2f},{map_y(y):.2f}" for x, y in points)
 

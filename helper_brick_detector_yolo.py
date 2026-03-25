@@ -37,8 +37,8 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 # Known brick dimensions (mm) — from world_model_brick.json
-BRICK_WIDTH_MM = 64.0
-BRICK_HEIGHT_MM = 48.0
+BRICK_WIDTH_MM = 53.0
+BRICK_HEIGHT_MM = 28.0
 BRICK_DEPTH_MM = 20.0
 
 # Camera defaults (overridden at runtime from actual frame size)
@@ -1515,13 +1515,16 @@ class BrickDetector:
         if not isinstance(rect_points, np.ndarray) or rect_points.shape != (4, 2):
             return None
 
+        half_width = float(BRICK_WIDTH_MM) * 0.5
+        model_height = float(BRICK_HEIGHT_MM)
+
         # World model uses Y-positive-up. Map model corners into image TL/TR/BR/BL.
         src = np.asarray(
             [
-                [-32.0, 48.0],  # top-left in model coords
-                [32.0, 48.0],   # top-right
-                [32.0, 0.0],    # bottom-right
-                [-32.0, 0.0],   # bottom-left
+                [-half_width, model_height],  # top-left in model coords
+                [half_width, model_height],   # top-right
+                [half_width, 0.0],            # bottom-right
+                [-half_width, 0.0],           # bottom-left
             ],
             dtype=np.float32,
         )
@@ -1543,9 +1546,9 @@ class BrickDetector:
         norm_width = width_vector / rect_width if rect_width > 0 else np.array([1.0, 0.0])
         norm_height = height_vector / rect_height if rect_height > 0 else np.array([0.0, 1.0])
         
-        # Brick is 64mm × 48mm (aspect ratio 4:3)
+        # Brick is BRICK_WIDTH_MM × BRICK_HEIGHT_MM in the world model.
         # Scale to fit within the detected box while preserving aspect ratio
-        target_aspect = 64.0 / 48.0  # 4/3
+        target_aspect = float(BRICK_WIDTH_MM) / max(1e-6, float(BRICK_HEIGHT_MM))
         current_aspect = rect_width / rect_height if rect_height > 0 else target_aspect
         
         if current_aspect > target_aspect:
