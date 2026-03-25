@@ -2048,6 +2048,23 @@ class WorldModel:
         self.turn_efficiency_r = TURN_EFFICIENCY.get("r", 100.0)
         
         self.action_history = collections.deque(maxlen=100)
+
+        # Telemetry observation correction curves (loaded from world_model_robot.json).
+        # Maps variable name -> {"slope": float, "intercept": float}.
+        self._telemetry_correction_curves: dict = {}
+        try:
+            _robot_data = json.loads(ROBOT_MODEL_FILE.read_text()) if ROBOT_MODEL_FILE.exists() else {}
+            _by_var = _robot_data.get("telemetry_observation_calibration", {}).get("by_variable", {})
+            for _var, _rec in _by_var.items():
+                _fit = _rec.get("fit") if isinstance(_rec, dict) else None
+                if isinstance(_fit, dict) and "slope" in _fit and "intercept" in _fit:
+                    self._telemetry_correction_curves[str(_var)] = {
+                        "slope": float(_fit["slope"]),
+                        "intercept": float(_fit["intercept"]),
+                    }
+        except Exception:
+            pass
+
         helper_xyz_coords.ensure_workspace(self)
         helper_xyz_coords.sync_from_world(self, reason="init")
 
@@ -2111,6 +2128,39 @@ class WorldModel:
                 
         return net_dist
 
+    def reload_telemetry_correction_curves(self):
+        """Reload telemetry correction curves from world_model_robot.json.
+        
+        Call this after calibration data is saved to pick up new curves without
+        restarting the application.
+        """
+        self._telemetry_correction_curves = {}
+        try:
+            _robot_data = json.loads(ROBOT_MODEL_FILE.read_text()) if ROBOT_MODEL_FILE.exists() else {}
+            _by_var = _robot_data.get("telemetry_observation_calibration", {}).get("by_variable", {})
+            for _var, _rec in _by_var.items():
+                _fit = _rec.get("fit") if isinstance(_rec, dict) else None
+                if isinstance(_fit, dict) and "slope" in _fit and "intercept" in _fit:
+                    self._telemetry_correction_curves[str(_var)] = {
+                        "slope": float(_fit["slope"]),
+                        "intercept": float(_fit["intercept"]),
+                    }
+        except Exception:
+            pass
+
+    def _apply_telemetry_correction(self, variable: str, raw_value: float) -> float:
+        """Apply the calibrated linear correction for a telemetry variable.
+
+        Returns the corrected value, or the original if no curve is loaded.
+        """
+        curve = self._telemetry_correction_curves.get(str(variable))
+        if not isinstance(curve, dict):
+            return raw_value
+        try:
+            return float(curve["slope"]) * float(raw_value) + float(curve["intercept"])
+        except (KeyError, TypeError, ValueError):
+            return raw_value
+
     def update_vision(
         self,
         found,
@@ -2125,6 +2175,18 @@ class WorldModel:
     ):
         brick_module = _brick_module()
         wall_module = _wall_module()
+        # Apply telemetry observation corrections if calibration curves are loaded.
+        # Store the original camera reading as raw_dist / raw_cam_h so callers
+        # that need the uncorrected values can still access them.
+        raw_cam_h = float(cam_h) if cam_h is not None else 0.0
+        _curves = getattr(self, "_telemetry_correction_curves", {})
+        if found:
+            if raw_dist is None:
+                raw_dist = float(dist)
+            if "dist" in _curves:
+                dist = self._apply_telemetry_correction("dist", float(dist))
+            if "y" in _curves:
+                cam_h = self._apply_telemetry_correction("y", raw_cam_h)
         # Global x-axis convention: normal number line.
         # Turning camera left (brick appears further right in frame) should
         # decrease x-axis; turning right should increase x-axis.

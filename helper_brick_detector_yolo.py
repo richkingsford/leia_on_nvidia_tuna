@@ -55,6 +55,7 @@ FOCAL_REF_WIDTH = 640.0
 
 # YOLO model path (relative to this file) — scenario-2 runtime uses v4 only
 MODEL_PATH = Path(__file__).resolve().parent / "brick_yolo_v4.onnx"
+BRICK_MODEL_PATH = Path(__file__).resolve().parent / "world_model_brick.json"
 
 # Detection confidence threshold
 CONF_THRESHOLD = 0.15
@@ -80,6 +81,9 @@ STACK_Y_GAP_RATIO = 0.35        # Vertical gap threshold for above/below
 # brick face/top aspect ratios. Kept broad to allow perspective distortion.
 BRICK_SHAPE_REL_ERROR_MAX = 0.75
 BRICK_SHAPE_FILL_RATIO_MIN = 0.28
+BRICK_FACE_MATCH_MAX_FULL = 0.40
+BRICK_FACE_MATCH_MAX_PARTIAL = 0.55
+FALLBACK_SHAPE_MIN_AREA_RATIO = 0.06
 
 # Cyan-target experiment: stabilize selection around centerpoint.
 CENTER_LOCK_RADIUS_RATIO = 0.18
@@ -201,6 +205,13 @@ class BrickDetector:
         self._center_axis_weight_x = float(CENTER_AXIS_WEIGHT_X)
         self._center_axis_weight_y = float(CENTER_AXIS_WEIGHT_Y)
         self._center_lock_prev_center = None
+
+        # Canonical brick face shape (world model) for debug/overlay rendering.
+        self._face_polygon_model = None
+        self._face_lines_model = []
+        self._face_shape_templates = {}
+        self._load_face_shape_model()
+        self._init_shape_match_templates()
 
         # Temporal smoothing
         self._prev_angle = None
@@ -447,11 +458,27 @@ class BrickDetector:
         return angle
 
     def _estimate_distance(self, bbox_height_px):
-        """Estimate distance to brick using pinhole camera model."""
+        """Estimate distance from apparent brick size in the image.
+
+        Uses inverse size relation: larger bbox height means closer brick,
+        yielding a smaller distance value.
+        """
         if bbox_height_px <= 0:
             return 999.0
-        dist_mm = (BRICK_HEIGHT_MM * self.focal_px) / bbox_height_px
-        return dist_mm
+        return (BRICK_HEIGHT_MM * self.focal_px) / float(bbox_height_px)
+
+    def _effective_distance_height_px(self, bbox_height_px, partial_kind=None):
+        """
+        Convert observed bbox height into a full-brick equivalent height.
+
+        Top/bottom partial profiles represent roughly half the face height,
+        so scale them up before deriving the pixel-size distance proxy.
+        """
+        h_px = max(1.0, float(bbox_height_px))
+        kind = str(partial_kind or "").strip().lower()
+        if kind in {"top_half", "bottom_half"}:
+            h_px *= 2.0
+        return h_px
 
     def _smooth(self, new_val, prev_val):
         """Exponential moving average for temporal smoothing."""
@@ -459,18 +486,18 @@ class BrickDetector:
             return new_val
         return self._smooth_alpha * new_val + (1 - self._smooth_alpha) * prev_val
 
-    def _estimate_cam_height(self, center_y_px, dist_mm):
+    def _estimate_cam_height(self, center_y_px, dist_signal):
         """
-        Estimate camera-space vertical offset (mm) from image-space Y center.
+        Estimate camera-space vertical offset from image-space Y center.
 
-        This mirrors ArUco's `tvec[1]` convention:
-        - 0 mm at image vertical center
+        Returns raw pixel offset (not converted to mm):
+        - 0 px at image vertical center
         - positive when brick center is below image center
         - negative when brick center is above image center
         """
         frame_center_y = float(self.frame_h) / 2.0
         offset_y_px = float(center_y_px) - frame_center_y
-        return (offset_y_px / float(self.focal_px)) * float(dist_mm)
+        return offset_y_px
 
     def _clear_partial_state(self):
         self.last_partial_count = 0
@@ -672,6 +699,23 @@ class BrickDetector:
             if rel_err > BRICK_SHAPE_REL_ERROR_MAX:
                 continue
 
+            # Canonical shape gate: accept only full/top/bottom profile matches.
+            shape_profile, shape_match_score = self._classify_contour_shape(cnt)
+            if shape_profile is None:
+                continue
+
+            partial = False
+            partial_kind = None
+            partial_label = None
+            if shape_profile == "top_half":
+                partial = True
+                partial_kind = "top_half"
+                partial_label = PARTIAL_LABEL_TOP
+            elif shape_profile == "bottom_half":
+                partial = True
+                partial_kind = "bottom_half"
+                partial_label = PARTIAL_LABEL_BOTTOM
+
             partial_info = self._partial_info_for_crop_bbox(
                 bx,
                 by,
@@ -698,10 +742,16 @@ class BrickDetector:
                 "rect": rect_frame,
                 "bbox": (bx + x1, by + y1, bw, bh),
                 "area": area,
-                "partial": bool(partial_info.get("partial")),
-                "partial_kind": partial_info.get("kind"),
-                "partial_label": partial_info.get("label"),
+                "partial": bool(partial),
+                "partial_kind": partial_kind,
+                "partial_label": partial_label,
                 "partial_edges": partial_info.get("edges") or {},
+                "shape_profile": shape_profile,
+                "shape_match_score": (
+                    float(shape_match_score)
+                    if isinstance(shape_match_score, (int, float))
+                    else None
+                ),
             })
 
         return bricks
@@ -967,14 +1017,15 @@ class BrickDetector:
 
             # Distance from individual brick bbox height
             _, _, _, ind_bh = primary["bbox"]
-            raw_dist = self._estimate_distance(ind_bh)
+            eff_h = self._effective_distance_height_px(ind_bh, primary.get("partial_kind"))
+            raw_dist = self._estimate_distance(eff_h)
             dist = self._smooth(raw_dist, self._prev_dist)
             self._prev_dist = dist
 
-            # Horizontal offset
+            # Horizontal offset (pixel-based)
             frame_center_x = w_frame / 2.0 + self.camera_center_offset_px
             offset_px = primary["center_x"] - frame_center_x
-            raw_offset_x = (offset_px / self.focal_px) * dist
+            raw_offset_x = float(offset_px)
             offset_x = self._smooth(raw_offset_x, self._prev_offset)
             self._prev_offset = offset_x
 
@@ -1009,13 +1060,39 @@ class BrickDetector:
             return (True, angle, dist, offset_x, conf_pct, cam_height,
                     brick_above, brick_below)
 
-        # Fallback path: current YOLO-only pipeline (gray bricks, HSV disabled, etc.)
-        primary_box = self._select_center_box(bricks, w_frame, h_frame)
+        # Fallback path: require canonical full/top/bottom shape match.
+        shape_gate_enabled = bool(getattr(self, "_face_shape_templates", None))
+        matched_boxes = []
+        matched_partials = []
+        if shape_gate_enabled:
+            for bx1, by1, bx2, by2, bconf in bricks:
+                contour = self._extract_shape_contour_in_box(frame, bx1, by1, bx2, by2)
+                shape_profile, _shape_score = self._classify_contour_shape(contour)
+                if shape_profile is None:
+                    continue
+                matched_boxes.append((bx1, by1, bx2, by2, bconf))
+                matched_partials.append(self._partial_from_shape_profile(shape_profile))
+        else:
+            matched_boxes = list(bricks)
+            matched_partials = [self._partial_from_shape_profile("full") for _ in matched_boxes]
+
+        if not matched_boxes:
+            self._prev_angle = None
+            self._prev_dist = None
+            self._prev_offset = None
+            self._prev_offset_y = None
+            self._center_lock_prev_center = None
+            self.last_status = "shape mismatch"
+            self.last_primary_confidence = 0.0
+            self._clear_partial_state()
+            return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+
+        primary_box = self._select_center_box(matched_boxes, w_frame, h_frame)
         if primary_box is None:
-            primary_box = bricks[0]
+            primary_box = matched_boxes[0]
         x1, y1, x2, y2, conf = primary_box
         primary_idx = 0
-        for idx, box in enumerate(bricks):
+        for idx, box in enumerate(matched_boxes):
             if box == primary_box:
                 primary_idx = idx
                 break
@@ -1027,15 +1104,22 @@ class BrickDetector:
         angle = self._smooth_angle(raw_angle, self._prev_angle)
         self._prev_angle = angle
 
+        primary_partial_info = (
+            matched_partials[primary_idx]
+            if 0 <= int(primary_idx) < len(matched_partials)
+            else {}
+        )
+
         bbox_h = y2 - y1
-        raw_dist = self._estimate_distance(bbox_h)
+        eff_h = self._effective_distance_height_px(bbox_h, primary_partial_info.get("kind"))
+        raw_dist = self._estimate_distance(eff_h)
         dist = self._smooth(raw_dist, self._prev_dist)
         self._prev_dist = dist
 
         brick_center_x = (x1 + x2) / 2.0
         frame_center_x = w_frame / 2.0 + self.camera_center_offset_px
         offset_px = brick_center_x - frame_center_x
-        raw_offset_x = (offset_px / self.focal_px) * dist
+        raw_offset_x = float(offset_px)
         offset_x = self._smooth(raw_offset_x, self._prev_offset)
         self._prev_offset = offset_x
 
@@ -1047,7 +1131,7 @@ class BrickDetector:
         primary_cy = (y1 + y2) / 2.0
         brick_above = False
         brick_below = False
-        for idx, (bx1, by1, bx2, by2, bconf) in enumerate(bricks):
+        for idx, (bx1, by1, bx2, by2, bconf) in enumerate(matched_boxes):
             if idx == primary_idx:
                 continue
             other_cy = (by1 + by2) / 2.0
@@ -1055,16 +1139,7 @@ class BrickDetector:
                 brick_above = True
             elif other_cy > primary_cy + bbox_h * 0.5:
                 brick_below = True
-        box_partial_infos = []
-        for bx1, by1, bx2, by2, _bconf in bricks:
-            box_partial_infos.append(
-                self._partial_info_for_frame_box(bx1, by1, bx2, by2, w_frame, h_frame)
-            )
-        primary_partial_info = (
-            box_partial_infos[primary_idx]
-            if 0 <= int(primary_idx) < len(box_partial_infos)
-            else {}
-        )
+        box_partial_infos = list(matched_partials)
         self._set_partial_state(
             box_partial_infos,
             primary_partial_kind=(primary_partial_info.get("kind") if isinstance(primary_partial_info, dict) and bool(primary_partial_info.get("partial")) else None),
@@ -1072,10 +1147,10 @@ class BrickDetector:
         )
 
         if self.debug:
-            ordered = [primary_box] + [box for idx, box in enumerate(bricks) if idx != primary_idx]
+            ordered = [primary_box] + [box for idx, box in enumerate(matched_boxes) if idx != primary_idx]
             ordered_partial_infos = [box_partial_infos[primary_idx]] + [
                 box_partial_infos[idx]
-                for idx in range(len(bricks))
+                for idx in range(len(matched_boxes))
                 if idx != primary_idx
             ]
             self._draw_debug(frame, ordered, angle, dist, offset_x, conf, partial_infos=ordered_partial_infos)
@@ -1234,6 +1309,278 @@ class BrickDetector:
             return "right" if dx >= 0.0 else "left"
         return "bottom" if dy >= 0.0 else "top"
 
+    def _load_face_shape_model(self):
+        self._face_polygon_model = None
+        self._face_lines_model = []
+        try:
+            import json
+
+            data = json.loads(BRICK_MODEL_PATH.read_text())
+        except Exception:
+            return
+
+        brick = data.get("brick") if isinstance(data, dict) else None
+        if not isinstance(brick, dict):
+            return
+
+        raw_poly = brick.get("facePolygon")
+        points = []
+        if isinstance(raw_poly, list):
+            for row in raw_poly:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    points.append([float(row.get("x")), float(row.get("y"))])
+                except (TypeError, ValueError):
+                    continue
+        if len(points) >= 3:
+            self._face_polygon_model = np.asarray(points, dtype=np.float32)
+
+        raw_lines = brick.get("faceLines")
+        if isinstance(raw_lines, list):
+            for row in raw_lines:
+                if not isinstance(row, dict):
+                    continue
+                p1 = row.get("p1") if isinstance(row.get("p1"), dict) else None
+                p2 = row.get("p2") if isinstance(row.get("p2"), dict) else None
+                if p1 is None or p2 is None:
+                    continue
+                try:
+                    self._face_lines_model.append(
+                        (
+                            (float(p1.get("x")), float(p1.get("y"))),
+                            (float(p2.get("x")), float(p2.get("y"))),
+                        )
+                    )
+                except (TypeError, ValueError):
+                    continue
+
+    def _contour_from_points(self, points):
+        if not isinstance(points, np.ndarray):
+            points = np.asarray(points, dtype=np.float32)
+        if points.ndim != 2 or points.shape[0] < 3 or points.shape[1] != 2:
+            return None
+        return points.reshape(-1, 1, 2).astype(np.float32)
+
+    def _clip_polygon_y(self, points, y_cut, keep_above):
+        if not isinstance(points, np.ndarray) or points.ndim != 2 or len(points) < 3:
+            return np.empty((0, 2), dtype=np.float32)
+
+        def inside(pt):
+            if keep_above:
+                return float(pt[1]) >= float(y_cut)
+            return float(pt[1]) <= float(y_cut)
+
+        clipped = []
+        prev = points[-1]
+        prev_inside = inside(prev)
+        for cur in points:
+            cur_inside = inside(cur)
+            if cur_inside != prev_inside:
+                dy = float(cur[1] - prev[1])
+                if abs(dy) > 1e-6:
+                    t = (float(y_cut) - float(prev[1])) / dy
+                    ix = float(prev[0]) + t * float(cur[0] - prev[0])
+                else:
+                    ix = float(cur[0])
+                clipped.append([ix, float(y_cut)])
+            if cur_inside:
+                clipped.append([float(cur[0]), float(cur[1])])
+            prev = cur
+            prev_inside = cur_inside
+
+        if len(clipped) < 3:
+            return np.empty((0, 2), dtype=np.float32)
+        return np.asarray(clipped, dtype=np.float32)
+
+    def _init_shape_match_templates(self):
+        self._face_shape_templates = {}
+        poly = self._face_polygon_model
+        if not isinstance(poly, np.ndarray) or poly.shape[0] < 3:
+            return
+
+        full_contour = self._contour_from_points(poly)
+        if full_contour is None:
+            return
+
+        y_min = float(np.min(poly[:, 1]))
+        y_max = float(np.max(poly[:, 1]))
+        y_mid = (y_min + y_max) * 0.5
+        top_poly = self._clip_polygon_y(poly, y_mid, keep_above=True)
+        bottom_poly = self._clip_polygon_y(poly, y_mid, keep_above=False)
+
+        top_contour = self._contour_from_points(top_poly)
+        bottom_contour = self._contour_from_points(bottom_poly)
+
+        self._face_shape_templates["full"] = cv2.convexHull(full_contour)
+        if top_contour is not None:
+            self._face_shape_templates["top_half"] = cv2.convexHull(top_contour)
+        if bottom_contour is not None:
+            self._face_shape_templates["bottom_half"] = cv2.convexHull(bottom_contour)
+
+    def _classify_contour_shape(self, contour):
+        templates = getattr(self, "_face_shape_templates", None)
+        if not isinstance(templates, dict) or not templates:
+            # Keep test stubs and non-initialized instances functional.
+            return "full", 0.0
+        if contour is None:
+            return None, None
+
+        contour_arr = np.asarray(contour, dtype=np.float32)
+        if contour_arr.ndim != 3 or contour_arr.shape[0] < 3:
+            return None, None
+
+        try:
+            candidate_hull = cv2.convexHull(contour_arr)
+        except Exception:
+            return None, None
+
+        best_profile = None
+        best_score = None
+        for profile, templ in templates.items():
+            try:
+                score = float(
+                    cv2.matchShapes(
+                        candidate_hull,
+                        templ,
+                        cv2.CONTOURS_MATCH_I1,
+                        0.0,
+                    )
+                )
+            except Exception:
+                continue
+            if best_score is None or score < best_score:
+                best_score = score
+                best_profile = str(profile)
+
+        if best_profile is None or best_score is None:
+            return None, None
+
+        threshold = (
+            float(BRICK_FACE_MATCH_MAX_FULL)
+            if best_profile == "full"
+            else float(BRICK_FACE_MATCH_MAX_PARTIAL)
+        )
+        if float(best_score) > threshold:
+            return None, float(best_score)
+        return best_profile, float(best_score)
+
+    def _extract_shape_contour_in_box(self, frame, x1, y1, x2, y2):
+        crop = frame[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
+        if crop.size == 0:
+            return None
+
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blur, 50, 150)
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+
+        crop_area = float(crop.shape[0] * crop.shape[1])
+        min_area = max(8.0, crop_area * float(FALLBACK_SHAPE_MIN_AREA_RATIO))
+        best = None
+        best_area = 0.0
+        for cnt in contours:
+            area = float(cv2.contourArea(cnt))
+            if area < min_area:
+                continue
+            if area > best_area:
+                best = cnt
+                best_area = area
+        return best
+
+    def _partial_from_shape_profile(self, profile):
+        if profile == "top_half":
+            return {
+                "partial": True,
+                "kind": "top_half",
+                "label": PARTIAL_LABEL_TOP,
+            }
+        if profile == "bottom_half":
+            return {
+                "partial": True,
+                "kind": "bottom_half",
+                "label": PARTIAL_LABEL_BOTTOM,
+            }
+        return {
+            "partial": False,
+            "kind": None,
+            "label": None,
+        }
+
+    def _project_model_points_to_rect(self, model_points, rect_points):
+        if not isinstance(model_points, np.ndarray) or model_points.size == 0:
+            return None
+        if not isinstance(rect_points, np.ndarray) or rect_points.shape != (4, 2):
+            return None
+
+        # World model uses Y-positive-up. Map model corners into image TL/TR/BR/BL.
+        src = np.asarray(
+            [
+                [-32.0, 48.0],  # top-left in model coords
+                [32.0, 48.0],   # top-right
+                [32.0, 0.0],    # bottom-right
+                [-32.0, 0.0],   # bottom-left
+            ],
+            dtype=np.float32,
+        )
+        
+        # Preserve brick's aspect ratio (64mm wide × 48mm tall = 4:3)
+        rect_pts = rect_points.astype(np.float32)
+        
+        # Calculate center of bounding box
+        center = np.mean(rect_pts, axis=0)
+        
+        # Calculate width/height vectors of the detected rectangle
+        tl, tr, br, bl = rect_pts
+        width_vector = tr - tl
+        height_vector = bl - tl
+        rect_width = np.linalg.norm(width_vector)
+        rect_height = np.linalg.norm(height_vector)
+        
+        # Normalize vectors
+        norm_width = width_vector / rect_width if rect_width > 0 else np.array([1.0, 0.0])
+        norm_height = height_vector / rect_height if rect_height > 0 else np.array([0.0, 1.0])
+        
+        # Brick is 64mm × 48mm (aspect ratio 4:3)
+        # Scale to fit within the detected box while preserving aspect ratio
+        target_aspect = 64.0 / 48.0  # 4/3
+        current_aspect = rect_width / rect_height if rect_height > 0 else target_aspect
+        
+        if current_aspect > target_aspect:
+            # Detected box is too wide; scale height up
+            actual_width = rect_height * target_aspect
+            actual_height = rect_height
+        else:
+            # Detected box is too tall; scale width up
+            actual_width = rect_width
+            actual_height = rect_width / target_aspect
+        
+        # Create adjusted destination rectangle centered at the same center
+        half_width = norm_width * actual_width * 0.5
+        half_height = norm_height * actual_height * 0.5
+        
+        new_tl = center - half_width - half_height
+        new_tr = center + half_width - half_height
+        new_br = center + half_width + half_height
+        new_bl = center - half_width + half_height
+        
+        dst = np.asarray([new_tl, new_tr, new_br, new_bl], dtype=np.float32)
+        
+        try:
+            H = cv2.getPerspectiveTransform(src, dst)
+        except Exception:
+            return None
+        pts_in = np.asarray(model_points, dtype=np.float32).reshape(-1, 1, 2)
+        try:
+            projected = cv2.perspectiveTransform(pts_in, H)
+        except Exception:
+            return None
+        if projected is None:
+            return None
+        return projected.reshape(-1, 2)
+
     def _draw_primary_face_outline(self, frame, primary):
         if not isinstance(primary, dict):
             return
@@ -1247,6 +1594,46 @@ class BrickDetector:
         edges = primary.get("partial_edges") or {}
         outline_color = PARTIAL_COLOR_BGR if is_partial else (0, 255, 0)
         outline_thickness = 3 if is_partial else 2
+
+        shape_profile = str(primary.get("shape_profile") or "").strip().lower()
+        if not shape_profile:
+            if is_partial:
+                partial_kind = str(primary.get("partial_kind") or "").strip().lower()
+                if partial_kind in {"top_half", "bottom_half"}:
+                    shape_profile = partial_kind
+            if not shape_profile:
+                shape_profile = "full"
+
+        # Draw canonical world-model face shape for full/top/bottom profiles.
+        model_poly = None
+        face_polygon_model = getattr(self, "_face_polygon_model", None)
+        if isinstance(face_polygon_model, np.ndarray):
+            if shape_profile == "top_half":
+                y_vals = face_polygon_model[:, 1]
+                y_mid = (float(np.min(y_vals)) + float(np.max(y_vals))) * 0.5
+                model_poly = self._clip_polygon_y(face_polygon_model, y_mid, keep_above=True)
+            elif shape_profile == "bottom_half":
+                y_vals = face_polygon_model[:, 1]
+                y_mid = (float(np.min(y_vals)) + float(np.max(y_vals))) * 0.5
+                model_poly = self._clip_polygon_y(face_polygon_model, y_mid, keep_above=False)
+            else:
+                model_poly = face_polygon_model
+
+        if isinstance(model_poly, np.ndarray) and model_poly.size >= 6:
+            poly_proj = self._project_model_points_to_rect(model_poly, points)
+            if isinstance(poly_proj, np.ndarray) and len(poly_proj) >= 3:
+                poly_draw = np.round(poly_proj).astype(np.int32).reshape(-1, 1, 2)
+                cv2.polylines(frame, [poly_draw], True, outline_color, 2, cv2.LINE_AA)
+
+                if shape_profile == "full" and isinstance(self._face_lines_model, list) and self._face_lines_model:
+                    for p1, p2 in self._face_lines_model:
+                        line_points = np.asarray([p1, p2], dtype=np.float32)
+                        line_proj = self._project_model_points_to_rect(line_points, points)
+                        if isinstance(line_proj, np.ndarray) and len(line_proj) == 2:
+                            a = tuple(np.intp(np.round(line_proj[0])))
+                            b = tuple(np.intp(np.round(line_proj[1])))
+                            cv2.line(frame, a, b, (220, 245, 255), 1, cv2.LINE_AA)
+                return
 
         visible_segments = []
         for idx in range(4):

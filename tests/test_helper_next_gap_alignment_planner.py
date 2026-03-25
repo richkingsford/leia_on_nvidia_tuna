@@ -932,6 +932,53 @@ class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
         self.assertIn("distance monotonic curve", str(plan.get("curve_name") or ""))
         self.assertAlmostEqual(float(plan.get("curve_value_mm") or 0.0), 4.62, places=2)
 
+    def test_gap_planner_align_brick_distance_direction_is_consistent_across_8mm_threshold(self):
+        process_rules = {
+            "ALIGN_BRICK": {
+                "align_policy": {
+                    "metric_direction_overrides": {
+                        "dist": "band",
+                    },
+                },
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 1.0},
+                    "yAxis_offset_abs": {"target": 0.0, "tol": 1.0},
+                    "dist": {"target": 69.55, "tol": 2.30},
+                },
+            }
+        }
+        # Farther-than-target should always choose the same command direction,
+        # independent of whether curve override is active (>8mm) or fallback is used (<8mm).
+        far_plan = helper_next.select_alignment_next_act(
+            process_rules=process_rules,
+            learned_rules={},
+            step="ALIGN_BRICK",
+            x_axis_mm=0.0,
+            y_axis_mm=0.0,
+            dist_mm=81.93,  # +12.38mm from target: curve path
+            visible=True,
+            angle_deg=0.0,
+            duration_s=0.05,
+        )
+        near_plan = helper_next.select_alignment_next_act(
+            process_rules=process_rules,
+            learned_rules={},
+            step="ALIGN_BRICK",
+            x_axis_mm=0.0,
+            y_axis_mm=0.0,
+            dist_mm=77.19,  # +7.64mm from target: fallback path
+            visible=True,
+            angle_deg=0.0,
+            duration_s=0.05,
+        )
+
+        self.assertEqual(far_plan.get("planner"), "gap", far_plan)
+        self.assertEqual(near_plan.get("planner"), "gap", near_plan)
+        self.assertEqual(far_plan.get("correction_type"), "distance", far_plan)
+        self.assertEqual(near_plan.get("correction_type"), "distance", near_plan)
+        self.assertEqual(far_plan.get("cmd"), "f", far_plan)
+        self.assertEqual(near_plan.get("cmd"), "f", near_plan)
+
     def test_gap_planner_dist_priority_cheat_forces_distance_choice(self):
         process_rules = {
             "BRICK_LOCK": {

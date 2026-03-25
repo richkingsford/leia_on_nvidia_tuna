@@ -2,6 +2,82 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Python: Calibrate (Menu)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/calibrate_speed_curve.py",
+            "console": "integratedTerminal",
+            "python": "${command:python.interpreterPath}",
+            "env": {
+                "DISPLAY": ":0"
+            }
+        },
+        {
+            "name": "Python: Calibrate Dist (Cyan/Leia)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/calibrate_speed_curve.py",
+            "args": [
+                "--choice",
+                "dist",
+                "--vision",
+                "leia",
+                "--target-dist-mm",
+                "166",
+                "--observe-samples",
+                "7",
+                "--observe-timeout-s",
+                "2.8",
+                "--results-file",
+                "Runs - cyan/calibrate_dist_live.json"
+            ],
+            "console": "integratedTerminal",
+            "python": "${command:python.interpreterPath}",
+            "env": {
+                "DISPLAY": ":0"
+            }
+        },
+        {
+            "name": "Python: Calibrate Dist Guided (Cyan)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/calibrate_speed_curve.py",
+            "args": [
+                "--choice",
+                "dist-guided",
+                "--vision",
+                "leia",
+                "--checkpoints-mm",
+                "120,140,160,180,200,220",
+                "--trials-per-checkpoint",
+                "12"
+            ],
+            "console": "integratedTerminal",
+            "python": "${command:python.interpreterPath}",
+            "env": {
+                "DISPLAY": ":0"
+            }
+        },
+        {
+            "name": "Python: Calibrate Y (30 trials)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/calibrate_speed_curve.py",
+            "args": [
+                "--choice",
+                "y",
+                "--vision",
+                "yolo",
+                "--trials",
+                "30"
+            ],
+            "console": "integratedTerminal",
+            "python": "${command:python.interpreterPath}",
+            "env": {
+                "DISPLAY": ":0"
+            }
+        },
+        {
             "name": "Python: Current File",
             "type": "debugpy",
             "request": "launch",

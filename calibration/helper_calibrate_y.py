@@ -15,6 +15,7 @@ import math
 import random
 import statistics
 import sys
+import threading
 import time
 from collections import deque
 from dataclasses import asdict, dataclass
@@ -43,6 +44,10 @@ from .helper_calibrate import (
     write_results as shared_write_results,
 )
 from helper_robot_control import Robot
+import helper_xyz_coords
+from helper_manual_config import load_manual_training_config
+from helper_stream_server import format_stream_url
+from helper_streaming import start_stream_server
 from helper_vision_leia import LeiaVision
 
 # The Yolo brick detector is used by manual training; it's optional here and
@@ -59,14 +64,14 @@ from telemetry_process import (
     send_robot_command,
     update_world_from_vision,
 )
-from telemetry_robot import StepState, WorldModel, normalize_speed_score, speed_power_pwm_for_cmd
+from telemetry_robot import StepState, WorldModel, draw_telemetry_overlay, normalize_speed_score, speed_power_pwm_for_cmd
 
 OBSERVE_SLEEP_S = 0.02
 OBSERVE_TIMEOUT_S = 1.8
 POST_ACT_SETTLE_S = 0.10
 OBSERVE_SAMPLES_DEFAULT = 3
 Y_AXIS_SWEET_SPOT_MM_DEFAULT = 8.1
-DURATION_CEILING_MS = 500
+DURATION_CEILING_MS = 1500
 DURATION_SECTION_STEP_MS_DEFAULT = 100
 DURATION_SECTION_SPAN_MS_DEFAULT = 50
 DURATION_SAMPLES_PER_SECTION_DEFAULT = 5
@@ -111,8 +116,25 @@ RECOVERY_OBSERVE_TIMEOUT_S = 1.0
 RESULTS_FILE_DEFAULT: str | None = None
 PLOT_FILE_DEFAULT: str | None = None
 
+_MANUAL_CONFIG = load_manual_training_config()
+STREAM_HOST = str(_MANUAL_CONFIG.get("stream_host", "127.0.0.1"))
+STREAM_PORT = int(_MANUAL_CONFIG.get("stream_port", 5000))
+STREAM_FPS = int(_MANUAL_CONFIG.get("stream_fps", 10))
+STREAM_JPEG_QUALITY = int(_MANUAL_CONFIG.get("stream_jpeg_quality", 85))
+STREAM_IMG_WIDTH = int(_MANUAL_CONFIG.get("stream_img_width", 1600))
+ANSI_ORANGE_BRIGHT = "\033[38;5;208m"
+ANSI_RESET = "\033[0m"
+
 # Folder where calibration runs deposit live files.
-RUN_DIR = Path("Runs - aruco")
+RUN_DIR_ARUCO = Path("Runs - aruco")
+RUN_DIR_CYAN = Path("Runs - cyan")
+
+
+def _run_dir_for_vision(vision_mode: str | None) -> Path:
+    mode = str(vision_mode or "").strip().lower()
+    if mode == "aruco":
+        return Path(RUN_DIR_ARUCO)
+    return Path(RUN_DIR_CYAN)
 
 
 def _cleanup_old_run_files():
@@ -125,9 +147,9 @@ def _cleanup_old_run_files():
     )
 
 
-def _ensure_run_dir():
+def _ensure_run_dir(run_dir: Path):
     ensure_run_dir(
-        run_dir=RUN_DIR,
+        run_dir=Path(run_dir),
         preserve_live_files={
             "calibrate_x_live.json",
             "calibrate_y_live.json",
@@ -211,6 +233,123 @@ class ResetEffort:
 
 def log_line(message: str) -> None:
     print(str(message), flush=True)
+
+
+def _orange_text(text: str) -> str:
+    return f"{ANSI_ORANGE_BRIGHT}{str(text)}{ANSI_RESET}"
+
+
+def _parse_float_list(raw_text: str) -> list[float]:
+    values: list[float] = []
+    for token in str(raw_text or "").replace(";", ",").split(","):
+        text = str(token or "").strip()
+        if not text:
+            continue
+        values.append(float(text))
+    return values
+
+
+def _current_vision_frame(vision):
+    for attr in ("current_frame", "debug_frame", "raw_frame"):
+        frame = getattr(vision, attr, None)
+        if frame is not None:
+            return frame
+    return None
+
+
+def _refresh_stream_state(
+    *,
+    stream_state: dict | None,
+    vision,
+    world,
+    title_lines: list[str],
+) -> None:
+    if not isinstance(stream_state, dict):
+        return
+    frame = _current_vision_frame(vision)
+    if frame is None:
+        try:
+            update_world_from_vision(world, vision, log=False)
+            frame = _current_vision_frame(vision)
+        except Exception:
+            frame = _current_vision_frame(vision)
+    text_lines = list(title_lines or [])
+    try:
+        helper_xyz_coords.sync_from_world(world, reason="vision", render=False)
+    except Exception:
+        pass
+    if frame is not None:
+        try:
+            show_cl = bool(stream_state.get("show_center_line", True))
+            frame = draw_telemetry_overlay(
+                frame,
+                world,
+                show_prompt=False,
+                draw_text=False,
+                line_sink=text_lines,
+                show_center_line=show_cl,
+            )
+        except Exception:
+            pass
+    lock = stream_state.get("lock")
+    if lock is None:
+        stream_state["frame"] = frame
+        stream_state["text_lines"] = text_lines
+        return
+    with lock:
+        stream_state["frame"] = frame
+        stream_state["text_lines"] = text_lines
+
+
+def _load_y_duration_calibration(path: Path | None = None) -> dict | None:
+    curve_path = Path(path) if path is not None else (Path(__file__).resolve().parents[1] / "world_model_up_down_curve.json")
+    if not curve_path.exists():
+        return None
+    try:
+        payload = json.loads(curve_path.read_text())
+    except Exception:
+        return None
+    calib = payload.get("aruco_marker_calibration") if isinstance(payload, dict) else None
+    by_cmd = calib.get("by_cmd") if isinstance(calib, dict) else None
+    if not isinstance(by_cmd, dict):
+        return None
+    out = {}
+    for cmd in ("u", "d"):
+        row = by_cmd.get(cmd)
+        if not isinstance(row, dict):
+            continue
+        try:
+            out[cmd] = {
+                "slope_mm_per_ms": float(row.get("slope_mm_per_ms")),
+                "intercept_mm": float(row.get("intercept_mm")),
+            }
+        except Exception:
+            continue
+    return out if out else None
+
+
+def _predict_duration_for_target_delta_mm(
+    *,
+    cmd: str,
+    abs_delta_mm: float,
+    duration_min_ms: int,
+    duration_max_ms: int,
+    y_calibration: dict | None,
+) -> int:
+    cmd_key = _normalize_cmd(cmd, allow_auto=False)
+    if not isinstance(y_calibration, dict) or cmd_key not in y_calibration:
+        return int(max(duration_min_ms, min(duration_max_ms, duration_min_ms)))
+    row = y_calibration.get(cmd_key) or {}
+    try:
+        slope = float(row.get("slope_mm_per_ms"))
+        intercept = float(row.get("intercept_mm"))
+    except Exception:
+        return int(max(duration_min_ms, min(duration_max_ms, duration_min_ms)))
+    if slope <= 1e-9:
+        return int(max(duration_min_ms, min(duration_max_ms, duration_min_ms)))
+    predicted = (max(0.0, float(abs_delta_mm)) - float(intercept)) / float(slope)
+    predicted = max(float(duration_min_ms), min(float(duration_max_ms), float(predicted)))
+    return int(round(predicted))
 
 
 def _supports_ansi_color() -> bool:
@@ -1647,10 +1786,22 @@ def _exit_as_script(exit_code: int) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Minimal y-axis duration probe with live scatter updates.")
     parser.add_argument(
+        "--trial-mode",
+        choices=["observation", "target"],
+        default="observation",
+        help="observation=random duration probes, target=one-shot attempts toward requested y targets.",
+    )
+    parser.add_argument(
         "--trials",
         type=int,
         default=None,
         help="Optional trial cap; default runs the full sectioned duration schedule.",
+    )
+    parser.add_argument(
+        "--repeat-trials",
+        type=int,
+        default=None,
+        help="Optional repeat-trial count; repeats run after primaries using recorded cmd/duration.",
     )
     parser.add_argument("--speed-score", type=int, default=1, help="Fixed y-axis speed score (default: 1).")
     parser.add_argument(
@@ -1670,12 +1821,12 @@ def main() -> int:
     parser.add_argument(
         "--vision",
         choices=["leia", "yolo", "aruco"],
-        default="aruco",
-        help="Which vision backend to use: aruco markers (default), leia edges, or yolo cyan bricks.",
+        default="yolo",
+        help="Which vision backend to use: yolo cyan bricks (default), aruco markers, or leia edges.",
     )
 
     parser.add_argument("--min-duration-ms", type=int, default=200, help="Minimum random duration in ms (default: 200).")
-    parser.add_argument("--max-duration-ms", type=int, default=300, help="Maximum random duration in ms (default: 300).")
+    parser.add_argument("--max-duration-ms", type=int, default=1500, help="Maximum random duration in ms (default: 1500).")
     parser.add_argument("--observe-samples", type=int, default=OBSERVE_SAMPLES_DEFAULT, help="Observation samples per pose; use 3 for 3-frame confidence (default: 3).")
     parser.add_argument("--observe-timeout-s", type=float, default=OBSERVE_TIMEOUT_S, help=f"Observation timeout in seconds (default: {OBSERVE_TIMEOUT_S}).")
     parser.add_argument("--post-act-settle-s", type=float, default=POST_ACT_SETTLE_S, help=f"Extra wait after the act before re-observing (default: {POST_ACT_SETTLE_S}).")
@@ -1683,13 +1834,42 @@ def main() -> int:
     parser.add_argument("--show-plot", action="store_true", help="Open an interactive Matplotlib window and update it after each trial.")
     parser.add_argument("--plot-path", type=str, default=PLOT_FILE_DEFAULT, help="Optional PNG file to rewrite after each trial.")
     parser.add_argument("--results-file", type=str, default=RESULTS_FILE_DEFAULT, help="JSON output path (default: run-specific file in ./runs).")
+    parser.add_argument(
+        "--target-y-mm",
+        type=str,
+        default="-9,-6,-3,0,3,6,9",
+        help="Comma-separated target y-axis values (mm) used by --trial-mode target.",
+    )
+    parser.add_argument(
+        "--target-repeats",
+        type=int,
+        default=1,
+        help="How many one-shot attempts per target in --trial-mode target (default: 1).",
+    )
+    parser.add_argument(
+        "--livestream",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable livestream with mast/XYZ side panels for y-axis trial progress (default: enabled).",
+    )
+    parser.add_argument("--stream-host", type=str, default=STREAM_HOST)
+    parser.add_argument("--stream-port", type=int, default=STREAM_PORT)
+    parser.add_argument("--stream-fps", type=int, default=STREAM_FPS)
+    parser.add_argument("--stream-jpeg-quality", type=int, default=STREAM_JPEG_QUALITY)
+    parser.add_argument("--stream-img-width", type=int, default=STREAM_IMG_WIDTH)
+    parser.add_argument(
+        "--preflight-check",
+        action="store_true",
+        help="Run a 1% movement preflight check before trials (disabled by default).",
+    )
     parser.add_argument("--reference-distance-mm", type=float, default=None, help="Assumed brick distance (mm) for this calibration set")
     parser.add_argument("--invert-y-axis", action="store_true", help="Invert u/d command mapping (test for command inversion issues)")
     args = parser.parse_args()
-    _ensure_run_dir()
-    # Use a stable live JSON file in the Runs - aruco folder.
+    run_dir = _run_dir_for_vision(args.vision)
+    _ensure_run_dir(run_dir)
+    # Use a stable live JSON file in the vision-specific runs folder.
     if args.results_file is None:
-        args.results_file = str(RUN_DIR / "calibrate_y_live.json")
+        args.results_file = str(Path(run_dir) / "calibrate_y_live.json")
     try:
         cmd_mode = _normalize_cmd(args.cmd, allow_auto=True)
         center_fallback_cmd = _normalize_cmd(args.center_fallback_cmd, allow_auto=False)
@@ -1698,6 +1878,8 @@ def main() -> int:
         return 2
 
     trials_requested = None if args.trials is None else max(1, int(args.trials))
+    repeat_trials_requested = None if args.repeat_trials is None else max(0, int(args.repeat_trials))
+    trial_mode = str(args.trial_mode)
     speed_score = normalize_speed_score(args.speed_score)
     center_y_mm = float(args.center_y_mm)
     auto_deadband_mm = abs(float(args.auto_deadband_mm))
@@ -1720,6 +1902,8 @@ def main() -> int:
     observe_samples = max(1, int(args.observe_samples))
     observe_timeout_s = max(0.2, float(args.observe_timeout_s))
     post_act_settle_s = max(0.0, float(args.post_act_settle_s))
+    target_repeats = max(1, int(args.target_repeats))
+    target_y_values = _parse_float_list(args.target_y_mm)
     rng = random.Random(args.seed)
     global Y_AXIS_INVERT
     if args.invert_y_axis:
@@ -1733,7 +1917,16 @@ def main() -> int:
         max_duration_ms=max_duration_ms,
         rng=rng,
     )
-    trials_planned = len(durations_ms)
+    if trial_mode == "target":
+        if not target_y_values:
+            log_line("[CALIBRATE_Y] --trial-mode target requires at least one --target-y-mm value.")
+            return 2
+        planned_targets = [float(v) for _ in range(int(target_repeats)) for v in target_y_values]
+        trials_planned = len(planned_targets)
+        durations_ms = [int(min_duration_ms)] * int(trials_planned)
+    else:
+        planned_targets = []
+        trials_planned = len(durations_ms)
     results_path = Path(args.results_file)
     plot_path = Path(args.plot_path) if args.plot_path else None
     duration_section_count = (
@@ -1744,9 +1937,11 @@ def main() -> int:
     )
 
     config = {
+        "trial_mode": str(trial_mode),
         "trials": int(trials_planned),
         "requested_trials": None if trials_requested is None else int(trials_requested),
         "repeat_pass_enabled": True,
+        "requested_repeat_trials": None if repeat_trials_requested is None else int(repeat_trials_requested),
         "duration_ceiling_ms": int(duration_ceiling_ms),
         "speed_score": int(speed_score),
         "cmd": str(cmd_mode),
@@ -1776,13 +1971,15 @@ def main() -> int:
         "plot_path": str(plot_path) if plot_path is not None else None,
         "brick_distance_source": str(BRICK_DISTANCE_SOURCE),
         "brick_distance_definition": str(BRICK_DISTANCE_DEFINITION),
+        "target_y_mm": [float(v) for v in planned_targets] if trial_mode == "target" else [],
+        "target_repeats": int(target_repeats),
     }
     if REFERENCE_BRICK_DISTANCE_MM is not None:
         config["reference_brick_distance_mm"] = float(REFERENCE_BRICK_DISTANCE_MM)
 
     log_line("[CALIBRATE_Y] Starting y-axis duration probe.")
     log_line(
-        f"[CALIBRATE_Y] trials={trials_planned} score={int(speed_score)}% durations_ms={durations_ms} "
+        f"[CALIBRATE_Y] mode={trial_mode} trials={trials_planned} score={int(speed_score)}% durations_ms={durations_ms} "
         f"observe_samples={observe_samples}"
     )
     log_line(
@@ -1827,6 +2024,9 @@ def main() -> int:
     robot = None
     vision = None
     world = None
+    stream_server = None
+    stream_state = None
+    stream_url = format_stream_url(str(args.stream_host), int(args.stream_port))
     recent_acts = deque(maxlen=32)
     trial_rows: list[TrialResult] = []
     reset_rows: list[ResetEffort] = []
@@ -1851,105 +2051,269 @@ def main() -> int:
         else:  # leia
             vision = LeiaVision(debug=False)
 
-        for trial_idx, duration_ms in enumerate(durations_ms, start=1):
-            trial_label = _trial_label_text(trial_idx, trials_planned)
-            pre_pose = None
-            pre_obs_meta = None
-            scheduled_trial_cmd = _scheduled_primary_cmd_for_trial(trial_idx, phase="primary")
-            if scheduled_trial_cmd is not None:
-                cmd = str(scheduled_trial_cmd)
-                log_line(
-                    f"[CALIBRATE_Y] {trial_label}: scheduled alternating cmd={str(cmd).upper()} "
-                    f"({_mast_label_for_cmd(cmd)}) to stay near y_axis={float(center_y_mm):+.2f}mm."
-                )
-            elif cmd_mode == "auto":
-                pre_pose, pre_obs_meta = _observe_pose_with_reobserve(
+        if bool(args.livestream):
+            log_line(f"[CALIBRATE_Y] Livestream URL: {_orange_text(stream_url)}")
+            stream_state = {
+                "frame": None,
+                "text_lines": [],
+                "lock": threading.Lock(),
+                "show_center_line": True,
+                "vision_mode": "aruco" if str(args.vision).strip().lower() == "aruco" else "cyan",
+            }
+
+            def _live_refresh(extra_lines=None):
+                lines = [
+                    f"Y calibration mode: {trial_mode}",
+                    f"Trials: {len(trial_rows)}/{int(trials_planned)}",
+                    f"Score: {int(speed_score)}%",
+                ]
+                if isinstance(extra_lines, list):
+                    lines.extend([str(item) for item in extra_lines])
+                _refresh_stream_state(
+                    stream_state=stream_state,
                     vision=vision,
                     world=world,
-                    samples=observe_samples,
-                    timeout_s=observe_timeout_s,
+                    title_lines=lines,
                 )
-                if pre_pose is None:
-                    pre_pose, pre_obs_meta = _recover_pose_for_trial(
+
+            _live_refresh([])
+            try:
+                stream_server, stream_url = start_stream_server(
+                    stream_state,
+                    title="Y-Axis Speed Curve Calibration",
+                    header="",
+                    footer="<div class='footer-sections'><div class='footer-section'><div class='footer-title'>Y Calibration</div><div>Mast/XYZ side panel + live trial telemetry.</div></div></div>",
+                    host=str(args.stream_host),
+                    port=int(args.stream_port),
+                    fps=max(1, int(args.stream_fps)),
+                    jpeg_quality=max(1, min(100, int(args.stream_jpeg_quality))),
+                    img_width=max(320, int(args.stream_img_width)),
+                    vision_mode_options=[("aruco", "AruCo Markers"), ("cyan", "Cyan Bricks")],
+                    xyz_workspace_getter=lambda: getattr(world, "_xyz_workspace", None),
+                )
+                log_line(f"[CALIBRATE_Y] Livestream started: {_orange_text(stream_url)}")
+            except Exception as exc:
+                log_line(f"[CALIBRATE_Y] Livestream startup failed at {stream_url}: {exc}")
+                stream_server = None
+        else:
+            def _live_refresh(extra_lines=None):
+                return
+
+        # Preflight check: verify 1% speed produces detectable movement before any trial.
+        from .helper_calibrate import check_1pct_speed_movement
+        cmd_to_test = "u"  # Use lift (up) as the test command for Y-axis
+        log_line(f"[CALIBRATE_Y] Running preflight check: sending 1% speed {cmd_to_test.upper()} to verify movement...")
+        if not check_1pct_speed_movement(
+            robot=robot,
+            vision=vision,
+            world=world,
+            cmd=cmd_to_test,
+            movement_threshold_mm=0.15,
+            sample_frames=3,
+            sample_timeout_s=1.5,
+            observe_sleep_s=0.02,
+            control_sleep_s=0.04,
+        ):
+            log_line(f"[CALIBRATE_Y] ⚠️  PREFLIGHT FAILED: 1% speed {cmd_to_test.upper()} did not produce detectable movement!")
+            log_line("[CALIBRATE_Y] Check: Is the robot powered on? Is 1% speed (PWM~30-40) too low for motion?")
+            log_line("[CALIBRATE_Y] Aborting calibration to prevent wasted trials at ineffective duration.")
+            status = "aborted"
+            abort_reason = "preflight_1pct_speed_no_movement"
+        else:
+            log_line(f"[CALIBRATE_Y] ✓ Preflight passed: 1% speed produces detectable movement.")
+            _, _, _, preflight_model_ms = speed_power_pwm_for_cmd(cmd_to_test, 1)
+            min_duration_ms = max(min_duration_ms, int(preflight_model_ms))
+            max_duration_ms = max(min_duration_ms, max_duration_ms)
+            durations_ms = _build_duration_schedule(
+                trials=trials_requested,
+                min_duration_ms=min_duration_ms,
+                max_duration_ms=max_duration_ms,
+                rng=rng,
+            )
+            trials_planned = len(durations_ms)
+            log_line(f"[CALIBRATE_Y] Schedule rebuilt from preflight min: {int(min_duration_ms)}ms → {int(max_duration_ms)}ms ({int(trials_planned)} trials)")
+
+        if status == "aborted":
+            pass
+        else:
+            y_duration_cal = _load_y_duration_calibration()
+            for trial_idx, duration_ms in enumerate(durations_ms, start=1):
+                trial_label = _trial_label_text(trial_idx, trials_planned)
+                pre_pose = None
+                pre_obs_meta = None
+
+                if trial_mode == "target":
+                    pre_pose, pre_obs_meta = _observe_pose_with_reobserve(
                         vision=vision,
                         world=world,
-                        robot=robot,
-                        recent_acts=recent_acts,
-                        trial_idx=trial_idx,
-                        trials_requested=trials_planned,
-                        stage_label="before command selection",
-                        trial_label=trial_label,
+                        samples=observe_samples,
+                        timeout_s=observe_timeout_s,
                     )
-                if pre_pose is None:
-                    status = "aborted"
-                    abort_reason = f"pre_pose_unavailable_trial_{trial_idx}"
-                    log_line(f"[CALIBRATE_Y] {trial_label}: recovery failed before command selection. Aborting.")
-                    break
-                curr_y = float(pre_pose["offset_y"])
-                cmd = _auto_cmd_for_y(
-                    curr_y,
-                    center_y_mm=float(center_y_mm),
-                    deadband_mm=float(auto_deadband_mm),
-                    fallback_cmd=center_fallback_cmd,
-                )
-                log_line(
-                    f"[CALIBRATE_Y] {trial_label}: auto selection "
-                    f"current_y={curr_y:+.2f}mm target_y={float(center_y_mm):+.2f}mm "
-                    f"deadband=+/-{float(auto_deadband_mm):.2f}mm -> cmd={cmd.upper()}"
-                )
-            else:
-                cmd = str(cmd_mode)
+                    if pre_pose is None:
+                        pre_pose, pre_obs_meta = _recover_pose_for_trial(
+                            vision=vision,
+                            world=world,
+                            robot=robot,
+                            recent_acts=recent_acts,
+                            trial_idx=trial_idx,
+                            trials_requested=trials_planned,
+                            stage_label="before target trial",
+                            trial_label=trial_label,
+                        )
+                    if pre_pose is None:
+                        status = "aborted"
+                        abort_reason = f"pre_pose_unavailable_trial_{trial_idx}"
+                        log_line(f"[CALIBRATE_Y] {trial_label}: pre-pose unavailable for target trial.")
+                        break
+                    curr_y = float(pre_pose.get("offset_y") or 0.0)
+                    target_y = float(planned_targets[trial_idx - 1])
+                    y_delta = float(target_y - curr_y)
+                    cmd = _y_cmd_for_positive_motion() if y_delta >= 0.0 else _y_cmd_for_negative_motion()
+                    duration_ms = _predict_duration_for_target_delta_mm(
+                        cmd=cmd,
+                        abs_delta_mm=abs(float(y_delta)),
+                        duration_min_ms=int(min_duration_ms),
+                        duration_max_ms=int(max_duration_ms),
+                        y_calibration=y_duration_cal,
+                    )
+                    log_line(
+                        f"[CALIBRATE_Y] {trial_label}: target_y={target_y:+.2f}mm current_y={curr_y:+.2f}mm "
+                        f"delta={y_delta:+.2f}mm cmd={str(cmd).upper()} duration={int(duration_ms)}ms"
+                    )
+                    _live_refresh(
+                        [
+                            f"Trial {int(trial_idx)}/{int(trials_planned)}",
+                            f"Target y: {float(target_y):+.2f}mm",
+                            f"Current y: {float(curr_y):+.2f}mm",
+                            f"Planned: {str(cmd).upper()} {int(duration_ms)}ms",
+                        ]
+                    )
+                else:
+                    scheduled_trial_cmd = _scheduled_primary_cmd_for_trial(trial_idx, phase="primary")
+                    if scheduled_trial_cmd is not None:
+                        cmd = str(scheduled_trial_cmd)
+                        log_line(
+                            f"[CALIBRATE_Y] {trial_label}: scheduled alternating cmd={str(cmd).upper()} "
+                            f"({_mast_label_for_cmd(cmd)}) to stay near y_axis={float(center_y_mm):+.2f}mm."
+                        )
+                    elif cmd_mode == "auto":
+                        pre_pose, pre_obs_meta = _observe_pose_with_reobserve(
+                            vision=vision,
+                            world=world,
+                            samples=observe_samples,
+                            timeout_s=observe_timeout_s,
+                        )
+                        if pre_pose is None:
+                            pre_pose, pre_obs_meta = _recover_pose_for_trial(
+                                vision=vision,
+                                world=world,
+                                robot=robot,
+                                recent_acts=recent_acts,
+                                trial_idx=trial_idx,
+                                trials_requested=trials_planned,
+                                stage_label="before command selection",
+                                trial_label=trial_label,
+                            )
+                        if pre_pose is None:
+                            status = "aborted"
+                            abort_reason = f"pre_pose_unavailable_trial_{trial_idx}"
+                            log_line(f"[CALIBRATE_Y] {trial_label}: recovery failed before command selection. Aborting.")
+                            break
+                        curr_y = float(pre_pose["offset_y"])
+                        cmd = _auto_cmd_for_y(
+                            curr_y,
+                            center_y_mm=float(center_y_mm),
+                            deadband_mm=float(auto_deadband_mm),
+                            fallback_cmd=center_fallback_cmd,
+                        )
+                        log_line(
+                            f"[CALIBRATE_Y] {trial_label}: auto selection "
+                            f"current_y={curr_y:+.2f}mm target_y={float(center_y_mm):+.2f}mm "
+                            f"deadband=+/-{float(auto_deadband_mm):.2f}mm -> cmd={cmd.upper()}"
+                        )
+                    else:
+                        cmd = str(cmd_mode)
 
-            row, trial_abort_reason = _run_trial_action(
-                trial_idx=trial_idx,
-                trials_planned=trials_planned,
-                trial_label=trial_label,
-                cmd=str(cmd),
-                duration_ms=int(duration_ms),
-                phase="primary",
-                source_trial=trial_idx,
-                action_step="CALIBRATE_Y",
-                plot_kind="trial",
-                vision=vision,
-                world=world,
-                robot=robot,
-                recent_acts=recent_acts,
-                setup_score=int(speed_score),
-                center_target_y_mm=float(center_y_mm),
-                observe_samples=observe_samples,
-                observe_timeout_s=observe_timeout_s,
-                post_act_settle_s=post_act_settle_s,
-                camera_direction_check=camera_direction_check,
-                plotter=plotter,
-                initial_pre_pose=(pre_pose if cmd_mode == "auto" else None),
-                initial_pre_obs_meta=(pre_obs_meta if cmd_mode == "auto" else None),
-            )
-            if row is None:
-                status = "aborted"
-                abort_reason = str(trial_abort_reason or f"trial_failed_{trial_idx}")
-                break
-            if bool(row.wrong_way):
-                _diagnose_wrong_way_event(row)
-                log_line(
-                    f"[CALIBRATE_Y] ⚠️  Trial {trial_idx}: wrong_way detected (likely vision jitter). "
-                    f"Skipping plot point but continuing trials."
-                )
-            trial_rows.append(row)
-            _write_results(
-                results_path,
-                _build_payload(
-                    config=config,
-                    durations_ms=durations_ms,
-                    trials=trial_rows,
-                    reset_efforts=reset_rows,
+                row, trial_abort_reason = _run_trial_action(
+                    trial_idx=trial_idx,
+                    trials_planned=trials_planned,
+                    trial_label=trial_label,
+                    cmd=str(cmd),
+                    duration_ms=int(duration_ms),
+                    phase="primary",
+                    source_trial=trial_idx,
+                    action_step="CALIBRATE_Y",
+                    plot_kind="trial",
+                    vision=vision,
+                    world=world,
+                    robot=robot,
+                    recent_acts=recent_acts,
+                    setup_score=int(speed_score),
+                    center_target_y_mm=float(center_y_mm),
+                    observe_samples=observe_samples,
+                    observe_timeout_s=observe_timeout_s,
+                    post_act_settle_s=post_act_settle_s,
                     camera_direction_check=camera_direction_check,
-                    status=status,
-                    abort_reason=abort_reason,
-                ),
-            )
+                    plotter=plotter,
+                    initial_pre_pose=(pre_pose if (cmd_mode == "auto" or trial_mode == "target") else None),
+                    initial_pre_obs_meta=(pre_obs_meta if (cmd_mode == "auto" or trial_mode == "target") else None),
+                )
+                if row is None:
+                    status = "aborted"
+                    abort_reason = str(trial_abort_reason or f"trial_failed_{trial_idx}")
+                    break
+                if bool(row.wrong_way):
+                    _diagnose_wrong_way_event(row)
+                    log_line(
+                        f"[CALIBRATE_Y] ⚠️  Trial {trial_idx}: wrong_way detected (likely vision jitter). "
+                        f"Skipping plot point but continuing trials."
+                    )
+                trial_rows.append(row)
+                if trial_mode == "target":
+                    target_y = float(planned_targets[trial_idx - 1])
+                    final_err = float(target_y - float(row.post_y_mm))
+                    log_line(
+                        f"[CALIBRATE_Y] {trial_label}: target={target_y:+.2f}mm post_y={float(row.post_y_mm):+.2f}mm "
+                        f"final_error={float(final_err):+.2f}mm"
+                    )
+                    _live_refresh(
+                        [
+                            f"Trial {int(trial_idx)}/{int(trials_planned)}",
+                            f"Target y: {float(target_y):+.2f}mm",
+                            f"Post y: {float(row.post_y_mm):+.2f}mm",
+                            f"Final err: {float(final_err):+.2f}mm",
+                        ]
+                    )
+                else:
+                    _live_refresh(
+                        [
+                            f"Trial {int(trial_idx)}/{int(trials_planned)}",
+                            f"Cmd: {str(row.cmd).upper()} duration={int(row.duration_ms)}ms",
+                            f"Distance: {float(row.cmd_delta_mm):.2f}mm",
+                        ]
+                    )
+                _write_results(
+                    results_path,
+                    _build_payload(
+                        config=config,
+                        durations_ms=durations_ms,
+                        trials=trial_rows,
+                        reset_efforts=reset_rows,
+                        camera_direction_check=camera_direction_check,
+                        status=status,
+                        abort_reason=abort_reason,
+                    ),
+                )
 
-        if status == "completed":
-            repeat_plan = [row for row in trial_rows if str(getattr(row, "phase", "primary")) != "repeat"]
+        if status == "completed" and trial_mode == "observation":
+            repeat_plan_source = [row for row in trial_rows if str(getattr(row, "phase", "primary")) != "repeat"]
+            if repeat_trials_requested is None:
+                repeat_plan = list(repeat_plan_source)
+            else:
+                repeat_plan = []
+                if repeat_plan_source and int(repeat_trials_requested) > 0:
+                    for idx in range(int(repeat_trials_requested)):
+                        repeat_plan.append(repeat_plan_source[idx % len(repeat_plan_source)])
             log_line(
                 f"[CALIBRATE_Y] Primary pass complete. Starting repeat pass over "
                 f"{len(repeat_plan)} recorded trial(s)."
@@ -2027,6 +2391,13 @@ def main() -> int:
         if robot is not None:
             try:
                 robot.close()
+            except Exception:
+                pass
+        if stream_server is not None:
+            try:
+                close_fn = getattr(stream_server, "close", None)
+                if callable(close_fn):
+                    close_fn()
             except Exception:
                 pass
 

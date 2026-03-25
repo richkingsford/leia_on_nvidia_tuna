@@ -65,15 +65,15 @@ class TestTelemetryProcessFindWall2Gates(unittest.TestCase):
         self.assertIsInstance(step_cfg, dict)
         self.assertNotIn("start_ground_reset_exception", step_cfg)
 
-    def test_process_model_find_topmost_brick_does_not_require_stack_booleans(self):
+    def test_process_model_find_topmost_brick_uses_visible_and_brick_above_success_gates(self):
         model = telemetry_process.load_process_model()
         steps = (model or {}).get("steps") if isinstance(model, dict) else {}
         step_cfg = (steps or {}).get("FIND_TOPMOST_BRICK") if isinstance(steps, dict) else {}
         gates = (step_cfg or {}).get("success_gates") if isinstance(step_cfg, dict) else {}
         self.assertIsInstance(gates, dict)
-        self.assertIn("inCrosshairs", gates)
-        self.assertNotIn("brick_above", gates)
-        self.assertNotIn("brick_below", gates)
+        self.assertIn("visible", gates)
+        self.assertIn("brick_above", gates)
+        self.assertNotIn("inCrosshairs", gates)
 
     def test_process_model_find_topmost_brick_wall_level2_uses_non_reset_skip_policy(self):
         model = telemetry_process.load_process_model()
@@ -148,7 +148,7 @@ class TestTelemetryProcessFindWall2Gates(unittest.TestCase):
         self.assertIsInstance(y_gate, dict)
         self.assertEqual(float(y_gate.get("tol")), 3.0)
 
-    def test_process_model_topmost_steps_enable_crosshair_drop_completion(self):
+    def test_process_model_topmost_steps_disable_crosshair_drop_completion(self):
         model = telemetry_process.load_process_model()
         steps = (model or {}).get("steps") if isinstance(model, dict) else {}
         for step_name in ("FIND_TOPMOST_BRICK", "FIND_TOPMOST_BRICK_WALL"):
@@ -160,7 +160,7 @@ class TestTelemetryProcessFindWall2Gates(unittest.TestCase):
                     else {}
                 )
                 self.assertIsInstance(exception_cfg, dict)
-                self.assertIs(exception_cfg.get("complete_on_crosshair_drop"), True)
+                self.assertIs(exception_cfg.get("complete_on_crosshair_drop"), False)
 
     def test_process_model_find_topmost_brick_enables_bottom_discovery_phase(self):
         model = telemetry_process.load_process_model()

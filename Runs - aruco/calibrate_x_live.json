@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "source": "calibrate_x",
+  "generated_at": 1774455397.0310001,
+  "config": {
+    "trials": 2,
+    "requested_trials": 2,
+    "repeat_pass_enabled": true,
+    "requested_repeat_trials": 2,
+    "duration_ceiling_ms": 900,
+    "speed_score": 20,
+    "center_x_mm": 0.0,
+    "min_duration_ms": 250,
+    "max_duration_ms": 500,
+    "duration_step_ms": 10,
+    "x_axis_positive_cmd": "r",
+    "x_axis_negative_cmd": "l",
+    "observe_samples": 3,
+    "observe_timeout_s": 1.8,
+    "post_act_settle_s": 0.1,
+    "half_first_turn_pulse": false,
+    "primary_trial_cmd_schedule": "per_duration_sequence",
+    "primary_trial_cmd_sequence": [
+      "L",
+      "R",
+      "L",
+      "R"
+    ],
+    "primary_trial_repetitions_per_direction": 2,
+    "x_axis_center_target_mm": 0.0,
+    "plot_path": null,
+    "brick_distance_source": "vision.dist",
+    "brick_distance_definition": "Camera-to-brick distance reported by vision at observation time (mm)."
+  },
+  "durations_ms": [
+    250
+  ],
+  "summary": {
+    "trial_count": 0,
+    "repeat_trial_count": 0,
+    "median_distance_mm": null,
+    "mean_distance_mm": null,
+    "min_distance_mm": null,
+    "max_distance_mm": null,
+    "wrong_way_count": 0,
+    "repeat_median_distance_mm": null,
+    "repeat_wrong_way_count": 0,
+    "reset_effort_count": 0,
+    "reset_median_distance_mm": null,
+    "reset_wrong_way_count": 0,
+    "brick_distance_median_mm": null,
+    "brick_distance_min_mm": null,
+    "brick_distance_max_mm": null,
+    "status": "aborted",
+    "abort_reason": "pre_pose_unavailable_trial_1"
+  },
+  "reset_efforts": [],
+  "trials": []
+}

@@ -1318,6 +1318,12 @@ def main() -> int:
         help="Optional primary-trial cap; default runs the full deterministic duration schedule.",
     )
     parser.add_argument(
+        "--repeat-trials",
+        type=int,
+        default=None,
+        help="Optional repeat-trial count; repeats run after primaries using recorded cmd/duration.",
+    )
+    parser.add_argument(
         "--center-x-mm",
         type=float,
         default=X_AXIS_TARGET_MM_DEFAULT,
@@ -1338,6 +1344,11 @@ def main() -> int:
     parser.add_argument("--show-plot", action="store_true", help="Open an interactive Matplotlib window and update it after each trial.")
     parser.add_argument("--plot-path", type=str, default=PLOT_FILE_DEFAULT, help="Optional PNG file to rewrite after each trial.")
     parser.add_argument("--results-file", type=str, default=RESULTS_FILE_DEFAULT, help="JSON output path (default: run-specific file in ./runs).")
+    parser.add_argument(
+        "--preflight-check",
+        action="store_true",
+        help="Run a 1% movement preflight check before trials (disabled by default).",
+    )
     parser.add_argument("--reference-distance-mm", type=float, default=None, help="Assumed brick distance (mm) for this calibration set")
     parser.add_argument("--invert-x-axis", action="store_true", help="Invert l/r command mapping.")
     args = parser.parse_args()
@@ -1346,6 +1357,7 @@ def main() -> int:
     if args.results_file is None:
         args.results_file = str(RUN_DIR / "calibrate_x_live.json")
     trials_requested = None if args.trials is None else max(1, int(args.trials))
+    repeat_trials_requested = None if args.repeat_trials is None else max(0, int(args.repeat_trials))
     speed_score = normalize_speed_score(SPEED_SCORE_DEFAULT)
     center_x_mm = float(args.center_x_mm)
     min_duration_ms = max(1, int(args.min_duration_ms))
@@ -1403,6 +1415,7 @@ def main() -> int:
         "trials": int(trials_planned),
         "requested_trials": None if trials_requested is None else int(trials_requested),
         "repeat_pass_enabled": True,
+        "requested_repeat_trials": None if repeat_trials_requested is None else int(repeat_trials_requested),
         "duration_ceiling_ms": int(duration_ceiling_ms),
         "speed_score": int(speed_score),
         "center_x_mm": float(center_x_mm),
@@ -1488,65 +1501,101 @@ def main() -> int:
         else:  # leia
             vision = LeiaVision(debug=False)
 
-        for trial_idx, plan_step in enumerate(trial_plan, start=1):
-            trial_label = _trial_label_text(trial_idx, trials_planned)
-            cmd = str(plan_step.get("cmd") or "")
-            duration_ms = max(1, int(_coerce_int(plan_step.get("duration_ms"), 1) or 1))
-            log_line(
-                f"[CALIBRATE_X] {trial_label}: scheduled cmd={str(cmd).upper()} "
-                f"({_turn_label_for_cmd(cmd)}) for {_highlight_duration_ms(int(duration_ms))}."
-            )
-
-            row, trial_abort_reason = _run_trial_action(
-                trial_idx=trial_idx,
-                trials_planned=trials_planned,
-                trial_label=trial_label,
-                cmd=str(cmd),
-                duration_ms=int(duration_ms),
-                phase="primary",
-                source_trial=trial_idx,
-                action_step="CALIBRATE_X",
-                plot_kind="trial",
+        # Optional preflight check: verify 1% speed produces detectable movement.
+        if bool(args.preflight_check):
+            from .helper_calibrate import check_1pct_speed_movement
+            cmd_to_test = str(_x_cmd_for_positive_motion())
+            log_line(f"[CALIBRATE_X] Running preflight check: sending 1% speed {str(cmd_to_test).upper()} to verify movement...")
+            if not check_1pct_speed_movement(
+                robot=robot,
                 vision=vision,
                 world=world,
-                robot=robot,
-                recent_acts=recent_acts,
-                setup_score=int(speed_score),
-                center_target_x_mm=float(center_x_mm),
-                observe_samples=observe_samples,
-                observe_timeout_s=observe_timeout_s,
-                post_act_settle_s=post_act_settle_s,
-                plotter=plotter,
-            )
-            if row is None:
+                cmd=cmd_to_test,
+                movement_threshold_mm=0.15,
+                sample_frames=3,
+                sample_timeout_s=1.5,
+                observe_sleep_s=0.02,
+                control_sleep_s=0.04,
+            ):
+                log_line(f"[CALIBRATE_X] ⚠️  PREFLIGHT FAILED: 1% speed {str(cmd_to_test).upper()} did not produce detectable movement!")
+                log_line("[CALIBRATE_X] Check: Is the robot powered on? Is 1% speed (PWM~30-40) too low for motion?")
+                log_line("[CALIBRATE_X] Aborting calibration because --preflight-check is enabled.")
                 status = "aborted"
-                abort_reason = str(trial_abort_reason or f"trial_failed_{trial_idx}")
-                break
-            if bool(row.wrong_way):
-                wrong_way_reason = _wrong_way_reason_text(
-                    pre_x_mm=float(row.pre_x_mm),
-                    post_x_mm=float(row.post_x_mm),
-                    target_x_mm=float(center_x_mm),
-                )
+                abort_reason = "preflight_1pct_speed_no_movement"
+            else:
+                log_line(f"[CALIBRATE_X] ✓ Preflight passed: 1% speed produces detectable movement.")
+        else:
+            log_line("[CALIBRATE_X] Preflight check skipped (use --preflight-check to enable).")
+
+        if status == "aborted":
+            pass  # skip to cleanup
+        else:
+            for trial_idx, plan_step in enumerate(trial_plan, start=1):
+                trial_label = _trial_label_text(trial_idx, trials_planned)
+                cmd = str(plan_step.get("cmd") or "")
+                duration_ms = max(1, int(_coerce_int(plan_step.get("duration_ms"), 1) or 1))
                 log_line(
-                    f"[CALIBRATE_X] ⚠️  Trial {trial_idx}: wrong_way detected. "
-                    f"Plotting it anyway. {wrong_way_reason}"
+                    f"[CALIBRATE_X] {trial_label}: scheduled cmd={str(cmd).upper()} "
+                    f"({_turn_label_for_cmd(cmd)}) for {_highlight_duration_ms(int(duration_ms))}."
                 )
-            trial_rows.append(row)
-            _write_results(
-                results_path,
-                _build_payload(
-                    config=config,
-                    durations_ms=durations_ms,
-                    trials=trial_rows,
-                    reset_efforts=reset_rows,
-                    status=status,
-                    abort_reason=abort_reason,
-                ),
-            )
+
+                row, trial_abort_reason = _run_trial_action(
+                    trial_idx=trial_idx,
+                    trials_planned=trials_planned,
+                    trial_label=trial_label,
+                    cmd=str(cmd),
+                    duration_ms=int(duration_ms),
+                    phase="primary",
+                    source_trial=trial_idx,
+                    action_step="CALIBRATE_X",
+                    plot_kind="trial",
+                    vision=vision,
+                    world=world,
+                    robot=robot,
+                    recent_acts=recent_acts,
+                    setup_score=int(speed_score),
+                    center_target_x_mm=float(center_x_mm),
+                    observe_samples=observe_samples,
+                    observe_timeout_s=observe_timeout_s,
+                    post_act_settle_s=post_act_settle_s,
+                    plotter=plotter,
+                )
+                if row is None:
+                    status = "aborted"
+                    abort_reason = str(trial_abort_reason or f"trial_failed_{trial_idx}")
+                    break
+                if bool(row.wrong_way):
+                    wrong_way_reason = _wrong_way_reason_text(
+                        pre_x_mm=float(row.pre_x_mm),
+                        post_x_mm=float(row.post_x_mm),
+                        target_x_mm=float(center_x_mm),
+                    )
+                    log_line(
+                        f"[CALIBRATE_X] ⚠️  Trial {trial_idx}: wrong_way detected. "
+                        f"Plotting it anyway. {wrong_way_reason}"
+                    )
+                trial_rows.append(row)
+                _write_results(
+                    results_path,
+                    _build_payload(
+                        config=config,
+                        durations_ms=durations_ms,
+                        trials=trial_rows,
+                        reset_efforts=reset_rows,
+                        status=status,
+                        abort_reason=abort_reason,
+                    ),
+                )
 
         if status == "completed":
-            repeat_plan = [row for row in trial_rows if str(getattr(row, "phase", "primary")) != "repeat"]
+            repeat_plan_source = [row for row in trial_rows if str(getattr(row, "phase", "primary")) != "repeat"]
+            if repeat_trials_requested is None:
+                repeat_plan = list(repeat_plan_source)
+            else:
+                repeat_plan = []
+                if repeat_plan_source and int(repeat_trials_requested) > 0:
+                    for idx in range(int(repeat_trials_requested)):
+                        repeat_plan.append(repeat_plan_source[idx % len(repeat_plan_source)])
             log_line(
                 f"[CALIBRATE_X] Primary pass complete. Starting repeat pass over "
                 f"{len(repeat_plan)} recorded trial(s)."

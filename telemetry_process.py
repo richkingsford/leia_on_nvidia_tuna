@@ -97,8 +97,8 @@ PROCESS_SUCCESS_METRICS_BY_STEP = {
     "EXIT_WALL": ("visible",),
     "FIND_BRICK": ("visible", "xAxis_offset_abs", "yAxis_offset_abs"),
     "APPROACH_VECTOR_BRICK_SUPPLY": ("visible", "angle_abs", "x_axis", "y_axis"),
-    "FIND_TOPMOST_BRICK": ("inCrosshairs",),
-    "FIND_TOPMOST_BRICK_WALL": ("inCrosshairs",),
+    "FIND_TOPMOST_BRICK": ("visible", "brick_above"),
+    "FIND_TOPMOST_BRICK_WALL": ("visible", "brick_above"),
     "BRICK_LOCK": ("visible",),
     "BRICK_LOCK_WALL": ("visible",),
     "ALIGN_BRICK": ("visible", "xAxis_offset_abs", "yAxis_offset_abs", "dist"),
@@ -3692,6 +3692,10 @@ def _run_ground_up_level2_exception(
     success_gates_cfg = step_cfg.get("success_gates")
     if not isinstance(success_gates_cfg, dict):
         success_gates_cfg = {}
+    crosshair_gate_cfg = success_gates_cfg.get("inCrosshairs")
+    if crosshair_gate_cfg is None:
+        crosshair_gate_cfg = success_gates_cfg.get("in_crosshairs")
+    require_crosshair_false = gate_utils.bool_gate_target(crosshair_gate_cfg) is False
     above_gate_cfg = success_gates_cfg.get("brick_above")
     if above_gate_cfg is None:
         above_gate_cfg = success_gates_cfg.get("brickAbove")
@@ -4147,7 +4151,7 @@ def _run_ground_up_level2_exception(
         )
 
     if not align_silent:
-        reminder = reminder_msg or "Exception active: mast-up 100% + level2 crosshair confidence confirmation."
+        reminder = reminder_msg or "Exception active: mast-up 100% + level2 topmost confirmation."
         print(format_headline(f"[EXCEPTION] [{step_key}] {reminder}", COLOR_MAGENTA_BRIGHT))
         phase_idx = 1
         if ground_reset_enabled:
@@ -4185,7 +4189,7 @@ def _run_ground_up_level2_exception(
                     + (" (first)" if int(phase_idx) == 1 else "")
                     + (
                         f": mast-only confidence sweep "
-                        f"({str(mast_cmd).upper()} {int(mast_score)}%) while tracking inCrosshairs NO streak."
+                        f"({str(mast_cmd).upper()} {int(mast_score)}%) while tracking configured topmost gates."
                     )
                 ),
                 COLOR_MAGENTA_BRIGHT,
@@ -4936,11 +4940,16 @@ def _run_ground_up_level2_exception(
         last_obs_fresh = bool(fresh_after_mast)
         visible_ok_for_level2 = bool(visible_now) or (not bool(level2_require_visible_for_confirm))
         confidence_ok_for_level2 = bool(obs_confident) or (not bool(level2_confidence_gates_observation))
+        crosshair_required_for_gate = bool(
+            require_crosshair_false
+            or crosshair_count_enabled
+            or complete_on_crosshair_drop
+        )
         base_usable = (
             bool(visible_ok_for_level2)
             and bool(confidence_ok_for_level2)
             and bool(fresh_after_mast)
-            and (crosshair_now is not None)
+            and ((crosshair_now is not None) if crosshair_required_for_gate else True)
         )
         _record_crosshair_count_sample(
             frame_id_now,
@@ -4990,7 +4999,7 @@ def _run_ground_up_level2_exception(
             skip_reason = "brickAbove=YES"
         elif require_brick_below_false and bool(brick_below_now):
             skip_reason = "brickBelow=YES"
-        elif crosshair_now is None:
+        elif bool(require_crosshair_false) and crosshair_now is None:
             if int(level2_confirm_frames) > 1 and not bool(crosshair_samples_consistent):
                 skip_reason = "inCrosshairs=UNSTABLE"
             else:
@@ -5014,12 +5023,15 @@ def _run_ground_up_level2_exception(
             if robot:
                 robot.stop()
             return {"enabled": True, "handled": True, "success": False, "reason": fail_reason}
-        condition_hit = bool(
-            used_observation
-            and (crosshair_now is False)
-        )
+        if bool(require_crosshair_false):
+            condition_hit = bool(used_observation and (crosshair_now is False))
+        elif bool(require_stack_false_gate):
+            condition_hit = bool(used_observation and bool(stack_gate_armed))
+        else:
+            condition_hit = bool(used_observation)
         crosshair_drop_hit = bool(
             bool(complete_on_crosshair_drop)
+            and bool(require_crosshair_false)
             and bool(used_observation)
             and (pre_crosshair_now is True)
             and (crosshair_now is False)
@@ -5062,6 +5074,23 @@ def _run_ground_up_level2_exception(
                 bb_text = "WAIT"
             else:
                 bb_text = "YES" if bool(brick_below_now) else "NO"
+            if bool(require_brick_above_false) or bool(require_brick_below_false):
+                gate_pre_text = (
+                    f"brickAbove={pre_above_text}, brickBelow={pre_below_text}"
+                    if bool(require_brick_below_false)
+                    else f"brickAbove={pre_above_text}"
+                )
+                gate_post_text = (
+                    f"brickAbove={b_text}, brickBelow={bb_text}"
+                    if bool(require_brick_below_false)
+                    else f"brickAbove={b_text}"
+                )
+            elif bool(require_crosshair_false):
+                gate_pre_text = f"inCrosshairs={pre_crosshair_text}"
+                gate_post_text = f"inCrosshairs={c_text}"
+            else:
+                gate_pre_text = f"visible={('YES' if bool(pre_visible_now) else 'NO')}"
+                gate_post_text = f"visible={('YES' if bool(visible_now) else 'NO')}"
             # `cycle_condition` is per-cycle truth only.
             if bool(condition_hit):
                 cond_word = f"{COLOR_GREEN}PASS{COLOR_RESET}"
@@ -5113,17 +5142,17 @@ def _run_ground_up_level2_exception(
             raw_crosshair_text = "WAIT" if raw_crosshair_now is None else ("YES" if bool(raw_crosshair_now) else "NO")
             calc_crosshair_text = "WAIT" if calc_crosshair_now is None else ("YES" if bool(calc_crosshair_now) else "NO")
             crosshair_samples_note = ""
-            if int(level2_confirm_frames) > 1:
+            if bool(require_crosshair_false) and int(level2_confirm_frames) > 1:
                 crosshair_samples_note = (
                     f"obs{int(level2_confirm_frames)}=[{_crosshair_sample_text(crosshair_samples)}], "
                 )
-            if int(crosshair_stabilize_extra_frames) > 0:
+            if bool(require_crosshair_false) and int(crosshair_stabilize_extra_frames) > 0:
                 crosshair_samples_note = (
                     f"{crosshair_samples_note}hold+{int(crosshair_stabilize_extra_frames)}f, "
                 )
             mismatch_text = (
                 f"crosshair-src(raw={raw_crosshair_text}, calc={calc_crosshair_text}), "
-                if bool(crosshair_mismatch_now)
+                if bool(require_crosshair_false) and bool(crosshair_mismatch_now)
                 else ""
             )
             lift_now_mm, lift_text = _exception_lift_estimate_text(world, prev_mast_lift_mm)
@@ -5134,35 +5163,11 @@ def _run_ground_up_level2_exception(
                     "[EXCEPTION]",
                     COLOR_MAGENTA_BRIGHT,
                     f" {exc_runtime_color}[{step_key}] Cycle {int(idx)}/{int(mast_max_acts)}: "
-                    f"observe(pre)=inCrosshairs={pre_crosshair_text}, "
-                    + (
-                        (
-                            f"brickAbove={pre_above_text}, "
-                            + (
-                                f"brickBelow={pre_below_text}, "
-                                if bool(require_brick_below_false)
-                                else ""
-                            )
-                        )
-                        if bool(show_stack_gate_fields)
-                        else ""
-                    )
+                    f"observe(pre)={gate_pre_text}, "
                     + f"conf={pre_conf_text}, frame={int(pre_obs_frame_id)} "
                     + f"-> act={COLOR_ORANGE_BRIGHT}{('MAST_UP' if str(mast_cmd) == 'u' else 'MAST_DOWN' if str(mast_cmd) == 'd' else str(mast_cmd).upper())} {int(mast_score)}%{exc_runtime_color} "
-                    + f"-> confirm: inCrosshairs={c_text}, "
+                    + f"-> confirm: {gate_post_text}, "
                     + f"{crosshair_samples_note}"
-                    + (
-                        (
-                            f"brickAbove={b_text}, "
-                            + (
-                                f"brickBelow={bb_text}, "
-                                if bool(require_brick_below_false)
-                                else ""
-                            )
-                        )
-                        if bool(show_stack_gate_fields)
-                        else ""
-                    )
                     + (
                         f"gate-armed={armed_word}, "
                         if bool(require_stack_false_gate)
@@ -5208,7 +5213,7 @@ def _run_ground_up_level2_exception(
                                 f"initial bricks={int(crosshair_count_initial_bricks)}, "
                             )
                         count_source_text = (
-                            "step-5 inCrosshairs brick/gap scan "
+                            "step-5 topmost band scan "
                             f"({initial_bricks_note}brick bands={int(count_summary.get('brick_bands') or 0)}, "
                             f"internal gaps={int(count_summary.get('internal_gap_bands') or 0)}, "
                             f"leading_gap={('YES' if bool(count_summary.get('leading_gap_observed')) else 'NO')}, "
@@ -5218,7 +5223,7 @@ def _run_ground_up_level2_exception(
                 elif int(crosshair_true_to_false_count) > 0:
                     counted_bricks = int(crosshair_true_to_false_count)
                     count_source_text = (
-                        f"{int(crosshair_true_to_false_count)} inCrosshairs YES->NO transition(s) "
+                        f"{int(crosshair_true_to_false_count)} topmost YES->NO transition(s) "
                         "during mast-up topmost follow"
                     )
                 if counted_bricks is not None and count_source_text is not None:
@@ -5241,12 +5246,12 @@ def _run_ground_up_level2_exception(
                             f" {exc_runtime_color}[{step_key}] Transition: "
                             + (
                                 (
-                                    "inCrosshairs dropped YES->NO across a mast pulse"
+                                    "topmost gate dropped YES->NO across a mast pulse"
                                     f" (cycle {int(crosshair_drop_cycle_idx or idx)}/{int(mast_max_acts)})"
                                 )
                                 if bool(crosshair_drop_completed)
                                 else (
-                                    f"inCrosshairs=NO observed for {int(no_streak_required)} "
+                                    f"topmost gate PASS observed for {int(no_streak_required)} "
                                     f"consecutive confident mast-up observations"
                                 )
                             )
@@ -5296,7 +5301,11 @@ def _run_ground_up_level2_exception(
         "reason": (
             "level2 no-streak condition not satisfied within mast-up limit "
             f"({int(mast_pulses_sent)}/{int(mast_max_acts)} pulses; "
-            f"last_inCrosshairs={last_crosshair_text}; "
+            + (
+                f"last_inCrosshairs={last_crosshair_text}; "
+                if bool(require_crosshair_false)
+                else ""
+            )
             + (
                 f"last_brickAbove={('WAIT' if last_brick_above is None else ('YES' if bool(last_brick_above) else 'NO'))}; "
                 if bool(require_brick_above_false)
@@ -10227,9 +10236,9 @@ def run_alignment_segment(
                 current_num = _as_float(curr_abs_val, None)
                 current_text = "unknown" if current_num is None else f"{float(current_num):.2f}"
                 if float(curr_err) > 0.0:
-                    relation = "farther than"
+                    relation = "too far"
                 elif float(curr_err) < 0.0:
-                    relation = "closer than"
+                    relation = "too close"
                 else:
                     relation = "at"
                 if relation == "at":
@@ -10237,8 +10246,12 @@ def run_alignment_segment(
                         f"I see dist={current_text} Δ{err_render} at our "
                         f"{obs_target_label}={target_text}{tol_text}{obs_target_note}."
                     )
+                if relation == "too close":
+                    relation_text = "too close to our distance target"
+                else:
+                    relation_text = "away from our distance target"
                 return (
-                    f"I see dist={current_text} Δ{err_render} {relation} our "
+                    f"I see dist={current_text} Δ{err_render} {relation_text} "
                     f"{obs_target_label}={target_text}{tol_text}{obs_target_note}."
                 )
             if metric_name == "y_err":
@@ -10692,11 +10705,25 @@ def run_alignment_segment(
         if isinstance(success_gate_cfg, dict)
         else []
     )
-    if not topmost_gate_metrics and topmost_requires_crosshair_false:
-        topmost_gate_metrics = ["inCrosshairs"]
+    if not topmost_gate_metrics:
+        if topmost_requires_brick_above_false or topmost_requires_brick_below_false:
+            topmost_gate_metrics = ["brick_above"]
+            if topmost_requires_brick_below_false:
+                topmost_gate_metrics.append("brick_below")
+        elif topmost_requires_crosshair_false:
+            topmost_gate_metrics = ["inCrosshairs"]
     topmost_gate_target_text = format_gate_metrics(success_gate_cfg if isinstance(success_gate_cfg, dict) else {})
     if not str(topmost_gate_target_text).strip() or str(topmost_gate_target_text).strip().lower() == "none":
-        topmost_gate_target_text = "inCrosshairs=false" if topmost_requires_crosshair_false else "configured success gates"
+        if topmost_requires_brick_above_false and topmost_requires_brick_below_false:
+            topmost_gate_target_text = "brickAbove=false, brickBelow=false"
+        elif topmost_requires_brick_above_false:
+            topmost_gate_target_text = "brickAbove=false"
+        elif topmost_requires_brick_below_false:
+            topmost_gate_target_text = "brickBelow=false"
+        elif topmost_requires_crosshair_false:
+            topmost_gate_target_text = "inCrosshairs=false"
+        else:
+            topmost_gate_target_text = "configured success gates"
     topmost_exception_cfg = step_rules.get("topmost_crosshair_exception") if isinstance(step_rules, dict) else {}
     if not isinstance(topmost_exception_cfg, dict):
         topmost_exception_cfg = {}

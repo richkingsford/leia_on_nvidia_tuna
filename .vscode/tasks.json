@@ -6,7 +6,7 @@
             "type": "shell",
             "command": "python3",
             "args": [
-                "calibrate.py",
+                "calibrate_speed_curve.py",
                 "--choice",
                 "y",
                 "--trials", "30"

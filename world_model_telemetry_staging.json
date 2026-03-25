@@ -1,0 +1,669 @@
+{
+  "schema_version": 1,
+  "updated_at": 1774390819.1263156,
+  "latest_variable": "y",
+  "by_variable": {
+    "dist": {
+      "schema_version": 1,
+      "run_id": 1774386735,
+      "timestamp": 1774386735.2262409,
+      "variable": "dist",
+      "config": {
+        "variable": "dist",
+        "vision": "leia",
+        "requested_points": 5,
+        "captured_points": 5,
+        "observe_samples": 7,
+        "observe_timeout_s": 2.8,
+        "manual_motion": true,
+        "motion_method": "operator_hotkeys",
+        "commit_world_model": true,
+        "allow_partial_commit": true,
+        "plot_path": "Runs - cyan/calibrate_telemetry_dist_live.png"
+      },
+      "fit": {
+        "equation": "expected = 0.018069 * observed + 101.593064",
+        "slope": 0.01806942842421952,
+        "intercept": 101.59306360211343,
+        "r2": 0.009077758765552946
+      },
+      "summary": {
+        "mean_error_mm": 57.46278823050256,
+        "median_error_mm": 68.22145899669653,
+        "mae_mm": 126.95246797373368,
+        "max_abs_error_mm": 199.74759519108065,
+        "residual_mean_error_mm": 7.105427357601002e-15,
+        "residual_mae_mm": 17.100641649643592,
+        "residual_max_abs_error_mm": 42.751604124109,
+        "mean_confidence": 0.5162280840382915
+      },
+      "curve_points": [
+        {
+          "index": 1,
+          "expected_value": 63.6,
+          "observed_variable": 263.34759519108064,
+          "observed_dist": 263.34759519108064,
+          "observed_x": -116.38574218394069,
+          "observed_y": 82.92372608851085,
+          "error_mm": 199.74759519108065,
+          "confidence": 0.2501718648672104
+        },
+        {
+          "index": 2,
+          "expected_value": 105.0,
+          "observed_variable": 45.32967958060152,
+          "observed_dist": 45.32967958060152,
+          "observed_x": 61.666675903250805,
+          "observed_y": 23.127786289975326,
+          "error_mm": -59.67032041939848,
+          "confidence": 0.3489536481161912
+        },
+        {
+          "index": 3,
+          "expected_value": 107.0,
+          "observed_variable": -7.053878938679304,
+          "observed_dist": -7.053878938679304,
+          "observed_x": 22.630504508403,
+          "observed_y": -11.7568231939145,
+          "error_mm": -114.0538789386793,
+          "confidence": 0.5710012440523416
+        },
+        {
+          "index": 4,
+          "expected_value": 107.0,
+          "observed_variable": 175.22145899669653,
+          "observed_dist": 175.22145899669653,
+          "observed_x": 4.219627852843411,
+          "observed_y": 48.44230766076196,
+          "error_mm": 68.22145899669653,
+          "confidence": 0.579194050794729
+        },
+        {
+          "index": 5,
+          "expected_value": 140.0,
+          "observed_variable": 333.0690863228134,
+          "observed_dist": 333.0690863228134,
+          "observed_x": 79.51451989236305,
+          "observed_y": 49.13536634408713,
+          "error_mm": 193.0690863228134,
+          "confidence": 0.8318196123609851
+        }
+      ]
+    },
+    "y": {
+      "schema_version": 1,
+      "run_id": 1774390819,
+      "timestamp": 1774390819.1262271,
+      "variable": "y",
+      "config": {
+        "variable": "y",
+        "vision": "leia",
+        "requested_points": 0,
+        "captured_points": 10,
+        "observe_samples": 5,
+        "observe_timeout_s": 2.8,
+        "manual_motion": true,
+        "motion_method": "operator_hotkeys",
+        "commit_world_model": true,
+        "allow_partial_commit": true,
+        "plot_path": "Runs - cyan/calibrate_telemetry_y_live.png"
+      },
+      "fit": {
+        "equation": "expected = -0.046722 * observed + -0.096014",
+        "slope": -0.046721664192884683,
+        "intercept": -0.0960137522459319,
+        "r2": 0.007075909793700319
+      },
+      "summary": {
+        "mean_error_mm": 27.069335672281667,
+        "median_error_mm": 24.86081646083699,
+        "mae_mm": 27.069335672281667,
+        "max_abs_error_mm": 75.16244530356971,
+        "residual_mean_error_mm": -5.440092820663267e-16,
+        "residual_mae_mm": 7.865256885546607,
+        "residual_max_abs_error_mm": 16.142218138124647,
+        "mean_confidence": 0.6209207501439521
+      },
+      "curve_points": [
+        {
+          "index": 1,
+          "expected_value": 0.0,
+          "observed_variable": 16.06472416324251,
+          "observed_dist": 105.23310975912067,
+          "observed_x": 20.680064356539127,
+          "observed_y": 16.06472416324251,
+          "error_mm": 16.06472416324251,
+          "confidence": 0.8875856549158908
+        },
+        {
+          "index": 2,
+          "expected_value": -9.0,
+          "observed_variable": 14.10115636155475,
+          "observed_dist": 105.01959745771883,
+          "observed_x": 25.26427741087886,
+          "observed_y": 14.10115636155475,
+          "error_mm": 23.10115636155475,
+          "confidence": 0.7684378639428079
+        },
+        {
+          "index": 3,
+          "expected_value": -13.0,
+          "observed_variable": 28.37101549295531,
+          "observed_dist": 107.22239453892784,
+          "observed_x": -21.111660046593638,
+          "observed_y": 28.37101549295531,
+          "error_mm": 41.37101549295531,
+          "confidence": 0.285089866824746
+        },
+        {
+          "index": 4,
+          "expected_value": 0.0,
+          "observed_variable": 5.099286700890521,
+          "observed_dist": 103.54911571479516,
+          "observed_x": 14.785109976764316,
+          "observed_y": 5.099286700890521,
+          "error_mm": 5.099286700890521,
+          "confidence": 0.5444785994108312
+        },
+        {
+          "index": 5,
+          "expected_value": 9.0,
+          "observed_variable": 38.80525182317604,
+          "observed_dist": 120.48131905079191,
+          "observed_x": -6.937161307119306,
+          "observed_y": 38.80525182317604,
+          "error_mm": 29.805251823176043,
+          "confidence": 0.6192991793176702
+        },
+        {
+          "index": 6,
+          "expected_value": 15.0,
+          "observed_variable": 22.392275702329155,
+          "observed_dist": 106.60792415770746,
+          "observed_x": 29.29672516960271,
+          "observed_y": 22.392275702329155,
+          "error_mm": 7.3922757023291545,
+          "confidence": 0.855664407824895
+        },
+        {
+          "index": 7,
+          "expected_value": 9.0,
+          "observed_variable": 35.62047656011923,
+          "observed_dist": 112.00559352263399,
+          "observed_x": -13.384034123398498,
+          "observed_y": 35.62047656011923,
+          "error_mm": 26.62047656011923,
+          "confidence": 0.497876242498662
+        },
+        {
+          "index": 8,
+          "expected_value": 0.0,
+          "observed_variable": 5.091553031863169,
+          "observed_dist": 103.53925511633592,
+          "observed_x": 14.672572447714293,
+          "observed_y": 5.091553031863169,
+          "error_mm": 5.091553031863169,
+          "confidence": 0.5300967074129758
+        },
+        {
+          "index": 9,
+          "expected_value": -9.0,
+          "observed_variable": 66.16244530356971,
+          "observed_dist": 181.72093242213856,
+          "observed_x": -21.3958225037668,
+          "observed_y": 66.16244530356971,
+          "error_mm": 75.16244530356971,
+          "confidence": 0.8205732925820817
+        },
+        {
+          "index": 10,
+          "expected_value": -15.0,
+          "observed_variable": 25.985171583116262,
+          "observed_dist": 107.21089861346921,
+          "observed_x": -15.41975996787598,
+          "observed_y": 25.985171583116262,
+          "error_mm": 40.98517158311626,
+          "confidence": 0.4001056867089603
+        }
+      ]
+    }
+  },
+  "history": [
+    {
+      "schema_version": 1,
+      "run_id": 1774376317,
+      "timestamp": 1774376317.4418585,
+      "variable": "dist",
+      "config": {
+        "variable": "dist",
+        "vision": "leia",
+        "requested_points": 5,
+        "captured_points": 3,
+        "observe_samples": 7,
+        "observe_timeout_s": 2.8,
+        "manual_motion": true,
+        "motion_method": "operator_hotkeys"
+      },
+      "fit": {
+        "equation": "expected = 0.758899 * observed + -148.587715",
+        "slope": 0.7588992955460506,
+        "intercept": -148.58771484495182,
+        "r2": 0.9365903759355566
+      },
+      "summary": {
+        "mean_error_mm": 229.15199662622945,
+        "median_error_mm": 231.10175847552438,
+        "mae_mm": 229.15199662622945,
+        "max_abs_error_mm": 243.98392585504303,
+        "mean_confidence": 0.8272372386412002
+      },
+      "curve_points": [
+        {
+          "index": 1,
+          "expected_value": 65.0,
+          "observed_variable": 277.37030554812094,
+          "observed_dist": 277.37030554812094,
+          "observed_x": -107.03849435871125,
+          "observed_y": 29.83140018849782,
+          "error_mm": 212.37030554812094,
+          "confidence": 0.8401206894776788
+        },
+        {
+          "index": 2,
+          "expected_value": 105.0,
+          "observed_variable": 348.983925855043,
+          "observed_dist": 348.983925855043,
+          "observed_x": -118.32590139625445,
+          "observed_y": 40.9598120935996,
+          "error_mm": 243.98392585504303,
+          "confidence": 0.8340946209208108
+        },
+        {
+          "index": 3,
+          "expected_value": 145.0,
+          "observed_variable": 376.1017584755244,
+          "observed_dist": 376.1017584755244,
+          "observed_x": -125.43417755099041,
+          "observed_y": 43.07367321215969,
+          "error_mm": 231.10175847552438,
+          "confidence": 0.8074964055251111
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "run_id": 1774383208,
+      "timestamp": 1774383208.1040306,
+      "variable": "y",
+      "config": {
+        "variable": "y",
+        "vision": "leia",
+        "requested_points": 5,
+        "captured_points": 3,
+        "observe_samples": 7,
+        "observe_timeout_s": 2.8,
+        "manual_motion": true,
+        "motion_method": "operator_hotkeys",
+        "commit_world_model": true,
+        "allow_partial_commit": true,
+        "plot_path": "Runs - cyan/calibrate_telemetry_y_live.png"
+      },
+      "fit": {
+        "equation": "expected = -1.276063 * observed + 66.699071",
+        "slope": -1.2760631110608132,
+        "intercept": 66.69907118591277,
+        "r2": 0.26457737652962154
+      },
+      "summary": {
+        "mean_error_mm": 52.26941411264894,
+        "median_error_mm": 41.492217048147914,
+        "mae_mm": 52.26941411264894,
+        "max_abs_error_mm": 90.25615987161552,
+        "mean_confidence": 0.8075998391441281
+      },
+      "curve_points": [
+        {
+          "index": 1,
+          "expected_value": 27.0,
+          "observed_variable": 52.05986541818337,
+          "observed_dist": 306.3933412626083,
+          "observed_x": 89.52449665000921,
+          "observed_y": 52.05986541818337,
+          "error_mm": 25.05986541818337,
+          "confidence": 0.7627950651619289
+        },
+        {
+          "index": 2,
+          "expected_value": 0.0,
+          "observed_variable": 41.492217048147914,
+          "observed_dist": 374.5356402379275,
+          "observed_x": -125.0995828662704,
+          "observed_y": 41.492217048147914,
+          "error_mm": 41.492217048147914,
+          "confidence": 0.8072009240358611
+        },
+        {
+          "index": 3,
+          "expected_value": -27.0,
+          "observed_variable": 63.25615987161553,
+          "observed_dist": 254.6458315007044,
+          "observed_x": 2.4695795631627275,
+          "observed_y": 63.25615987161553,
+          "error_mm": 90.25615987161552,
+          "confidence": 0.8528035282345945
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "run_id": 1774386735,
+      "timestamp": 1774386735.2262409,
+      "variable": "dist",
+      "config": {
+        "variable": "dist",
+        "vision": "leia",
+        "requested_points": 5,
+        "captured_points": 5,
+        "observe_samples": 7,
+        "observe_timeout_s": 2.8,
+        "manual_motion": true,
+        "motion_method": "operator_hotkeys",
+        "commit_world_model": true,
+        "allow_partial_commit": true,
+        "plot_path": "Runs - cyan/calibrate_telemetry_dist_live.png"
+      },
+      "fit": {
+        "equation": "expected = 0.018069 * observed + 101.593064",
+        "slope": 0.01806942842421952,
+        "intercept": 101.59306360211343,
+        "r2": 0.009077758765552946
+      },
+      "summary": {
+        "mean_error_mm": 57.46278823050256,
+        "median_error_mm": 68.22145899669653,
+        "mae_mm": 126.95246797373368,
+        "max_abs_error_mm": 199.74759519108065,
+        "residual_mean_error_mm": 7.105427357601002e-15,
+        "residual_mae_mm": 17.100641649643592,
+        "residual_max_abs_error_mm": 42.751604124109,
+        "mean_confidence": 0.5162280840382915
+      },
+      "curve_points": [
+        {
+          "index": 1,
+          "expected_value": 63.6,
+          "observed_variable": 263.34759519108064,
+          "observed_dist": 263.34759519108064,
+          "observed_x": -116.38574218394069,
+          "observed_y": 82.92372608851085,
+          "error_mm": 199.74759519108065,
+          "confidence": 0.2501718648672104
+        },
+        {
+          "index": 2,
+          "expected_value": 105.0,
+          "observed_variable": 45.32967958060152,
+          "observed_dist": 45.32967958060152,
+          "observed_x": 61.666675903250805,
+          "observed_y": 23.127786289975326,
+          "error_mm": -59.67032041939848,
+          "confidence": 0.3489536481161912
+        },
+        {
+          "index": 3,
+          "expected_value": 107.0,
+          "observed_variable": -7.053878938679304,
+          "observed_dist": -7.053878938679304,
+          "observed_x": 22.630504508403,
+          "observed_y": -11.7568231939145,
+          "error_mm": -114.0538789386793,
+          "confidence": 0.5710012440523416
+        },
+        {
+          "index": 4,
+          "expected_value": 107.0,
+          "observed_variable": 175.22145899669653,
+          "observed_dist": 175.22145899669653,
+          "observed_x": 4.219627852843411,
+          "observed_y": 48.44230766076196,
+          "error_mm": 68.22145899669653,
+          "confidence": 0.579194050794729
+        },
+        {
+          "index": 5,
+          "expected_value": 140.0,
+          "observed_variable": 333.0690863228134,
+          "observed_dist": 333.0690863228134,
+          "observed_x": 79.51451989236305,
+          "observed_y": 49.13536634408713,
+          "error_mm": 193.0690863228134,
+          "confidence": 0.8318196123609851
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "run_id": 1774390375,
+      "timestamp": 1774390375.234138,
+      "variable": "y",
+      "config": {
+        "variable": "y",
+        "vision": "leia",
+        "requested_points": 5,
+        "captured_points": 5,
+        "observe_samples": 5,
+        "observe_timeout_s": 2.8,
+        "manual_motion": true,
+        "motion_method": "operator_hotkeys",
+        "commit_world_model": true,
+        "allow_partial_commit": true,
+        "plot_path": "Runs - cyan/calibrate_telemetry_y_live.png"
+      },
+      "fit": {
+        "equation": "expected = 0.246164 * observed + -2.884521",
+        "slope": 0.24616420345447546,
+        "intercept": -2.884520921602565,
+        "r2": 0.6803682709339596
+      },
+      "summary": {
+        "mean_error_mm": 6.205680868230429,
+        "median_error_mm": 10.018641720983268,
+        "mae_mm": 17.495860278911,
+        "max_abs_error_mm": 24.963921770926063,
+        "residual_mean_error_mm": 0.0,
+        "residual_mae_mm": 2.8811248526282656,
+        "residual_max_abs_error_mm": 7.202812131570664,
+        "mean_confidence": 0.6481353993885607
+      },
+      "curve_points": [
+        {
+          "index": 1,
+          "expected_value": 0.0,
+          "observed_variable": 24.963921770926063,
+          "observed_dist": 103.51379513368336,
+          "observed_x": 14.826602062635176,
+          "observed_y": 24.963921770926063,
+          "error_mm": 24.963921770926063,
+          "confidence": 0.5078801823890485
+        },
+        {
+          "index": 2,
+          "expected_value": -9.0,
+          "observed_variable": -22.36604064401226,
+          "observed_dist": 105.03109696102594,
+          "observed_x": 20.09780278444274,
+          "observed_y": -22.36604064401226,
+          "error_mm": -13.366040644012259,
+          "confidence": 0.8144464106860013
+        },
+        {
+          "index": 3,
+          "expected_value": 9.0,
+          "observed_variable": 19.01864172098327,
+          "observed_dist": 103.64977277618165,
+          "observed_x": 9.16843765510201,
+          "observed_y": 19.01864172098327,
+          "error_mm": 10.018641720983268,
+          "confidence": 0.5515496610430775
+        },
+        {
+          "index": 4,
+          "expected_value": 0.0,
+          "observed_variable": 24.271289375944235,
+          "observed_dist": 103.54440788568569,
+          "observed_x": 14.353119330314719,
+          "observed_y": 24.271289375944235,
+          "error_mm": 24.271289375944235,
+          "confidence": 0.5356934879153566
+        },
+        {
+          "index": 5,
+          "expected_value": -9.0,
+          "observed_variable": -23.859407882689165,
+          "observed_dist": 105.10210810370073,
+          "observed_x": 24.67116716674134,
+          "observed_y": -23.859407882689165,
+          "error_mm": -14.859407882689165,
+          "confidence": 0.8311072549093197
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "run_id": 1774390819,
+      "timestamp": 1774390819.1262271,
+      "variable": "y",
+      "config": {
+        "variable": "y",
+        "vision": "leia",
+        "requested_points": 0,
+        "captured_points": 10,
+        "observe_samples": 5,
+        "observe_timeout_s": 2.8,
+        "manual_motion": true,
+        "motion_method": "operator_hotkeys",
+        "commit_world_model": true,
+        "allow_partial_commit": true,
+        "plot_path": "Runs - cyan/calibrate_telemetry_y_live.png"
+      },
+      "fit": {
+        "equation": "expected = -0.046722 * observed + -0.096014",
+        "slope": -0.046721664192884683,
+        "intercept": -0.0960137522459319,
+        "r2": 0.007075909793700319
+      },
+      "summary": {
+        "mean_error_mm": 27.069335672281667,
+        "median_error_mm": 24.86081646083699,
+        "mae_mm": 27.069335672281667,
+        "max_abs_error_mm": 75.16244530356971,
+        "residual_mean_error_mm": -5.440092820663267e-16,
+        "residual_mae_mm": 7.865256885546607,
+        "residual_max_abs_error_mm": 16.142218138124647,
+        "mean_confidence": 0.6209207501439521
+      },
+      "curve_points": [
+        {
+          "index": 1,
+          "expected_value": 0.0,
+          "observed_variable": 16.06472416324251,
+          "observed_dist": 105.23310975912067,
+          "observed_x": 20.680064356539127,
+          "observed_y": 16.06472416324251,
+          "error_mm": 16.06472416324251,
+          "confidence": 0.8875856549158908
+        },
+        {
+          "index": 2,
+          "expected_value": -9.0,
+          "observed_variable": 14.10115636155475,
+          "observed_dist": 105.01959745771883,
+          "observed_x": 25.26427741087886,
+          "observed_y": 14.10115636155475,
+          "error_mm": 23.10115636155475,
+          "confidence": 0.7684378639428079
+        },
+        {
+          "index": 3,
+          "expected_value": -13.0,
+          "observed_variable": 28.37101549295531,
+          "observed_dist": 107.22239453892784,
+          "observed_x": -21.111660046593638,
+          "observed_y": 28.37101549295531,
+          "error_mm": 41.37101549295531,
+          "confidence": 0.285089866824746
+        },
+        {
+          "index": 4,
+          "expected_value": 0.0,
+          "observed_variable": 5.099286700890521,
+          "observed_dist": 103.54911571479516,
+          "observed_x": 14.785109976764316,
+          "observed_y": 5.099286700890521,
+          "error_mm": 5.099286700890521,
+          "confidence": 0.5444785994108312
+        },
+        {
+          "index": 5,
+          "expected_value": 9.0,
+          "observed_variable": 38.80525182317604,
+          "observed_dist": 120.48131905079191,
+          "observed_x": -6.937161307119306,
+          "observed_y": 38.80525182317604,
+          "error_mm": 29.805251823176043,
+          "confidence": 0.6192991793176702
+        },
+        {
+          "index": 6,
+          "expected_value": 15.0,
+          "observed_variable": 22.392275702329155,
+          "observed_dist": 106.60792415770746,
+          "observed_x": 29.29672516960271,
+          "observed_y": 22.392275702329155,
+          "error_mm": 7.3922757023291545,
+          "confidence": 0.855664407824895
+        },
+        {
+          "index": 7,
+          "expected_value": 9.0,
+          "observed_variable": 35.62047656011923,
+          "observed_dist": 112.00559352263399,
+          "observed_x": -13.384034123398498,
+          "observed_y": 35.62047656011923,
+          "error_mm": 26.62047656011923,
+          "confidence": 0.497876242498662
+        },
+        {
+          "index": 8,
+          "expected_value": 0.0,
+          "observed_variable": 5.091553031863169,
+          "observed_dist": 103.53925511633592,
+          "observed_x": 14.672572447714293,
+          "observed_y": 5.091553031863169,
+          "error_mm": 5.091553031863169,
+          "confidence": 0.5300967074129758
+        },
+        {
+          "index": 9,
+          "expected_value": -9.0,
+          "observed_variable": 66.16244530356971,
+          "observed_dist": 181.72093242213856,
+          "observed_x": -21.3958225037668,
+          "observed_y": 66.16244530356971,
+          "error_mm": 75.16244530356971,
+          "confidence": 0.8205732925820817
+        },
+        {
+          "index": 10,
+          "expected_value": -15.0,
+          "observed_variable": 25.985171583116262,
+          "observed_dist": 107.21089861346921,
+          "observed_x": -15.41975996787598,
+          "observed_y": 25.985171583116262,
+          "error_mm": 40.98517158311626,
+          "confidence": 0.4001056867089603
+        }
+      ]
+    }
+  ]
+}

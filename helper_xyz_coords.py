@@ -36,9 +36,10 @@ ROBOT_NOSE_TO_TAIL_MM = 68.0 * 1.7  # Made 1.7x longer for better visibility
 ROBOT_TAIL_CENTER_MM = 58.0 * 1.7
 ROBOT_HALF_WIDTH_MM = 22.0
 ROBOT_OBJECT_MARGIN_MM = 6.0
-BIRDSEYE_VIEW_MARGIN_MM = 35.0
-BIRDSEYE_MIN_SPAN_X_MM = 220.0
-BIRDSEYE_MIN_SPAN_Y_MM = 170.0
+BIRDSEYE_VIEW_MARGIN_MM = 6.0
+BIRDSEYE_MIN_SPAN_X_MM = 68.0
+BIRDSEYE_MIN_SPAN_Y_MM = 52.0
+BIRD_STACK_SHIFT_X_PX = 200.0
 STEP_HISTORY_COLOR_CLOSER = "#2f9e44"
 STEP_HISTORY_COLOR_FURTHER = "#d94841"
 STEP_HISTORY_COLOR_NEUTRAL = "#c59d2a"
@@ -46,11 +47,18 @@ STEP_HISTORY_COLOR_UNKNOWN = "#7b7668"
 STEP_HISTORY_RECENT_MEDIUM_DOTS = 3
 STEP_HISTORY_DOT_RADIUS_TINY_PX = 2.0
 STEP_HISTORY_DOT_RADIUS_MEDIUM_PX = 6.0
+BIRD_DIST_TRACK_MAX_MM = 150.0
+BIRD_DIST_TRACK_MARGIN_PX = 42.0
+BIRD_DIST_TRACK_STACK_GAP_PX = 16.0
 
 SVG_WIDTH = 980
-SVG_HEIGHT = 680
+BIRD_SVG_HEIGHT = 228
+BIRD_SVG_PADDING = 28
 SVG_PADDING = 80
 MAST_SVG_HEIGHT = 360
+MAST_VIEW_MIN_MM = 0.0
+MAST_VIEW_MAX_MM = 20.0
+MAST_Y_AXIS_EXTENT_MM = 20.0
 _PROCESS_MODEL_CACHE = {"mtime_ns": None, "payload": None}
 
 
@@ -270,6 +278,53 @@ def _default_workspace_state(*, render_enabled: bool) -> dict:
         "history_step_name": None,
         "micro_adjust_phase": False,
     }
+
+
+def _normalized_render_snapshot(state: dict | None) -> dict:
+    snapshot = _default_workspace_state(render_enabled=False)
+    if not isinstance(state, dict):
+        return snapshot
+
+    for key in (
+        "schema_version",
+        "updated_at",
+        "history",
+        "history_step_seq",
+        "history_step_name",
+        "micro_adjust_phase",
+    ):
+        if key in state:
+            snapshot[key] = _deepcopy(state.get(key))
+
+    for key in (
+        "robot",
+        "raw_robot",
+        "leia",
+        "active_target",
+        "held_brick",
+        "last_visible_brick",
+    ):
+        override = state.get(key)
+        if isinstance(override, dict):
+            merged = dict(snapshot.get(key) or {})
+            merged.update(_deepcopy(override))
+            snapshot[key] = merged
+
+    raw_objects = state.get("objects")
+    if isinstance(raw_objects, dict):
+        merged_objects = dict(snapshot.get("objects") or {})
+        for obj_name, default_obj in list(merged_objects.items()):
+            override = raw_objects.get(obj_name)
+            if isinstance(default_obj, dict) and isinstance(override, dict):
+                obj_merged = dict(default_obj)
+                obj_merged.update(_deepcopy(override))
+                merged_objects[obj_name] = obj_merged
+        for obj_name, override in raw_objects.items():
+            if obj_name not in merged_objects:
+                merged_objects[obj_name] = _deepcopy(override)
+        snapshot["objects"] = merged_objects
+
+    return snapshot
 
 
 def ensure_workspace(world, *, render_enabled: bool = True) -> dict:
@@ -906,7 +961,13 @@ def _viewport_points(state: dict) -> list[tuple[float, float]]:
     points.append((float(robot["x_mm"]), float(robot["y_mm"])))
     for entry in _current_step_motion_history(state):
         points.append((float(entry["x_mm"]), float(entry["y_mm"])))
-    for obj in state["objects"].values():
+    active = state.get("active_target") or {}
+    active_name = str(active.get("object_name") or "").strip().lower()
+    object_names = ["wall", "brick_supply"]
+    if active_name in {"wall", "brick_supply"}:
+        object_names = [active_name]
+    for obj_name in object_names:
+        obj = (state.get("objects") or {}).get(obj_name) or {}
         points.append((float(obj.get("x_mm", 0.0)), float(obj.get("y_mm", 0.0))))
         if obj.get("name") == "wall":
             points.extend(_wall_render_points(obj))
@@ -942,11 +1003,11 @@ def _project_fn(state: dict):
     min_x, max_x, min_y, max_y = _build_viewbox(state)
     span_x = max(1.0, max_x - min_x)
     span_y = max(1.0, max_y - min_y)
-    scale = min((SVG_WIDTH - 2 * SVG_PADDING) / span_x, (SVG_HEIGHT - 2 * SVG_PADDING) / span_y)
+    scale = min((SVG_WIDTH - 2 * BIRD_SVG_PADDING) / span_x, (BIRD_SVG_HEIGHT - 2 * BIRD_SVG_PADDING) / span_y)
 
     def view_project(view_x_mm: float, view_y_mm: float) -> tuple[float, float]:
-        sx = SVG_PADDING + (float(view_x_mm) - min_x) * scale
-        sy = SVG_HEIGHT - SVG_PADDING - (float(view_y_mm) - min_y) * scale
+        sx = BIRD_SVG_PADDING + (float(view_x_mm) - min_x) * scale
+        sy = BIRD_SVG_HEIGHT - BIRD_SVG_PADDING - (float(view_y_mm) - min_y) * scale
         return sx, sy
 
     def project(x_mm: float, y_mm: float) -> tuple[float, float]:
@@ -1107,7 +1168,8 @@ def _current_step_mast_history(state: dict) -> list[dict]:
         action_type = str(entry.get("action_type") or "").strip().lower()
         y_axis_mm = _coerce_float(entry.get("y_axis_mm"), None)
         camera_height_mm = _coerce_float(entry.get("camera_height_mm"), None)
-        if camera_height_mm is None:
+        current_lift_mm = _coerce_float(entry.get("current_lift_mm"), None)
+        if camera_height_mm is None and current_lift_mm is None:
             continue
         if action_type not in {"mast_up", "mast_down"} and y_axis_mm is None:
             continue
@@ -1141,7 +1203,8 @@ def _all_mast_history(state: dict) -> list[dict]:
         action_type = str(entry.get("action_type") or "").strip().lower()
         y_axis_mm = _coerce_float(entry.get("y_axis_mm"), None)
         camera_height_mm = _coerce_float(entry.get("camera_height_mm"), None)
-        if camera_height_mm is None:
+        current_lift_mm = _coerce_float(entry.get("current_lift_mm"), None)
+        if camera_height_mm is None and current_lift_mm is None:
             continue
         if action_type not in {"mast_up", "mast_down"} and y_axis_mm is None:
             continue
@@ -1165,7 +1228,7 @@ def _mast_history_trend(previous_entry: dict | None, entry: dict) -> str:
 
 
 def render_workspace_svg(state: dict | None) -> str:
-    snapshot = _deepcopy(state or _default_workspace_state(render_enabled=False))
+    snapshot = _normalized_render_snapshot(state)
     project, view_project, scale = _project_fn(snapshot)
     min_x, max_x, min_y, max_y = _build_viewbox(snapshot)
     active_target = snapshot.get("active_target") or {}
@@ -1174,59 +1237,148 @@ def render_workspace_svg(state: dict | None) -> str:
     dot_history = _all_motion_history(snapshot)
     
     svg_parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{SVG_WIDTH}" height="{SVG_HEIGHT}" viewBox="0 0 {SVG_WIDTH} {SVG_HEIGHT}">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{SVG_WIDTH}" height="{BIRD_SVG_HEIGHT}" viewBox="0 0 {SVG_WIDTH} {BIRD_SVG_HEIGHT}">',
         '<rect width="100%" height="100%" fill="#f4efe4" />',
-        '<rect x="22" y="22" width="936" height="636" rx="24" fill="#f9f6ef" stroke="#d7d1c4" stroke-width="1.5" />',
+        f'<rect x="22" y="12" width="936" height="{BIRD_SVG_HEIGHT - 24}" rx="18" fill="#f9f6ef" stroke="#d7d1c4" stroke-width="1.5" />',
     ]
 
     # Add title at top
     tx = SVG_WIDTH * 0.5
-    ty = 54.0
+    ty = 42.0
     svg_parts.append(f'<text x="{tx:.1f}" y="{ty:.1f}" text-anchor="middle" font-size="28" font-weight="900" fill="#233843">Bird View</text>')
 
+    show_stack = active_name if active_name in {"wall", "brick_supply"} else None
+    if show_stack is None:
+        step_key = _normalize_step_key(active_target.get("step_name"))
+        step_number = _coerce_int(active_target.get("step_number"), None)
+        inferred = _workspace_target_for_step(snapshot, step_key, step_number)
+        if inferred in {"wall", "brick_supply"}:
+            show_stack = inferred
+    if show_stack not in {"wall", "brick_supply"}:
+        show_stack = "brick_supply"
+    stack_screen = None
+    stack_center = None
+
     wall = snapshot["objects"]["wall"]
-    wall_cx = float(wall.get("x_mm", 0.0))
-    wall_cy = float(wall.get("y_mm", 0.0))
-    wall_rect = _wall_render_points(wall)
-    wall_screen = [project(x, y) for x, y in wall_rect]
-    wall_fill = "#c2523c" if bool(wall.get("valid", False)) else "#d4a090"
-    wall_stroke = "#f3c548" if active_name == "wall" else "#7b2e1e"
-    wall_stroke_width = "4.5" if active_name == "wall" else "2.5"
-    svg_parts.append(
-        f'<polygon points="{_polygon_points(wall_screen)}" fill="{wall_fill}" stroke="{wall_stroke}" stroke-width="{wall_stroke_width}" />'
-    )
-    w_tx, w_ty = project(wall_cx, wall_cy)
-    svg_parts.append(
-        f'<text x="{w_tx:.1f}" y="{w_ty - 46:.1f}" text-anchor="middle" font-size="28" font-weight="600" fill="#7b2e1e">Wall</text>'
-    )
-    wall_count = "?" if wall.get("count") is None else str(int(wall["count"]))
-    svg_parts.append(
-        f'<text x="{w_tx:.1f}" y="{w_ty + 8:.1f}" text-anchor="middle" font-size="22" font-weight="700" fill="#ffffff">{wall_count}</text>'
-    )
+    if show_stack == "wall":
+        wall_cx = float(wall.get("x_mm", 0.0))
+        wall_cy = float(wall.get("y_mm", 0.0))
+        wall_rect = _wall_render_points(wall)
+        wall_screen = [project(x, y) for x, y in wall_rect]
+        wall_screen = [(sx + float(BIRD_STACK_SHIFT_X_PX), sy) for sx, sy in wall_screen]
+        stack_screen = list(wall_screen)
+        stack_center = (float(w_tx), float(w_ty)) if "w_tx" in locals() and "w_ty" in locals() else None
+        wall_top_y = min(float(pt[1]) for pt in wall_screen)
+        wall_label_y = max(float(wall_top_y) - 16.0, 68.0)
+        wall_fill = "#cc3a2b"
+        wall_stroke = "#7d241b"
+        svg_parts.append(
+            f'<polygon points="{_polygon_points(wall_screen)}" fill="{wall_fill}" stroke="{wall_stroke}" stroke-width="4.5" />'
+        )
+        w_tx, w_ty = project(wall_cx, wall_cy)
+        w_tx = float(w_tx) + float(BIRD_STACK_SHIFT_X_PX)
+        stack_center = (float(w_tx), float(w_ty))
+        svg_parts.append(
+            f'<text x="{w_tx:.1f}" y="{wall_label_y:.1f}" text-anchor="middle" font-size="28" font-weight="600" fill="#1d2830">Wall</text>'
+        )
+        wall_count = "?" if wall.get("count") is None else str(int(wall["count"]))
+        svg_parts.append(
+            f'<text x="{w_tx:.1f}" y="{w_ty + 8:.1f}" text-anchor="middle" font-size="22" font-weight="700" fill="#ffffff">{wall_count}</text>'
+        )
 
     supply = snapshot["objects"]["brick_supply"]
-    supply_rect = _rotated_rect(
-        float(supply.get("x_mm", 0.0)),
-        float(supply.get("y_mm", 0.0)),
-        float(supply.get("theta_deg", 0.0)),
-        54.0,
-        54.0,
-    )
-    supply_screen = [project(x, y) for x, y in supply_rect]
-    supply_stroke = "#f3c548" if active_name == "brick_supply" else "#18494e"
-    supply_stroke_width = "4.5" if active_name == "brick_supply" else "3"
-    svg_parts.append(
-        f'<polygon points="{_polygon_points(supply_screen)}" fill="#63f2f7" stroke="{supply_stroke}" stroke-width="{supply_stroke_width}" />'
-    )
-    supply_tx, supply_ty = project(float(supply.get("x_mm", 0.0)), float(supply.get("y_mm", 0.0)))
-    svg_parts.append(f'<text x="{supply_tx:.1f}" y="{supply_ty - 46:.1f}" text-anchor="middle" font-size="36" font-weight="600" fill="#18494e">Supply</text>')
-    count_text = "?" if supply.get("count") is None else str(int(supply["count"]))
-    svg_parts.append(
-        f'<text x="{supply_tx:.1f}" y="{supply_ty + 16:.1f}" text-anchor="middle" font-size="44" font-weight="700" fill="#0d2b32">{count_text}</text>'
-    )
+    if show_stack == "brick_supply":
+        supply_rect = _rotated_rect(
+            float(supply.get("x_mm", 0.0)),
+            float(supply.get("y_mm", 0.0)),
+            float(supply.get("theta_deg", 0.0)),
+            54.0,
+            54.0,
+        )
+        supply_screen = [project(x, y) for x, y in supply_rect]
+        supply_screen = [(sx + float(BIRD_STACK_SHIFT_X_PX), sy) for sx, sy in supply_screen]
+        stack_screen = list(supply_screen)
+        supply_top_y = min(float(pt[1]) for pt in supply_screen)
+        supply_label_y = float(supply_top_y) - 16.0
+        supply_stroke = "#122d57"
+        svg_parts.append(
+            f'<polygon points="{_polygon_points(supply_screen)}" fill="#1f4b8f" stroke="{supply_stroke}" stroke-width="4.5" />'
+        )
+        supply_tx, supply_ty = project(float(supply.get("x_mm", 0.0)), float(supply.get("y_mm", 0.0)))
+        supply_tx = float(supply_tx) + float(BIRD_STACK_SHIFT_X_PX)
+        stack_center = (float(supply_tx), float(supply_ty))
+        svg_parts.append(f'<text x="{supply_tx:.1f}" y="{supply_label_y:.1f}" text-anchor="middle" font-size="28" font-weight="600" fill="#1d2830">Supply</text>')
+        count_text = "?" if supply.get("count") is None else str(int(supply["count"]))
+        svg_parts.append(
+            f'<text x="{supply_tx:.1f}" y="{supply_ty + 16:.1f}" text-anchor="middle" font-size="36" font-weight="700" fill="#ffffff">{count_text}</text>'
+        )
 
     robot = snapshot["robot"]
     target_obj = (snapshot.get("objects") or {}).get(active_name) if active_name in {"wall", "brick_supply"} else None
+
+    # Build a dedicated distance track so 0mm sits by the stack edge and
+    # 150mm maps to the far side of the diagram.
+    def _bird_history_screen_point(entry: dict) -> tuple[float, float]:
+        try:
+            if not isinstance(entry, dict):
+                raise ValueError("entry")
+            if not isinstance(stack_screen, list) or len(stack_screen) < 3:
+                raise ValueError("stack")
+
+            xs = [float(pt[0]) for pt in stack_screen]
+            ys = [float(pt[1]) for pt in stack_screen]
+            min_x = min(xs)
+            max_x = max(xs)
+            center_x = (min_x + max_x) * 0.5
+
+            track_y = None
+            if isinstance(stack_center, tuple) and len(stack_center) == 2:
+                track_y = float(stack_center[1])
+            if track_y is None:
+                track_y = (min(ys) + max(ys)) * 0.5
+            track_y = max(58.0, min(float(BIRD_SVG_HEIGHT) - 26.0, float(track_y)))
+
+            if center_x <= (float(SVG_WIDTH) * 0.5):
+                near_x = min(float(SVG_WIDTH) - float(BIRD_DIST_TRACK_MARGIN_PX), max_x + float(BIRD_DIST_TRACK_STACK_GAP_PX))
+                far_x = float(SVG_WIDTH) - float(BIRD_DIST_TRACK_MARGIN_PX)
+            else:
+                near_x = max(float(BIRD_DIST_TRACK_MARGIN_PX), min_x - float(BIRD_DIST_TRACK_STACK_GAP_PX))
+                far_x = float(BIRD_DIST_TRACK_MARGIN_PX)
+
+            if abs(float(far_x) - float(near_x)) < 10.0:
+                near_x = float(SVG_WIDTH) * 0.5
+                far_x = near_x + 120.0
+
+            dist_mm = _coerce_float(entry.get("target_range_mm"), None)
+            if dist_mm is None and isinstance(target_obj, dict):
+                ex = _coerce_float(entry.get("x_mm"), None)
+                ey = _coerce_float(entry.get("y_mm"), None)
+                tx_obj = _coerce_float(target_obj.get("x_mm"), None)
+                ty_obj = _coerce_float(target_obj.get("y_mm"), None)
+                if ex is not None and ey is not None and tx_obj is not None and ty_obj is not None:
+                    dist_mm = math.hypot(float(tx_obj) - float(ex), float(ty_obj) - float(ey))
+            if dist_mm is None:
+                dist_mm = BIRD_DIST_TRACK_MAX_MM
+
+            ratio = max(0.0, min(1.0, float(dist_mm) / float(BIRD_DIST_TRACK_MAX_MM)))
+            px = float(near_x) + (float(far_x) - float(near_x)) * ratio
+            return float(px), float(track_y)
+        except Exception:
+            return project(float(entry.get("x_mm", 0.0)), float(entry.get("y_mm", 0.0)))
+
+    if isinstance(stack_screen, list) and len(stack_screen) >= 3:
+        guide_start = _bird_history_screen_point({"target_range_mm": 0.0})
+        guide_end = _bird_history_screen_point({"target_range_mm": float(BIRD_DIST_TRACK_MAX_MM)})
+        svg_parts.append(
+            f'<line x1="{guide_start[0]:.1f}" y1="{guide_start[1]:.1f}" x2="{guide_end[0]:.1f}" y2="{guide_end[1]:.1f}" stroke="#b7aea0" stroke-width="1.6" stroke-dasharray="4 4" opacity="0.7" />'
+        )
+        svg_parts.append(
+            f'<text x="{guide_start[0]:.1f}" y="{guide_start[1] - 10:.1f}" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">0mm</text>'
+        )
+        svg_parts.append(
+            f'<text x="{guide_end[0]:.1f}" y="{guide_end[1] - 10:.1f}" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">150mm</text>'
+        )
+
     current_trend = "unknown"
     current_dot_color = "#2c6fbb"
     if dot_history:
@@ -1235,7 +1387,7 @@ def render_workspace_svg(state: dict | None) -> str:
         for idx, entry in enumerate(dot_history):
             trend = _step_history_trend(previous_entry, entry)
             color = _step_history_color(trend)
-            hx, hy = project(float(entry.get("x_mm", 0.0)), float(entry.get("y_mm", 0.0)))
+            hx, hy = _bird_history_screen_point(entry)
             radius = _history_dot_radius(idx, history_count)
             opacity = 0.5 + 0.4 * ((float(idx) + 1.0) / float(history_count))
             svg_parts.append(
@@ -1249,7 +1401,7 @@ def render_workspace_svg(state: dict | None) -> str:
     if step_history:
         svg_parts.append('<g id="step-history">')
         history_points = [
-            project(float(entry.get("x_mm", 0.0)), float(entry.get("y_mm", 0.0)))
+            _bird_history_screen_point(entry)
             for entry in step_history
         ]
         if len(history_points) >= 2:
@@ -1294,21 +1446,7 @@ def render_workspace_svg(state: dict | None) -> str:
             f'<text x="{text_x:.1f}" y="{text_y - 8:.1f}" text-anchor="middle" font-size="16" font-weight="600" fill="#233843" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">{dist_to_target:.0f}</text>'
         )
     
-    # Distance to the other stack (non-active target)
-    other_stack_name = "wall" if active_name == "brick_supply" else "brick_supply"
-    other_stack = snapshot["objects"].get(other_stack_name)
-    if isinstance(other_stack, dict):
-        other_x = float(other_stack.get("x_mm", 0.0))
-        other_y = float(other_stack.get("y_mm", 0.0))
-        dist_to_other = math.hypot(other_x - robot_x, other_y - robot_y)
-        
-        # Position text near the other stack
-        other_text_x, other_text_y = project(other_x, other_y)
-        other_label = "Wall" if other_stack_name == "wall" else "Supply"
-        
-        svg_parts.append(
-            f'<text x="{other_text_x:.1f}" y="{other_text_y + 58:.1f}" text-anchor="middle" font-size="14" font-weight="500" fill="#5d676e" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">~{dist_to_other:.0f} to {other_label}</text>'
-        )
+    # Do not render distance text for hidden stacks in compact single-stack mode.
 
     if bool(snapshot["held_brick"].get("held", False)):
         hx, hy = _heading_vector(float(robot.get("theta_deg", 0.0)))
@@ -1333,65 +1471,52 @@ def render_workspace_svg(state: dict | None) -> str:
 
 
 def render_mast_svg(state: dict | None) -> str:
-    snapshot = _deepcopy(state or _default_workspace_state(render_enabled=False))
+    snapshot = _normalized_render_snapshot(state)
     mast_history = _current_step_mast_history(snapshot)
     mast_dot_history = _all_mast_history(snapshot)
+    active_target = snapshot.get("active_target") or {}
+    active_name = str(active_target.get("object_name") or "").strip().lower()
     objects = snapshot.get("objects") or {}
     supply = objects.get("brick_supply") or {}
     wall = objects.get("wall") or {}
-    leia = snapshot.get("leia") or {}
     last_visible = snapshot.get("last_visible_brick") or {}
 
-    history_heights = [
-        float(_coerce_float(entry.get("camera_height_mm"), 0.0) or 0.0)
-        for entry in mast_history
-    ]
-    max_height_mm = max(
-        160.0,
-        float(_coerce_float(leia.get("z_mm"), DEFAULT_CAMERA_Z_MM) or DEFAULT_CAMERA_Z_MM),
-        float(_coerce_float(supply.get("height_mm"), 0.0) or 0.0),
-        float(_coerce_float(wall.get("height_mm"), 0.0) or 0.0),
-        *(history_heights or [0.0]),
-    ) + 28.0
+    show_stack = active_name if active_name in {"wall", "brick_supply"} else None
+    if show_stack is None:
+        step_key = _normalize_step_key(active_target.get("step_name"))
+        step_number = _coerce_int(active_target.get("step_number"), None)
+        inferred = _workspace_target_for_step(snapshot, step_key, step_number)
+        if inferred in {"wall", "brick_supply"}:
+            show_stack = inferred
+    if show_stack not in {"wall", "brick_supply"}:
+        show_stack = "brick_supply"
+
     plot_left = 86.0
     plot_right = float(SVG_WIDTH) - 86.0
     plot_top = 72.0
     plot_bottom = float(MAST_SVG_HEIGHT) - 44.0
     plot_height = max(1.0, plot_bottom - plot_top)
-    supply_x = 216.0
+    stack_x = 216.0
     camera_x = float(SVG_WIDTH) * 0.5
-    wall_x = float(SVG_WIDTH) - 216.0
-    stack_width = 92.0
-    trail_half_span_px = 108.0
+    stack_size_px = 92.0
+    zero_y = plot_top + (plot_height * 0.5)
+    axis_extent_mm = max(1.0, float(MAST_Y_AXIS_EXTENT_MM))
+
     y_axis_values = [
-        abs(float(_coerce_float(entry.get("y_axis_mm"), 0.0) or 0.0))
+        float(_coerce_float(entry.get("y_axis_mm"), 0.0) or 0.0)
         for entry in mast_history
         if _coerce_float(entry.get("y_axis_mm"), None) is not None
     ]
     current_y_axis_mm = _coerce_float(last_visible.get("y_axis_mm"), None)
     if current_y_axis_mm is not None:
-        y_axis_values.append(abs(float(current_y_axis_mm)))
-    max_y_axis_mm = max(16.0, *(y_axis_values or [0.0]))
+        y_axis_values.append(float(current_y_axis_mm))
 
-    def project_height(height_mm: float) -> float:
-        clamped = max(0.0, float(_coerce_float(height_mm, 0.0) or 0.0))
-        return plot_bottom - (clamped / float(max_height_mm)) * plot_height
-
-    def project_y_axis_mm(y_axis_mm: float | None) -> float:
+    def project_y_axis_to_y(y_axis_mm: float | None) -> float:
         if y_axis_mm is None:
-            return camera_x
-        ratio = max(-1.0, min(1.0, float(y_axis_mm) / float(max_y_axis_mm)))
-        return camera_x + ratio * trail_half_span_px
-
-    def stack_rect(x_center: float, height_mm: float, fill: str, stroke: str, label: str, count: int | None) -> list[str]:
-        top_y = project_height(height_mm)
-        rect_height = max(6.0, plot_bottom - top_y)
-        count_text = "?" if count is None else str(int(count))
-        return [
-            f'<rect x="{x_center - stack_width * 0.5:.1f}" y="{top_y:.1f}" width="{stack_width:.1f}" height="{rect_height:.1f}" fill="{fill}" stroke="{stroke}" stroke-width="3" rx="16" />',
-            f'<text x="{x_center:.1f}" y="{top_y - 16.0:.1f}" text-anchor="middle" font-size="28" font-weight="600" fill="{stroke}">{label}</text>',
-            f'<text x="{x_center:.1f}" y="{top_y + rect_height * 0.5 + 8.0:.1f}" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">{count_text}</text>',
-        ]
+            return float(zero_y)
+        val = max(-axis_extent_mm, min(axis_extent_mm, float(y_axis_mm)))
+        usable_half_span = max(16.0, (plot_height * 0.42))
+        return float(zero_y) - (val / axis_extent_mm) * usable_half_span
 
     svg_parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{SVG_WIDTH}" height="{MAST_SVG_HEIGHT}" viewBox="0 0 {SVG_WIDTH} {MAST_SVG_HEIGHT}">',
@@ -1400,28 +1525,31 @@ def render_mast_svg(state: dict | None) -> str:
     ]
     title_x = SVG_WIDTH * 0.5
     svg_parts.append(f'<text x="{title_x:.1f}" y="52.0" text-anchor="middle" font-size="28" font-weight="900" fill="#233843">Mast View</text>')
+    # Single-brick reference: 0mm is at the square center.
+    stack_fill = "#1f4b8f" if show_stack == "brick_supply" else "#cc3a2b"
+    stack_stroke = "#122d57" if show_stack == "brick_supply" else "#7d241b"
+    stack_label = "Supply" if show_stack == "brick_supply" else "Wall"
+    square_top = float(zero_y) - (stack_size_px * 0.5)
     svg_parts.append(
-        f'<line x1="{plot_left:.1f}" y1="{plot_bottom:.1f}" x2="{plot_right:.1f}" y2="{plot_bottom:.1f}" stroke="#c8c2b5" stroke-width="3" stroke-linecap="round" />'
+        f'<rect x="{stack_x - stack_size_px * 0.5:.1f}" y="{square_top:.1f}" width="{stack_size_px:.1f}" height="{stack_size_px:.1f}" '
+        f'fill="{stack_fill}" stroke="{stack_stroke}" stroke-width="3" rx="12" />'
     )
-    svg_parts.extend(
-        stack_rect(
-            supply_x,
-            float(_coerce_float(supply.get("height_mm"), 0.0) or 0.0),
-            "#63f2f7",
-            "#18494e",
-            "Supply",
-            _coerce_int(supply.get("count"), None),
-        )
+    svg_parts.append(
+        f'<text x="{stack_x:.1f}" y="{square_top - 14.0:.1f}" text-anchor="middle" font-size="28" font-weight="600" fill="#1d2830">{stack_label}</text>'
     )
-    svg_parts.extend(
-        stack_rect(
-            wall_x,
-            float(_coerce_float(wall.get("height_mm"), 0.0) or 0.0),
-            "#c2523c",
-            "#7b2e1e",
-            "Wall",
-            _coerce_int(wall.get("count"), None),
-        )
+    svg_parts.append(
+        f'<line x1="{plot_left:.1f}" y1="{zero_y:.1f}" x2="{plot_right:.1f}" y2="{zero_y:.1f}" stroke="#c8c2b5" stroke-width="2.6" stroke-linecap="round" />'
+    )
+    svg_parts.append(
+        f'<text x="{plot_left - 10:.1f}" y="{zero_y + 5:.1f}" text-anchor="end" font-size="12" font-weight="700" fill="#5d676e">0mm</text>'
+    )
+    top_label_y = project_y_axis_to_y(axis_extent_mm)
+    bottom_label_y = project_y_axis_to_y(-axis_extent_mm)
+    svg_parts.append(
+        f'<text x="{plot_left - 10:.1f}" y="{top_label_y + 4:.1f}" text-anchor="end" font-size="11" font-weight="600" fill="#5d676e">+{int(axis_extent_mm)}mm</text>'
+    )
+    svg_parts.append(
+        f'<text x="{plot_left - 10:.1f}" y="{bottom_label_y + 4:.1f}" text-anchor="end" font-size="11" font-weight="600" fill="#5d676e">-{int(axis_extent_mm)}mm</text>'
     )
 
     current_trend = "unknown"
@@ -1432,8 +1560,12 @@ def render_mast_svg(state: dict | None) -> str:
         for idx, entry in enumerate(mast_dot_history):
             trend = _mast_history_trend(previous_entry, entry)
             color = _step_history_color(trend)
-            hx = project_y_axis_mm(_coerce_float(entry.get("y_axis_mm"), None))
-            hy = project_height(float(_coerce_float(entry.get("camera_height_mm"), 0.0) or 0.0))
+            y_val = _coerce_float(entry.get("y_axis_mm"), None)
+            if y_val is None:
+                previous_entry = entry
+                continue
+            hx = float(camera_x)
+            hy = project_y_axis_to_y(y_val)
             radius = _history_dot_radius(idx, history_count)
             opacity = 0.5 + 0.4 * ((float(idx) + 1.0) / float(history_count))
             svg_parts.append(
@@ -1448,11 +1580,9 @@ def render_mast_svg(state: dict | None) -> str:
     if mast_history:
         svg_parts.append('<g id="mast-history">')
         history_points = [
-            (
-                project_y_axis_mm(_coerce_float(entry.get("y_axis_mm"), None)),
-                project_height(float(_coerce_float(entry.get("camera_height_mm"), 0.0) or 0.0)),
-            )
+            (float(camera_x), project_y_axis_to_y(_coerce_float(entry.get("y_axis_mm"), None)))
             for entry in mast_history
+            if _coerce_float(entry.get("y_axis_mm"), None) is not None
         ]
         if len(history_points) >= 2:
             svg_parts.append(
@@ -1462,8 +1592,8 @@ def render_mast_svg(state: dict | None) -> str:
             )
         svg_parts.append("</g>")
 
-    current_camera_x = project_y_axis_mm(current_y_axis_mm)
-    current_camera_y = project_height(float(_coerce_float(leia.get("z_mm"), DEFAULT_CAMERA_Z_MM) or DEFAULT_CAMERA_Z_MM))
+    current_camera_x = float(camera_x)
+    current_camera_y = project_y_axis_to_y(current_y_axis_mm)
     current_dot_radius = 8.0
     svg_parts.append(
         f'<circle class="mast-camera-dot" data-trend="{current_trend}" cx="{current_camera_x:.1f}" cy="{current_camera_y:.1f}" '
@@ -1493,7 +1623,7 @@ def _summary_payload(state: dict) -> dict:
 
 
 def render_workspace_html(state: dict | None) -> str:
-    snapshot = _deepcopy(state or _default_workspace_state(render_enabled=False))
+    snapshot = _normalized_render_snapshot(state)
     svg = render_workspace_svg(snapshot)
     mast_svg = render_mast_svg(snapshot)
     summary_json = json.dumps(_summary_payload(snapshot), indent=2)

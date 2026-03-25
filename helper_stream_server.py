@@ -3,6 +3,7 @@ import time
 import socket
 import logging
 import html
+import json
 import urllib.request
 from pathlib import Path
 from typing import Callable, Optional
@@ -16,6 +17,7 @@ DEFAULT_STREAM_HOST = "127.0.0.1"
 DEFAULT_STREAM_FPS = 10
 DEFAULT_JPEG_QUALITY = 90
 DEFAULT_GONG_FILE = Path(__file__).resolve().parent / "gong.mp3"
+DEFAULT_BRICK_MODEL_FILE = Path(__file__).resolve().parent / "world_model_brick.json"
 
 
 def format_stream_url(host, port):
@@ -481,6 +483,7 @@ class StreamServer:
                 layout_camera_width = max(120, int(round(float(layout_width) * 0.5)))
                 layout_camera_img_width_attr = f' width="{int(layout_camera_width)}"'
         header_html = f"<h1>{self.header}</h1>" if self.header else ""
+        brick_shape_panel_html = self._brick_shape_panel_html()
         footer_panel_html = f"<div class='footer-panel'>{self.footer}</div>" if self.footer else ""
         footer_below_html = (
             f"<div class='footer-wrap footer-wrap-standalone'>{footer_panel_html}</div>"
@@ -831,6 +834,11 @@ class StreamServer:
             "word-break:break-word;user-select:text;}"
             ".telemetry > div{padding:3px 0;border-bottom:1px solid #242424;}"
             ".telemetry > div:last-child{border-bottom:none;}"
+            ".sidebar-stack{display:flex;flex-direction:column;gap:10px;}"
+            ".shape-panel{background:#0f0f0f;border:1px solid #2f2f2f;border-radius:8px;padding:8px;text-align:left;}"
+            ".shape-title{font-size:11px;color:#f0ad4e;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;font-weight:700;}"
+            ".shape-wrap{display:flex;justify-content:center;background:#141414;border:1px solid #2b2b2b;border-radius:6px;padding:6px;}"
+            ".shape-svg{max-width:100%;height:auto;display:block;}"
             ".stream{display:inline-block;border:4px solid #333;border-radius:8px;"
             "overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,0.35);}" 
             ".layout .stream{flex:0 0 auto;}"
@@ -886,7 +894,10 @@ class StreamServer:
             f"{controls_html}"
             "<div id='celebrationFlash' class='celebration-flash'><div id='celebrationFlashLabel' class='celebration-flash-label'>STEP ACHIEVED</div></div>"
             "<div class='layout'>"
-            "<div class='sidebar'><div id='telemetry' class='telemetry'></div></div>"
+            "<div class='sidebar sidebar-stack'>"
+            "<div id='telemetry' class='telemetry'></div>"
+            f"{brick_shape_panel_html}"
+            "</div>"
             f"<div style='display: flex; flex-direction: column; gap: 12px; align-items: center;'>"
             f"<div class='stream' style='background: white;'><img id='xyzLayout' src='/xyz_workspace_live.svg'{layout_xyz_img_width_attr or xyz_width_attr}></div>"
             f"<div class='stream' style='background: white;'><img id='mastLayout' src='/xyz_mast_live.svg'{layout_xyz_img_width_attr or xyz_width_attr}></div>"
@@ -1206,3 +1217,102 @@ class StreamServer:
             .replace("\n", "\\n")
             .replace("\r", "\\r")
         ) + "'"
+
+    def _brick_shape_panel_html(self):
+        fallback_html = (
+            "<div class='shape-panel'>"
+            "<div class='shape-title'>Target Brick Shape</div>"
+            "<div class='shape-wrap'><div style='color:#bbb;font-size:11px;'>shape coords unavailable</div></div>"
+            "</div>"
+        )
+
+        try:
+            data = json.loads(Path(DEFAULT_BRICK_MODEL_FILE).read_text())
+        except Exception:
+            return fallback_html
+
+        brick = data.get("brick") if isinstance(data, dict) else None
+        if not isinstance(brick, dict):
+            return fallback_html
+
+        face_polygon_raw = brick.get("facePolygon")
+        face_lines_raw = brick.get("faceLines")
+        if not isinstance(face_polygon_raw, list):
+            return fallback_html
+
+        points = []
+        for row in face_polygon_raw:
+            if not isinstance(row, dict):
+                continue
+            try:
+                x = float(row.get("x"))
+                y = float(row.get("y"))
+            except (TypeError, ValueError):
+                continue
+            points.append((x, y))
+
+        if len(points) < 3:
+            return fallback_html
+
+        min_x = min(p[0] for p in points)
+        max_x = max(p[0] for p in points)
+        min_y = min(p[1] for p in points)
+        max_y = max(p[1] for p in points)
+        span_x = max(1.0, max_x - min_x)
+        span_y = max(1.0, max_y - min_y)
+
+        svg_w = 260.0
+        svg_h = 140.0
+        pad = 16.0
+        usable_w = svg_w - (2.0 * pad)
+        usable_h = svg_h - (2.0 * pad)
+        scale = min(usable_w / span_x, usable_h / span_y)
+
+        def map_x(x_val):
+            return pad + ((float(x_val) - min_x) * scale)
+
+        def map_y(y_val):
+            # World-model Y is positive-up; SVG Y is positive-down.
+            return pad + ((max_y - float(y_val)) * scale)
+
+        polygon_points = " ".join(f"{map_x(x):.2f},{map_y(y):.2f}" for x, y in points)
+
+        face_line_svg = ""
+        if isinstance(face_lines_raw, list):
+            line_parts = []
+            for seg in face_lines_raw:
+                if not isinstance(seg, dict):
+                    continue
+                p1 = seg.get("p1") if isinstance(seg.get("p1"), dict) else None
+                p2 = seg.get("p2") if isinstance(seg.get("p2"), dict) else None
+                if p1 is None or p2 is None:
+                    continue
+                try:
+                    x1 = float(p1.get("x"))
+                    y1 = float(p1.get("y"))
+                    x2 = float(p2.get("x"))
+                    y2 = float(p2.get("y"))
+                except (TypeError, ValueError):
+                    continue
+                line_parts.append(
+                    f"<line x1='{map_x(x1):.2f}' y1='{map_y(y1):.2f}' x2='{map_x(x2):.2f}' y2='{map_y(y2):.2f}' "
+                    "stroke='#def7ff' stroke-width='1.4' stroke-dasharray='4 3'/>"
+                )
+            face_line_svg = "".join(line_parts)
+
+        svg_html = (
+            "<svg class='shape-svg' viewBox='0 0 260 140' width='250' height='134' xmlns='http://www.w3.org/2000/svg' "
+            "role='img' aria-label='Brick shape reference from world model coordinates'>"
+            "<rect x='1' y='1' width='258' height='138' rx='8' fill='#11181d' stroke='#2f4a54' stroke-width='1.2'/>"
+            f"<polygon points='{polygon_points}' fill='#1f9db1' stroke='#c7f6ff' stroke-width='2.0'/>"
+            f"{face_line_svg}"
+            "<text x='14' y='16' fill='#d8fbff' font-size='10.5' font-family='monospace'>source: world_model_brick.json</text>"
+            "</svg>"
+        )
+
+        return (
+            "<div class='shape-panel'>"
+            "<div class='shape-title'>Target Brick Shape</div>"
+            f"<div class='shape-wrap'>{svg_html}</div>"
+            "</div>"
+        )

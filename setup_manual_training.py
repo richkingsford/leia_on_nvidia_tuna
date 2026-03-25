@@ -1,6 +1,8 @@
 import argparse
+import cv2
 import json
 import math
+import numpy as np
 import random
 import sys
 import threading
@@ -2859,6 +2861,9 @@ def refresh_world_model_from_demos(
     except OSError:
         process_mtime = 0.0
     app_state.config_mtime = max(demo_mtime, process_mtime)
+    
+    # Reload telemetry correction curves from updated world_model_robot.json
+    app_state.world.reload_telemetry_correction_curves()
 
 def refresh_brick_telemetry(app_state, read_vision=True):
     if read_vision:
@@ -3142,6 +3147,80 @@ def markerless_stream_debug_lines(app_state, vision):
     return cyan_stream_debug_lines(app_state, vision)
 
 
+def _build_cyan_mask_preview(vision, frame):
+    """Build a black/white cyan mask preview from the current camera frame.
+
+    White pixels represent values inside the active cyan HSV range.
+    """
+    if vision is None:
+        return None
+    hsv_enabled = getattr(vision, "_hsv_enabled", None)
+    hsv_lower = getattr(vision, "_hsv_lower", None)
+    hsv_upper = getattr(vision, "_hsv_upper", None)
+    if hsv_enabled is False or hsv_lower is None or hsv_upper is None:
+        return None
+
+    src = getattr(vision, "raw_frame", None)
+    if src is None:
+        src = frame
+    if src is None:
+        return None
+
+    try:
+        hsv = cv2.cvtColor(src, cv2.COLOR_BGR2HSV)
+        lower = np.array(hsv_lower, dtype=np.uint8)
+        upper = np.array(hsv_upper, dtype=np.uint8)
+        mask = cv2.inRange(hsv, lower, upper)
+        erode_iter = max(0, int(getattr(vision, "_hsv_erode_iterations", 0) or 0))
+        if erode_iter > 0:
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+            mask = cv2.erode(mask, kernel, iterations=erode_iter)
+        return cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    except Exception:
+        return None
+
+
+def _overlay_corner_inset(frame, inset, *, title="CYAN MASK"):
+    if frame is None or inset is None:
+        return frame
+    try:
+        h, w = frame.shape[:2]
+        ih, iw = inset.shape[:2]
+        if h <= 0 or w <= 0 or ih <= 0 or iw <= 0:
+            return frame
+
+        target_w = max(120, int(0.28 * w))
+        scale = float(target_w) / float(iw)
+        target_h = max(90, int(ih * scale))
+        if target_h > int(0.45 * h):
+            target_h = int(0.45 * h)
+            target_w = max(80, int(iw * (float(target_h) / float(ih))))
+
+        inset_resized = cv2.resize(inset, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+
+        margin = 10
+        x1 = max(0, w - target_w - margin)
+        y1 = margin
+        x2 = min(w, x1 + target_w)
+        y2 = min(h, y1 + target_h)
+
+        frame[y1:y2, x1:x2] = inset_resized[0 : (y2 - y1), 0 : (x2 - x1)]
+        cv2.rectangle(frame, (x1 - 1, y1 - 1), (x2, y2), (255, 255, 255), 1)
+        cv2.putText(
+            frame,
+            str(title),
+            (x1 + 6, y1 + 18),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        return frame
+    except Exception:
+        return frame
+
+
 def update_stream_frame(app_state):
     vision = app_state.vision
     if vision is None or vision.current_frame is None:
@@ -3187,6 +3266,8 @@ def update_stream_frame(app_state):
             brick_extra_lines=cyan_lines,
             telemetry_step=stream_step,
         )
+        mask_preview = _build_cyan_mask_preview(vision, frame)
+        frame = _overlay_corner_inset(frame, mask_preview, title="CYAN MASK")
         app_state.current_frame = frame
     if app_state.stream_state:
         with app_state.stream_state["lock"]:
@@ -5004,6 +5085,7 @@ if __name__ == "__main__":
             if actual_port != STREAM_PORT:
                 log_line(f"[VISION] Stream port {STREAM_PORT} busy; using {actual_port}")
             state.pending_stream_started_url = str(url)
+            log_line(f"[VISION] Livestream URL: {url}")
             _open_stream_in_chrome(url)
     else:
         state.stream_enabled = False

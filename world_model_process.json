@@ -161,7 +161,7 @@
             "topmost_crosshair_exception": {
                 "enabled": true,
                 "ground_up_level2_enabled": true,
-                "operator_log_reminder": "Exception active: mast-down bottom discovery, then mast-up stack-height detection (level2 inCrosshairs confirmation).",
+                "operator_log_reminder": "Exception active: mast-down bottom discovery, then mast-up topmost stack confirmation.",
                 "ground_reset_enabled": false,
                 "bottom_brick_discovery": {
                     "enabled": true,
@@ -188,7 +188,7 @@
                 "false_up_acts_required": 2,
                 "false_confirm_frames": 3,
                 "consecutive_no_required": 2,
-                "complete_on_crosshair_drop": true,
+                "complete_on_crosshair_drop": false,
                 "level2_require_visible_for_confirm": false,
                 "level2_fail_on_skipped_observation": false,
                 "level2_reset_on_skipped_observation": true,
@@ -196,7 +196,10 @@
                 "observation_confidence_min": 50.0
             },
             "success_gates": {
-                "inCrosshairs": {
+                "visible": {
+                    "min": true
+                },
+                "brick_above": {
                     "target": false,
                     "tol": 0.0
                 }
@@ -327,15 +330,15 @@
                     "min": true
                 },
                 "xAxis_offset_abs": {
-                    "target": 6.54,
+                    "target": 3.44,
                     "tol": 1.4
                 },
                 "yAxis_offset_abs": {
-                    "target": 4.92,
+                    "target": -1.18,
                     "tol": 2.3
                 },
                 "dist": {
-                    "target": 135.17,
+                    "target": 69.55,
                     "tol": 2.3
                 }
             }
@@ -361,7 +364,7 @@
                     "min": true
                 },
                 "dist": {
-                    "target": 58.85,
+                    "target": 58.78,
                     "tol": 2.3
                 }
             }
@@ -512,7 +515,7 @@
             "topmost_crosshair_exception": {
                 "enabled": true,
                 "ground_up_level2_enabled": true,
-                "operator_log_reminder": "Exception active: mast-only stack-height detection (mast UP 100% with level2 inCrosshairs confirmation).",
+                "operator_log_reminder": "Exception active: mast-only topmost stack confirmation (mast UP 100%).",
                 "ground_reset_enabled": false,
                 "mast_up_command": "u",
                 "mast_up_score": 100,
@@ -520,7 +523,7 @@
                 "false_up_acts_required": 5,
                 "false_confirm_frames": 3,
                 "consecutive_no_required": 5,
-                "complete_on_crosshair_drop": true,
+                "complete_on_crosshair_drop": false,
                 "level2_require_visible_for_confirm": false,
                 "level2_fail_on_skipped_observation": false,
                 "level2_reset_on_skipped_observation": false,
@@ -528,7 +531,10 @@
                 "observation_confidence_min": 50.0
             },
             "success_gates": {
-                "inCrosshairs": {
+                "visible": {
+                    "min": true
+                },
+                "brick_above": {
                     "target": false,
                     "tol": 0.0
                 }

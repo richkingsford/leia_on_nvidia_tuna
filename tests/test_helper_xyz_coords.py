@@ -37,6 +37,12 @@ class _DummyWorld:
 
 
 class HelperXyzCoordsTests(unittest.TestCase):
+    def test_render_workspace_svg_tolerates_partial_workspace_state(self):
+        svg = helper_xyz_coords.render_workspace_svg({"objects": {}})
+
+        self.assertIn("Bird View", svg)
+        self.assertIn("Supply", svg)
+
     def test_sync_from_world_tracks_robot_and_leia_pose(self):
         world = _DummyWorld()
         world.x = 45.0
@@ -70,8 +76,8 @@ class HelperXyzCoordsTests(unittest.TestCase):
         svg = helper_xyz_coords.render_workspace_svg(state)
         wall_pose = helper_xyz_coords.relative_object_pose(world, "wall")
 
-        self.assertIn("Wall", svg)
         self.assertIn("Supply", svg)
+        self.assertNotIn(">Wall<", svg)
         self.assertEqual(state["active_target"]["object_name"], "brick_supply")
         self.assertAlmostEqual(float(state["robot"]["theta_deg"]), -90.0, places=3)
         self.assertAlmostEqual(float(wall_pose["bearing_deg"]), 90.0, places=3)
@@ -231,7 +237,7 @@ class HelperXyzCoordsTests(unittest.TestCase):
         self.assertIn('class="mast-history-dot"', mast_svg)
         self.assertIn('class="mast-camera-dot"', mast_svg)
         self.assertIn("Supply", mast_svg)
-        self.assertIn("Wall", mast_svg)
+        self.assertNotIn(">Wall<", mast_svg)
         self.assertIn('data-trend="closer"', mast_svg)
         self.assertIn('data-trend="further"', mast_svg)
 

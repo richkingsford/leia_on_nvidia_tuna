@@ -599,7 +599,7 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
             f"Δ{telemetry_process.COLOR_YELLOW}+42.97{telemetry_process.COLOR_RESET}",
             observe_line,
         )
-        self.assertIn("farther than our target=105.63 ±1.50.", observe_line)
+        self.assertIn("away from our distance target target=105.63 ±1.50.", observe_line)
         self.assertIn(
             f"{telemetry_process.COLOR_ORANGE_BRIGHT}> B 1%{telemetry_process.COLOR_RESET}",
             observe_line,

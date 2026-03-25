@@ -1,13 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="980" height="680" viewBox="0 0 980 680">
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="228" viewBox="0 0 980 228">
 <rect width="100%" height="100%" fill="#f4efe4" />
-<rect x="22" y="22" width="936" height="636" rx="24" fill="#f9f6ef" stroke="#d7d1c4" stroke-width="1.5" />
-<text x="490.0" y="54.0" text-anchor="middle" font-size="28" font-weight="900" fill="#233843">Bird View</text>
-<polygon points="432.9,432.9 534.3,432.9 534.3,534.3 432.9,534.3" fill="#d4a090" stroke="#7b2e1e" stroke-width="2.5" />
-<text x="483.6" y="437.6" text-anchor="middle" font-size="28" font-weight="600" fill="#7b2e1e">Wall</text>
-<text x="483.6" y="491.6" text-anchor="middle" font-size="22" font-weight="700" fill="#ffffff">1</text>
-<polygon points="196.4,196.4 95.0,196.4 95.0,95.0 196.4,95.0" fill="#63f2f7" stroke="#f3c548" stroke-width="4.5" />
-<text x="145.7" y="99.7" text-anchor="middle" font-size="36" font-weight="600" fill="#18494e">Supply</text>
-<text x="145.7" y="161.7" text-anchor="middle" font-size="44" font-weight="700" fill="#0d2b32">3</text>
-<text x="232.1" y="258.8" text-anchor="middle" font-size="16" font-weight="600" fill="#233843" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">113</text>
-<text x="483.6" y="541.6" text-anchor="middle" font-size="14" font-weight="500" fill="#5d676e" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">~144 to Wall</text>
+<rect x="22" y="12" width="936" height="204" rx="18" fill="#f9f6ef" stroke="#d7d1c4" stroke-width="1.5" />
+<text x="490.0" y="42.0" text-anchor="middle" font-size="28" font-weight="900" fill="#233843">Bird View</text>
+<polygon points="337.2,224.0 158.5,224.0 158.5,45.4 337.2,45.4" fill="#1f4b8f" stroke="#122d57" stroke-width="4.5" />
+<text x="247.8" y="29.4" text-anchor="middle" font-size="28" font-weight="600" fill="#1d2830">Supply</text>
+<text x="247.8" y="150.7" text-anchor="middle" font-size="36" font-weight="700" fill="#ffffff">?</text>
+<line x1="353.2" y1="134.7" x2="938.0" y2="134.7" stroke="#b7aea0" stroke-width="1.6" stroke-dasharray="4 4" opacity="0.7" />
+<text x="353.2" y="124.7" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">0mm</text>
+<text x="938.0" y="124.7" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">150mm</text>
+<g id="camera-glyph">
+<circle class="camera-dot" data-trend="unknown" cx="391.9" cy="93.3" r="3.0" fill="#2c6fbb" stroke="#233843" stroke-width="2.2" />
+</g>
+<text x="288.7" y="97.7" text-anchor="middle" font-size="16" font-weight="600" fill="#233843" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">105</text>
 </svg>

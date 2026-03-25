@@ -86,7 +86,8 @@ RECOVERY_MAX_INVERSE_ACTS = 5
 RECOVERY_OBSERVE_TIMEOUT_S = 1.0
 RESULTS_FILE_DEFAULT: str | None = None
 PLOT_FILE_DEFAULT: str | None = None
-RUN_DIR = Path("Runs - aruco")
+RUN_DIR_ARUCO = Path("Runs - aruco")
+RUN_DIR_CYAN = Path("Runs - cyan")
 BRICK_DISTANCE_SOURCE = "vision.dist"
 BRICK_DISTANCE_DEFINITION = "Camera-to-brick distance reported by vision at observation time (mm)."
 DISTANCE_DIRECTION_VERIFY_MIN_DELTA_MM = 0.5
@@ -184,9 +185,16 @@ def _cleanup_old_run_files():
     )
 
 
-def _ensure_run_dir():
+def _run_dir_for_vision(vision_mode: str | None) -> Path:
+    mode = str(vision_mode or "").strip().lower()
+    if mode == "aruco":
+        return Path(RUN_DIR_ARUCO)
+    return Path(RUN_DIR_CYAN)
+
+
+def _ensure_run_dir(*, run_dir: Path):
     ensure_run_dir(
-        run_dir=RUN_DIR,
+        run_dir=Path(run_dir),
         preserve_live_files={
             "calibrate_x_live.json",
             "calibrate_y_live.json",
@@ -1277,6 +1285,12 @@ def _exit_as_script(exit_code: int) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Minimal distance-gap duration probe with live scatter updates.")
     parser.add_argument("--trials", type=int, default=None, help="Optional primary-trial cap; default runs the full deterministic duration schedule.")
+    parser.add_argument(
+        "--repeat-trials",
+        type=int,
+        default=None,
+        help="Optional repeat-trial count; repeats run after primaries using recorded cmd/duration.",
+    )
     parser.add_argument("--speed-score", type=int, default=SPEED_SCORE_DEFAULT, help=f"Fixed drive speed score (default: {SPEED_SCORE_DEFAULT}).")
     parser.add_argument(
         "--target-dist-mm",
@@ -1293,6 +1307,11 @@ def main() -> int:
     parser.add_argument("--show-plot", action="store_true")
     parser.add_argument("--plot-path", type=str, default=PLOT_FILE_DEFAULT, help="Optional PNG file to rewrite after each trial.")
     parser.add_argument("--results-file", type=str, default=RESULTS_FILE_DEFAULT)
+    parser.add_argument(
+        "--preflight-check",
+        action="store_true",
+        help="Run a 1% movement preflight check before trials (disabled by default).",
+    )
     parser.add_argument("--reference-distance-mm", type=float, default=None)
     parser.add_argument(
         "--fast-target-budget-s",
@@ -1306,13 +1325,15 @@ def main() -> int:
         help="Continue the run even if forward/backward are both proven inverted against observed distance motion.",
     )
     args = parser.parse_args()
-    _ensure_run_dir()
+    run_dir = _run_dir_for_vision(args.vision)
+    _ensure_run_dir(run_dir=run_dir)
 
     if args.results_file is None:
-        args.results_file = str(RUN_DIR / "calibrate_dist_live.json")
+        args.results_file = str(Path(run_dir) / "calibrate_dist_live.json")
     results_path = Path(args.results_file)
     plot_path = Path(args.plot_path) if args.plot_path else None
     trials_requested = None if args.trials is None else max(1, int(args.trials))
+    repeat_trials_requested = None if args.repeat_trials is None else max(0, int(args.repeat_trials))
     speed_score = int(normalize_speed_score(args.speed_score))
     observe_samples = max(1, int(args.observe_samples))
     observe_timeout_s = max(0.2, float(args.observe_timeout_s))
@@ -1338,6 +1359,7 @@ def main() -> int:
         "trials": int(trials_planned),
         "requested_trials": None if trials_requested is None else int(trials_requested),
         "repeat_pass_enabled": True,
+        "requested_repeat_trials": None if repeat_trials_requested is None else int(repeat_trials_requested),
         "duration_ceiling_ms": int(DURATION_CEILING_MS),
         "speed_score": int(speed_score),
         "min_duration_ms": int(min_duration_ms),
@@ -1415,9 +1437,10 @@ def main() -> int:
                 timeout_s=observe_timeout_s,
             )
             if initial_pose is None:
-                status = "aborted"
-                abort_reason = "initial_target_pose_unavailable"
-                log_line("[CALIBRATE_DIST] Failed to observe initial target distance. Aborting.")
+                log_line(
+                    "[CALIBRATE_DIST] Failed to observe initial target distance. "
+                    "Proceeding with fallback target distance."
+                )
             else:
                 target_dist_mm = float(initial_pose.get("dist") or 0.0)
                 log_line(f"[CALIBRATE_DIST] Using initial observed distance as target: {target_dist_mm:.2f}mm.")
@@ -1425,6 +1448,32 @@ def main() -> int:
             target_dist_mm = float(REFERENCE_BRICK_DISTANCE_MM or PLOT_TITLE_DISTANCE_MM_DEFAULT)
         config["target_dist_mm"] = float(target_dist_mm)
         log_line(f"[CALIBRATE_DIST] target distance: dist={float(target_dist_mm):.2f}mm.")
+
+        # Optional preflight check: verify 1% speed produces detectable movement.
+        if status == "completed" and bool(args.preflight_check):
+            from .helper_calibrate import check_1pct_speed_movement
+            cmd_to_test = "f"  # Use forward as the test command for distance
+            log_line(f"[CALIBRATE_DIST] Running preflight check: sending 1% speed {cmd_to_test.upper()} to verify movement...")
+            if not check_1pct_speed_movement(
+                robot=robot,
+                vision=vision,
+                world=world,
+                cmd=cmd_to_test,
+                movement_threshold_mm=0.15,
+                sample_frames=3,
+                sample_timeout_s=1.5,
+                observe_sleep_s=0.02,
+                control_sleep_s=0.04,
+            ):
+                log_line(f"[CALIBRATE_DIST] ⚠️  PREFLIGHT FAILED: 1% speed {cmd_to_test.upper()} did not produce detectable movement!")
+                log_line("[CALIBRATE_DIST] Check: Is the robot powered on? Is 1% speed (PWM~30-40) too low for motion?")
+                log_line("[CALIBRATE_DIST] Aborting calibration because --preflight-check is enabled.")
+                status = "aborted"
+                abort_reason = "preflight_1pct_speed_no_movement"
+            else:
+                log_line(f"[CALIBRATE_DIST] ✓ Preflight passed: 1% speed produces detectable movement.")
+        elif status == "completed":
+            log_line("[CALIBRATE_DIST] Preflight check skipped (use --preflight-check to enable).")
 
         if status == "completed":
             for trial_idx, plan_step in enumerate(trial_plan, start=1):
@@ -1495,7 +1544,14 @@ def main() -> int:
                     break
 
         if status == "completed":
-            repeat_plan = [row for row in trial_rows if str(getattr(row, "phase", "primary")) != "repeat"]
+            repeat_plan_source = [row for row in trial_rows if str(getattr(row, "phase", "primary")) != "repeat"]
+            if repeat_trials_requested is None:
+                repeat_plan = list(repeat_plan_source)
+            else:
+                repeat_plan = []
+                if repeat_plan_source and int(repeat_trials_requested) > 0:
+                    for idx in range(int(repeat_trials_requested)):
+                        repeat_plan.append(repeat_plan_source[idx % len(repeat_plan_source)])
             log_line(
                 f"[CALIBRATE_DIST] Primary pass complete. Starting repeat pass over {len(repeat_plan)} recorded trial(s)."
             )

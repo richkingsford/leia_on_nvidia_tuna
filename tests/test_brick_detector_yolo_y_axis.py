@@ -153,6 +153,81 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         self.assertIsNotNone(det.current_frame)
         self.assertTrue(np.array_equal(det.current_frame[10, 30], np.array([0, 165, 255], dtype=np.uint8)))
 
+    def test_process_bricks_fallback_rejects_shape_mismatch_when_gate_enabled(self):
+        det = self._detector_stub()
+        det._hsv_enabled = False
+        det._face_shape_templates = {"full": np.array([[[0.0, 0.0]], [[1.0, 0.0]], [[1.0, 1.0]]], dtype=np.float32)}
+        det._extract_shape_contour_in_box = lambda *_args, **_kwargs: np.array(
+            [[[0.0, 0.0]], [[4.0, 0.0]], [[4.0, 4.0]], [[0.0, 4.0]]], dtype=np.float32
+        )
+        det._classify_contour_shape = lambda _cnt: (None, 0.9)
+
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        bricks = [(300, 280, 340, 320, 0.95)]
+
+        result = BrickDetector._process_bricks(det, frame, bricks)
+
+        self.assertFalse(result[0])
+        self.assertEqual(det.last_status, "shape mismatch")
+        self.assertEqual(det.last_primary_confidence, 0.0)
+
+    def test_effective_distance_height_scales_top_bottom_partials(self):
+        det = self._detector_stub()
+
+        self.assertEqual(BrickDetector._effective_distance_height_px(det, 20, None), 20.0)
+        self.assertEqual(BrickDetector._effective_distance_height_px(det, 20, "full"), 20.0)
+        self.assertEqual(BrickDetector._effective_distance_height_px(det, 20, "top_half"), 40.0)
+        self.assertEqual(BrickDetector._effective_distance_height_px(det, 20, "bottom_half"), 40.0)
+
+    def test_hsv_partial_uses_full_equivalent_height_for_distance(self):
+        det = self._detector_stub()
+        det._hsv_enabled = True
+        called_heights = []
+        det._estimate_distance = lambda h: called_heights.append(float(h)) or 200.0
+        det._refine_angle_for_primary = lambda *_args, **_kwargs: 0.0
+        det._select_center_brick = lambda hsv_bricks, _w, _h: hsv_bricks[0]
+        det._stack_flags_from_individuals = lambda *_args, **_kwargs: (False, False)
+
+        primary = {
+            "center_x": 320,
+            "center_y": 200,
+            "bbox": (300, 180, 40, 40),
+            "contour": np.array([[[300, 180]], [[340, 180]], [[340, 220]], [[300, 220]]], dtype=np.int32),
+            "rect": ((320.0, 200.0), (40.0, 40.0), 0.0),
+            "partial": True,
+            "partial_kind": "top_half",
+            "partial_label": "TOP HALF",
+        }
+        det._segment_bricks_hsv = lambda *_args, **_kwargs: [primary]
+
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        bricks = [(260, 220, 380, 360, 0.9)]
+
+        result = BrickDetector._process_bricks(det, frame, bricks)
+
+        self.assertTrue(result[0])
+        self.assertEqual(called_heights, [80.0])
+
+    def test_fallback_partial_uses_full_equivalent_height_for_distance(self):
+        det = self._detector_stub()
+        det._hsv_enabled = False
+        det._face_shape_templates = {"full": np.array([[[0.0, 0.0]], [[1.0, 0.0]], [[1.0, 1.0]]], dtype=np.float32)}
+        det._extract_shape_contour_in_box = lambda *_args, **_kwargs: np.array(
+            [[[0.0, 0.0]], [[4.0, 0.0]], [[4.0, 4.0]], [[0.0, 4.0]]], dtype=np.float32
+        )
+        det._classify_contour_shape = lambda _cnt: ("bottom_half", 0.1)
+        det._estimate_angle = lambda *_args, **_kwargs: 0.0
+        called_heights = []
+        det._estimate_distance = lambda h: called_heights.append(float(h)) or 200.0
+
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        bricks = [(300, 280, 340, 320, 0.95)]
+
+        result = BrickDetector._process_bricks(det, frame, bricks)
+
+        self.assertTrue(result[0])
+        self.assertEqual(called_heights, [80.0])
+
 
 if __name__ == "__main__":
     unittest.main()

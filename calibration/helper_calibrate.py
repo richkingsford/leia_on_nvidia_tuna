@@ -634,3 +634,119 @@ class CalibrationLivePlot:
             plt.show(block=True)
         else:
             plt.close(self._fig)
+
+
+def check_1pct_speed_movement(
+    *,
+    robot,
+    vision,
+    world,
+    cmd: str,
+    movement_threshold_mm: float = 0.15,
+    sample_frames: int = 3,
+    sample_timeout_s: float = 1.5,
+    observe_sleep_s: float = 0.02,
+    control_sleep_s: float = 0.04,
+) -> bool:
+    """
+    Preflight check: verify that 1% speed score produces detectable movement.
+    
+    Sends a single 1% speed pulse and verifies the target metric moves by at least
+    the threshold. Returns True if movement is detected, False otherwise.
+    
+    Args:
+        robot: Robot control instance
+        vision: Vision system instance with read() method
+        world: WorldModel instance
+        cmd: Command letter (e.g., 'r' for right turn)
+        movement_threshold_mm: Minimum movement to consider as success (default 0.15mm)
+        sample_frames: Number of confirmation frames needed (default 3)
+        sample_timeout_s: Timeout for collecting samples (default 1.5s)
+        observe_sleep_s: Wait time between vision reads (default 0.02s)
+        control_sleep_s: Wait time after sending motion (default 0.04s)
+    
+    Returns:
+        True if 1% speed produces detectable movement, False otherwise
+    """
+    from telemetry_process import send_robot_command_pwm
+    from telemetry_robot import StepState, speed_power_pwm_for_cmd
+    
+    # Determine which metric to measure based on command
+    cmd_lower = str(cmd or "").strip().lower()
+    if cmd_lower in ("l", "r"):
+        metric = "x_axis"
+    elif cmd_lower in ("u", "d"):
+        metric = "cam_h"
+    elif cmd_lower in ("f", "b"):
+        metric = "dist"
+    else:
+        return False
+    
+    try:
+        # Collect baseline samples (before motion)
+        baseline_vals: list[float] = []
+        time_start = time.time()
+        while len(baseline_vals) < sample_frames and (time.time() - time_start) < sample_timeout_s:
+            found, angle, dist, offset_x, conf, cam_h, above, below = vision.read()
+            world.update_vision(found, dist, angle, conf, offset_x, cam_h, above, below)
+            if found:
+                if metric == "x_axis":
+                    val = offset_x
+                elif metric == "cam_h":
+                    val = cam_h
+                else:  # dist
+                    val = dist
+                if val is not None and isinstance(val, (int, float)):
+                    baseline_vals.append(float(val))
+            time.sleep(observe_sleep_s)
+        
+        if len(baseline_vals) < sample_frames:
+            return False
+        
+        baseline = float(statistics.mean(baseline_vals))
+        
+        # Send 1% speed command
+        power, pwm, score_used, duration_model_ms = speed_power_pwm_for_cmd(cmd_lower, 1)
+        send_robot_command_pwm(
+            robot,
+            world,
+            StepState.ALIGN_BRICK,
+            cmd_lower,
+            power,
+            pwm,
+            int(duration_model_ms),
+            speed_score=score_used,
+            auto_mode=False,
+        )
+        
+        time.sleep(control_sleep_s)
+        
+        # Collect post-motion samples
+        after_vals: list[float] = []
+        time_start = time.time()
+        while len(after_vals) < sample_frames and (time.time() - time_start) < sample_timeout_s:
+            found, angle, dist, offset_x, conf, cam_h, above, below = vision.read()
+            world.update_vision(found, dist, angle, conf, offset_x, cam_h, above, below)
+            if found:
+                if metric == "x_axis":
+                    val = offset_x
+                elif metric == "cam_h":
+                    val = cam_h
+                else:  # dist
+                    val = dist
+                if val is not None and isinstance(val, (int, float)):
+                    after_vals.append(float(val))
+            time.sleep(observe_sleep_s)
+        
+        if len(after_vals) < sample_frames:
+            return False
+        
+        # Check if movement was detected
+        deltas = [abs(float(v) - float(baseline)) for v in after_vals]
+        moved_frames = int(sum(1 for d in deltas if float(d) >= float(movement_threshold_mm)))
+        
+        return bool(moved_frames >= sample_frames)
+        
+    except Exception as e:
+        print(f"[PREFLIGHT] Exception during 1% speed check: {e}")
+        return False

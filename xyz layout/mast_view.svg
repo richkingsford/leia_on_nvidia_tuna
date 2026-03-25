@@ -2,76 +2,75 @@
 <rect width="100%" height="100%" fill="#f4efe4" />
 <rect x="22" y="22" width="936" height="316" rx="24" fill="#f9f6ef" stroke="#d7d1c4" stroke-width="1.5" />
 <text x="490.0" y="52.0" text-anchor="middle" font-size="28" font-weight="900" fill="#233843">Mast View</text>
-<line x1="86.0" y1="316.0" x2="894.0" y2="316.0" stroke="#c8c2b5" stroke-width="3" stroke-linecap="round" />
-<rect x="170.0" y="144.7" width="92.0" height="171.3" fill="#63f2f7" stroke="#18494e" stroke-width="3" rx="16" />
-<text x="216.0" y="128.7" text-anchor="middle" font-size="28" font-weight="600" fill="#18494e">Supply</text>
-<text x="216.0" y="238.3" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">3</text>
-<rect x="718.0" y="258.9" width="92.0" height="57.1" fill="#c2523c" stroke="#7b2e1e" stroke-width="3" rx="16" />
-<text x="764.0" y="242.9" text-anchor="middle" font-size="28" font-weight="600" fill="#7b2e1e">Wall</text>
-<text x="764.0" y="295.4" text-anchor="middle" font-size="26" font-weight="700" fill="#ffffff">1</text>
-<circle class="mast-history-dot" data-trend="unknown" cx="544.0" cy="127.8" r="2.0" fill="#7b7668" fill-opacity="0.51" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.51" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.52" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.53" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.53" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.54" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.55" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.55" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.56" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.57" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.57" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.58" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.59" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.59" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.60" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.61" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.61" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.62" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.63" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.63" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.64" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.65" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.65" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.66" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.67" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.67" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.68" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.69" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.69" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.70" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.71" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.71" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.72" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.73" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.73" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.74" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.75" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.75" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.76" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.77" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.77" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.78" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.79" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.79" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.80" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.81" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.81" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.82" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.83" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.83" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.84" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.85" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.85" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.86" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.87" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.87" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="2.0" fill="#c59d2a" fill-opacity="0.88" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="6.0" fill="#c59d2a" fill-opacity="0.89" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="6.0" fill="#c59d2a" fill-opacity="0.89" stroke="#f9f6ef" stroke-width="2" />
-<circle class="mast-history-dot" data-trend="neutral" cx="544.0" cy="127.8" r="6.0" fill="#c59d2a" fill-opacity="0.90" stroke="#f9f6ef" stroke-width="2" />
+<rect x="170.0" y="148.0" width="92.0" height="92.0" fill="#1f4b8f" stroke="#122d57" stroke-width="3" rx="12" />
+<text x="216.0" y="134.0" text-anchor="middle" font-size="28" font-weight="600" fill="#1d2830">Supply</text>
+<line x1="86.0" y1="194.0" x2="894.0" y2="194.0" stroke="#c8c2b5" stroke-width="2.6" stroke-linecap="round" />
+<text x="76.0" y="199.0" text-anchor="end" font-size="12" font-weight="700" fill="#5d676e">0mm</text>
+<text x="76.0" y="95.5" text-anchor="end" font-size="11" font-weight="600" fill="#5d676e">+20mm</text>
+<text x="76.0" y="300.5" text-anchor="end" font-size="11" font-weight="600" fill="#5d676e">-20mm</text>
+<circle class="mast-history-dot" data-trend="unknown" cx="490.0" cy="191.3" r="2.0" fill="#7b7668" fill-opacity="0.51" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="191.3" r="2.0" fill="#c59d2a" fill-opacity="0.51" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="191.2" r="2.0" fill="#c59d2a" fill-opacity="0.52" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="191.2" r="2.0" fill="#c59d2a" fill-opacity="0.53" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="191.2" r="2.0" fill="#c59d2a" fill-opacity="0.53" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="191.2" r="2.0" fill="#c59d2a" fill-opacity="0.54" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="191.2" r="2.0" fill="#c59d2a" fill-opacity="0.55" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="191.2" r="2.0" fill="#c59d2a" fill-opacity="0.55" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="191.1" r="2.0" fill="#c59d2a" fill-opacity="0.56" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="191.1" r="2.0" fill="#c59d2a" fill-opacity="0.57" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="191.0" r="2.0" fill="#c59d2a" fill-opacity="0.57" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="191.0" r="2.0" fill="#c59d2a" fill-opacity="0.58" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="191.0" r="2.0" fill="#c59d2a" fill-opacity="0.59" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="190.9" r="2.0" fill="#c59d2a" fill-opacity="0.59" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="190.9" r="2.0" fill="#c59d2a" fill-opacity="0.60" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="190.9" r="2.0" fill="#c59d2a" fill-opacity="0.61" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="190.9" r="2.0" fill="#c59d2a" fill-opacity="0.61" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="190.9" r="2.0" fill="#c59d2a" fill-opacity="0.62" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="190.9" r="2.0" fill="#c59d2a" fill-opacity="0.63" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="190.9" r="2.0" fill="#c59d2a" fill-opacity="0.63" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="190.9" r="2.0" fill="#c59d2a" fill-opacity="0.64" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="190.9" r="2.0" fill="#c59d2a" fill-opacity="0.65" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="190.9" r="2.0" fill="#c59d2a" fill-opacity="0.65" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="190.9" r="2.0" fill="#c59d2a" fill-opacity="0.66" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="190.9" r="2.0" fill="#c59d2a" fill-opacity="0.67" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="190.7" r="2.0" fill="#c59d2a" fill-opacity="0.67" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="190.4" r="2.0" fill="#c59d2a" fill-opacity="0.68" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="190.2" r="2.0" fill="#c59d2a" fill-opacity="0.69" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="190.1" r="2.0" fill="#c59d2a" fill-opacity="0.69" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.9" r="2.0" fill="#c59d2a" fill-opacity="0.70" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.9" r="2.0" fill="#c59d2a" fill-opacity="0.71" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.8" r="2.0" fill="#c59d2a" fill-opacity="0.71" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.8" r="2.0" fill="#c59d2a" fill-opacity="0.72" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.8" r="2.0" fill="#c59d2a" fill-opacity="0.73" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.7" r="2.0" fill="#c59d2a" fill-opacity="0.73" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.8" r="2.0" fill="#c59d2a" fill-opacity="0.74" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.8" r="2.0" fill="#c59d2a" fill-opacity="0.75" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.8" r="2.0" fill="#c59d2a" fill-opacity="0.75" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.7" r="2.0" fill="#c59d2a" fill-opacity="0.76" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.6" r="2.0" fill="#c59d2a" fill-opacity="0.77" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.6" r="2.0" fill="#c59d2a" fill-opacity="0.77" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.6" r="2.0" fill="#c59d2a" fill-opacity="0.78" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.6" r="2.0" fill="#c59d2a" fill-opacity="0.79" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.6" r="2.0" fill="#c59d2a" fill-opacity="0.79" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.6" r="2.0" fill="#c59d2a" fill-opacity="0.80" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.6" r="2.0" fill="#c59d2a" fill-opacity="0.81" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.6" r="2.0" fill="#c59d2a" fill-opacity="0.81" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.6" r="2.0" fill="#c59d2a" fill-opacity="0.82" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.7" r="2.0" fill="#c59d2a" fill-opacity="0.83" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.6" r="2.0" fill="#c59d2a" fill-opacity="0.83" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.6" r="2.0" fill="#c59d2a" fill-opacity="0.84" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.6" r="2.0" fill="#c59d2a" fill-opacity="0.85" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.7" r="2.0" fill="#c59d2a" fill-opacity="0.85" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.7" r="2.0" fill="#c59d2a" fill-opacity="0.86" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.7" r="2.0" fill="#c59d2a" fill-opacity="0.87" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.5" r="2.0" fill="#c59d2a" fill-opacity="0.87" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.3" r="2.0" fill="#c59d2a" fill-opacity="0.88" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.1" r="6.0" fill="#c59d2a" fill-opacity="0.89" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="189.0" r="6.0" fill="#c59d2a" fill-opacity="0.89" stroke="#f9f6ef" stroke-width="2" />
+<circle class="mast-history-dot" data-trend="neutral" cx="490.0" cy="188.9" r="6.0" fill="#c59d2a" fill-opacity="0.90" stroke="#f9f6ef" stroke-width="2" />
 <g id="mast-history">
-<polyline class="mast-history-path" points="544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8 544.0,127.8" fill="none" stroke="#b7aea0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.85" />
+<polyline class="mast-history-path" points="490.0,191.3 490.0,191.3 490.0,191.2 490.0,191.2 490.0,191.2 490.0,191.2 490.0,191.2 490.0,191.2 490.0,191.1 490.0,191.1 490.0,191.0 490.0,191.0 490.0,191.0 490.0,190.9 490.0,190.9 490.0,190.9 490.0,190.9 490.0,190.9 490.0,190.9 490.0,190.9 490.0,190.9 490.0,190.9 490.0,190.9 490.0,190.9 490.0,190.9 490.0,190.7 490.0,190.4 490.0,190.2 490.0,190.1 490.0,189.9 490.0,189.9 490.0,189.8 490.0,189.8 490.0,189.8 490.0,189.7 490.0,189.8 490.0,189.8 490.0,189.8 490.0,189.7 490.0,189.6 490.0,189.6 490.0,189.6 490.0,189.6 490.0,189.6 490.0,189.6 490.0,189.6 490.0,189.6 490.0,189.6 490.0,189.7 490.0,189.6 490.0,189.6 490.0,189.6 490.0,189.7 490.0,189.7 490.0,189.7 490.0,189.5 490.0,189.3 490.0,189.1 490.0,189.0 490.0,188.9" fill="none" stroke="#b7aea0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.85" />
 </g>
-<circle class="mast-camera-dot" data-trend="neutral" cx="544.0" cy="127.8" r="8.0" fill="#c59d2a" stroke="#233843" stroke-width="2.2" />
-<text x="544.0" y="113.8" text-anchor="middle" font-size="14" font-weight="600" fill="#233843">y=+8mm</text>
+<circle class="mast-camera-dot" data-trend="neutral" cx="490.0" cy="188.9" r="8.0" fill="#c59d2a" stroke="#233843" stroke-width="2.2" />
+<text x="490.0" y="174.9" text-anchor="middle" font-size="14" font-weight="600" fill="#233843">y=+1mm</text>
 </svg>
