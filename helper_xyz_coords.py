@@ -1552,30 +1552,9 @@ def render_mast_svg(state: dict | None) -> str:
         f'<text x="{plot_left - 10:.1f}" y="{bottom_label_y + 4:.1f}" text-anchor="end" font-size="11" font-weight="600" fill="#5d676e">-{int(axis_extent_mm)}mm</text>'
     )
 
+    # Dots removed: only lines will be drawn for mast history.
     current_trend = "unknown"
     current_dot_color = "#2c6fbb"
-    if mast_dot_history:
-        previous_entry = None
-        history_count = len(mast_dot_history)
-        for idx, entry in enumerate(mast_dot_history):
-            trend = _mast_history_trend(previous_entry, entry)
-            color = _step_history_color(trend)
-            y_val = _coerce_float(entry.get("y_axis_mm"), None)
-            if y_val is None:
-                previous_entry = entry
-                continue
-            hx = float(camera_x)
-            hy = project_y_axis_to_y(y_val)
-            radius = _history_dot_radius(idx, history_count)
-            opacity = 0.5 + 0.4 * ((float(idx) + 1.0) / float(history_count))
-            svg_parts.append(
-                f'<circle class="mast-history-dot" data-trend="{trend}" cx="{hx:.1f}" cy="{hy:.1f}" '
-                f'r="{radius:.1f}" fill="{color}" fill-opacity="{opacity:.2f}" '
-                'stroke="#f9f6ef" stroke-width="2" />'
-            )
-            previous_entry = entry
-            current_trend = trend
-            current_dot_color = color
 
     if mast_history:
         svg_parts.append('<g id="mast-history">')
@@ -1587,22 +1566,17 @@ def render_mast_svg(state: dict | None) -> str:
         if len(history_points) >= 2:
             svg_parts.append(
                 f'<polyline class="mast-history-path" points="{_polygon_points(history_points)}" '
-                'fill="none" stroke="#b7aea0" stroke-width="2.4" stroke-linecap="round" '
+                'fill="none" stroke="#b7aea0" stroke-width="1" stroke-linecap="round" '
                 'stroke-linejoin="round" opacity="0.85" />'
             )
         svg_parts.append("</g>")
 
-    current_camera_x = float(camera_x)
-    current_camera_y = project_y_axis_to_y(current_y_axis_mm)
-    current_dot_radius = 8.0
-    svg_parts.append(
-        f'<circle class="mast-camera-dot" data-trend="{current_trend}" cx="{current_camera_x:.1f}" cy="{current_camera_y:.1f}" '
-        f'r="{current_dot_radius:.1f}" fill="{current_dot_color}" stroke="#233843" stroke-width="2.2" />'
-    )
-    if current_y_axis_mm is not None:
-        svg_parts.append(
-            f'<text x="{current_camera_x:.1f}" y="{current_camera_y - 14.0:.1f}" text-anchor="middle" font-size="14" font-weight="600" fill="#233843">y={float(current_y_axis_mm):+.0f}mm</text>'
-        )
+    # Remove current camera dot as well (no dots, only lines)
+    # If you want to keep the y label, uncomment below:
+    # if current_y_axis_mm is not None:
+    #     svg_parts.append(
+    #         f'<text x="{current_camera_x:.1f}" y="{current_camera_y - 14.0:.1f}" text-anchor="middle" font-size="14" font-weight="600" fill="#233843">y={float(current_y_axis_mm):+.0f}mm</text>'
+    #     )
     svg_parts.append("</svg>")
     return "\n".join(svg_parts)
 

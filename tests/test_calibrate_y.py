@@ -93,18 +93,18 @@ class CalibrateYTests(unittest.TestCase):
     def test_plot_color_for_cmd_separates_up_and_down(self):
         self.assertEqual(calibrate_y._plot_color_for_cmd("u"), "#1f77b4")
         self.assertEqual(calibrate_y._plot_color_for_cmd("d"), "#ff7f0e")
-        self.assertEqual(calibrate_y._plot_color_for_cmd("u", "repeat"), calibrate_y.PLOT_REPEAT_COLOR_BY_CMD["u"])
-        self.assertEqual(calibrate_y._plot_color_for_cmd("d", "repeat"), calibrate_y.PLOT_REPEAT_COLOR_BY_CMD["d"])
+        self.assertEqual(calibrate_y._plot_color_for_cmd("u", "repeat"), "#1f77b4")
+        self.assertEqual(calibrate_y._plot_color_for_cmd("d", "repeat"), "#ff7f0e")
 
     def test_plot_series_collapses_setup_and_measured_points_by_command_family(self):
         self.assertEqual(calibrate_y._plot_series_key("u", "trial"), "u")
         self.assertEqual(calibrate_y._plot_series_key("u", "reset"), "u")
-        self.assertEqual(calibrate_y._plot_series_key("u", "repeat"), "u:repeat")
+        self.assertEqual(calibrate_y._plot_series_key("u", "repeat"), "u")
         self.assertEqual(calibrate_y._plot_series_label("u", "trial"), "mast_up")
         self.assertEqual(calibrate_y._plot_series_label("u", "reset"), "mast_up")
         self.assertEqual(calibrate_y._plot_series_label("d", "reset"), "mast_down")
-        self.assertEqual(calibrate_y._plot_series_label("u", "repeat"), "Repeat up")
-        self.assertEqual(calibrate_y._plot_series_label("d", "repeat"), "Repeat down")
+        self.assertEqual(calibrate_y._plot_series_label("u", "repeat"), "mast_up")
+        self.assertEqual(calibrate_y._plot_series_label("d", "repeat"), "mast_down")
 
     def test_plot_title_text_defines_brick_distance_context(self):
         empty_title = calibrate_y._plot_title_text([])
@@ -164,6 +164,63 @@ class CalibrateYTests(unittest.TestCase):
         self.assertEqual(calibrate_y._next_cycled_duration_ms(schedule), 250)
         self.assertEqual(list(schedule), [350, 450, 250])
         self.assertEqual(calibrate_y._next_cycled_duration_ms(schedule), 350)
+
+    def test_effective_preflight_speed_score_uses_detected_minimum(self):
+        self.assertEqual(
+            calibrate_y._effective_preflight_speed_score(1, {"score_used": 3}),
+            3,
+        )
+
+    def test_effective_preflight_speed_score_falls_back_to_requested_score(self):
+        self.assertEqual(
+            calibrate_y._effective_preflight_speed_score(5, None),
+            5,
+        )
+        self.assertEqual(
+            calibrate_y._effective_preflight_speed_score(5, {"score_used": None}),
+            5,
+        )
+
+    def test_should_log_command_inversion_detail_only_on_expectation_failure(self):
+        self.assertFalse(
+            calibrate_y._should_log_command_inversion_detail(
+                logical_cmd="d",
+                wire_cmd="u",
+                raw_delta_mm=-0.63,
+                threshold_mm=0.60,
+            )
+        )
+
+    def test_trial_result_status_text_uses_useful_and_fail_labels(self):
+        with patch.object(calibrate_y, "_supports_ansi_color", return_value=False):
+            self.assertEqual(calibrate_y._trial_result_status_text(useful=True), "USEFUL")
+            self.assertEqual(calibrate_y._trial_result_status_text(useful=False), "FAIL")
+
+    def test_trial_result_label_uses_trial_wording(self):
+        self.assertEqual(
+            calibrate_y._trial_result_label(trial_idx=1, trials_planned=2),
+            "Trial 1/2",
+        )
+        self.assertEqual(
+            calibrate_y._trial_result_label(trial_idx=2, trials_planned=2),
+            "Trial 2/2",
+        )
+        self.assertTrue(
+            calibrate_y._should_log_command_inversion_detail(
+                logical_cmd="d",
+                wire_cmd="u",
+                raw_delta_mm=0.63,
+                threshold_mm=0.60,
+            )
+        )
+        self.assertTrue(
+            calibrate_y._should_log_command_inversion_detail(
+                logical_cmd="d",
+                wire_cmd="u",
+                raw_delta_mm=None,
+                threshold_mm=0.60,
+            )
+        )
 
     def test_build_payload_summarizes_observed_brick_distance(self):
         payload = calibrate_y._build_payload(
@@ -225,8 +282,6 @@ class CalibrateYTests(unittest.TestCase):
                     pre_observation_mode="primary_full",
                     post_observation_mode="primary_full",
                     post_reobserved=False,
-                    phase="repeat",
-                    source_trial=1,
                 ),
             ],
             reset_efforts=[
@@ -257,9 +312,9 @@ class CalibrateYTests(unittest.TestCase):
             status="completed",
             abort_reason=None,
         )
-        self.assertEqual(payload["summary"]["trial_count"], 1)
-        self.assertEqual(payload["summary"]["repeat_trial_count"], 1)
-        self.assertEqual(payload["summary"]["repeat_median_distance_mm"], 1.0)
+        self.assertEqual(payload["summary"]["trial_count"], 2)
+        self.assertEqual(payload["summary"]["repeat_trial_count"], 0)
+        self.assertIsNone(payload["summary"]["repeat_median_distance_mm"])
         self.assertEqual(payload["summary"]["brick_distance_min_mm"], 98.0)
         self.assertEqual(payload["summary"]["brick_distance_max_mm"], 104.0)
         self.assertEqual(payload["summary"]["brick_distance_median_mm"], 101.5)
@@ -421,7 +476,7 @@ class CalibrateYTests(unittest.TestCase):
         ) as mock_send, patch.object(
             calibrate_y,
             "_observe_pose_with_reobserve",
-            return_value=(end_pose, {"mode": "primary_full", "reobserved": False}),
+            return_value=(end_pose, {"mode": "trial_full", "reobserved": False}),
         ), patch.object(calibrate_y, "_supports_ansi_color", return_value=False):
             positioned, meta = calibrate_y._ensure_pose_within_trial_band(
                 initial_pose=start_pose,

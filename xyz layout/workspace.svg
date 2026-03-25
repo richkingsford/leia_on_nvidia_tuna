@@ -2,14 +2,14 @@
 <rect width="100%" height="100%" fill="#f4efe4" />
 <rect x="22" y="12" width="936" height="204" rx="18" fill="#f9f6ef" stroke="#d7d1c4" stroke-width="1.5" />
 <text x="490.0" y="42.0" text-anchor="middle" font-size="28" font-weight="900" fill="#233843">Bird View</text>
-<polygon points="337.2,242.0 158.5,242.0 158.5,63.4 337.2,63.4" fill="#1f4b8f" stroke="#122d57" stroke-width="4.5" />
-<text x="247.8" y="47.4" text-anchor="middle" font-size="28" font-weight="600" fill="#1d2830">Supply</text>
-<text x="247.8" y="168.7" text-anchor="middle" font-size="36" font-weight="700" fill="#ffffff">5</text>
-<line x1="353.2" y1="152.7" x2="938.0" y2="152.7" stroke="#b7aea0" stroke-width="1.6" stroke-dasharray="4 4" opacity="0.7" />
-<text x="353.2" y="142.7" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">0mm</text>
-<text x="938.0" y="142.7" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">150mm</text>
+<polygon points="337.2,254.5 158.5,254.5 158.5,75.9 337.2,75.9" fill="#1f4b8f" stroke="#122d57" stroke-width="4.5" />
+<text x="247.8" y="59.9" text-anchor="middle" font-size="28" font-weight="600" fill="#1d2830">Supply</text>
+<text x="247.8" y="181.2" text-anchor="middle" font-size="36" font-weight="700" fill="#ffffff">?</text>
+<line x1="353.2" y1="165.2" x2="938.0" y2="165.2" stroke="#b7aea0" stroke-width="1.6" stroke-dasharray="4 4" opacity="0.7" />
+<text x="353.2" y="155.2" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">0mm</text>
+<text x="938.0" y="155.2" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">150mm</text>
 <g id="camera-glyph">
-<circle class="camera-dot" data-trend="unknown" cx="382.6" cy="75.3" r="3.0" fill="#2c6fbb" stroke="#233843" stroke-width="2.2" />
+<circle class="camera-dot" data-trend="unknown" cx="375.7" cy="62.8" r="3.0" fill="#2c6fbb" stroke="#233843" stroke-width="2.2" />
 </g>
-<text x="282.1" y="90.5" text-anchor="middle" font-size="16" font-weight="600" fill="#233843" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">104</text>
+<text x="277.3" y="85.5" text-anchor="middle" font-size="16" font-weight="600" fill="#233843" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">104</text>
 </svg>

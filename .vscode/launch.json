@@ -5,7 +5,7 @@
             "name": "Python: Calibrate (Menu)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/calibrate_speed_curve.py",
+            "program": "${workspaceFolder}/helper_calibrate_speed_curve.py",
             "console": "integratedTerminal",
             "python": "${command:python.interpreterPath}",
             "env": {
@@ -16,7 +16,7 @@
             "name": "Python: Calibrate Dist (Cyan/Leia)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/calibrate_speed_curve.py",
+            "program": "${workspaceFolder}/helper_calibrate_speed_curve.py",
             "args": [
                 "--choice",
                 "dist",
@@ -41,7 +41,7 @@
             "name": "Python: Calibrate Dist Guided (Cyan)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/calibrate_speed_curve.py",
+            "program": "${workspaceFolder}/helper_calibrate_speed_curve.py",
             "args": [
                 "--choice",
                 "dist-guided",
@@ -62,7 +62,7 @@
             "name": "Python: Calibrate Y (30 trials)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/calibrate_speed_curve.py",
+            "program": "${workspaceFolder}/helper_calibrate_speed_curve.py",
             "args": [
                 "--choice",
                 "y",

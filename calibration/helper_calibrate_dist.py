@@ -1453,8 +1453,10 @@ def main() -> int:
         if status == "completed" and bool(args.preflight_check):
             from .helper_calibrate import check_1pct_speed_movement
             cmd_to_test = "f"  # Use forward as the test command for distance
-            log_line(f"[CALIBRATE_DIST] Running preflight check: sending 1% speed {cmd_to_test.upper()} to verify movement...")
-            if not check_1pct_speed_movement(
+            log_line(
+                f"[CALIBRATE_DIST] Running preflight check: probing {cmd_to_test.upper()} at fixed 250ms and escalating score until movement is detected..."
+            )
+            preflight_result = check_1pct_speed_movement(
                 robot=robot,
                 vision=vision,
                 world=world,
@@ -1464,14 +1466,22 @@ def main() -> int:
                 sample_timeout_s=1.5,
                 observe_sleep_s=0.02,
                 control_sleep_s=0.04,
-            ):
-                log_line(f"[CALIBRATE_DIST] ⚠️  PREFLIGHT FAILED: 1% speed {cmd_to_test.upper()} did not produce detectable movement!")
-                log_line("[CALIBRATE_DIST] Check: Is the robot powered on? Is 1% speed (PWM~30-40) too low for motion?")
+                duration_override_ms=250,
+                log=log_line,
+            )
+            if not preflight_result:
+                log_line(
+                    f"[CALIBRATE_DIST] ⚠️  PREFLIGHT FAILED: no tested score produced detectable {cmd_to_test.upper()} movement at 250ms!"
+                )
+                log_line("[CALIBRATE_DIST] Check: Is the robot powered on? Are drive motors stalled or distance readings unstable?")
                 log_line("[CALIBRATE_DIST] Aborting calibration because --preflight-check is enabled.")
                 status = "aborted"
-                abort_reason = "preflight_1pct_speed_no_movement"
+                abort_reason = "preflight_no_detectable_movement_at_250ms"
             else:
-                log_line(f"[CALIBRATE_DIST] ✓ Preflight passed: 1% speed produces detectable movement.")
+                log_line(
+                    f"[CALIBRATE_DIST] ✓ Preflight passed: first detectable movement was {cmd_to_test.upper()} at "
+                    f"{int(preflight_result.get('score_used') or 0)}% for {int(preflight_result.get('duration_ms') or 0)}ms."
+                )
         elif status == "completed":
             log_line("[CALIBRATE_DIST] Preflight check skipped (use --preflight-check to enable).")
 

@@ -39,7 +39,6 @@ from .helper_calibrate import (
     ensure_run_dir,
     observed_brick_distances_mm as shared_observed_brick_distances_mm,
     plot_offsets as shared_plot_offsets,
-    plot_series_phase as shared_plot_series_phase,
     trial_label_text as shared_trial_label_text,
     write_results as shared_write_results,
 )
@@ -86,16 +85,7 @@ PLOT_COLOR_BY_CMD = {
     "u": "#1f77b4",
     "d": "#ff7f0e",
 }
-PLOT_REPEAT_COLOR_BY_CMD = {
-    "u": "#00dd77",
-    "d": "#dd00dd",
-}
-PLOT_REPEAT_FAIL_COLOR_BY_CMD = {
-    "u": "#ff1493",
-    "d": "#ff69b4",
-}
-REPEAT_RESULT_ERROR_MARGIN_MM = 1.5
-PRIMARY_TRIAL_ALTERNATING_START_CMD = "d"
+TRIAL_ALTERNATING_START_CMD = "d"
 CAMERA_DIRECTION_VERIFY_MIN_DELTA_MM = 0.60
 UP_TRIAL_BAND_MIN_MM = 8.0
 UP_TRIAL_BAND_MAX_MM = 16.0
@@ -200,7 +190,7 @@ class TrialResult:
     recovery_inverse_acts: int | None = None
     pre_lite_required_frames: int | None = None
     post_lite_required_frames: int | None = None
-    phase: str = "primary"
+    phase: str = "trial"
     source_trial: int | None = None
 
 
@@ -227,7 +217,7 @@ class ResetEffort:
     pre_pose_source: str | None
     post_pose_source: str | None
     post_observation_mode: str | None
-    phase: str = "primary"
+    phase: str = "trial"
     source_trial: int | None = None
 
 
@@ -363,6 +353,18 @@ def _colorize(text: str, color_code: str) -> str:
     if not _supports_ansi_color():
         return str(text)
     return f"{str(color_code)}{str(text)}\033[0m"
+
+
+def _trial_result_status_text(*, useful: bool) -> str:
+    return _colorize("USEFUL", "\033[92m") if bool(useful) else _colorize("FAIL", "\033[91m")
+
+
+def _trial_result_label(
+    *,
+    trial_idx: int,
+    trials_planned: int,
+) -> str:
+    return f"Trial {int(trial_idx)}/{int(trials_planned)}"
 
 
 def _coerce_float(value, fallback=None):
@@ -538,7 +540,7 @@ def _observe_pose_with_reobserve(
     )
     if strict_pose is not None:
         return strict_pose, {
-            "mode": "primary_full",
+            "mode": "trial_full",
             "reobserved": False,
         }
 
@@ -717,6 +719,26 @@ def _log_command_inversion_detail(
     )
 
 
+def _should_log_command_inversion_detail(
+    *,
+    logical_cmd: str,
+    wire_cmd: str,
+    raw_delta_mm: float | None,
+    threshold_mm: float = CAMERA_DIRECTION_VERIFY_MIN_DELTA_MM,
+) -> bool:
+    logical_cmd_key = _normalize_cmd(logical_cmd, allow_auto=False)
+    wire_cmd_key = _normalize_cmd(wire_cmd, allow_auto=False)
+    if logical_cmd_key == wire_cmd_key:
+        return False
+    if raw_delta_mm is None:
+        return True
+    observed_direction = _camera_direction_from_raw_delta(float(raw_delta_mm), threshold_mm=float(threshold_mm))
+    if observed_direction is None:
+        return True
+    expected_direction = _expected_camera_direction_for_cmd(logical_cmd_key)
+    return str(observed_direction) != str(expected_direction)
+
+
 def _new_camera_direction_check_entry(cmd: str) -> dict:
     cmd_key = _normalize_cmd(cmd, allow_auto=False)
     return {
@@ -882,37 +904,18 @@ def _camera_direction_check_summary_line(check_state: dict | None) -> str | None
     )
 
 
-def _plot_series_phase(kind: str | None = None) -> str:
-    return shared_plot_series_phase(kind)
-
-
 def _plot_color_for_cmd(cmd: str, kind: str | None = None, repeat_status: str | None = None) -> str:
     cmd_key = _normalize_cmd(cmd, allow_auto=False)
-    if repeat_status == "fail":
-        return str(PLOT_REPEAT_FAIL_COLOR_BY_CMD.get(cmd_key) or "#ff1493")
-    phase = _plot_series_phase(kind)
-    if phase == "repeat":
-        return str(PLOT_REPEAT_COLOR_BY_CMD.get(cmd_key) or "#5e81ac")
     return str(PLOT_COLOR_BY_CMD.get(cmd_key) or "#4c566a")
 
 
 def _plot_series_key(cmd: str, kind: str | None = None, repeat_status: str | None = None) -> str:
     cmd_key = _normalize_cmd(cmd, allow_auto=False)
-    phase = _plot_series_phase(kind)
-    if phase == "primary":
-        return str(cmd_key)
-    if repeat_status == "fail":
-        return f"{cmd_key}:repeat_fail"
-    return f"{cmd_key}:repeat"
+    return str(cmd_key)
 
 
 def _plot_series_label(cmd: str, kind: str | None = None, repeat_status: str | None = None) -> str:
     cmd_key = _normalize_cmd(cmd, allow_auto=False)
-    phase = _plot_series_phase(kind)
-    if repeat_status == "fail":
-        return "Repeat fail" if cmd_key == "u" else "Repeat fail"
-    if phase == "repeat":
-        return "Repeat up" if cmd_key == "u" else "Repeat down"
     return _mast_label_for_cmd(cmd_key)
 
 
@@ -955,10 +958,8 @@ def _trial_label_text(
     )
 
 
-def _scheduled_primary_cmd_for_trial(trial_idx: int, *, phase: str = "primary") -> str | None:
-    if str(phase or "primary").strip().lower() == "repeat":
-        return None
-    start_cmd = _normalize_cmd(PRIMARY_TRIAL_ALTERNATING_START_CMD, allow_auto=False)
+def _scheduled_trial_cmd_for_trial(trial_idx: int) -> str:
+    start_cmd = _normalize_cmd(TRIAL_ALTERNATING_START_CMD, allow_auto=False)
     if int(trial_idx) % 2 == 1:
         return str(start_cmd)
     return str(_inverse_cmd(start_cmd) or "u")
@@ -1084,6 +1085,14 @@ def _planned_action_meta(cmd: str, score: int, duration_override_ms: int) -> dic
         "score_model": int(score_used),
         "duration_ms": int(duration_ms),
     }
+
+
+def _effective_preflight_speed_score(speed_score: int, preflight_result: dict | None) -> int:
+    score = normalize_speed_score(speed_score)
+    if not isinstance(preflight_result, dict):
+        return int(score)
+    detected_score = _coerce_int(preflight_result.get("score_used"), score)
+    return int(normalize_speed_score(detected_score))
 
 
 def _send_fixed_score_command(
@@ -1356,69 +1365,11 @@ def _ensure_pose_within_trial_band(
 
 
 def _diagnose_wrong_way_event(trial_result: TrialResult) -> None:
-    """Log comprehensive diagnostics for a wrong_way movement event."""
+    """Log a loud alert for wrong_way without verbose diagnostics."""
     log_line("")
     log_line("=" * 80)
-    log_line("⚠️  WRONG_WAY EVENT DETECTED - IMMEDIATE DIAGNOSTIC DUMP")
-    log_line("=" * 80)
-    log_line("")
-    
-    log_line("COMMAND & ACTION INFO")
-    log_line(f"  Trial: {trial_result.trial}")
-    log_line(f"  Command issued: {trial_result.cmd.upper()}")
-    log_line(f"  Command sent (wire): {trial_result.cmd_sent}")
-    log_line(f"  Duration: {trial_result.duration_ms}ms")
-    log_line(f"  Speed score: {trial_result.score_requested}%")
-    log_line(f"  PWM: {trial_result.pwm}, Power: {trial_result.power:.6f}")
-    log_line("")
-    
-    log_line("PRE-ACTION STATE")
-    log_line(f"  Y-axis position: {trial_result.pre_y_mm:+.2f}mm")
-    log_line(f"  Camera distance: {trial_result.pre_dist_mm:.1f}mm")
-    log_line(f"  Confidence: {trial_result.pre_confidence:.1f}%")
-    log_line(f"  Pose source: {trial_result.pre_pose_source}")
-    log_line(f"  Observation mode: {trial_result.pre_observation_mode}")
-    log_line(f"  Samples used: {trial_result.pre_samples_used}")
-    log_line("")
-    
-    log_line("POST-ACTION STATE")
-    log_line(f"  Y-axis position: {trial_result.post_y_mm:+.2f}mm")
-    log_line(f"  Camera distance: {trial_result.post_dist_mm:.1f}mm")
-    log_line(f"  Confidence: {trial_result.post_confidence:.1f}%")
-    log_line(f"  Pose source: {trial_result.post_pose_source}")
-    log_line(f"  Observation mode: {trial_result.post_observation_mode}")
-    log_line(f"  Samples used: {trial_result.post_samples_used}")
-    log_line(f"  Reobserved: {trial_result.post_reobserved}")
-    if trial_result.lost_visibility:
-        log_line(f"  Lost visibility: YES (recovered={trial_result.recovered_visibility}, mode={trial_result.recovery_mode})")
-    log_line("")
-    
-    log_line("MOVEMENT METRICS")
-    log_line(f"  Raw delta (post - pre): {trial_result.raw_delta_mm:+.2f}mm")
-    log_line(f"  Signed command delta: {trial_result.signed_cmd_delta_mm:+.2f}mm")
-    log_line(f"  Absolute movement: {trial_result.cmd_delta_mm:.2f}mm")
-    log_line(f"  Direction: {trial_result.cmd.upper()} command expected {'positive' if trial_result.cmd == 'u' else 'negative'} delta")
-    log_line(f"  Actual direction: {'POSITIVE' if trial_result.signed_cmd_delta_mm > 0 else 'NEGATIVE'}")
-    log_line(f"  ❌ MISMATCH: Expected {'↑' if trial_result.cmd == 'u' else '↓'}, got {'↑' if trial_result.signed_cmd_delta_mm > 0 else '↓'}")
-    log_line("")
-    
-    log_line("LITE GATE REQUIREMENTS")
-    log_line(f"  Pre-action lite required frames: {trial_result.pre_lite_required_frames}")
-    log_line(f"  Post-action lite required frames: {trial_result.post_lite_required_frames}")
-    log_line("")
-    
-    log_line("POSSIBLE ROOT CAUSES")
-    log_line("  1. Motor polarity inverted for the 'd' command")
-    log_line("  2. Command mapping is reversed (hotkey 'd' != automation 'd')")
-    log_line("  3. Hardware feedback is inverted")
-    log_line("  4. Vision pose is inaccurate or inconsistent")
-    log_line("")
-    
-    log_line("ACTION REQUIRED")
-    log_line("  → Check motor wiring and polarity for y-axis mast")
-    log_line("  → Verify command byte values in telemetry_robot.py")
-    log_line("  → Compare hotkey command codes vs automation command codes")
-    log_line("  → Re-run calibration after fix")
+    log_line("⚠️  WRONG_WAY EVENT DETECTED")
+    log_line("⚠️  ALERT ONLY: detailed diagnostic dump intentionally suppressed")
     log_line("=" * 80)
     log_line("")
 
@@ -1484,10 +1435,9 @@ def _run_trial_action(
     plotter=None,
     initial_pre_pose: dict | None = None,
     initial_pre_obs_meta: dict | None = None,
-    compare_to_distance: float | None = None,
 ) -> tuple[TrialResult | None, str | None]:
-    phase_key = str(phase or "primary")
-    abort_prefix = "repeat_" if phase_key == "repeat" else ""
+    phase_key = str(phase or "trial")
+    abort_prefix = ""
 
     pre_pose = dict(initial_pre_pose) if isinstance(initial_pre_pose, dict) else None
     pre_obs_meta = dict(initial_pre_obs_meta) if isinstance(initial_pre_obs_meta, dict) else None
@@ -1598,7 +1548,12 @@ def _run_trial_action(
         raw_delta_mm=raw_delta_mm,
     )
     cmd_sent_effective = str(action_meta.get("cmd_sent") or cmd)
-    if str(cmd_sent_effective).strip().lower() != str(cmd).strip().lower():
+    if _should_log_command_inversion_detail(
+        logical_cmd=str(cmd),
+        wire_cmd=str(cmd_sent_effective),
+        raw_delta_mm=float(raw_delta_mm),
+        threshold_mm=float(CAMERA_DIRECTION_VERIFY_MIN_DELTA_MM),
+    ):
         _log_command_inversion_detail(
             prefix="[CALIBRATE_Y] ⚠️  Command inversion detail:",
             trial_label=trial_label,
@@ -1646,27 +1601,16 @@ def _run_trial_action(
         source_trial=_coerce_int(source_trial_value),
     )
 
+    useful_trial = not bool(wrong_way)
     log_line(
         "[CALIBRATE_Y] "
-        f"{trial_label}: cmd={cmd.upper()} score={int(setup_score)}% "
+        f"{_trial_result_status_text(useful=useful_trial)} "
+        f"{_trial_result_label(trial_idx=trial_idx, trials_planned=trials_planned)}: "
+        f"cmd={cmd.upper()} score={int(setup_score)}% "
         f"duration={int(duration_used_ms or 0)}ms start_y={pre_y_mm:+.2f}mm end_y={post_y_mm:+.2f}mm "
         f"distance={cmd_delta_mm:.2f}mm signed={signed_cmd_delta_mm:+.2f}mm "
-        f"wrong_way={bool(wrong_way)} raw_delta={raw_delta_mm:+.2f}mm "
-        f"obs={row.pre_observation_mode}->{row.post_observation_mode} "
-        f"recovered={bool(row.recovered_visibility)}"
+        f"wrong_way={bool(wrong_way)} raw_delta={raw_delta_mm:+.2f}mm"
     )
-
-    repeat_status = None
-    if phase_key == "repeat" and compare_to_distance is not None:
-        delta_from_source = abs(float(cmd_delta_mm) - float(compare_to_distance))
-        if delta_from_source > REPEAT_RESULT_ERROR_MARGIN_MM:
-            repeat_status = "fail"
-            log_line(
-                f"[CALIBRATE_Y] {trial_label}: repeat result differs by {delta_from_source:.2f}mm "
-                f"(original: {compare_to_distance:.2f}mm, repeat: {cmd_delta_mm:.2f}mm, margin: ±{REPEAT_RESULT_ERROR_MARGIN_MM}mm)"
-            )
-        else:
-            repeat_status = "success"
 
     if plotter is not None and not bool(wrong_way):
         plotter.add_point(
@@ -1678,7 +1622,6 @@ def _run_trial_action(
             pre_brick_distance_mm=_coerce_finite_float(pre_pose.get("dist")),
             post_brick_distance_mm=_coerce_finite_float(post_pose.get("dist")),
             annotation_label=None,
-            repeat_status=repeat_status,
         )
     return row, None
 
@@ -1725,7 +1668,6 @@ class LivePlot:
         pre_brick_distance_mm: float | None = None,
         post_brick_distance_mm: float | None = None,
         annotation_label: str | None = None,
-        repeat_status: str | None = None,
     ) -> None:
         self._plot.add_point(
             duration_ms=duration_ms,
@@ -1736,7 +1678,6 @@ class LivePlot:
             pre_brick_distance_mm=pre_brick_distance_mm,
             post_brick_distance_mm=post_brick_distance_mm,
             annotation_label=annotation_label,
-            repeat_status=repeat_status,
         )
 
     def finish(self) -> None:
@@ -1798,12 +1739,8 @@ def main() -> int:
         help="Optional trial cap; default runs the full sectioned duration schedule.",
     )
     parser.add_argument(
-        "--repeat-trials",
-        type=int,
-        default=None,
-        help="Optional repeat-trial count; repeats run after primaries using recorded cmd/duration.",
+        "--speed-score", type=int, default=1, help="Fixed y-axis speed score (default: 1)."
     )
-    parser.add_argument("--speed-score", type=int, default=1, help="Fixed y-axis speed score (default: 1).")
     parser.add_argument(
         "--cmd",
         type=str,
@@ -1878,9 +1815,9 @@ def main() -> int:
         return 2
 
     trials_requested = None if args.trials is None else max(1, int(args.trials))
-    repeat_trials_requested = None if args.repeat_trials is None else max(0, int(args.repeat_trials))
     trial_mode = str(args.trial_mode)
     speed_score = normalize_speed_score(args.speed_score)
+    requested_speed_score = int(speed_score)
     center_y_mm = float(args.center_y_mm)
     auto_deadband_mm = abs(float(args.auto_deadband_mm))
     min_duration_ms = max(1, int(args.min_duration_ms))
@@ -1940,10 +1877,10 @@ def main() -> int:
         "trial_mode": str(trial_mode),
         "trials": int(trials_planned),
         "requested_trials": None if trials_requested is None else int(trials_requested),
-        "repeat_pass_enabled": True,
-        "requested_repeat_trials": None if repeat_trials_requested is None else int(repeat_trials_requested),
         "duration_ceiling_ms": int(duration_ceiling_ms),
         "speed_score": int(speed_score),
+        "requested_speed_score": int(requested_speed_score),
+        "speed_score_source": "arg",
         "cmd": str(cmd_mode),
         "center_y_mm": float(center_y_mm),
         "auto_deadband_mm": float(auto_deadband_mm),
@@ -1964,8 +1901,8 @@ def main() -> int:
             "u": "down",
             "d": "up",
         },
-        "primary_trial_cmd_schedule": "alternating",
-        "primary_trial_cmd_start": str(_normalize_cmd(PRIMARY_TRIAL_ALTERNATING_START_CMD, allow_auto=False)).upper(),
+        "trial_cmd_schedule": "alternating",
+        "trial_cmd_start": str(_normalize_cmd(TRIAL_ALTERNATING_START_CMD, allow_auto=False)).upper(),
         "y_axis_center_target_mm": float(center_y_mm),
         "seed": args.seed,
         "plot_path": str(plot_path) if plot_path is not None else None,
@@ -1988,10 +1925,6 @@ def main() -> int:
         f"samples_per_section={int(DURATION_SAMPLES_PER_SECTION_DEFAULT)}"
     )
     log_line(
-        f"[CALIBRATE_Y] repeat_pass=enabled; repeats are deferred until all {int(trials_planned)} "
-        f"primary trial(s) finish."
-    )
-    log_line(
         f"[CALIBRATE_Y] y-axis motion sign: {_mast_label_for_cmd(_y_cmd_for_positive_motion())} increases y_axis, "
         f"{_mast_label_for_cmd(_y_cmd_for_negative_motion())} decreases y_axis."
     )
@@ -2001,9 +1934,9 @@ def main() -> int:
         f"mast_down should move brick UP on camera (threshold {float(CAMERA_DIRECTION_VERIFY_MIN_DELTA_MM):.2f}mm)."
     )
     log_line(
-        f"[CALIBRATE_Y] primary trial command schedule: alternating "
-        f"{_mast_label_for_cmd(PRIMARY_TRIAL_ALTERNATING_START_CMD)}, "
-        f"{_mast_label_for_cmd(_inverse_cmd(PRIMARY_TRIAL_ALTERNATING_START_CMD) or 'u')}."
+        f"[CALIBRATE_Y] trial command schedule: alternating "
+        f"{_mast_label_for_cmd(TRIAL_ALTERNATING_START_CMD)}, "
+        f"{_mast_label_for_cmd(_inverse_cmd(TRIAL_ALTERNATING_START_CMD) or 'u')}."
     )
     if Y_AXIS_INVERT:
         log_line("[CALIBRATE_Y] ⚠️  Y-AXIS INVERSION ACTIVE: u/d commands are inverted")
@@ -2102,8 +2035,10 @@ def main() -> int:
         # Preflight check: verify 1% speed produces detectable movement before any trial.
         from .helper_calibrate import check_1pct_speed_movement
         cmd_to_test = "u"  # Use lift (up) as the test command for Y-axis
-        log_line(f"[CALIBRATE_Y] Running preflight check: sending 1% speed {cmd_to_test.upper()} to verify movement...")
-        if not check_1pct_speed_movement(
+        log_line(
+            f"[CALIBRATE_Y] Running preflight check: probing {cmd_to_test.upper()} at fixed 250ms and escalating score until movement is detected..."
+        )
+        preflight_result = check_1pct_speed_movement(
             robot=robot,
             vision=vision,
             world=world,
@@ -2113,16 +2048,44 @@ def main() -> int:
             sample_timeout_s=1.5,
             observe_sleep_s=0.02,
             control_sleep_s=0.04,
-        ):
-            log_line(f"[CALIBRATE_Y] ⚠️  PREFLIGHT FAILED: 1% speed {cmd_to_test.upper()} did not produce detectable movement!")
-            log_line("[CALIBRATE_Y] Check: Is the robot powered on? Is 1% speed (PWM~30-40) too low for motion?")
+            duration_override_ms=250,
+            log=log_line,
+        )
+        if not preflight_result:
+            log_line(
+                f"[CALIBRATE_Y] ⚠️  PREFLIGHT FAILED: no tested score produced detectable {cmd_to_test.upper()} movement at 250ms."
+            )
+            config["preflight_result"] = {
+                "passed": False,
+                "cmd": str(cmd_to_test),
+                "duration_ms": 250,
+            }
+            log_line("[CALIBRATE_Y] Check: Is the robot powered on? Is the mast stalled or the visibility feed too noisy?")
             log_line("[CALIBRATE_Y] Aborting calibration to prevent wasted trials at ineffective duration.")
             status = "aborted"
-            abort_reason = "preflight_1pct_speed_no_movement"
+            abort_reason = "preflight_no_detectable_movement_at_250ms"
         else:
-            log_line(f"[CALIBRATE_Y] ✓ Preflight passed: 1% speed produces detectable movement.")
-            _, _, _, preflight_model_ms = speed_power_pwm_for_cmd(cmd_to_test, 1)
-            min_duration_ms = max(min_duration_ms, int(preflight_model_ms))
+            detected_speed_score = _effective_preflight_speed_score(speed_score, preflight_result)
+            config["preflight_result"] = {
+                "passed": True,
+                "cmd": str(preflight_result.get("cmd") or cmd_to_test),
+                "duration_ms": int(preflight_result.get("duration_ms") or 250),
+                "score_used": int(preflight_result.get("score_used") or detected_speed_score),
+                "attempt_idx": _coerce_int(preflight_result.get("attempt_idx")),
+                "attempt_count": _coerce_int(preflight_result.get("attempt_count")),
+            }
+            log_line(
+                f"[CALIBRATE_Y] ✓ Preflight passed: first detectable movement was {cmd_to_test.upper()} at "
+                f"{int(preflight_result.get('score_used') or 0)}% for {int(preflight_result.get('duration_ms') or 0)}ms."
+            )
+            if int(detected_speed_score) != int(speed_score):
+                log_line(
+                    f"[CALIBRATE_Y] Updating active calibration speed from {int(speed_score)}% to detected preflight minimum {int(detected_speed_score)}%."
+                )
+            speed_score = int(detected_speed_score)
+            config["speed_score"] = int(speed_score)
+            config["speed_score_source"] = "preflight_min_detectable"
+            min_duration_ms = max(min_duration_ms, int(preflight_result.get("duration_ms") or 250))
             max_duration_ms = max(min_duration_ms, max_duration_ms)
             durations_ms = _build_duration_schedule(
                 trials=trials_requested,
@@ -2131,7 +2094,10 @@ def main() -> int:
                 rng=rng,
             )
             trials_planned = len(durations_ms)
-            log_line(f"[CALIBRATE_Y] Schedule rebuilt from preflight min: {int(min_duration_ms)}ms → {int(max_duration_ms)}ms ({int(trials_planned)} trials)")
+            log_line(
+                f"[CALIBRATE_Y] Schedule rebuilt from preflight min: {int(min_duration_ms)}ms → {int(max_duration_ms)}ms "
+                f"({int(trials_planned)} trials)"
+            )
 
         if status == "aborted":
             pass
@@ -2189,7 +2155,7 @@ def main() -> int:
                         ]
                     )
                 else:
-                    scheduled_trial_cmd = _scheduled_primary_cmd_for_trial(trial_idx, phase="primary")
+                    scheduled_trial_cmd = _scheduled_trial_cmd_for_trial(trial_idx)
                     if scheduled_trial_cmd is not None:
                         cmd = str(scheduled_trial_cmd)
                         log_line(
@@ -2240,7 +2206,7 @@ def main() -> int:
                     trial_label=trial_label,
                     cmd=str(cmd),
                     duration_ms=int(duration_ms),
-                    phase="primary",
+                    phase="trial",
                     source_trial=trial_idx,
                     action_step="CALIBRATE_Y",
                     plot_kind="trial",
@@ -2305,66 +2271,6 @@ def main() -> int:
                     ),
                 )
 
-        if status == "completed" and trial_mode == "observation":
-            repeat_plan_source = [row for row in trial_rows if str(getattr(row, "phase", "primary")) != "repeat"]
-            if repeat_trials_requested is None:
-                repeat_plan = list(repeat_plan_source)
-            else:
-                repeat_plan = []
-                if repeat_plan_source and int(repeat_trials_requested) > 0:
-                    for idx in range(int(repeat_trials_requested)):
-                        repeat_plan.append(repeat_plan_source[idx % len(repeat_plan_source)])
-            log_line(
-                f"[CALIBRATE_Y] Primary pass complete. Starting repeat pass over "
-                f"{len(repeat_plan)} recorded trial(s)."
-            )
-            for repeat_idx, source_row in enumerate(repeat_plan, start=1):
-                repeat_label = _trial_label_text(
-                    repeat_idx,
-                    len(repeat_plan),
-                    phase="repeat",
-                    source_trial=_coerce_int(source_row.source_trial, source_row.trial),
-                )
-                repeat_row, repeat_abort_reason = _run_trial_action(
-                    trial_idx=repeat_idx,
-                    trials_planned=len(repeat_plan),
-                    trial_label=repeat_label,
-                    cmd=str(source_row.cmd),
-                    duration_ms=int(source_row.duration_ms),
-                    phase="repeat",
-                    source_trial=_coerce_int(source_row.source_trial, source_row.trial),
-                    action_step="CALIBRATE_Y_REPEAT",
-                    plot_kind="repeat",
-                    vision=vision,
-                    world=world,
-                    robot=robot,
-                    recent_acts=recent_acts,
-                    setup_score=int(speed_score),
-                    center_target_y_mm=float(center_y_mm),
-                    observe_samples=observe_samples,
-                    observe_timeout_s=observe_timeout_s,
-                    post_act_settle_s=post_act_settle_s,
-                    camera_direction_check=camera_direction_check,
-                    plotter=plotter,
-                    compare_to_distance=float(source_row.cmd_delta_mm),
-                )
-                if repeat_row is None:
-                    status = "aborted"
-                    abort_reason = str(repeat_abort_reason or f"repeat_trial_failed_{repeat_idx}")
-                    break
-                trial_rows.append(repeat_row)
-                _write_results(
-                    results_path,
-                    _build_payload(
-                        config=config,
-                        durations_ms=durations_ms,
-                        trials=trial_rows,
-                        reset_efforts=reset_rows,
-                        camera_direction_check=camera_direction_check,
-                        status=status,
-                        abort_reason=abort_reason,
-                    ),
-                )
     except KeyboardInterrupt:
         status = "interrupted"
         abort_reason = "keyboard_interrupt"

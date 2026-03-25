@@ -23,6 +23,32 @@ RUN_FOLDERS_DEFAULT = (
     Path("Runs - aruco"),
     Path("Runs - cyan"),
 )
+PREFLIGHT_DURATION_MS = 250
+PREFLIGHT_SCORE_CANDIDATES = (
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    8,
+    10,
+    12,
+    15,
+    18,
+    22,
+    26,
+    30,
+    35,
+    40,
+    45,
+    50,
+    60,
+    70,
+    80,
+    90,
+    100,
+)
 
 
 def cleanup_old_run_files(
@@ -647,12 +673,16 @@ def check_1pct_speed_movement(
     sample_timeout_s: float = 1.5,
     observe_sleep_s: float = 0.02,
     control_sleep_s: float = 0.04,
-) -> bool:
+    score_candidates: Sequence[int] | None = None,
+    duration_override_ms: int = PREFLIGHT_DURATION_MS,
+    log: Callable[[str], None] | None = None,
+) -> dict | None:
     """
-    Preflight check: verify that 1% speed score produces detectable movement.
-    
-    Sends a single 1% speed pulse and verifies the target metric moves by at least
-    the threshold. Returns True if movement is detected, False otherwise.
+    Preflight check: verify that a fixed-duration low-power pulse produces detectable
+    movement, escalating score until the first successful act.
+
+    The probe keeps duration fixed and dials power upward so the caller can learn the
+    smallest score that produces visible motion without conflating power with time.
     
     Args:
         robot: Robot control instance
@@ -664,12 +694,15 @@ def check_1pct_speed_movement(
         sample_timeout_s: Timeout for collecting samples (default 1.5s)
         observe_sleep_s: Wait time between vision reads (default 0.02s)
         control_sleep_s: Wait time after sending motion (default 0.04s)
-    
+        score_candidates: Ordered speed-score candidates to try from weakest to strongest
+        duration_override_ms: Fixed command duration for every preflight attempt
+        log: Optional logger used for per-attempt operator messages
+
     Returns:
-        True if 1% speed produces detectable movement, False otherwise
+        Metadata for the first successful attempt, or None if no candidate moved enough
     """
     from telemetry_process import send_robot_command_pwm
-    from telemetry_robot import StepState, speed_power_pwm_for_cmd
+    from telemetry_robot import StepState, normalize_speed_score, speed_power_pwm_for_cmd
     
     # Determine which metric to measure based on command
     cmd_lower = str(cmd or "").strip().lower()
@@ -680,73 +713,119 @@ def check_1pct_speed_movement(
     elif cmd_lower in ("f", "b"):
         metric = "dist"
     else:
-        return False
+        return None
+
+    duration_ms = max(1, int(coerce_int(duration_override_ms, PREFLIGHT_DURATION_MS) or PREFLIGHT_DURATION_MS))
+    candidates_raw = tuple(score_candidates or PREFLIGHT_SCORE_CANDIDATES)
+    candidates: list[int] = []
+    seen_scores: set[int] = set()
+    for value in candidates_raw:
+        score = int(normalize_speed_score(value))
+        if score in seen_scores:
+            continue
+        seen_scores.add(score)
+        candidates.append(score)
+    if not candidates:
+        candidates = [1]
+
+    def _metric_value(*, dist, offset_x, cam_h):
+        if metric == "x_axis":
+            return offset_x
+        if metric == "cam_h":
+            return cam_h
+        return dist
+
+    log_fn = log if callable(log) else None
     
     try:
-        # Collect baseline samples (before motion)
-        baseline_vals: list[float] = []
-        time_start = time.time()
-        while len(baseline_vals) < sample_frames and (time.time() - time_start) < sample_timeout_s:
-            found, angle, dist, offset_x, conf, cam_h, above, below = vision.read()
-            world.update_vision(found, dist, angle, conf, offset_x, cam_h, above, below)
-            if found:
-                if metric == "x_axis":
-                    val = offset_x
-                elif metric == "cam_h":
-                    val = cam_h
-                else:  # dist
-                    val = dist
-                if val is not None and isinstance(val, (int, float)):
-                    baseline_vals.append(float(val))
-            time.sleep(observe_sleep_s)
-        
-        if len(baseline_vals) < sample_frames:
-            return False
-        
-        baseline = float(statistics.mean(baseline_vals))
-        
-        # Send 1% speed command
-        power, pwm, score_used, duration_model_ms = speed_power_pwm_for_cmd(cmd_lower, 1)
-        send_robot_command_pwm(
-            robot,
-            world,
-            StepState.ALIGN_BRICK,
-            cmd_lower,
-            power,
-            pwm,
-            int(duration_model_ms),
-            speed_score=score_used,
-            auto_mode=False,
-        )
-        
-        time.sleep(control_sleep_s)
-        
-        # Collect post-motion samples
-        after_vals: list[float] = []
-        time_start = time.time()
-        while len(after_vals) < sample_frames and (time.time() - time_start) < sample_timeout_s:
-            found, angle, dist, offset_x, conf, cam_h, above, below = vision.read()
-            world.update_vision(found, dist, angle, conf, offset_x, cam_h, above, below)
-            if found:
-                if metric == "x_axis":
-                    val = offset_x
-                elif metric == "cam_h":
-                    val = cam_h
-                else:  # dist
-                    val = dist
-                if val is not None and isinstance(val, (int, float)):
-                    after_vals.append(float(val))
-            time.sleep(observe_sleep_s)
-        
-        if len(after_vals) < sample_frames:
-            return False
-        
-        # Check if movement was detected
-        deltas = [abs(float(v) - float(baseline)) for v in after_vals]
-        moved_frames = int(sum(1 for d in deltas if float(d) >= float(movement_threshold_mm)))
-        
-        return bool(moved_frames >= sample_frames)
-        
+        for attempt_idx, score in enumerate(candidates, start=1):
+            baseline_vals: list[float] = []
+            time_start = time.time()
+            while len(baseline_vals) < sample_frames and (time.time() - time_start) < sample_timeout_s:
+                found, angle, dist, offset_x, conf, cam_h, above, below = vision.read()
+                world.update_vision(found, dist, angle, conf, offset_x, cam_h, above, below)
+                if found:
+                    val = _metric_value(dist=dist, offset_x=offset_x, cam_h=cam_h)
+                    if val is not None and isinstance(val, (int, float)):
+                        baseline_vals.append(float(val))
+                time.sleep(observe_sleep_s)
+
+            if len(baseline_vals) < sample_frames:
+                if log_fn is not None:
+                    log_fn(
+                        f"[PREFLIGHT] Attempt {int(attempt_idx)}/{int(len(candidates))}: insufficient baseline samples "
+                        f"for {str(cmd_lower).upper()} at {int(score)}% ({len(baseline_vals)}/{int(sample_frames)})."
+                    )
+                continue
+
+            baseline = float(statistics.mean(baseline_vals))
+            power, pwm, score_used, _duration_model_ms = speed_power_pwm_for_cmd(cmd_lower, score)
+            if log_fn is not None:
+                log_fn(
+                    f"[PREFLIGHT] Attempt {int(attempt_idx)}/{int(len(candidates))}: "
+                    f"{str(cmd_lower).upper()} score={int(score_used)}% pwm={int(pwm)} duration={int(duration_ms)}ms."
+                )
+            send_robot_command_pwm(
+                robot,
+                world,
+                StepState.ALIGN_BRICK,
+                cmd_lower,
+                power,
+                pwm,
+                int(duration_ms),
+                speed_score=score_used,
+                auto_mode=False,
+            )
+
+            time.sleep(control_sleep_s)
+
+            after_vals: list[float] = []
+            time_start = time.time()
+            while len(after_vals) < sample_frames and (time.time() - time_start) < sample_timeout_s:
+                found, angle, dist, offset_x, conf, cam_h, above, below = vision.read()
+                world.update_vision(found, dist, angle, conf, offset_x, cam_h, above, below)
+                if found:
+                    val = _metric_value(dist=dist, offset_x=offset_x, cam_h=cam_h)
+                    if val is not None and isinstance(val, (int, float)):
+                        after_vals.append(float(val))
+                time.sleep(observe_sleep_s)
+
+            if len(after_vals) < sample_frames:
+                if log_fn is not None:
+                    log_fn(
+                        f"[PREFLIGHT] Attempt {int(attempt_idx)}/{int(len(candidates))}: insufficient post-act samples "
+                        f"for {str(cmd_lower).upper()} at {int(score_used)}% ({len(after_vals)}/{int(sample_frames)})."
+                    )
+                continue
+
+            deltas = [abs(float(v) - float(baseline)) for v in after_vals]
+            moved_frames = int(sum(1 for d in deltas if float(d) >= float(movement_threshold_mm)))
+            if moved_frames >= sample_frames:
+                return {
+                    "cmd": str(cmd_lower),
+                    "metric": str(metric),
+                    "score_used": int(score_used),
+                    "power": float(power),
+                    "pwm": int(pwm),
+                    "duration_ms": int(duration_ms),
+                    "baseline": float(baseline),
+                    "after_values": list(after_vals),
+                    "deltas": list(deltas),
+                    "moved_frames": int(moved_frames),
+                    "sample_frames": int(sample_frames),
+                    "attempt_idx": int(attempt_idx),
+                    "attempt_count": int(len(candidates)),
+                }
+
+            if log_fn is not None:
+                max_delta = max(deltas) if deltas else 0.0
+                log_fn(
+                    f"[PREFLIGHT] No detectable movement at {int(score_used)}% after {int(duration_ms)}ms "
+                    f"(max delta {float(max_delta):.3f}mm; threshold {float(movement_threshold_mm):.3f}mm)."
+                )
+
+        return None
+
     except Exception as e:
         print(f"[PREFLIGHT] Exception during 1% speed check: {e}")
-        return False
+        return None
