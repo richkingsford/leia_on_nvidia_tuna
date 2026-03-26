@@ -59,6 +59,10 @@ MAST_SVG_HEIGHT = 360
 MAST_VIEW_MIN_MM = 0.0
 MAST_VIEW_MAX_MM = 20.0
 MAST_Y_AXIS_EXTENT_MM = 20.0
+MAST_HISTORY_LINE_CURRENT = {"recency": "current", "stroke": "#0b3d91", "stroke_width": "1"}
+MAST_HISTORY_LINE_PREVIOUS = {"recency": "n-1", "stroke": "#2563eb", "stroke_width": "1"}
+MAST_HISTORY_LINE_PREVIOUS_2 = {"recency": "n-2", "stroke": "#63d7ff", "stroke_width": "1"}
+MAST_HISTORY_LINE_OLDER = {"recency": "older", "stroke": "#d3d7dd", "stroke_width": "1"}
 _PROCESS_MODEL_CACHE = {"mtime_ns": None, "payload": None}
 
 
@@ -1227,6 +1231,38 @@ def _mast_history_trend(previous_entry: dict | None, entry: dict) -> str:
     return "neutral"
 
 
+def _mast_history_line_style(segment_from_end: int) -> dict:
+    if int(segment_from_end) <= 0:
+        return dict(MAST_HISTORY_LINE_CURRENT)
+    if int(segment_from_end) == 1:
+        return dict(MAST_HISTORY_LINE_PREVIOUS)
+    if int(segment_from_end) == 2:
+        return dict(MAST_HISTORY_LINE_PREVIOUS_2)
+    return dict(MAST_HISTORY_LINE_OLDER)
+
+
+def _mast_history_screen_points(
+    y_values: list[float],
+    *,
+    history_left_x: float,
+    history_right_x: float,
+    project_y,
+) -> list[tuple[float, float]]:
+    if not y_values:
+        return []
+    if len(y_values) == 1:
+        return [(float(history_left_x), float(project_y(y_values[0])))]
+    span_x = max(1.0, float(history_right_x) - float(history_left_x))
+    step_x = float(span_x) / float(len(y_values) - 1)
+    return [
+        (
+            float(history_right_x) - float(step_x) * float(idx),
+            float(project_y(value)),
+        )
+        for idx, value in enumerate(y_values)
+    ]
+
+
 def render_workspace_svg(state: dict | None) -> str:
     snapshot = _normalized_render_snapshot(state)
     project, view_project, scale = _project_fn(snapshot)
@@ -1473,7 +1509,6 @@ def render_workspace_svg(state: dict | None) -> str:
 def render_mast_svg(state: dict | None) -> str:
     snapshot = _normalized_render_snapshot(state)
     mast_history = _current_step_mast_history(snapshot)
-    mast_dot_history = _all_mast_history(snapshot)
     active_target = snapshot.get("active_target") or {}
     active_name = str(active_target.get("object_name") or "").strip().lower()
     objects = snapshot.get("objects") or {}
@@ -1497,10 +1532,12 @@ def render_mast_svg(state: dict | None) -> str:
     plot_bottom = float(MAST_SVG_HEIGHT) - 44.0
     plot_height = max(1.0, plot_bottom - plot_top)
     stack_x = 216.0
-    camera_x = float(SVG_WIDTH) * 0.5
     stack_size_px = 92.0
     zero_y = plot_top + (plot_height * 0.5)
     axis_extent_mm = max(1.0, float(MAST_Y_AXIS_EXTENT_MM))
+    stack_right_x = float(stack_x) + (float(stack_size_px) * 0.5)
+    history_left_x = max(plot_left + 18.0, stack_right_x + 10.0)
+    history_right_x = plot_right - 24.0
 
     y_axis_values = [
         float(_coerce_float(entry.get("y_axis_mm"), 0.0) or 0.0)
@@ -1530,6 +1567,7 @@ def render_mast_svg(state: dict | None) -> str:
     stack_stroke = "#122d57" if show_stack == "brick_supply" else "#7d241b"
     stack_label = "Supply" if show_stack == "brick_supply" else "Wall"
     square_top = float(zero_y) - (stack_size_px * 0.5)
+    zero_guide_right_x = max(plot_left + 24.0, stack_x - (stack_size_px * 0.5) - 8.0)
     svg_parts.append(
         f'<rect x="{stack_x - stack_size_px * 0.5:.1f}" y="{square_top:.1f}" width="{stack_size_px:.1f}" height="{stack_size_px:.1f}" '
         f'fill="{stack_fill}" stroke="{stack_stroke}" stroke-width="3" rx="12" />'
@@ -1538,7 +1576,9 @@ def render_mast_svg(state: dict | None) -> str:
         f'<text x="{stack_x:.1f}" y="{square_top - 14.0:.1f}" text-anchor="middle" font-size="28" font-weight="600" fill="#1d2830">{stack_label}</text>'
     )
     svg_parts.append(
-        f'<line x1="{plot_left:.1f}" y1="{zero_y:.1f}" x2="{plot_right:.1f}" y2="{zero_y:.1f}" stroke="#c8c2b5" stroke-width="2.6" stroke-linecap="round" />'
+        f'<line class="mast-zero-guide" x1="{plot_left:.1f}" y1="{zero_y:.1f}" '
+        f'x2="{zero_guide_right_x:.1f}" y2="{zero_y:.1f}" '
+        'stroke="#c8c2b5" stroke-width="2.6" stroke-linecap="round" />'
     )
     svg_parts.append(
         f'<text x="{plot_left - 10:.1f}" y="{zero_y + 5:.1f}" text-anchor="end" font-size="12" font-weight="700" fill="#5d676e">0mm</text>'
@@ -1552,23 +1592,46 @@ def render_mast_svg(state: dict | None) -> str:
         f'<text x="{plot_left - 10:.1f}" y="{bottom_label_y + 4:.1f}" text-anchor="end" font-size="11" font-weight="600" fill="#5d676e">-{int(axis_extent_mm)}mm</text>'
     )
 
-    # Dots removed: only lines will be drawn for mast history.
-    current_trend = "unknown"
-    current_dot_color = "#2c6fbb"
-
     if mast_history:
         svg_parts.append('<g id="mast-history">')
-        history_points = [
-            (float(camera_x), project_y_axis_to_y(_coerce_float(entry.get("y_axis_mm"), None)))
+        history_y_values = [
+            float(_coerce_float(entry.get("y_axis_mm"), None))
             for entry in mast_history
             if _coerce_float(entry.get("y_axis_mm"), None) is not None
         ]
+        history_points = _mast_history_screen_points(
+            history_y_values,
+            history_left_x=history_left_x,
+            history_right_x=history_right_x,
+            project_y=project_y_axis_to_y,
+        )
+        if history_points:
+            latest_x, latest_y = history_points[-1]
+            lead_start_x = stack_right_x + 2.0
+            if float(lead_start_x) < float(latest_x):
+                svg_parts.append(
+                    f'<line class="mast-history-lead" x1="{lead_start_x:.1f}" y1="{latest_y:.1f}" '
+                    f'x2="{latest_x:.1f}" y2="{latest_y:.1f}" '
+                    'stroke="#0b3d91" stroke-width="1.4" stroke-linecap="round" opacity="0.95" />'
+                )
         if len(history_points) >= 2:
+            trace_points = list(reversed(history_points))
             svg_parts.append(
-                f'<polyline class="mast-history-path" points="{_polygon_points(history_points)}" '
-                'fill="none" stroke="#b7aea0" stroke-width="1" stroke-linecap="round" '
-                'stroke-linejoin="round" opacity="0.85" />'
+                f'<polyline class="mast-history-trace" points="{_polygon_points(trace_points)}" '
+                'fill="none" stroke="#9db4da" stroke-width="1.4" stroke-linecap="round" '
+                'stroke-linejoin="round" opacity="0.55" />'
             )
+            segment_count = len(history_points) - 1
+            for segment_idx in range(1, len(history_points)):
+                start_x, start_y = history_points[segment_idx - 1]
+                end_x, end_y = history_points[segment_idx]
+                style = _mast_history_line_style(segment_count - segment_idx)
+                svg_parts.append(
+                    f'<line class="mast-history-segment" data-recency="{style["recency"]}" '
+                    f'x1="{start_x:.1f}" y1="{start_y:.1f}" x2="{end_x:.1f}" y2="{end_y:.1f}" '
+                    f'stroke="{style["stroke"]}" stroke-width="{style["stroke_width"]}" '
+                    'stroke-linecap="round" />'
+                )
         svg_parts.append("</g>")
 
     # Remove current camera dot as well (no dots, only lines)

@@ -14,6 +14,7 @@ import json
 import math
 import statistics
 import sys
+import threading
 import time
 from collections import deque
 from dataclasses import asdict, dataclass
@@ -37,14 +38,19 @@ from .helper_calibrate import (
     coerce_float as shared_coerce_float,
     coerce_int as shared_coerce_int,
     ensure_run_dir,
+    get_shared_stream_runtime,
     observed_brick_distances_mm as shared_observed_brick_distances_mm,
     planned_durations_ms as shared_planned_durations_ms,
+    prepare_shared_stream_state,
     plot_offsets as shared_plot_offsets,
     plot_series_phase as shared_plot_series_phase,
     trial_label_text as shared_trial_label_text,
     write_results as shared_write_results,
 )
+from helper_manual_config import load_manual_training_config
 from helper_robot_control import Robot
+from helper_stream_server import format_stream_url
+from helper_streaming import start_stream_server
 from helper_vision_leia import LeiaVision
 
 # The Yolo brick detector is used by manual training; it's optional here and
@@ -67,11 +73,13 @@ from telemetry_robot import (
     StepState,
     WorldModel,
     clamp_pwm,
+    draw_telemetry_overlay,
     normalize_speed_score,
     power_to_pwm,
     pwm_to_power,
     speed_power_pwm_for_cmd,
 )
+import helper_xyz_coords
 
 OBSERVE_SLEEP_S = 0.02
 OBSERVE_TIMEOUT_S = 1.8
@@ -113,6 +121,13 @@ RECOVERY_OBSERVE_TIMEOUT_S = 1.0
 RESULTS_FILE_DEFAULT: str | None = None
 PLOT_FILE_DEFAULT: str | None = None
 
+_MANUAL_CONFIG = load_manual_training_config()
+STREAM_HOST = str(_MANUAL_CONFIG.get("stream_host", "127.0.0.1"))
+STREAM_PORT = int(_MANUAL_CONFIG.get("stream_port", 5000))
+STREAM_FPS = int(_MANUAL_CONFIG.get("stream_fps", 10))
+STREAM_JPEG_QUALITY = int(_MANUAL_CONFIG.get("stream_jpeg_quality", 85))
+STREAM_IMG_WIDTH = int(_MANUAL_CONFIG.get("stream_img_width", 1600))
+
 # Folder where calibration runs deposit live files.
 RUN_DIR = Path("Runs - aruco")
 
@@ -150,6 +165,7 @@ ANSI_MAGENTA_BRIGHT = "\033[95m"
 ANSI_GREEN_BRIGHT = "\033[92m"
 ANSI_RED_BRIGHT = "\033[91m"
 ANSI_YELLOW_BRIGHT = "\033[93m"
+ANSI_ORANGE_BRIGHT = "\033[38;5;208m"
 
 
 @dataclass
@@ -221,6 +237,61 @@ def log_line(message: str) -> None:
     print(str(message), flush=True)
 
 
+def _current_vision_frame(vision):
+    for attr in ("current_frame", "debug_frame", "raw_frame"):
+        frame = getattr(vision, attr, None)
+        if frame is not None:
+            return frame
+    return None
+
+
+def _refresh_stream_state(
+    *,
+    stream_state: dict | None,
+    vision,
+    world,
+    title_lines: list[str],
+) -> None:
+    if not isinstance(stream_state, dict):
+        return
+    frame = _current_vision_frame(vision)
+    if frame is None:
+        try:
+            update_world_from_vision(world, vision, log=False)
+            frame = _current_vision_frame(vision)
+        except Exception:
+            frame = _current_vision_frame(vision)
+    text_lines = list(title_lines or [])
+    try:
+        helper_xyz_coords.sync_from_world(world, reason="vision", render=False)
+    except Exception:
+        pass
+    xyz_workspace = getattr(world, "_xyz_workspace", None)
+    if frame is not None:
+        try:
+            show_cl = bool(stream_state.get("show_center_line", True))
+            frame = draw_telemetry_overlay(
+                frame,
+                world,
+                show_prompt=False,
+                draw_text=False,
+                line_sink=text_lines,
+                show_center_line=show_cl,
+            )
+        except Exception:
+            pass
+    lock = stream_state.get("lock")
+    if lock is None:
+        stream_state["frame"] = frame
+        stream_state["text_lines"] = text_lines
+        stream_state["xyz_workspace"] = xyz_workspace
+        return
+    with lock:
+        stream_state["frame"] = frame
+        stream_state["text_lines"] = text_lines
+        stream_state["xyz_workspace"] = xyz_workspace
+
+
 def _supports_ansi_color() -> bool:
     try:
         return bool(sys.stdout.isatty())
@@ -232,6 +303,10 @@ def _colorize(text: str, color_code: str) -> str:
     if not _supports_ansi_color():
         return str(text)
     return f"{str(color_code)}{str(text)}\033[0m"
+
+
+def _orange_text(text: str) -> str:
+    return _colorize(str(text), ANSI_ORANGE_BRIGHT)
 
 
 def _highlight_number_text(text: str) -> str:
@@ -373,6 +448,7 @@ def read_pose(
     timeout_s: float = OBSERVE_TIMEOUT_S,
     min_sample_time: float | None = None,
     min_samples_required: int | None = None,
+    on_vision_update=None,
 ) -> dict | None:
     poses = []
     start_t = time.time()
@@ -393,6 +469,8 @@ def read_pose(
         pose = None
         try:
             update_world_from_vision(world, vision, log=False)
+            if callable(on_vision_update):
+                on_vision_update()
             now = time.time()
             if min_sample_time is not None and now < float(min_sample_time):
                 time.sleep(OBSERVE_SLEEP_S)
@@ -405,6 +483,8 @@ def read_pose(
         if pose is None:
             found, angle, dist, offset_x, conf, cam_h, _above, _below = vision.read()
             world.update_vision(found, dist, angle, conf, offset_x, cam_h)
+            if callable(on_vision_update):
+                on_vision_update()
             if not found:
                 time.sleep(OBSERVE_SLEEP_S)
                 continue
@@ -436,6 +516,7 @@ def _observe_pose_with_reobserve(
     hold_s: float = REOBSERVE_HOLD_S,
     reobserve_rounds: int = REOBSERVE_ROUNDS,
     relaxed_timeout_s: float = RELAXED_OBSERVE_TIMEOUT_S,
+    on_vision_update=None,
 ) -> tuple[dict | None, dict]:
     target_samples = max(1, int(samples))
     strict_pose = read_pose(
@@ -445,6 +526,7 @@ def _observe_pose_with_reobserve(
         timeout_s=float(timeout_s),
         min_sample_time=min_sample_time,
         min_samples_required=target_samples,
+        on_vision_update=on_vision_update,
     )
     if strict_pose is not None:
         return strict_pose, {
@@ -463,6 +545,7 @@ def _observe_pose_with_reobserve(
             timeout_s=max(float(timeout_s), float(relaxed_timeout_s)),
             min_sample_time=None,
             min_samples_required=1,
+            on_vision_update=on_vision_update,
         )
         if relaxed_pose is None:
             if round_idx < rounds:
@@ -484,6 +567,7 @@ def _observe_pose_with_reobserve(
                 timeout_s=max(1.0, float(timeout_s)),
                 min_sample_time=None,
                 min_samples_required=1,
+                on_vision_update=on_vision_update,
             )
             if confirm_pose is not None and int(confirm_pose.get("samples_used") or 0) >= int(relaxed_pose.get("samples_used") or 0):
                 relaxed_pose = confirm_pose
@@ -851,6 +935,7 @@ def _recover_visibility(
     robot,
     recent_acts,
     max_acts: int = RECOVERY_MAX_INVERSE_ACTS,
+    on_vision_update=None,
 ) -> tuple[dict | None, dict]:
     history = list(recent_acts)[-int(max_acts):]
     if not history:
@@ -894,6 +979,7 @@ def _recover_visibility(
             samples=1,
             timeout_s=float(RECOVERY_OBSERVE_TIMEOUT_S),
             min_sample_time=act_start_ts + (float(duration_ms_used or 0) / 1000.0) + float(POST_ACT_SETTLE_S),
+            on_vision_update=on_vision_update,
         )
         if pose is not None:
             log_line(f"[RECOVERY] Reacquired vision after {idx} inverse act(s).")
@@ -911,6 +997,7 @@ def _attempt_recovery(
     world,
     robot,
     recent_acts,
+    on_vision_update=None,
 ) -> tuple[dict | None, dict]:
     rounds = max(1, int(REOBSERVE_ROUNDS))
     for idx in range(1, rounds + 1):
@@ -920,6 +1007,7 @@ def _attempt_recovery(
             samples=1,
             timeout_s=float(RECOVERY_OBSERVE_TIMEOUT_S),
             min_samples_required=1,
+            on_vision_update=on_vision_update,
         )
         if pose is not None:
             if idx > 1:
@@ -935,6 +1023,7 @@ def _attempt_recovery(
         world=world,
         robot=robot,
         recent_acts=recent_acts,
+        on_vision_update=on_vision_update,
     )
 
 
@@ -948,6 +1037,7 @@ def _recover_pose_for_trial(
     trials_requested: int,
     stage_label: str,
     trial_label: str | None = None,
+    on_vision_update=None,
 ) -> tuple[dict | None, dict]:
     display_label = str(trial_label or _trial_label_text(int(trial_idx), int(trials_requested)))
     log_line(
@@ -958,6 +1048,7 @@ def _recover_pose_for_trial(
         world=world,
         robot=robot,
         recent_acts=recent_acts,
+        on_vision_update=on_vision_update,
     )
     if pose is None:
         return None, {
@@ -1020,9 +1111,14 @@ def _run_trial_action(
     initial_pre_pose: dict | None = None,
     initial_pre_obs_meta: dict | None = None,
     compare_to_distance: float | None = None,
+    stream_refresh_fn=None,
 ) -> tuple[TrialResult | None, str | None]:
     phase_key = str(phase or "primary")
     abort_prefix = "repeat_" if phase_key == "repeat" else ""
+
+    def _on_vision_update():
+        if callable(stream_refresh_fn):
+            stream_refresh_fn()
 
     pre_pose = dict(initial_pre_pose) if isinstance(initial_pre_pose, dict) else None
     pre_obs_meta = dict(initial_pre_obs_meta) if isinstance(initial_pre_obs_meta, dict) else None
@@ -1032,6 +1128,7 @@ def _run_trial_action(
             world=world,
             samples=observe_samples,
             timeout_s=observe_timeout_s,
+            on_vision_update=_on_vision_update,
         )
     if pre_pose is None:
         pre_pose, pre_obs_meta = _recover_pose_for_trial(
@@ -1043,6 +1140,7 @@ def _run_trial_action(
             trials_requested=trials_planned,
             stage_label="before act",
             trial_label=trial_label,
+            on_vision_update=_on_vision_update,
         )
         if pre_pose is None:
             log_line(f"[CALIBRATE_X] {trial_label}: recovery failed before act. Aborting.")
@@ -1094,6 +1192,7 @@ def _run_trial_action(
         samples=observe_samples,
         timeout_s=observe_timeout_s,
         min_sample_time=act_start_ts + (float(duration_used_ms or 0) / 1000.0) + float(post_act_settle_s),
+        on_vision_update=_on_vision_update,
     )
     lost_visibility = False
     recovered_visibility = False
@@ -1119,6 +1218,7 @@ def _run_trial_action(
             trials_requested=trials_planned,
             stage_label="after act",
             trial_label=trial_label,
+            on_vision_update=_on_vision_update,
         )
         if post_pose is None:
             log_line(f"[CALIBRATE_X] {trial_label}: recovery failed after act. Aborting.")
@@ -1208,6 +1308,8 @@ def _run_trial_action(
             annotation_label=None,
             repeat_status=repeat_status,
         )
+    if callable(stream_refresh_fn):
+        stream_refresh_fn()
     return row, None
 
 
@@ -1349,6 +1451,17 @@ def main() -> int:
         action="store_true",
         help="Run a 1% movement preflight check before trials (disabled by default).",
     )
+    parser.add_argument(
+        "--livestream",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable livestream with overlay for x-axis trial progress (default: enabled).",
+    )
+    parser.add_argument("--stream-host", type=str, default=STREAM_HOST)
+    parser.add_argument("--stream-port", type=int, default=STREAM_PORT)
+    parser.add_argument("--stream-fps", type=int, default=STREAM_FPS)
+    parser.add_argument("--stream-jpeg-quality", type=int, default=STREAM_JPEG_QUALITY)
+    parser.add_argument("--stream-img-width", type=int, default=STREAM_IMG_WIDTH)
     parser.add_argument("--reference-distance-mm", type=float, default=None, help="Assumed brick distance (mm) for this calibration set")
     parser.add_argument("--invert-x-axis", action="store_true", help="Invert l/r command mapping.")
     args = parser.parse_args()
@@ -1483,6 +1596,9 @@ def main() -> int:
     reset_rows: list[ResetEffort] = []
     status = "completed"
     abort_reason = None
+    stream_server = None
+    stream_state = None
+    stream_url = format_stream_url(str(args.stream_host), int(args.stream_port))
 
     try:
         world = WorldModel()
@@ -1500,6 +1616,68 @@ def main() -> int:
             vision = ArucoBrickVision(debug=False)
         else:  # leia
             vision = LeiaVision(debug=False)
+
+        if bool(args.livestream):
+            shared_stream_state, shared_stream_url = get_shared_stream_runtime()
+            stream_state = prepare_shared_stream_state(
+                shared_stream_state,
+                vision_mode="aruco" if str(args.vision).strip().lower() == "aruco" else "cyan",
+            )
+            stream_extra_lines: list[str] = []
+            if stream_state is None:
+                stream_state = {
+                    "frame": None,
+                    "text_lines": [],
+                    "lock": threading.Lock(),
+                    "show_center_line": True,
+                    "vision_mode": "aruco" if str(args.vision).strip().lower() == "aruco" else "cyan",
+                }
+            else:
+                stream_url = str(shared_stream_url or stream_url)
+            log_line(f"[CALIBRATE_X] Livestream URL: {_orange_text(stream_url)}")
+
+            def _live_refresh(extra_lines=None):
+                nonlocal stream_extra_lines
+                if extra_lines is not None:
+                    stream_extra_lines = [str(item) for item in list(extra_lines)]
+                lines = [
+                    f"X calibration",
+                    f"Trials: {len(trial_rows)}/{int(trials_planned)}",
+                    f"Score: {int(speed_score)}%",
+                ]
+                lines.extend(list(stream_extra_lines))
+                _refresh_stream_state(
+                    stream_state=stream_state,
+                    vision=vision,
+                    world=world,
+                    title_lines=lines,
+                )
+
+            _live_refresh([])
+            if shared_stream_state is not None and stream_state is shared_stream_state:
+                log_line("[CALIBRATE_X] Reusing existing manual-training livestream.")
+            else:
+                try:
+                    stream_server, stream_url = start_stream_server(
+                        stream_state,
+                        title="X-Axis Speed Curve Calibration",
+                        header="",
+                        footer="<div class='footer-sections'><div class='footer-section'><div class='footer-title'>X Calibration</div><div>Live trial telemetry.</div></div></div>",
+                        host=str(args.stream_host),
+                        port=int(args.stream_port),
+                        fps=max(1, int(args.stream_fps)),
+                        jpeg_quality=max(1, min(100, int(args.stream_jpeg_quality))),
+                        img_width=max(320, int(args.stream_img_width)),
+                        vision_mode_options=[("aruco", "AruCo Markers"), ("cyan", "Cyan Bricks")],
+                        xyz_workspace_getter=lambda: getattr(world, "_xyz_workspace", None),
+                    )
+                    log_line(f"[CALIBRATE_X] Livestream started: {_orange_text(stream_url)}")
+                except Exception as exc:
+                    log_line(f"[CALIBRATE_X] Livestream startup failed at {stream_url}: {exc}")
+                    stream_server = None
+        else:
+            def _live_refresh(extra_lines=None):
+                return
 
         # Optional preflight check: verify 1% speed produces detectable movement.
         if bool(args.preflight_check):
@@ -1548,6 +1726,13 @@ def main() -> int:
                     f"[CALIBRATE_X] {trial_label}: scheduled cmd={str(cmd).upper()} "
                     f"({_turn_label_for_cmd(cmd)}) for {_highlight_duration_ms(int(duration_ms))}."
                 )
+                _live_refresh(
+                    [
+                        f"Trial {int(trial_idx)}/{int(trials_planned)}",
+                        f"Planned: {str(cmd).upper()} {int(duration_ms)}ms",
+                        "Observing...",
+                    ]
+                )
 
                 row, trial_abort_reason = _run_trial_action(
                     trial_idx=trial_idx,
@@ -1569,6 +1754,7 @@ def main() -> int:
                     observe_timeout_s=observe_timeout_s,
                     post_act_settle_s=post_act_settle_s,
                     plotter=plotter,
+                    stream_refresh_fn=_live_refresh,
                 )
                 if row is None:
                     status = "aborted"
@@ -1585,6 +1771,13 @@ def main() -> int:
                         f"Plotting it anyway. {wrong_way_reason}"
                     )
                 trial_rows.append(row)
+                _live_refresh(
+                    [
+                        f"Trial {int(trial_idx)}/{int(trials_planned)}",
+                        f"Cmd: {str(row.cmd).upper()} duration={int(row.duration_ms)}ms",
+                        f"Distance: {float(row.cmd_delta_mm):.2f}mm",
+                    ]
+                )
                 _write_results(
                     results_path,
                     _build_payload(
@@ -1617,6 +1810,13 @@ def main() -> int:
                     phase="repeat",
                     source_trial=_coerce_int(source_row.source_trial, source_row.trial),
                 )
+                _live_refresh(
+                    [
+                        f"Repeat {int(repeat_idx)}/{len(repeat_plan)}",
+                        f"Planned: {str(source_row.cmd).upper()} {int(source_row.duration_ms)}ms",
+                        "Observing...",
+                    ]
+                )
                 repeat_row, repeat_abort_reason = _run_trial_action(
                     trial_idx=repeat_idx,
                     trials_planned=len(repeat_plan),
@@ -1638,6 +1838,7 @@ def main() -> int:
                     post_act_settle_s=post_act_settle_s,
                     plotter=plotter,
                     compare_to_distance=float(source_row.cmd_delta_mm),
+                    stream_refresh_fn=_live_refresh,
                 )
                 if repeat_row is None:
                     status = "aborted"
@@ -1654,6 +1855,13 @@ def main() -> int:
                         f"Plotting it anyway. {wrong_way_reason}"
                     )
                 trial_rows.append(repeat_row)
+                _live_refresh(
+                    [
+                        f"Repeat {int(repeat_idx)}/{len(repeat_plan)}",
+                        f"Cmd: {str(repeat_row.cmd).upper()} duration={int(repeat_row.duration_ms)}ms",
+                        f"Distance: {float(repeat_row.cmd_delta_mm):.2f}mm",
+                    ]
+                )
                 _write_results(
                     results_path,
                     _build_payload(
@@ -1690,6 +1898,13 @@ def main() -> int:
         if robot is not None:
             try:
                 robot.close()
+            except Exception:
+                pass
+        if stream_server is not None:
+            try:
+                close_fn = getattr(stream_server, "close", None)
+                if callable(close_fn):
+                    close_fn()
             except Exception:
                 pass
 

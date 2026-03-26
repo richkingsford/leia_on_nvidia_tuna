@@ -1,7 +1,10 @@
+import json
 import math
 import random
+import tempfile
 import unittest
 from collections import deque
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from calibration import helper_calibrate_y as calibrate_y
@@ -181,6 +184,171 @@ class CalibrateYTests(unittest.TestCase):
             5,
         )
 
+    def test_calculate_prediction_comparison_reports_prediction_closeness(self):
+        comparison = calibrate_y._calculate_prediction_comparison(
+            actual_distance_mm=1.8,
+            predicted_distance_mm=2.0,
+            curve_source="curve_prediction",
+        )
+        self.assertAlmostEqual(comparison["predicted_distance_mm"], 2.0)
+        self.assertAlmostEqual(comparison["absolute_difference_mm"], 0.2)
+        self.assertAlmostEqual(comparison["prediction_closeness_percentage"], 90.0)
+
+    def test_calculate_prediction_comparison_clamps_prediction_closeness_at_zero(self):
+        comparison = calibrate_y._calculate_prediction_comparison(
+            actual_distance_mm=5.5,
+            predicted_distance_mm=2.0,
+            curve_source="curve_prediction",
+        )
+        self.assertAlmostEqual(comparison["absolute_difference_mm"], 3.5)
+        self.assertAlmostEqual(comparison["prediction_closeness_percentage"], 0.0)
+
+    def test_load_y_duration_calibration_collects_named_curves(self):
+        payload = {
+            "schema_version": 1,
+            "near_curve": {
+                "reference_distance_mm": 50.0,
+                "speed_score_pct": 1,
+                "by_cmd": {
+                    "u": {"slope_mm_per_ms": 0.01, "intercept_mm": 0.1},
+                    "d": {"slope_mm_per_ms": 0.02, "intercept_mm": 0.2},
+                },
+            },
+            "far_curve": {
+                "reference_distance_mm": 120.0,
+                "speed_score_pct": 3,
+                "by_cmd": {
+                    "u": {"slope_mm_per_ms": 0.03, "intercept_mm": 0.3},
+                    "d": {"slope_mm_per_ms": 0.04, "intercept_mm": 0.4},
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            curve_path = Path(tmpdir) / "world_model_up_down_curve.json"
+            curve_path.write_text(json.dumps(payload))
+            loaded = calibrate_y._load_y_duration_calibration(curve_path)
+        self.assertEqual(
+            [curve["curve_name"] for curve in loaded["curves"]],
+            [
+                "near_curve at 50mm distance at 1% speed",
+                "far_curve at 120mm distance at 3% speed",
+            ],
+        )
+
+    def test_predict_movement_from_curve_uses_closest_curve_name_for_observed_distance(self):
+        y_calibration = {
+            "curves": [
+                {
+                    "curve_name": "near_curve at 50mm distance at 1% speed",
+                    "reference_distance_mm": 50.0,
+                    "by_cmd": {
+                        "d": {"slope_mm_per_ms": 0.01, "intercept_mm": 0.5},
+                    },
+                },
+                {
+                    "curve_name": "far_curve at 120mm distance at 3% speed",
+                    "reference_distance_mm": 120.0,
+                    "by_cmd": {
+                        "d": {"slope_mm_per_ms": 0.03, "intercept_mm": 0.25},
+                    },
+                },
+            ],
+        }
+        predicted_mm, curve_source = calibrate_y._predict_movement_from_curve(
+            cmd="d",
+            duration_ms=100,
+            y_calibration=y_calibration,
+            observed_distance_mm=110.0,
+        )
+        self.assertAlmostEqual(predicted_mm, 3.25)
+        self.assertEqual(curve_source, "far_curve at 120mm distance at 3% speed")
+
+    def test_predict_duration_for_target_delta_mm_uses_closest_curve_for_observed_distance(self):
+        y_calibration = {
+            "curves": [
+                {
+                    "curve_name": "near_curve at 50mm distance at 1% speed",
+                    "reference_distance_mm": 50.0,
+                    "by_cmd": {
+                        "u": {"slope_mm_per_ms": 0.02, "intercept_mm": 0.5},
+                    },
+                },
+                {
+                    "curve_name": "far_curve at 120mm distance at 3% speed",
+                    "reference_distance_mm": 120.0,
+                    "by_cmd": {
+                        "u": {"slope_mm_per_ms": 0.01, "intercept_mm": 0.5},
+                    },
+                },
+            ],
+        }
+        duration_ms = calibrate_y._predict_duration_for_target_delta_mm(
+            cmd="u",
+            abs_delta_mm=4.5,
+            duration_min_ms=100,
+            duration_max_ms=500,
+            y_calibration=y_calibration,
+            observed_distance_mm=52.0,
+        )
+        self.assertEqual(duration_ms, 200)
+
+    def test_format_prediction_comparison_fields_omits_mm_suffix(self):
+        comparison = {
+            "absolute_difference_mm": 1.62,
+            "prediction_closeness_percentage": 0.0,
+        }
+        with patch.object(calibrate_y, "_supports_ansi_color", return_value=False):
+            text = calibrate_y._format_prediction_comparison_fields(comparison)
+        self.assertEqual(
+            text,
+            "absolute_difference=1.62 prediction_closeness=0.0%",
+        )
+
+    def test_format_prediction_comparison_fields_colors_numbers_only_from_closeness_rule(self):
+        comparison = {
+            "absolute_difference_mm": 1.62,
+            "prediction_closeness_percentage": 0.0,
+        }
+        with patch.object(calibrate_y, "_supports_ansi_color", return_value=True):
+            text = calibrate_y._format_prediction_comparison_fields(comparison)
+        self.assertIn("absolute_difference=\033[92m1.62\033[0m", text)
+        self.assertIn("prediction_closeness=\033[92m0.0\033[0m%", text)
+
+    def test_format_prediction_comparison_fields_uses_red_when_closeness_is_not_below_25(self):
+        comparison = {
+            "absolute_difference_mm": 1.62,
+            "prediction_closeness_percentage": 25.0,
+        }
+        with patch.object(calibrate_y, "_supports_ansi_color", return_value=True):
+            text = calibrate_y._format_prediction_comparison_fields(comparison)
+        self.assertIn("absolute_difference=\033[91m1.62\033[0m", text)
+        self.assertIn("prediction_closeness=\033[91m25.0\033[0m%", text)
+
+    def test_trials_setup_log_line_reports_observed_distance_and_curve(self):
+        with patch.object(calibrate_y, "_supports_ansi_color", return_value=False):
+            text = calibrate_y._trials_setup_log_line(
+                observed_distance_mm=49.0,
+                closest_curve_name="aruco_marker_calibration at 49mm distance at 1% speed",
+            )
+        self.assertEqual(
+            text,
+            "[TRIALS SETUP] observed_distance=49.00mm "
+            "closest_speed_curve=aruco_marker_calibration at 49mm distance at 1% speed",
+        )
+
+    def test_trials_setup_log_line_is_green(self):
+        with patch.object(calibrate_y, "_supports_ansi_color", return_value=True):
+            text = calibrate_y._trials_setup_log_line(
+                observed_distance_mm=49.0,
+                closest_curve_name="aruco_marker_calibration at 49mm distance at 1% speed",
+            )
+        self.assertTrue(
+            text.startswith(
+                "\033[92m[TRIALS SETUP] observed_distance=49.00mm "
+                "closest_speed_curve=aruco_marker_calibration at 49mm distance at 1% speed"
+            )
+        )
+
     def test_should_log_command_inversion_detail_only_on_expectation_failure(self):
         self.assertFalse(
             calibrate_y._should_log_command_inversion_detail(
@@ -221,6 +389,270 @@ class CalibrateYTests(unittest.TestCase):
                 threshold_mm=0.60,
             )
         )
+
+    def test_log_command_inversion_detail_starts_with_trial_label(self):
+        with patch.object(calibrate_y, "log_line") as mock_log_line:
+            calibrate_y._log_command_inversion_detail(
+                prefix="[CALIBRATE_Y] ⚠️  Command inversion detail:",
+                trial_label="Trial 59/60",
+                logical_cmd="d",
+                wire_cmd="u",
+                raw_delta_mm=-0.81,
+                threshold_mm=0.60,
+            )
+        mock_log_line.assert_called_once_with(
+            "[CALIBRATE_Y] Trial 59/60: ⚠️  Command inversion detail: "
+            "expected the brick to go upwards on camera, but saw it move downwards "
+            "(0.81mm; raw_delta=-0.81mm). Wire mast_up also implies downwards camera motion."
+        )
+
+    def test_run_trial_action_plots_wrong_way_trials(self):
+        pre_pose = {
+            "offset_y": 8.0,
+            "offset_x": 0.0,
+            "dist": 105.0,
+            "angle": 0.0,
+            "confidence": 90.0,
+            "obs_ts": 1.0,
+            "pose_source": "raw_visible",
+            "lite_required_frames": None,
+            "samples_used": 1,
+        }
+        post_pose = dict(pre_pose)
+        post_pose["offset_y"] = 8.81
+        post_pose["confidence"] = 91.0
+        plotter = Mock()
+
+        with patch.object(
+            calibrate_y,
+            "_send_fixed_score_command",
+            return_value={"duration_ms": 300, "cmd_sent": "u", "pwm": 40, "power": 0.2},
+        ), patch.object(
+            calibrate_y,
+            "_observe_pose_with_reobserve",
+            return_value=(post_pose, {"mode": "trial_full", "reobserved": False}),
+        ), patch.object(
+            calibrate_y,
+            "_predict_movement_from_curve",
+            return_value=(0.75, "curve_a"),
+        ), patch.object(
+            calibrate_y,
+            "_calculate_prediction_comparison",
+            return_value={
+                "predicted_distance_mm": 0.75,
+                "curve_source": "curve_a",
+                "absolute_difference_mm": 0.06,
+                "prediction_closeness_percentage": 92.0,
+            },
+        ), patch.object(
+            calibrate_y,
+            "_format_prediction_comparison_fields",
+            return_value="absolute_difference=0.06 prediction_closeness=92.0%",
+        ), patch.object(calibrate_y, "log_line"):
+            row, abort_reason = calibrate_y._run_trial_action(
+                trial_idx=4,
+                trials_planned=60,
+                trial_label="Trial 4/60",
+                cmd="u",
+                duration_ms=300,
+                phase="trial",
+                source_trial=None,
+                action_step="CALIBRATE_Y",
+                plot_kind="trial",
+                vision=object(),
+                world=object(),
+                robot=object(),
+                recent_acts=deque(maxlen=32),
+                setup_score=1,
+                center_target_y_mm=0.0,
+                observe_samples=1,
+                observe_timeout_s=1.0,
+                post_act_settle_s=0.0,
+                camera_direction_check={},
+                plotter=plotter,
+                initial_pre_pose=pre_pose,
+                initial_pre_obs_meta={"mode": "trial_full", "reobserved": False},
+                y_duration_cal={"curves": []},
+                stream_refresh_fn=None,
+            )
+
+        self.assertIsNone(abort_reason)
+        self.assertIsNotNone(row)
+        self.assertTrue(row.wrong_way)
+        plotter.add_point.assert_called_once()
+        plotted_kwargs = plotter.add_point.call_args.kwargs
+        self.assertEqual(plotted_kwargs["duration_ms"], 300)
+        self.assertAlmostEqual(plotted_kwargs["distance_mm"], 0.81)
+        self.assertEqual(plotted_kwargs["trial"], 4)
+        self.assertEqual(plotted_kwargs["cmd"], "u")
+        self.assertEqual(plotted_kwargs["kind"], "trial")
+        self.assertAlmostEqual(plotted_kwargs["pre_brick_distance_mm"], 105.0)
+        self.assertAlmostEqual(plotted_kwargs["post_brick_distance_mm"], 105.0)
+        self.assertIsNone(plotted_kwargs["annotation_label"])
+
+    def test_run_trial_action_uses_distance_curve_speed_score(self):
+        pre_pose = {
+            "offset_y": 8.0,
+            "offset_x": 0.0,
+            "dist": 250.0,
+            "angle": 0.0,
+            "confidence": 90.0,
+            "obs_ts": 1.0,
+            "pose_source": "raw_visible",
+            "lite_required_frames": None,
+            "samples_used": 1,
+        }
+        post_pose = dict(pre_pose)
+        post_pose["offset_y"] = 7.2
+        post_pose["confidence"] = 91.0
+        trial_speed_profile = {
+            "metric": "brick_distance_mm",
+            "curve_points": [
+                {"distance_mm": 120.0, "speed_score": 1},
+                {"distance_mm": 250.0, "speed_score": 100},
+            ],
+        }
+
+        with patch.object(
+            calibrate_y,
+            "_send_fixed_score_command",
+            return_value={"duration_ms": 300, "cmd_sent": "d", "pwm": 40, "power": 0.2},
+        ) as mock_send, patch.object(
+            calibrate_y,
+            "_observe_pose_with_reobserve",
+            return_value=(post_pose, {"mode": "trial_full", "reobserved": False}),
+        ), patch.object(
+            calibrate_y,
+            "_predict_movement_from_curve",
+            return_value=(0.75, "curve_a"),
+        ), patch.object(
+            calibrate_y,
+            "_calculate_prediction_comparison",
+            return_value={
+                "predicted_distance_mm": 0.75,
+                "curve_source": "curve_a",
+                "absolute_difference_mm": 0.05,
+                "prediction_closeness_percentage": 93.0,
+            },
+        ), patch.object(
+            calibrate_y,
+            "_format_prediction_comparison_fields",
+            return_value="absolute_difference=0.05 prediction_closeness=93.0%",
+        ), patch.object(calibrate_y, "log_line"):
+            row, abort_reason = calibrate_y._run_trial_action(
+                trial_idx=6,
+                trials_planned=60,
+                trial_label="Trial 6/60",
+                cmd="d",
+                duration_ms=300,
+                phase="trial",
+                source_trial=None,
+                action_step="CALIBRATE_Y",
+                plot_kind="trial",
+                vision=object(),
+                world=object(),
+                robot=object(),
+                recent_acts=deque(maxlen=32),
+                setup_score=1,
+                center_target_y_mm=0.0,
+                observe_samples=1,
+                observe_timeout_s=1.0,
+                post_act_settle_s=0.0,
+                camera_direction_check={},
+                plotter=None,
+                initial_pre_pose=pre_pose,
+                initial_pre_obs_meta={"mode": "trial_full", "reobserved": False},
+                y_duration_cal={"curves": []},
+                trial_speed_profile=trial_speed_profile,
+                stream_refresh_fn=None,
+            )
+
+        self.assertIsNone(abort_reason)
+        self.assertIsNotNone(row)
+        self.assertEqual(mock_send.call_args.kwargs["score"], 100)
+        self.assertEqual(row.score_requested, 100)
+
+    def test_run_trial_action_logs_trial_summary_before_inversion_detail(self):
+        pre_pose = {
+            "offset_y": 8.0,
+            "offset_x": 0.0,
+            "dist": 105.0,
+            "angle": 0.0,
+            "confidence": 90.0,
+            "obs_ts": 1.0,
+            "pose_source": "raw_visible",
+            "lite_required_frames": None,
+            "samples_used": 1,
+        }
+        post_pose = dict(pre_pose)
+        post_pose["offset_y"] = 7.19
+        post_pose["confidence"] = 91.0
+
+        with patch.object(
+            calibrate_y,
+            "_send_fixed_score_command",
+            return_value={"duration_ms": 300, "cmd_sent": "u", "pwm": 40, "power": 0.2},
+        ), patch.object(
+            calibrate_y,
+            "_observe_pose_with_reobserve",
+            return_value=(post_pose, {"mode": "trial_full", "reobserved": False}),
+        ), patch.object(
+            calibrate_y,
+            "_predict_movement_from_curve",
+            return_value=(0.75, "curve_a"),
+        ), patch.object(
+            calibrate_y,
+            "_calculate_prediction_comparison",
+            return_value={
+                "predicted_distance_mm": 0.75,
+                "curve_source": "curve_a",
+                "absolute_difference_mm": 0.06,
+                "prediction_closeness_percentage": 92.0,
+            },
+        ), patch.object(
+            calibrate_y,
+            "_format_prediction_comparison_fields",
+            return_value="absolute_difference=0.06 prediction_closeness=92.0%",
+        ), patch.object(calibrate_y, "log_line") as mock_log_line:
+            row, abort_reason = calibrate_y._run_trial_action(
+                trial_idx=5,
+                trials_planned=60,
+                trial_label="Trial 5/60",
+                cmd="d",
+                duration_ms=300,
+                phase="trial",
+                source_trial=None,
+                action_step="CALIBRATE_Y",
+                plot_kind="trial",
+                vision=object(),
+                world=object(),
+                robot=object(),
+                recent_acts=deque(maxlen=32),
+                setup_score=1,
+                center_target_y_mm=0.0,
+                observe_samples=1,
+                observe_timeout_s=1.0,
+                post_act_settle_s=0.0,
+                camera_direction_check={},
+                plotter=None,
+                initial_pre_pose=pre_pose,
+                initial_pre_obs_meta={"mode": "trial_full", "reobserved": False},
+                y_duration_cal={"curves": []},
+                stream_refresh_fn=None,
+            )
+
+        self.assertIsNone(abort_reason)
+        self.assertIsNotNone(row)
+        logged_lines = [call.args[0] for call in mock_log_line.call_args_list]
+        summary_idx = next(
+            idx for idx, line in enumerate(logged_lines) if "[CALIBRATE_Y] Trial 5/60: cmd=D score=1%" in line
+        )
+        detail_idx = next(
+            idx
+            for idx, line in enumerate(logged_lines)
+            if "[CALIBRATE_Y] Trial 5/60: ⚠️  Command inversion detail:" in line
+        )
+        self.assertLess(summary_idx, detail_idx)
 
     def test_build_payload_summarizes_observed_brick_distance(self):
         payload = calibrate_y._build_payload(

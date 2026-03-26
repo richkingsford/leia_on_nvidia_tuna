@@ -3274,6 +3274,21 @@ def update_stream_frame(app_state):
         with app_state.stream_state["lock"]:
             app_state.stream_state["frame"] = frame
             app_state.stream_state["text_lines"] = stream_lines
+            app_state.stream_state["xyz_workspace"] = getattr(app_state.world, "_xyz_workspace", None)
+
+
+def _stream_state_xyz_workspace(app_state):
+    stream_state = app_state.stream_state if isinstance(app_state.stream_state, dict) else None
+    if stream_state:
+        lock = stream_state.get("lock")
+        if lock is None:
+            state = stream_state.get("xyz_workspace")
+        else:
+            with lock:
+                state = stream_state.get("xyz_workspace")
+        if state is not None:
+            return state
+    return getattr(app_state.world, "_xyz_workspace", None)
 
 
 def make_auto_observer(app_state):
@@ -3722,6 +3737,7 @@ class AppState:
             "step_success_seq": 0,
             "step_success_step": None,
             "step_success_at": 0.0,
+            "xyz_workspace": None,
         }
         self.stream_enabled = False
         self.stream_requested = True
@@ -3776,7 +3792,7 @@ def _start_manual_stream_server(app_state, *, open_browser=False):
             cyan_profile_options=CYAN_PROFILE_OPTIONS,
             cyan_visibility_options=CYAN_VISIBILITY_OPTIONS,
             success_gate_step_options=STREAM_SUCCESS_GATE_STEP_OPTIONS,
-            xyz_workspace_getter=lambda: getattr(app_state.world, "_xyz_workspace", None),
+            xyz_workspace_getter=lambda: _stream_state_xyz_workspace(app_state),
         )
     except Exception as exc:
         app_state.stream_enabled = False
@@ -3805,9 +3821,9 @@ def _suspend_manual_runtime_for_calibration(app_state):
         _clear_manual_motion_state_locked(app_state)
 
     # Keep the stream server running so the browser connection stays alive.
-    # The stream_refresh_loop will simply stop pushing frames while vision is
-    # None, then automatically resume when _resume_manual_runtime_after_calibration
-    # reopens vision.
+    # The manual stream_refresh_loop will stop pushing frames while vision is
+    # None, but calibration helpers can reuse the same shared stream_state and
+    # keep the current browser feed updating.
 
     with app_state.vision_io_lock:
         vision = app_state.vision
@@ -3898,10 +3914,21 @@ def _run_calibration_mode(app_state):
     log_line("[CALIBRATE] Entering calibration mode. Choose an option or q to return to manual mode.")
     exit_code = 0
     try:
-        # Pass --no-livestream so calibration scripts don't try to start their
-        # own stream server on the same port that is still in use by a_MAIN.
+        stream_server = getattr(app_state, "stream_server", None)
+        shared_stream_state = app_state.stream_state if stream_server is not None else None
+        shared_stream_url = None
+        if stream_server is not None:
+            from helper_stream_server import format_stream_url
+
+            actual_port = getattr(stream_server, "port", STREAM_PORT)
+            shared_stream_url = str(
+                getattr(app_state, "pending_stream_started_url", "") or format_stream_url(STREAM_HOST, actual_port)
+            )
         exit_code = int(helper_calibrate_speed_curve.run_interactive_session(
-            show_banner=True, passthrough_args=["--no-livestream"]
+            show_banner=True,
+            passthrough_args=[],
+            shared_stream_state=shared_stream_state,
+            shared_stream_url=shared_stream_url,
         ) or 0)
     except Exception as exc:
         exit_code = 1

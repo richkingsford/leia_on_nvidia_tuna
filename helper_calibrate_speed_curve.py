@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from calibration import helper_calibrate_dist
+from calibration.helper_calibrate import get_shared_stream_runtime, use_shared_stream_runtime
 from calibration import helper_calibrate_motion
 from calibration import helper_calibrate_speed
 from calibration import helper_calibrate_x
@@ -316,32 +317,47 @@ def _restore_tty_line_input_mode() -> None:
         return
 
 
-def _print_stream_banner() -> None:
-    print(f"[CALIBRATE] Livestream URL: {_orange_text(_default_stream_url())}")
+def _print_stream_banner(shared_stream_url: str | None = None) -> None:
+    active_url = str(shared_stream_url or "").strip()
+    if not active_url:
+        _shared_state, active_url = get_shared_stream_runtime()
+    if not active_url:
+        active_url = _default_stream_url()
+    print(f"[CALIBRATE] Livestream URL: {_orange_text(active_url)}")
 
 
-def run_interactive_session(*, passthrough_args: list[str] | None = None, show_banner: bool = True) -> int:
+def run_interactive_session(
+    *,
+    passthrough_args: list[str] | None = None,
+    show_banner: bool = True,
+    shared_stream_state: dict | None = None,
+    shared_stream_url: str | None = None,
+) -> int:
     if bool(show_banner):
-        _print_stream_banner()
+        _print_stream_banner(shared_stream_url=shared_stream_url)
 
     base_args = list(passthrough_args or [])
     exit_code = 0
-    while True:
-        _restore_tty_line_input_mode()
-        selected = _pick_interactive()
-        if selected is None:
-            print("[CALIBRATE] Leaving calibration mode.")
-            return int(exit_code)
+    with use_shared_stream_runtime(
+        stream_state=shared_stream_state,
+        stream_url=shared_stream_url,
+    ):
+        while True:
+            _restore_tty_line_input_mode()
+            selected = _pick_interactive()
+            if selected is None:
+                print("[CALIBRATE] Leaving calibration mode.")
+                return int(exit_code)
 
-        run_args = list(base_args)
-        run_args.extend(_interactive_trial_args(selected, list(run_args)))
-        print(f"Running: {selected.label}")
-        step_code = _run_selected(selected, run_args)
-        exit_code = int(step_code) if int(step_code) != 0 else int(exit_code)
-        if int(step_code) == 0:
-            print(f"[CALIBRATE] Completed: {selected.label}")
-        else:
-            print(f"[CALIBRATE] {selected.label} ended with code={int(step_code)}")
+            run_args = list(base_args)
+            run_args.extend(_interactive_trial_args(selected, list(run_args)))
+            print(f"Running: {selected.label}")
+            step_code = _run_selected(selected, run_args)
+            exit_code = int(step_code) if int(step_code) != 0 else int(exit_code)
+            if int(step_code) == 0:
+                print(f"[CALIBRATE] Completed: {selected.label}")
+            else:
+                print(f"[CALIBRATE] {selected.label} ended with code={int(step_code)}")
 
 
 def main() -> int:

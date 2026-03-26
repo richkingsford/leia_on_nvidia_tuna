@@ -208,6 +208,9 @@ class HelperXyzCoordsTests(unittest.TestCase):
         world.brick["y_axis"] = 18.0
         helper_xyz_coords.sync_from_world(world, reason="vision", render=False)
 
+        world.brick["y_axis"] = 14.0
+        helper_xyz_coords.sync_from_world(world, reason="vision", render=False)
+
         world.lift_height = 20.0
         world.height_mm = 165.0
         world.brick["y_axis"] = 10.0
@@ -232,14 +235,74 @@ class HelperXyzCoordsTests(unittest.TestCase):
         )
 
         mast_svg = helper_xyz_coords.render_mast_svg(state)
+        x_pairs = re.findall(
+            r'class="mast-history-segment"[^>]* x1="([0-9.]+)"[^>]* x2="([0-9.]+)"',
+            mast_svg,
+        )
+        current_segment_match = re.search(
+            r'class="mast-history-segment" data-recency="current"[^>]* x1="([0-9.]+)"[^>]* x2="([0-9.]+)"',
+            mast_svg,
+        )
+        lead_match = re.search(
+            r'class="mast-history-lead"[^>]* x1="([0-9.]+)"[^>]* x2="([0-9.]+)"',
+            mast_svg,
+        )
+        trace_match = re.search(
+            r'class="mast-history-trace"[^>]* points="([^"]+)"',
+            mast_svg,
+        )
+        previous_segment_match = re.search(
+            r'class="mast-history-segment" data-recency="n-1"[^>]* x1="([0-9.]+)"[^>]* x2="([0-9.]+)"',
+            mast_svg,
+        )
+        previous2_segment_match = re.search(
+            r'class="mast-history-segment" data-recency="n-2"[^>]* x1="([0-9.]+)"[^>]* x2="([0-9.]+)"',
+            mast_svg,
+        )
+        zero_guide_match = re.search(
+            r'class="mast-zero-guide"[^>]* x1="([0-9.]+)"[^>]* x2="([0-9.]+)"',
+            mast_svg,
+        )
+        unique_x_values = sorted({value for pair in x_pairs for value in pair})
 
         self.assertIn("Mast View", mast_svg)
-        self.assertIn('class="mast-history-dot"', mast_svg)
-        self.assertIn('class="mast-camera-dot"', mast_svg)
+        self.assertIsNotNone(zero_guide_match)
+        self.assertEqual(zero_guide_match.group(1), "86.0")
+        self.assertLess(float(zero_guide_match.group(2)), 170.0)
+        self.assertIsNotNone(current_segment_match)
+        self.assertIsNotNone(lead_match)
+        self.assertIsNotNone(trace_match)
+        self.assertIsNotNone(previous_segment_match)
+        self.assertIsNotNone(previous2_segment_match)
+        self.assertGreater(float(lead_match.group(2)), float(lead_match.group(1)))
+        self.assertLess(float(current_segment_match.group(2)), float(previous_segment_match.group(2)))
+        self.assertLess(float(previous_segment_match.group(2)), float(previous2_segment_match.group(2)))
+        self.assertLess(float(current_segment_match.group(2)), 290.0)
+        self.assertEqual(mast_svg.count('class="mast-history-segment"'), 4)
+        self.assertGreater(len(unique_x_values), 2)
+        self.assertIn('class="mast-history-trace"', mast_svg)
+        self.assertIn(
+            'class="mast-history-segment" data-recency="current"',
+            mast_svg,
+        )
+        self.assertIn('stroke="#0b3d91" stroke-width="1"', mast_svg)
+        self.assertIn(
+            'class="mast-history-segment" data-recency="n-1"',
+            mast_svg,
+        )
+        self.assertIn('stroke="#2563eb" stroke-width="1"', mast_svg)
+        self.assertIn(
+            'class="mast-history-segment" data-recency="n-2"',
+            mast_svg,
+        )
+        self.assertIn('stroke="#63d7ff" stroke-width="1"', mast_svg)
+        self.assertIn(
+            'class="mast-history-segment" data-recency="older"',
+            mast_svg,
+        )
+        self.assertIn('stroke="#d3d7dd" stroke-width="1"', mast_svg)
         self.assertIn("Supply", mast_svg)
         self.assertNotIn(">Wall<", mast_svg)
-        self.assertIn('data-trend="closer"', mast_svg)
-        self.assertIn('data-trend="further"', mast_svg)
 
     def test_build_viewbox_uses_tighter_default_zoom(self):
         world = _DummyWorld()

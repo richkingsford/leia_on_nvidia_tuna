@@ -1083,11 +1083,10 @@ def update_from_motion(world, event, delta):
     return
 
 
-def update_from_vision(world, found, dist, angle, conf, offset_x=0, cam_h=0, brick_above=False, brick_below=False, raw_dist=None):
-    # `cam_h` is the marker's vertical offset relative to the camera center (same
-    # camera-space axis used for lift calibration). Alias it into brick telemetry
+def update_from_vision(world, found, dist, angle, conf, offset_x=0, offset_y=0, brick_above=False, brick_below=False, raw_dist=None):
+    # `offset_y` is the marker's vertical offset relative to the camera center (same
+    # camera-space axis used for lift calibration). Store it into brick telemetry
     # as `offset_y` / `y_axis` for recording and step-4 alignment.
-    offset_y = float(cam_h)
     world.brick["visible"] = bool(found)
     world.brick["dist"] = float(dist)
     if raw_dist is not None:
@@ -1130,10 +1129,10 @@ def update_from_vision(world, found, dist, angle, conf, offset_x=0, cam_h=0, bri
         world.scoop_lateral_drift = 0.0
 
     brick_height = None
-    if found and conf > 50 and cam_h > 0:
+    if found and conf > 50 and offset_y > 0:
         if world.camera_height_anchor is None:
-            world.camera_height_anchor = cam_h
-        brick_height = max(0.0, world.camera_height_anchor - cam_h)
+            world.camera_height_anchor = offset_y
+        brick_height = max(0.0, world.camera_height_anchor - offset_y)
         world.height_mm = brick_height
     else:
         world.height_mm = None

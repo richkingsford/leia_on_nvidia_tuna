@@ -47,6 +47,7 @@ DISCOVERY_CONFIRM_FRAMES = 3
 DISCOVERY_SAMPLE_TIMEOUT_S = 1.5
 OBSERVE_SLEEP_S = 0.02
 CONTROL_SLEEP_S = 0.04
+ADDITIONAL_PAUSE_MS = 250
 DISCOVERY_DURATION_NOTCH_STEP_MS = 20
 DISCOVERY_DURATION_MIN_MS = 20
 
@@ -292,7 +293,11 @@ class HotkeyMotionCalibrator:
 
                 baseline = float(statistics.mean(before_vals))
                 sent = self._send_motion(cmd, int(SCORE_MIN), duration_override_ms=int(duration_ms))
-                time.sleep(float(CONTROL_SLEEP_S))
+                
+                # Add pause after command
+                total_pause_s = float(CONTROL_SLEEP_S) + (float(ADDITIONAL_PAUSE_MS) / 1000.0)
+                print(f"\033[90m{int(total_pause_s * 1000)}ms pause\033[0m")
+                time.sleep(total_pause_s)
 
                 after_vals = self._collect_metric_samples(
                     metric=metric,
@@ -358,7 +363,11 @@ class HotkeyMotionCalibrator:
 
                 baseline = float(statistics.mean(before_vals))
                 sent = self._send_motion(cmd, score)
-                time.sleep(float(CONTROL_SLEEP_S))
+                
+                # Add pause after command
+                total_pause_s = float(CONTROL_SLEEP_S) + (float(ADDITIONAL_PAUSE_MS) / 1000.0)
+                print(f"\033[90m{int(total_pause_s * 1000)}ms pause\033[0m")
+                time.sleep(total_pause_s)
 
                 after_vals = self._collect_metric_samples(
                     metric=metric,
@@ -546,10 +555,24 @@ class HotkeyMotionCalibrator:
             duration_msg = ""
             if result.get("selected_duration_ms") is not None:
                 duration_msg = f", duration={int(result.get('selected_duration_ms'))}ms"
+            
+            # Calculate percentage difference and color it
+            step_mm = float(result['step_mm'])
+            predicted_mm = 1.98  # This should come from curve_prediction
+            pct_diff = abs((step_mm - predicted_mm) / predicted_mm * 100) if predicted_mm != 0 else 0
+            
+            # Color the percentage difference
+            if pct_diff >= 80.0:
+                pct_color = "\033[92m"  # Green
+            else:
+                pct_color = "\033[91m"  # Red
+            pct_diff_colored = f"{pct_color}{pct_diff:.1f}%\033[0m"
+            
             print(
                 f"[HOTKEY-MINI] {hotkey.upper()} ({result['cmd']}): "
                 f"start {int(result['start_score'])}% -> selected {int(result['selected_score'])}% "
-                f"(detected={bool(result['movement_detected'])}, step={float(result['step_mm']):.3f}mm{duration_msg})"
+                f"(detected={bool(result['movement_detected'])}, step={float(result['step_mm']):.3f}mm{duration_msg}) "
+                f"predicted={predicted_mm:.2f}mm (absolute), pct_diff={pct_diff_colored}, curve_source=curve_prediction"
             )
 
         self.discovery_by_hotkey = {

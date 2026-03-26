@@ -3,7 +3,7 @@
 Minimal y-axis duration probe.
 
 Observe the current y offset with a 3-frame confidence read, send one mast act
-at a fixed speed score and random duration, observe again, and plot
+at a configured trial speed policy and random duration, observe again, and plot
 command-direction distance traveled in mm against duration.
 """
 
@@ -37,8 +37,13 @@ from .helper_calibrate import (
     coerce_float as shared_coerce_float,
     coerce_int as shared_coerce_int,
     ensure_run_dir,
+    get_shared_stream_runtime,
+    load_calibration_trial_speed_profile as shared_load_calibration_trial_speed_profile,
     observed_brick_distances_mm as shared_observed_brick_distances_mm,
+    prediction_closeness_percentage as shared_prediction_closeness_percentage,
+    prepare_shared_stream_state,
     plot_offsets as shared_plot_offsets,
+    resolve_calibration_trial_speed_score as shared_resolve_calibration_trial_speed_score,
     trial_label_text as shared_trial_label_text,
     write_results as shared_write_results,
 )
@@ -74,7 +79,7 @@ DURATION_CEILING_MS = 1500
 DURATION_SECTION_STEP_MS_DEFAULT = 100
 DURATION_SECTION_SPAN_MS_DEFAULT = 50
 DURATION_SAMPLES_PER_SECTION_DEFAULT = 5
-Y_AXIS_POSITIVE_CMD_DEFAULT = "u"
+Y_AXIS_POSITIVE_CMD_DEFAULT = "d"
 Y_AXIS_INVERT = False  # Set to True to invert u/d command mapping
 
 # reference distance associated with the current regression equation.  The
@@ -86,7 +91,7 @@ PLOT_COLOR_BY_CMD = {
     "d": "#ff7f0e",
 }
 TRIAL_ALTERNATING_START_CMD = "d"
-CAMERA_DIRECTION_VERIFY_MIN_DELTA_MM = 0.60
+CAMERA_DIRECTION_VERIFY_MIN_DELTA_MM = 0.03
 UP_TRIAL_BAND_MIN_MM = 8.0
 UP_TRIAL_BAND_MAX_MM = 16.0
 DOWN_TRIAL_BAND_MIN_MM = 2.0
@@ -268,6 +273,7 @@ def _refresh_stream_state(
         helper_xyz_coords.sync_from_world(world, reason="vision", render=False)
     except Exception:
         pass
+    xyz_workspace = getattr(world, "_xyz_workspace", None)
     if frame is not None:
         try:
             show_cl = bool(stream_state.get("show_center_line", True))
@@ -285,10 +291,12 @@ def _refresh_stream_state(
     if lock is None:
         stream_state["frame"] = frame
         stream_state["text_lines"] = text_lines
+        stream_state["xyz_workspace"] = xyz_workspace
         return
     with lock:
         stream_state["frame"] = frame
         stream_state["text_lines"] = text_lines
+        stream_state["xyz_workspace"] = xyz_workspace
 
 
 def _load_y_duration_calibration(path: Path | None = None) -> dict | None:
@@ -299,23 +307,164 @@ def _load_y_duration_calibration(path: Path | None = None) -> dict | None:
         payload = json.loads(curve_path.read_text())
     except Exception:
         return None
-    calib = payload.get("aruco_marker_calibration") if isinstance(payload, dict) else None
-    by_cmd = calib.get("by_cmd") if isinstance(calib, dict) else None
-    if not isinstance(by_cmd, dict):
+    if not isinstance(payload, dict):
         return None
-    out = {}
-    for cmd in ("u", "d"):
-        row = by_cmd.get(cmd)
-        if not isinstance(row, dict):
+    curves: list[dict] = []
+    for curve_key, calib in payload.items():
+        if not isinstance(calib, dict):
             continue
-        try:
-            out[cmd] = {
-                "slope_mm_per_ms": float(row.get("slope_mm_per_ms")),
-                "intercept_mm": float(row.get("intercept_mm")),
+        by_cmd = calib.get("by_cmd")
+        if not isinstance(by_cmd, dict):
+            continue
+        cmd_rows: dict[str, dict] = {}
+        for cmd in ("u", "d"):
+            row = by_cmd.get(cmd)
+            if not isinstance(row, dict):
+                continue
+            try:
+                cmd_rows[cmd] = {
+                    "slope_mm_per_ms": float(row.get("slope_mm_per_ms")),
+                    "intercept_mm": float(row.get("intercept_mm")),
+                }
+            except Exception:
+                continue
+        if not cmd_rows:
+            continue
+        curves.append(
+            {
+                "curve_key": str(curve_key),
+                "curve_name": _y_curve_display_name(str(curve_key), calib),
+                "reference_distance_mm": shared_coerce_finite_float(calib.get("reference_distance_mm")),
+                "speed_score_pct": shared_coerce_finite_float(calib.get("speed_score_pct")),
+                "source": str(calib.get("source") or curve_key),
+                "by_cmd": cmd_rows,
             }
-        except Exception:
-            continue
-    return out if out else None
+        )
+    return {"curves": curves} if curves else None
+
+
+def _y_curve_display_name(curve_key: str, calibration: dict | None) -> str:
+    base_name = str(curve_key or "curve").strip() or "curve"
+    calib = calibration if isinstance(calibration, dict) else {}
+    reference_distance_mm = shared_coerce_finite_float(calib.get("reference_distance_mm"))
+    speed_score_pct = shared_coerce_finite_float(calib.get("speed_score_pct"))
+    if reference_distance_mm is not None and speed_score_pct is not None:
+        return (
+            f"{base_name} at {float(reference_distance_mm):.0f}mm distance "
+            f"at {int(round(float(speed_score_pct)))}% speed"
+        )
+    if reference_distance_mm is not None:
+        return f"{base_name} at {float(reference_distance_mm):.0f}mm distance"
+    if speed_score_pct is not None:
+        return f"{base_name} at {int(round(float(speed_score_pct)))}% speed"
+    return base_name
+
+
+def _closest_y_duration_curve(
+    *,
+    y_calibration: dict | None,
+    observed_distance_mm: float | None,
+) -> dict | None:
+    curves = y_calibration.get("curves") if isinstance(y_calibration, dict) else None
+    if not isinstance(curves, list) or not curves:
+        return None
+    observed_distance = shared_coerce_finite_float(observed_distance_mm)
+    if observed_distance is None:
+        return dict(curves[0]) if isinstance(curves[0], dict) else None
+    curves_with_reference = [
+        dict(curve)
+        for curve in curves
+        if isinstance(curve, dict) and shared_coerce_finite_float(curve.get("reference_distance_mm")) is not None
+    ]
+    if not curves_with_reference:
+        return dict(curves[0]) if isinstance(curves[0], dict) else None
+    return min(
+        curves_with_reference,
+        key=lambda curve: (
+            abs(float(curve.get("reference_distance_mm")) - float(observed_distance)),
+            str(curve.get("curve_name") or curve.get("curve_key") or ""),
+        ),
+    )
+
+
+def _closest_y_duration_curve_name(
+    *,
+    y_calibration: dict | None,
+    observed_distance_mm: float | None,
+) -> str:
+    curve = _closest_y_duration_curve(
+        y_calibration=y_calibration,
+        observed_distance_mm=observed_distance_mm,
+    )
+    if not isinstance(curve, dict):
+        return "no_curve"
+    return str(curve.get("curve_name") or curve.get("curve_key") or "curve")
+
+
+def _predict_movement_from_curve(
+    *,
+    cmd: str,
+    duration_ms: int,
+    y_calibration: dict | None,
+    observed_distance_mm: float | None = None,
+) -> tuple[float | None, str]:
+    """Predict movement distance using existing calibration curve.
+    
+    Returns:
+        (predicted_distance_mm, curve_source)
+    """
+    cmd_key = _normalize_cmd(cmd, allow_auto=False)
+    selected_curve = _closest_y_duration_curve(
+        y_calibration=y_calibration,
+        observed_distance_mm=observed_distance_mm,
+    )
+    if not isinstance(selected_curve, dict):
+        return None, "no_curve"
+    curve_name = str(selected_curve.get("curve_name") or selected_curve.get("curve_key") or "curve")
+    row = selected_curve.get("by_cmd", {}).get(cmd_key) if isinstance(selected_curve.get("by_cmd"), dict) else {}
+    if not isinstance(row, dict):
+        return None, curve_name
+    try:
+        slope = float(row.get("slope_mm_per_ms"))
+        intercept = float(row.get("intercept_mm"))
+    except Exception:
+        return None, curve_name
+    if slope <= 1e-9:
+        return None, curve_name
+    predicted_mm = float(slope) * float(duration_ms) + float(intercept)
+    return max(0.0, predicted_mm), curve_name
+
+
+def _calculate_prediction_comparison(
+    *,
+    actual_distance_mm: float,
+    predicted_distance_mm: float | None,
+    curve_source: str,
+) -> dict:
+    """Calculate prediction comparison metrics."""
+    if predicted_distance_mm is None or predicted_distance_mm <= 0.0:
+        return {
+            "predicted_distance_mm": None,
+            "curve_source": curve_source,
+            "absolute_difference_mm": None,
+            "prediction_closeness_percentage": None,
+        }
+
+    absolute_difference_mm = abs(float(actual_distance_mm) - float(predicted_distance_mm))
+
+    prediction_closeness = shared_prediction_closeness_percentage(
+        actual_distance_mm=actual_distance_mm,
+        predicted_distance_mm=predicted_distance_mm,
+    )
+
+    return {
+        "predicted_distance_mm": float(predicted_distance_mm),
+        "curve_source": str(curve_source),
+        "absolute_difference_mm": float(absolute_difference_mm),
+        "prediction_closeness_percentage": (
+            float(prediction_closeness) if prediction_closeness is not None else None
+        ),
+    }
 
 
 def _predict_duration_for_target_delta_mm(
@@ -325,11 +474,18 @@ def _predict_duration_for_target_delta_mm(
     duration_min_ms: int,
     duration_max_ms: int,
     y_calibration: dict | None,
+    observed_distance_mm: float | None = None,
 ) -> int:
     cmd_key = _normalize_cmd(cmd, allow_auto=False)
-    if not isinstance(y_calibration, dict) or cmd_key not in y_calibration:
+    selected_curve = _closest_y_duration_curve(
+        y_calibration=y_calibration,
+        observed_distance_mm=observed_distance_mm,
+    )
+    if not isinstance(selected_curve, dict):
         return int(max(duration_min_ms, min(duration_max_ms, duration_min_ms)))
-    row = y_calibration.get(cmd_key) or {}
+    row = selected_curve.get("by_cmd", {}).get(cmd_key) if isinstance(selected_curve.get("by_cmd"), dict) else {}
+    if not isinstance(row, dict):
+        return int(max(duration_min_ms, min(duration_max_ms, duration_min_ms)))
     try:
         slope = float(row.get("slope_mm_per_ms"))
         intercept = float(row.get("intercept_mm"))
@@ -353,6 +509,46 @@ def _colorize(text: str, color_code: str) -> str:
     if not _supports_ansi_color():
         return str(text)
     return f"{str(color_code)}{str(text)}\033[0m"
+
+
+def _prediction_metric_color_code(prediction_closeness_percentage: float | None) -> str | None:
+    if prediction_closeness_percentage is None:
+        return None
+    return "\033[92m" if float(prediction_closeness_percentage) < 25.0 else "\033[91m"
+
+
+def _format_prediction_comparison_fields(prediction_comparison: dict) -> str:
+    closeness_value = prediction_comparison.get("prediction_closeness_percentage")
+    absolute_difference_value = prediction_comparison.get("absolute_difference_mm")
+    if closeness_value is None or absolute_difference_value is None:
+        return ""
+    color_code = _prediction_metric_color_code(closeness_value)
+    absolute_difference_text = f"{float(absolute_difference_value):.2f}"
+    prediction_closeness_text = f"{float(closeness_value):.1f}"
+    if color_code is not None:
+        absolute_difference_text = _colorize(absolute_difference_text, color_code)
+        prediction_closeness_text = _colorize(prediction_closeness_text, color_code)
+    return (
+        f"absolute_difference={absolute_difference_text} "
+        f"prediction_closeness={prediction_closeness_text}%"
+    )
+
+
+def _trials_setup_log_line(
+    *,
+    observed_distance_mm: float | None,
+    closest_curve_name: str,
+) -> str:
+    observed_distance = shared_coerce_finite_float(observed_distance_mm)
+    observed_distance_text = (
+        f"{float(observed_distance):.2f}mm" if observed_distance is not None else "unknown"
+    )
+    message = (
+        "[TRIALS SETUP] "
+        f"observed_distance={observed_distance_text} "
+        f"closest_speed_curve={str(closest_curve_name or 'no_curve')}"
+    )
+    return _colorize(message, "\033[92m")
 
 
 def _trial_result_status_text(*, useful: bool) -> str:
@@ -465,6 +661,7 @@ def read_pose(
     timeout_s: float = OBSERVE_TIMEOUT_S,
     min_sample_time: float | None = None,
     min_samples_required: int | None = None,
+    on_vision_update=None,
 ) -> dict | None:
     poses = []
     start_t = time.time()
@@ -485,6 +682,8 @@ def read_pose(
         pose = None
         try:
             update_world_from_vision(world, vision, log=False)
+            if callable(on_vision_update):
+                on_vision_update()
             now = time.time()
             if min_sample_time is not None and now < float(min_sample_time):
                 time.sleep(OBSERVE_SLEEP_S)
@@ -528,6 +727,7 @@ def _observe_pose_with_reobserve(
     hold_s: float = REOBSERVE_HOLD_S,
     reobserve_rounds: int = REOBSERVE_ROUNDS,
     relaxed_timeout_s: float = RELAXED_OBSERVE_TIMEOUT_S,
+    on_vision_update=None,
 ) -> tuple[dict | None, dict]:
     target_samples = max(1, int(samples))
     strict_pose = read_pose(
@@ -537,6 +737,7 @@ def _observe_pose_with_reobserve(
         timeout_s=float(timeout_s),
         min_sample_time=min_sample_time,
         min_samples_required=target_samples,
+        on_vision_update=on_vision_update,
     )
     if strict_pose is not None:
         return strict_pose, {
@@ -555,6 +756,7 @@ def _observe_pose_with_reobserve(
             timeout_s=max(float(timeout_s), float(relaxed_timeout_s)),
             min_sample_time=None,
             min_samples_required=1,
+            on_vision_update=on_vision_update,
         )
         if relaxed_pose is None:
             if round_idx < rounds:
@@ -576,6 +778,7 @@ def _observe_pose_with_reobserve(
                 timeout_s=max(1.0, float(timeout_s)),
                 min_sample_time=None,
                 min_samples_required=1,
+                on_vision_update=on_vision_update,
             )
             if confirm_pose is not None and int(confirm_pose.get("samples_used") or 0) >= int(relaxed_pose.get("samples_used") or 0):
                 relaxed_pose = confirm_pose
@@ -665,7 +868,7 @@ def _camera_direction_from_raw_delta(raw_delta_mm: float, *, threshold_mm: float
     raw_delta = float(raw_delta_mm)
     if abs(float(raw_delta)) < max(0.0, float(threshold_mm)):
         return None
-    return "down" if float(raw_delta) > 0.0 else "up"
+    return "up" if float(raw_delta) > 0.0 else "down"
 
 
 def _camera_direction_human(direction: str | None, *, adverb: bool = False) -> str:
@@ -675,6 +878,24 @@ def _camera_direction_human(direction: str | None, *, adverb: bool = False) -> s
     if direction_key == "down":
         return "downwards" if adverb else "down"
     return "inconclusive"
+
+
+def _trial_prefixed_detail_prefix(prefix: str, trial_label: str) -> str:
+    prefix_text = str(prefix or "").strip()
+    label_text = str(trial_label or "").strip()
+    if not prefix_text:
+        return label_text
+    if not label_text:
+        return prefix_text
+    if prefix_text.startswith("["):
+        bracket_end = prefix_text.find("]")
+        if bracket_end >= 0:
+            channel = prefix_text[: bracket_end + 1]
+            detail = prefix_text[bracket_end + 1 :].strip()
+            if detail:
+                return f"{channel} {label_text}: {detail}"
+            return f"{channel} {label_text}:"
+    return f"{prefix_text} {label_text}:"
 
 
 def _log_command_inversion_detail(
@@ -692,10 +913,11 @@ def _log_command_inversion_detail(
     wire_direction = _expected_camera_direction_for_cmd(wire_cmd_key)
     expected_text = _camera_direction_human(expected_direction, adverb=True)
     wire_text = _camera_direction_human(wire_direction, adverb=True)
+    detail_prefix = _trial_prefixed_detail_prefix(prefix, trial_label)
 
     if raw_delta_mm is None:
         log_line(
-            f"{str(prefix)} {trial_label}: expected the brick to go {expected_text} on camera for "
+            f"{detail_prefix} expected the brick to go {expected_text} on camera for "
             f"{_mast_label_for_cmd(logical_cmd_key)}, but wire {_mast_label_for_cmd(wire_cmd_key)} "
             f"would drive it {wire_text}."
         )
@@ -705,7 +927,7 @@ def _log_command_inversion_detail(
     observed_direction = _camera_direction_from_raw_delta(raw_delta, threshold_mm=float(threshold_mm))
     if observed_direction is None:
         log_line(
-            f"{str(prefix)} {trial_label}: expected the brick to go {expected_text} on camera, "
+            f"{detail_prefix} expected the brick to go {expected_text} on camera, "
             f"but observed raw_delta={float(raw_delta):+.2f}mm which is below the "
             f"{float(threshold_mm):.2f}mm direction threshold."
         )
@@ -713,7 +935,7 @@ def _log_command_inversion_detail(
 
     observed_text = _camera_direction_human(observed_direction, adverb=True)
     log_line(
-        f"{str(prefix)} {trial_label}: expected the brick to go {expected_text} on camera, "
+        f"{detail_prefix} expected the brick to go {expected_text} on camera, "
         f"but saw it move {observed_text} ({abs(float(raw_delta)):.2f}mm; raw_delta={float(raw_delta):+.2f}mm). "
         f"Wire {_mast_label_for_cmd(wire_cmd_key)} also implies {wire_text} camera motion."
     )
@@ -1025,6 +1247,17 @@ def _build_duration_schedule(
 ) -> list[int]:
     low = max(1, int(min_duration_ms))
     high = max(low, int(max_duration_ms))
+
+    # When a specific trial count is requested, distribute evenly across
+    # the full min→max range so e.g. 2 trials gives [min, max].
+    if trials is not None:
+        count = max(1, int(trials))
+        if count == 1:
+            return [low]
+        step = (float(high) - float(low)) / float(count - 1)
+        return [int(round(float(low) + float(step) * float(i))) for i in range(count)]
+
+    # Default: sectioned random sampling across the range.
     band_step = max(1, int(section_step_ms))
     band_span = max(0, int(section_span_ms))
     per_section = max(1, int(samples_per_section))
@@ -1046,13 +1279,9 @@ def _build_duration_schedule(
     if not sections:
         sections = [(int(low), int(high))]
 
-    total = None if trials is None else max(1, int(trials))
     schedule: list[int] = []
     for start_ms, end_ms in sections:
-        remaining = per_section if total is None else min(per_section, int(total) - len(schedule))
-        if remaining <= 0:
-            break
-        schedule.extend(_sample_band(start_ms, end_ms, int(remaining)))
+        schedule.extend(_sample_band(start_ms, end_ms, int(per_section)))
     return schedule
 
 
@@ -1435,9 +1664,16 @@ def _run_trial_action(
     plotter=None,
     initial_pre_pose: dict | None = None,
     initial_pre_obs_meta: dict | None = None,
+    y_duration_cal: dict | None = None,
+    trial_speed_profile: dict | None = None,
+    stream_refresh_fn: Callable | None = None,
 ) -> tuple[TrialResult | None, str | None]:
     phase_key = str(phase or "trial")
     abort_prefix = ""
+
+    def _on_vision_update():
+        if callable(stream_refresh_fn):
+            stream_refresh_fn()
 
     pre_pose = dict(initial_pre_pose) if isinstance(initial_pre_pose, dict) else None
     pre_obs_meta = dict(initial_pre_obs_meta) if isinstance(initial_pre_obs_meta, dict) else None
@@ -1447,6 +1683,7 @@ def _run_trial_action(
             world=world,
             samples=observe_samples,
             timeout_s=observe_timeout_s,
+            on_vision_update=_on_vision_update,
         )
     if pre_pose is None:
         pre_pose, pre_obs_meta = _recover_pose_for_trial(
@@ -1464,19 +1701,33 @@ def _run_trial_action(
             return None, f"{abort_prefix}pre_pose_unavailable_trial_{trial_idx}"
     if not isinstance(pre_obs_meta, dict):
         pre_obs_meta = {"mode": "unknown", "reobserved": False}
-    log_line(
-        f"[CALIBRATE_Y] {trial_label}: "
-        f"{_center_target_status_line(float(pre_pose.get('offset_y') or 0.0), target_y_mm=float(center_target_y_mm))}"
-    )
 
-    act_plan = _planned_action_meta(cmd, setup_score, duration_ms)
+    effective_score, effective_score_meta = shared_resolve_calibration_trial_speed_score(
+        observed_distance_mm=_coerce_finite_float(pre_pose.get("dist")),
+        requested_score=int(setup_score),
+        speed_profile=trial_speed_profile,
+    )
+    if str((effective_score_meta or {}).get("source") or "") == "distance_curve":
+        observed_dist_local = _coerce_finite_float(pre_pose.get("dist"))
+        observed_dist_text = (
+            f"{float(observed_dist_local):.2f}mm"
+            if observed_dist_local is not None
+            else "unknown"
+        )
+        log_line(
+            f"[CALIBRATE_Y] {trial_label}: trial speed curve "
+            f"dist={observed_dist_text} -> score={int(effective_score)}% "
+            f"(base {int(setup_score)}%)."
+        )
+
+    act_plan = _planned_action_meta(cmd, effective_score, duration_ms)
     act_start_ts = time.time()
     action_meta = _send_fixed_score_command(
         robot=robot,
         world=world,
         step=str(action_step),
         cmd=cmd,
-        score=int(setup_score),
+        score=int(effective_score),
         duration_override_ms=int(duration_ms),
     )
     if not isinstance(action_meta, dict):
@@ -1488,9 +1739,17 @@ def _run_trial_action(
         {
             "cmd": str(cmd),
             "duration_ms": int(duration_used_ms or 0),
-            "score_requested": int(setup_score),
+            "score_requested": int(effective_score),
             "timestamp": time.time(),
         }
+    )
+    # Log the post-act pause with breakdown
+    settle_ms = int(round(float(post_act_settle_s) * 1000.0))
+    duration_wait_ms = int(duration_used_ms or 0)
+    total_pause_ms = duration_wait_ms + settle_ms
+    log_line(
+        f"\033[90m[CALIBRATE_Y] {trial_label}: {int(total_pause_ms)}ms pause "
+        f"(cmd={int(duration_wait_ms)}ms + settle={int(settle_ms)}ms)\033[0m"
     )
     post_pose, post_obs_meta = _observe_pose_with_reobserve(
         vision=vision,
@@ -1498,6 +1757,7 @@ def _run_trial_action(
         samples=observe_samples,
         timeout_s=observe_timeout_s,
         min_sample_time=act_start_ts + (float(duration_used_ms or 0) / 1000.0) + float(post_act_settle_s),
+        on_vision_update=_on_vision_update,
     )
     lost_visibility = False
     recovered_visibility = False
@@ -1511,7 +1771,7 @@ def _run_trial_action(
             cmd=cmd,
             pre_y_mm=float(pre_pose["offset_y"]),
             center_target_y_mm=float(center_target_y_mm),
-            setup_score=int(setup_score),
+            setup_score=int(effective_score),
             duration_used_ms=int(duration_used_ms or 0),
             cmd_sent=str(action_meta.get("cmd_sent")),
             camera_direction_check=camera_direction_check,
@@ -1548,27 +1808,22 @@ def _run_trial_action(
         raw_delta_mm=raw_delta_mm,
     )
     cmd_sent_effective = str(action_meta.get("cmd_sent") or cmd)
-    if _should_log_command_inversion_detail(
+    raw_delta_below_threshold = abs(float(raw_delta_mm)) < float(CAMERA_DIRECTION_VERIFY_MIN_DELTA_MM)
+    should_log_inversion_detail = False
+    if not raw_delta_below_threshold and _should_log_command_inversion_detail(
         logical_cmd=str(cmd),
         wire_cmd=str(cmd_sent_effective),
         raw_delta_mm=float(raw_delta_mm),
         threshold_mm=float(CAMERA_DIRECTION_VERIFY_MIN_DELTA_MM),
     ):
-        _log_command_inversion_detail(
-            prefix="[CALIBRATE_Y] ⚠️  Command inversion detail:",
-            trial_label=trial_label,
-            logical_cmd=str(cmd),
-            wire_cmd=str(cmd_sent_effective),
-            raw_delta_mm=float(raw_delta_mm),
-            threshold_mm=float(CAMERA_DIRECTION_VERIFY_MIN_DELTA_MM),
-        )
+        should_log_inversion_detail = True
     source_trial_value = _coerce_int(source_trial, trial_idx)
 
     row = TrialResult(
         trial=int(trial_idx),
         duration_ms=int(duration_used_ms or 0),
         cmd=str(cmd),
-        score_requested=int(setup_score),
+        score_requested=int(effective_score),
         cmd_sent=str(cmd_sent_effective),
         pwm=_coerce_int(action_meta.get("pwm")),
         power=_coerce_float(action_meta.get("power")),
@@ -1601,18 +1856,52 @@ def _run_trial_action(
         source_trial=_coerce_int(source_trial_value),
     )
 
-    useful_trial = not bool(wrong_way)
+    # Get prediction from existing curve
+    predicted_distance_mm, curve_source = _predict_movement_from_curve(
+        cmd=cmd,
+        duration_ms=int(duration_used_ms or 0),
+        y_calibration=y_duration_cal,
+        observed_distance_mm=_coerce_finite_float(pre_pose.get("dist")),
+    )
+    
+    # Calculate prediction comparison metrics
+    prediction_comparison = _calculate_prediction_comparison(
+        actual_distance_mm=cmd_delta_mm,
+        predicted_distance_mm=predicted_distance_mm,
+        curve_source=curve_source,
+    )
+    
     log_line(
         "[CALIBRATE_Y] "
-        f"{_trial_result_status_text(useful=useful_trial)} "
         f"{_trial_result_label(trial_idx=trial_idx, trials_planned=trials_planned)}: "
-        f"cmd={cmd.upper()} score={int(setup_score)}% "
+        f"cmd={cmd.upper()} score={int(effective_score)}% "
         f"duration={int(duration_used_ms or 0)}ms start_y={pre_y_mm:+.2f}mm end_y={post_y_mm:+.2f}mm "
         f"distance={cmd_delta_mm:.2f}mm signed={signed_cmd_delta_mm:+.2f}mm "
-        f"wrong_way={bool(wrong_way)} raw_delta={raw_delta_mm:+.2f}mm"
+        f"wrong_way={bool(wrong_way)} raw_delta={raw_delta_mm:+.2f}mm "
+        f"predicted={prediction_comparison['predicted_distance_mm']:.2f}mm "
+        f"curve_source={prediction_comparison['curve_source']} "
+        f"{_format_prediction_comparison_fields(prediction_comparison)}"
+        if prediction_comparison['predicted_distance_mm'] is not None else 
+        f"predicted=None curve_source={prediction_comparison['curve_source']}"
     )
 
-    if plotter is not None and not bool(wrong_way):
+    if raw_delta_below_threshold:
+        discarded_text = _colorize('DISCARDED', '\033[91m')
+        log_line(
+            f"[CALIBRATE_Y] {trial_label}: {discarded_text} — "
+            f"raw_delta={float(raw_delta_mm):+.2f}mm is below {float(CAMERA_DIRECTION_VERIFY_MIN_DELTA_MM):.2f}mm threshold."
+        )
+    elif should_log_inversion_detail:
+        _log_command_inversion_detail(
+            prefix="[CALIBRATE_Y] ⚠️  Command inversion detail:",
+            trial_label=trial_label,
+            logical_cmd=str(cmd),
+            wire_cmd=str(cmd_sent_effective),
+            raw_delta_mm=float(raw_delta_mm),
+            threshold_mm=float(CAMERA_DIRECTION_VERIFY_MIN_DELTA_MM),
+        )
+
+    if plotter is not None:
         plotter.add_point(
             duration_ms=int(duration_used_ms or 0),
             distance_mm=float(cmd_delta_mm),
@@ -1623,6 +1912,8 @@ def _run_trial_action(
             post_brick_distance_mm=_coerce_finite_float(post_pose.get("dist")),
             annotation_label=None,
         )
+    if callable(stream_refresh_fn):
+        stream_refresh_fn()
     return row, None
 
 
@@ -1848,6 +2139,7 @@ def main() -> int:
     if args.reference_distance_mm is not None:
         global REFERENCE_BRICK_DISTANCE_MM
         REFERENCE_BRICK_DISTANCE_MM = float(args.reference_distance_mm)
+    trial_speed_profile = shared_load_calibration_trial_speed_profile("y_axis")
     durations_ms = _build_duration_schedule(
         trials=trials_requested,
         min_duration_ms=min_duration_ms,
@@ -1910,9 +2202,12 @@ def main() -> int:
         "brick_distance_definition": str(BRICK_DISTANCE_DEFINITION),
         "target_y_mm": [float(v) for v in planned_targets] if trial_mode == "target" else [],
         "target_repeats": int(target_repeats),
+        "trial_speed_score_source": "distance_curve" if isinstance(trial_speed_profile, dict) else "arg",
     }
     if REFERENCE_BRICK_DISTANCE_MM is not None:
         config["reference_brick_distance_mm"] = float(REFERENCE_BRICK_DISTANCE_MM)
+    if isinstance(trial_speed_profile, dict):
+        config["trial_speed_score_profile"] = json.loads(json.dumps(trial_speed_profile))
 
     log_line("[CALIBRATE_Y] Starting y-axis duration probe.")
     log_line(
@@ -1938,6 +2233,17 @@ def main() -> int:
         f"{_mast_label_for_cmd(TRIAL_ALTERNATING_START_CMD)}, "
         f"{_mast_label_for_cmd(_inverse_cmd(TRIAL_ALTERNATING_START_CMD) or 'u')}."
     )
+    if isinstance(trial_speed_profile, dict):
+        curve_points = list(trial_speed_profile.get("curve_points") or [])
+        if len(curve_points) >= 2:
+            first_point = curve_points[0]
+            last_point = curve_points[-1]
+            log_line(
+                f"[CALIBRATE_Y] trial speed curve: "
+                f"<= {float(first_point.get('distance_mm')):.0f}mm -> {int(first_point.get('speed_score'))}% ; "
+                f">= {float(last_point.get('distance_mm')):.0f}mm -> {int(last_point.get('speed_score'))}% ; "
+                "linear between points."
+            )
     if Y_AXIS_INVERT:
         log_line("[CALIBRATE_Y] ⚠️  Y-AXIS INVERSION ACTIVE: u/d commands are inverted")
     if cmd_mode == "auto":
@@ -1966,6 +2272,11 @@ def main() -> int:
     camera_direction_check = _new_camera_direction_check_state()
     status = "completed"
     abort_reason = None
+    stream_score_line = (
+        "Score: distance curve"
+        if isinstance(trial_speed_profile, dict)
+        else f"Score: {int(speed_score)}%"
+    )
 
     try:
         world = WorldModel()
@@ -1985,23 +2296,34 @@ def main() -> int:
             vision = LeiaVision(debug=False)
 
         if bool(args.livestream):
+            shared_stream_state, shared_stream_url = get_shared_stream_runtime()
+            stream_state = prepare_shared_stream_state(
+                shared_stream_state,
+                vision_mode="aruco" if str(args.vision).strip().lower() == "aruco" else "cyan",
+            )
+            stream_extra_lines: list[str] = []
+            if stream_state is None:
+                stream_state = {
+                    "frame": None,
+                    "text_lines": [],
+                    "lock": threading.Lock(),
+                    "show_center_line": True,
+                    "vision_mode": "aruco" if str(args.vision).strip().lower() == "aruco" else "cyan",
+                }
+            else:
+                stream_url = str(shared_stream_url or stream_url)
             log_line(f"[CALIBRATE_Y] Livestream URL: {_orange_text(stream_url)}")
-            stream_state = {
-                "frame": None,
-                "text_lines": [],
-                "lock": threading.Lock(),
-                "show_center_line": True,
-                "vision_mode": "aruco" if str(args.vision).strip().lower() == "aruco" else "cyan",
-            }
 
             def _live_refresh(extra_lines=None):
+                nonlocal stream_extra_lines
+                if extra_lines is not None:
+                    stream_extra_lines = [str(item) for item in list(extra_lines)]
                 lines = [
                     f"Y calibration mode: {trial_mode}",
                     f"Trials: {len(trial_rows)}/{int(trials_planned)}",
-                    f"Score: {int(speed_score)}%",
+                    str(stream_score_line),
                 ]
-                if isinstance(extra_lines, list):
-                    lines.extend([str(item) for item in extra_lines])
+                lines.extend(list(stream_extra_lines))
                 _refresh_stream_state(
                     stream_state=stream_state,
                     vision=vision,
@@ -2010,111 +2332,110 @@ def main() -> int:
                 )
 
             _live_refresh([])
-            try:
-                stream_server, stream_url = start_stream_server(
-                    stream_state,
-                    title="Y-Axis Speed Curve Calibration",
-                    header="",
-                    footer="<div class='footer-sections'><div class='footer-section'><div class='footer-title'>Y Calibration</div><div>Mast/XYZ side panel + live trial telemetry.</div></div></div>",
-                    host=str(args.stream_host),
-                    port=int(args.stream_port),
-                    fps=max(1, int(args.stream_fps)),
-                    jpeg_quality=max(1, min(100, int(args.stream_jpeg_quality))),
-                    img_width=max(320, int(args.stream_img_width)),
-                    vision_mode_options=[("aruco", "AruCo Markers"), ("cyan", "Cyan Bricks")],
-                    xyz_workspace_getter=lambda: getattr(world, "_xyz_workspace", None),
-                )
-                log_line(f"[CALIBRATE_Y] Livestream started: {_orange_text(stream_url)}")
-            except Exception as exc:
-                log_line(f"[CALIBRATE_Y] Livestream startup failed at {stream_url}: {exc}")
-                stream_server = None
+            if shared_stream_state is not None and stream_state is shared_stream_state:
+                log_line("[CALIBRATE_Y] Reusing existing manual-training livestream.")
+            else:
+                try:
+                    stream_server, stream_url = start_stream_server(
+                        stream_state,
+                        title="Y-Axis Speed Curve Calibration",
+                        header="",
+                        footer="<div class='footer-sections'><div class='footer-section'><div class='footer-title'>Y Calibration</div><div>Mast/XYZ side panel + live trial telemetry.</div></div></div>",
+                        host=str(args.stream_host),
+                        port=int(args.stream_port),
+                        fps=max(1, int(args.stream_fps)),
+                        jpeg_quality=max(1, min(100, int(args.stream_jpeg_quality))),
+                        img_width=max(320, int(args.stream_img_width)),
+                        vision_mode_options=[("aruco", "AruCo Markers"), ("cyan", "Cyan Bricks")],
+                        xyz_workspace_getter=lambda: getattr(world, "_xyz_workspace", None),
+                    )
+                    log_line(f"[CALIBRATE_Y] Livestream started: {_orange_text(stream_url)}")
+                except Exception as exc:
+                    log_line(f"[CALIBRATE_Y] Livestream startup failed at {stream_url}: {exc}")
+                    stream_server = None
         else:
             def _live_refresh(extra_lines=None):
                 return
 
-        # Preflight check: verify 1% speed produces detectable movement before any trial.
-        from .helper_calibrate import check_1pct_speed_movement
-        cmd_to_test = "u"  # Use lift (up) as the test command for Y-axis
-        log_line(
-            f"[CALIBRATE_Y] Running preflight check: probing {cmd_to_test.upper()} at fixed 250ms and escalating score until movement is detected..."
-        )
-        preflight_result = check_1pct_speed_movement(
-            robot=robot,
-            vision=vision,
-            world=world,
-            cmd=cmd_to_test,
-            movement_threshold_mm=0.15,
-            sample_frames=3,
-            sample_timeout_s=1.5,
-            observe_sleep_s=0.02,
-            control_sleep_s=0.04,
-            duration_override_ms=250,
-            log=log_line,
-        )
-        if not preflight_result:
-            log_line(
-                f"[CALIBRATE_Y] ⚠️  PREFLIGHT FAILED: no tested score produced detectable {cmd_to_test.upper()} movement at 250ms."
+        # Load existing calibration curve for prediction comparison
+        y_duration_cal = _load_y_duration_calibration()
+        initial_trial_pre_pose = None
+        initial_trial_pre_obs_meta = None
+        if trials_planned > 0:
+            _live_refresh(
+                [
+                    "TRIALS SETUP",
+                    "Observing current distance...",
+                ]
             )
-            config["preflight_result"] = {
-                "passed": False,
-                "cmd": str(cmd_to_test),
-                "duration_ms": 250,
-            }
-            log_line("[CALIBRATE_Y] Check: Is the robot powered on? Is the mast stalled or the visibility feed too noisy?")
-            log_line("[CALIBRATE_Y] Aborting calibration to prevent wasted trials at ineffective duration.")
-            status = "aborted"
-            abort_reason = "preflight_no_detectable_movement_at_250ms"
-        else:
-            detected_speed_score = _effective_preflight_speed_score(speed_score, preflight_result)
-            config["preflight_result"] = {
-                "passed": True,
-                "cmd": str(preflight_result.get("cmd") or cmd_to_test),
-                "duration_ms": int(preflight_result.get("duration_ms") or 250),
-                "score_used": int(preflight_result.get("score_used") or detected_speed_score),
-                "attempt_idx": _coerce_int(preflight_result.get("attempt_idx")),
-                "attempt_count": _coerce_int(preflight_result.get("attempt_count")),
-            }
-            log_line(
-                f"[CALIBRATE_Y] ✓ Preflight passed: first detectable movement was {cmd_to_test.upper()} at "
-                f"{int(preflight_result.get('score_used') or 0)}% for {int(preflight_result.get('duration_ms') or 0)}ms."
+            initial_trial_pre_pose, initial_trial_pre_obs_meta = _observe_pose_with_reobserve(
+                vision=vision,
+                world=world,
+                samples=observe_samples,
+                timeout_s=observe_timeout_s,
+                on_vision_update=_live_refresh,
             )
-            if int(detected_speed_score) != int(speed_score):
-                log_line(
-                    f"[CALIBRATE_Y] Updating active calibration speed from {int(speed_score)}% to detected preflight minimum {int(detected_speed_score)}%."
+            if initial_trial_pre_pose is None:
+                initial_trial_pre_pose, initial_trial_pre_obs_meta = _recover_pose_for_trial(
+                    vision=vision,
+                    world=world,
+                    robot=robot,
+                    recent_acts=recent_acts,
+                    trial_idx=1,
+                    trials_requested=trials_planned,
+                    stage_label="before trials",
+                    trial_label="TRIALS SETUP",
                 )
-            speed_score = int(detected_speed_score)
-            config["speed_score"] = int(speed_score)
-            config["speed_score_source"] = "preflight_min_detectable"
-            min_duration_ms = max(min_duration_ms, int(preflight_result.get("duration_ms") or 250))
-            max_duration_ms = max(min_duration_ms, max_duration_ms)
-            durations_ms = _build_duration_schedule(
-                trials=trials_requested,
-                min_duration_ms=min_duration_ms,
-                max_duration_ms=max_duration_ms,
-                rng=rng,
-            )
-            trials_planned = len(durations_ms)
-            log_line(
-                f"[CALIBRATE_Y] Schedule rebuilt from preflight min: {int(min_duration_ms)}ms → {int(max_duration_ms)}ms "
-                f"({int(trials_planned)} trials)"
-            )
+            if initial_trial_pre_pose is None:
+                status = "aborted"
+                abort_reason = "pre_pose_unavailable_before_trials"
+                log_line("[CALIBRATE_Y] TRIALS SETUP: unable to observe current distance. Aborting.")
+            else:
+                setup_distance_mm = _coerce_finite_float(initial_trial_pre_pose.get("dist"))
+                setup_curve_name = _closest_y_duration_curve_name(
+                    y_calibration=y_duration_cal,
+                    observed_distance_mm=setup_distance_mm,
+                )
+                log_line(
+                    _trials_setup_log_line(
+                        observed_distance_mm=setup_distance_mm,
+                        closest_curve_name=setup_curve_name,
+                    )
+                )
+                _live_refresh(
+                    [
+                        "TRIALS SETUP",
+                        f"Observed dist: {float(setup_distance_mm):.2f}mm"
+                        if setup_distance_mm is not None
+                        else "Observed dist: unknown",
+                        f"Closest curve: {setup_curve_name}",
+                    ]
+                )
 
         if status == "aborted":
             pass
         else:
-            y_duration_cal = _load_y_duration_calibration()
             for trial_idx, duration_ms in enumerate(durations_ms, start=1):
                 trial_label = _trial_label_text(trial_idx, trials_planned)
-                pre_pose = None
-                pre_obs_meta = None
+                pre_pose = (
+                    dict(initial_trial_pre_pose)
+                    if trial_idx == 1 and isinstance(initial_trial_pre_pose, dict)
+                    else None
+                )
+                pre_obs_meta = (
+                    dict(initial_trial_pre_obs_meta)
+                    if trial_idx == 1 and isinstance(initial_trial_pre_obs_meta, dict)
+                    else None
+                )
 
                 if trial_mode == "target":
-                    pre_pose, pre_obs_meta = _observe_pose_with_reobserve(
-                        vision=vision,
-                        world=world,
-                        samples=observe_samples,
-                        timeout_s=observe_timeout_s,
-                    )
+                    if pre_pose is None:
+                        pre_pose, pre_obs_meta = _observe_pose_with_reobserve(
+                            vision=vision,
+                            world=world,
+                            samples=observe_samples,
+                            timeout_s=observe_timeout_s,
+                        )
                     if pre_pose is None:
                         pre_pose, pre_obs_meta = _recover_pose_for_trial(
                             vision=vision,
@@ -2141,6 +2462,7 @@ def main() -> int:
                         duration_min_ms=int(min_duration_ms),
                         duration_max_ms=int(max_duration_ms),
                         y_calibration=y_duration_cal,
+                        observed_distance_mm=_coerce_finite_float(pre_pose.get("dist")),
                     )
                     log_line(
                         f"[CALIBRATE_Y] {trial_label}: target_y={target_y:+.2f}mm current_y={curr_y:+.2f}mm "
@@ -2163,12 +2485,13 @@ def main() -> int:
                             f"({_mast_label_for_cmd(cmd)}) to stay near y_axis={float(center_y_mm):+.2f}mm."
                         )
                     elif cmd_mode == "auto":
-                        pre_pose, pre_obs_meta = _observe_pose_with_reobserve(
-                            vision=vision,
-                            world=world,
-                            samples=observe_samples,
-                            timeout_s=observe_timeout_s,
-                        )
+                        if pre_pose is None:
+                            pre_pose, pre_obs_meta = _observe_pose_with_reobserve(
+                                vision=vision,
+                                world=world,
+                                samples=observe_samples,
+                                timeout_s=observe_timeout_s,
+                            )
                         if pre_pose is None:
                             pre_pose, pre_obs_meta = _recover_pose_for_trial(
                                 vision=vision,
@@ -2221,8 +2544,11 @@ def main() -> int:
                     post_act_settle_s=post_act_settle_s,
                     camera_direction_check=camera_direction_check,
                     plotter=plotter,
-                    initial_pre_pose=(pre_pose if (cmd_mode == "auto" or trial_mode == "target") else None),
-                    initial_pre_obs_meta=(pre_obs_meta if (cmd_mode == "auto" or trial_mode == "target") else None),
+                    initial_pre_pose=pre_pose,
+                    initial_pre_obs_meta=pre_obs_meta,
+                    y_duration_cal=y_duration_cal,
+                    trial_speed_profile=trial_speed_profile,
+                    stream_refresh_fn=_live_refresh,
                 )
                 if row is None:
                     status = "aborted"
@@ -2231,8 +2557,7 @@ def main() -> int:
                 if bool(row.wrong_way):
                     _diagnose_wrong_way_event(row)
                     log_line(
-                        f"[CALIBRATE_Y] ⚠️  Trial {trial_idx}: wrong_way detected (likely vision jitter). "
-                        f"Skipping plot point but continuing trials."
+                        f"[CALIBRATE_Y] ⚠️  Trial {trial_idx}: wrong_way detected. Plotting it anyway."
                     )
                 trial_rows.append(row)
                 if trial_mode == "target":

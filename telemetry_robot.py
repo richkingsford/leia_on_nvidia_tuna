@@ -2194,6 +2194,12 @@ class WorldModel:
             normalized_offset_x = -float(offset_x)
         except (TypeError, ValueError):
             normalized_offset_x = 0.0
+        # Global y-axis convention: normal number line.
+        # Positive numbers should go up, negative numbers should go down.
+        try:
+            normalized_offset_y = -float(cam_h)
+        except (TypeError, ValueError):
+            normalized_offset_y = 0.0
         brick_height = brick_module.update_from_vision(
             self,
             found,
@@ -2201,14 +2207,14 @@ class WorldModel:
             angle,
             conf,
             normalized_offset_x,
-            cam_h,
+            normalized_offset_y,
             brick_above,
             brick_below,
             raw_dist=raw_dist,
         )
         update_lift_from_vision(
             self,
-            cam_h,
+            -normalized_offset_y,  # Convert back to cam_h for lift calibration
             brick_height,
             conf,
         )

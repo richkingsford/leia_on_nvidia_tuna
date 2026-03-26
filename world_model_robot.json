@@ -204,13 +204,21 @@
       "duration_ms": 1300
     }
   },
-  "command_remap": {
-    "f": "b",
-    "b": "f",
-    "l": "r",
-    "r": "l",
-    "u": "d",
-    "d": "u"
+  "calibration_trial_speed_profiles": {
+    "y_axis": {
+      "metric": "brick_distance_mm",
+      "note": "Use slower mast trial speeds when the brick is near the camera and ramp up linearly as distance increases during y-axis calibration trials, starting from the close-range ~49mm y reference.",
+      "curve_points": [
+        {
+          "distance_mm": 49.0,
+          "speed_score": 1
+        },
+        {
+          "distance_mm": 250.0,
+          "speed_score": 100
+        }
+      ]
+    }
   },
   "turn_efficiency": {
     "l": 88.04,

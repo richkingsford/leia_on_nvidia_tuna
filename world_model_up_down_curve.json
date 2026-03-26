@@ -125,5 +125,45 @@
       }
     },
     "reference_distance_mm": 49.0
+  },
+  "cyan_104mm_1pct_20260325": {
+    "schema_version": 1,
+    "generated_at_iso_utc": "2026-03-26T01:05:51Z",
+    "source": "calibrate_y.py with cyan brick vision",
+    "note": "Derived from the March 25, 2026 7:00 PM cyan run in Runs - cyan/calibrate_y_live.json. Promoted from a 60-trial low-motion run at ~104mm brick distance after direction verification passed with zero mismatches; kept zero-intercept linear fits so the saved curve stays physically usable despite weak signal.",
+    "vision_mode": "cyan",
+    "fit_method": "zero_intercept_linear_least_squares",
+    "fit_run_path": "Runs - cyan/calibrate_y_live.json",
+    "trial_count_total": 60,
+    "speed_score_pct": 1,
+    "duration_range_ms": [
+      200,
+      1500
+    ],
+    "by_cmd": {
+      "u": {
+        "command": "mast_up",
+        "description": "Upward mast motion (u command) from the March 25, 2026 cyan run at ~104mm distance.",
+        "intercept_mm": 0.0,
+        "slope_mm_per_ms": 0.00044619328345332163,
+        "r_squared": 0.7884263430614747,
+        "residual_std_mm": 0.12935816028724959,
+        "motion_rate_mm_per_sec": 0.44619328345332165,
+        "data_points": 30,
+        "equation": "distance_mm = 0.0000 + 0.000446 * duration_ms"
+      },
+      "d": {
+        "command": "mast_down",
+        "description": "Downward mast motion (d command) from the March 25, 2026 cyan run at ~104mm distance.",
+        "intercept_mm": 0.0,
+        "slope_mm_per_ms": 0.00041620781200265417,
+        "r_squared": 0.7728410836593744,
+        "residual_std_mm": 0.12693533156993467,
+        "motion_rate_mm_per_sec": 0.41620781200265416,
+        "data_points": 30,
+        "equation": "distance_mm = 0.0000 + 0.000416 * duration_ms"
+      }
+    },
+    "reference_distance_mm": 103.81956356481733
   }
 }

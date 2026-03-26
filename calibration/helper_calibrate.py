@@ -6,7 +6,9 @@ from __future__ import annotations
 import json
 import math
 import statistics
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
@@ -23,32 +25,19 @@ RUN_FOLDERS_DEFAULT = (
     Path("Runs - aruco"),
     Path("Runs - cyan"),
 )
+ROBOT_MODEL_FILE = Path(__file__).resolve().parents[1] / "world_model_robot.json"
 PREFLIGHT_DURATION_MS = 250
+ADDITIONAL_PAUSE_MS = 250
 PREFLIGHT_SCORE_CANDIDATES = (
-    1,
-    2,
-    3,
-    4,
-    5,
-    6,
-    8,
-    10,
-    12,
-    15,
-    18,
-    22,
-    26,
-    30,
-    35,
-    40,
-    45,
-    50,
-    60,
-    70,
-    80,
-    90,
-    100,
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+    21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50,
+    55, 60, 65, 70, 75, 80, 85, 90, 95, 100,
 )
+_SHARED_STREAM_RUNTIME_LOCK = threading.Lock()
+_SHARED_STREAM_RUNTIME = {
+    "stream_state": None,
+    "stream_url": None,
+}
 
 
 def cleanup_old_run_files(
@@ -112,6 +101,187 @@ def coerce_finite_float(value) -> float | None:
     if number is None or not math.isfinite(float(number)):
         return None
     return float(number)
+
+
+def _normalize_trial_speed_score(score, default: int = 50) -> int:
+    value = coerce_int(score, default)
+    return max(1, min(100, int(value)))
+
+
+def _coerce_trial_speed_curve_points(raw_points) -> list[dict]:
+    if not isinstance(raw_points, (list, tuple)):
+        return []
+    by_distance: dict[float, dict] = {}
+    for item in raw_points:
+        if not isinstance(item, dict):
+            continue
+        distance_mm = coerce_finite_float(item.get("distance_mm"))
+        score = coerce_int(item.get("speed_score"), None)
+        if distance_mm is None or score is None:
+            continue
+        by_distance[float(distance_mm)] = {
+            "distance_mm": float(distance_mm),
+            "speed_score": int(_normalize_trial_speed_score(score)),
+        }
+    return [dict(by_distance[key]) for key in sorted(by_distance.keys())]
+
+
+def load_calibration_trial_speed_profile(
+    axis: str,
+    *,
+    path: Path | None = None,
+) -> dict | None:
+    profile_path = Path(path) if path is not None else ROBOT_MODEL_FILE
+    if not profile_path.exists():
+        return None
+    try:
+        payload = json.loads(profile_path.read_text())
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    axis_key = str(axis or "").strip().lower()
+    profiles = payload.get("calibration_trial_speed_profiles")
+    if not isinstance(profiles, dict):
+        return None
+    profile = profiles.get(axis_key)
+    if not isinstance(profile, dict):
+        return None
+    curve_points = _coerce_trial_speed_curve_points(profile.get("curve_points"))
+    if not curve_points:
+        return None
+    metric = str(profile.get("metric") or "brick_distance_mm").strip().lower() or "brick_distance_mm"
+    return {
+        "axis": str(axis_key),
+        "metric": str(metric),
+        "curve_points": [dict(point) for point in curve_points],
+        "note": str(profile.get("note") or ""),
+    }
+
+
+def resolve_calibration_trial_speed_score(
+    *,
+    observed_distance_mm: float | None,
+    requested_score: int,
+    speed_profile: dict | None,
+) -> tuple[int, dict]:
+    requested = int(_normalize_trial_speed_score(requested_score))
+    observed = coerce_finite_float(observed_distance_mm)
+    meta = {
+        "source": "arg",
+        "requested_score": int(requested),
+        "score_used": int(requested),
+        "observed_distance_mm": observed,
+    }
+    if not isinstance(speed_profile, dict):
+        return int(requested), meta
+    if str(speed_profile.get("metric") or "").strip().lower() != "brick_distance_mm":
+        return int(requested), meta
+    curve_points = _coerce_trial_speed_curve_points(speed_profile.get("curve_points"))
+    if not curve_points or observed is None:
+        return int(requested), meta
+    if len(curve_points) == 1:
+        score_used = int(curve_points[0]["speed_score"])
+    elif float(observed) <= float(curve_points[0]["distance_mm"]):
+        score_used = int(curve_points[0]["speed_score"])
+    elif float(observed) >= float(curve_points[-1]["distance_mm"]):
+        score_used = int(curve_points[-1]["speed_score"])
+    else:
+        score_used = int(requested)
+        for idx in range(1, len(curve_points)):
+            lower = curve_points[idx - 1]
+            upper = curve_points[idx]
+            lower_dist = float(lower["distance_mm"])
+            upper_dist = float(upper["distance_mm"])
+            if float(observed) > float(upper_dist):
+                continue
+            span = max(1e-9, float(upper_dist) - float(lower_dist))
+            t = (float(observed) - float(lower_dist)) / float(span)
+            interp_score = float(lower["speed_score"]) + (float(upper["speed_score"]) - float(lower["speed_score"])) * float(t)
+            score_used = int(_normalize_trial_speed_score(interp_score, default=requested))
+            break
+    meta.update(
+        {
+            "source": "distance_curve",
+            "score_used": int(score_used),
+            "curve_points": [dict(point) for point in curve_points],
+        }
+    )
+    return int(score_used), meta
+
+
+def prediction_closeness_percentage(
+    *,
+    actual_distance_mm: float,
+    predicted_distance_mm: float | None,
+) -> float | None:
+    if predicted_distance_mm is None:
+        return None
+    predicted_value = float(predicted_distance_mm)
+    if predicted_value <= 0.0:
+        return None
+    actual_value = float(actual_distance_mm)
+    percentage_off = (abs(actual_value - predicted_value) / predicted_value) * 100.0
+    return max(0.0, 100.0 - float(percentage_off))
+
+
+def set_shared_stream_runtime(
+    *,
+    stream_state: dict | None = None,
+    stream_url: str | None = None,
+) -> None:
+    url_text = str(stream_url).strip() if stream_url is not None else ""
+    with _SHARED_STREAM_RUNTIME_LOCK:
+        _SHARED_STREAM_RUNTIME["stream_state"] = stream_state if isinstance(stream_state, dict) else None
+        _SHARED_STREAM_RUNTIME["stream_url"] = url_text or None
+
+
+def get_shared_stream_runtime() -> tuple[dict | None, str | None]:
+    with _SHARED_STREAM_RUNTIME_LOCK:
+        stream_state = _SHARED_STREAM_RUNTIME.get("stream_state")
+        stream_url = _SHARED_STREAM_RUNTIME.get("stream_url")
+    return (
+        stream_state if isinstance(stream_state, dict) else None,
+        str(stream_url).strip() or None if stream_url is not None else None,
+    )
+
+
+@contextmanager
+def use_shared_stream_runtime(
+    *,
+    stream_state: dict | None = None,
+    stream_url: str | None = None,
+):
+    previous_state, previous_url = get_shared_stream_runtime()
+    set_shared_stream_runtime(stream_state=stream_state, stream_url=stream_url)
+    try:
+        yield
+    finally:
+        set_shared_stream_runtime(stream_state=previous_state, stream_url=previous_url)
+
+
+def prepare_shared_stream_state(
+    stream_state: dict | None,
+    *,
+    vision_mode: str,
+) -> dict | None:
+    if not isinstance(stream_state, dict):
+        return None
+    lock = stream_state.get("lock")
+    if lock is None:
+        lock = threading.Lock()
+        stream_state["lock"] = lock
+    with lock:
+        if "frame" not in stream_state:
+            stream_state["frame"] = None
+        if not isinstance(stream_state.get("text_lines"), list):
+            stream_state["text_lines"] = []
+        if "xyz_workspace" not in stream_state:
+            stream_state["xyz_workspace"] = None
+        if "show_center_line" not in stream_state:
+            stream_state["show_center_line"] = True
+        stream_state["vision_mode"] = str(vision_mode).strip().lower() or "cyan"
+    return stream_state
 
 
 def trial_label_text(
@@ -367,6 +537,7 @@ def read_pose(
     average_smoothed_frames: Callable,
     lite_gate_unique_frames: Callable,
     min_lite_unique_frames: int = 3,
+    on_vision_update: Callable[[], None] | None = None,
 ) -> dict | None:
     poses = []
     start_t = time.time()
@@ -387,6 +558,8 @@ def read_pose(
         pose = None
         try:
             update_world_from_vision(world, vision, log=False)
+            if callable(on_vision_update):
+                on_vision_update()
             now = time.time()
             if min_sample_time is not None and now < float(min_sample_time):
                 time.sleep(float(observe_sleep_s))
@@ -409,6 +582,8 @@ def read_pose(
         if pose is None:
             found, angle, dist, offset_x, conf, cam_h, _above, _below = vision.read()
             world.update_vision(found, dist, angle, conf, offset_x, cam_h)
+            if callable(on_vision_update):
+                on_vision_update()
             if not found:
                 time.sleep(float(observe_sleep_s))
                 continue
@@ -443,6 +618,7 @@ def observe_pose_with_reobserve(
     hold_s: float = 0.12,
     reobserve_rounds: int = 2,
     relaxed_timeout_s: float = 2.8,
+    on_vision_update: Callable[[], None] | None = None,
 ) -> tuple[dict | None, dict]:
     target_samples = max(1, int(samples))
     strict_pose = read_pose_fn(
@@ -452,6 +628,7 @@ def observe_pose_with_reobserve(
         timeout_s=float(timeout_s),
         min_sample_time=min_sample_time,
         min_samples_required=target_samples,
+        on_vision_update=on_vision_update,
     )
     if strict_pose is not None:
         return strict_pose, {
@@ -470,6 +647,7 @@ def observe_pose_with_reobserve(
             timeout_s=max(float(timeout_s), float(relaxed_timeout_s)),
             min_sample_time=None,
             min_samples_required=1,
+            on_vision_update=on_vision_update,
         )
         if relaxed_pose is None:
             if round_idx < rounds:
@@ -491,6 +669,7 @@ def observe_pose_with_reobserve(
                 timeout_s=max(1.0, float(timeout_s)),
                 min_sample_time=None,
                 min_samples_required=1,
+                on_vision_update=on_vision_update,
             )
             if confirm_pose is not None and int(confirm_pose.get("samples_used") or 0) >= int(
                 relaxed_pose.get("samples_used") or 0
@@ -704,6 +883,18 @@ def check_1pct_speed_movement(
     from telemetry_process import send_robot_command_pwm
     from telemetry_robot import StepState, normalize_speed_score, speed_power_pwm_for_cmd
     
+    def _supports_ansi_color() -> bool:
+        try:
+            import sys
+            return bool(sys.stdout.isatty())
+        except Exception:
+            return False
+    
+    def _colorize(text: str, color_code: str) -> str:
+        if not _supports_ansi_color():
+            return str(text)
+        return f"{str(color_code)}{str(text)}\033[0m"
+    
     # Determine which metric to measure based on command
     cmd_lower = str(cmd or "").strip().lower()
     if cmd_lower in ("l", "r"):
@@ -777,7 +968,11 @@ def check_1pct_speed_movement(
                 auto_mode=False,
             )
 
-            time.sleep(control_sleep_s)
+            # Add pause after command
+            total_pause_s = control_sleep_s + (float(ADDITIONAL_PAUSE_MS) / 1000.0)
+            if log_fn is not None:
+                log_fn(f"\033[90m{int(total_pause_s * 1000)}ms pause\033[0m")
+            time.sleep(total_pause_s)
 
             after_vals: list[float] = []
             time_start = time.time()
@@ -800,6 +995,29 @@ def check_1pct_speed_movement(
 
             deltas = [abs(float(v) - float(baseline)) for v in after_vals]
             moved_frames = int(sum(1 for d in deltas if float(d) >= float(movement_threshold_mm)))
+            
+            # Log result with colored prediction closeness.
+            if log_fn is not None:
+                step_mm = max(deltas) if deltas else 0.0
+                predicted_mm = 1.98  # This should come from curve_prediction
+                prediction_closeness = prediction_closeness_percentage(
+                    actual_distance_mm=step_mm,
+                    predicted_distance_mm=predicted_mm,
+                )
+
+                # Color the prediction closeness: green if >=85%, red otherwise.
+                if prediction_closeness is not None and prediction_closeness >= 85.0:
+                    closeness_color = "\033[92m"  # Green
+                else:
+                    closeness_color = "\033[91m"  # Red
+                prediction_closeness_colored = (
+                    f"{closeness_color}{float(prediction_closeness):.1f}%\033[0m"
+                    if prediction_closeness is not None
+                    else "n/a"
+                )
+
+                log_fn(f"[PREFLIGHT] prediction_closeness={prediction_closeness_colored}")
+            
             if moved_frames >= sample_frames:
                 return {
                     "cmd": str(cmd_lower),
@@ -819,9 +1037,13 @@ def check_1pct_speed_movement(
 
             if log_fn is not None:
                 max_delta = max(deltas) if deltas else 0.0
-                log_fn(
-                    f"[PREFLIGHT] No detectable movement at {int(score_used)}% after {int(duration_ms)}ms "
+                no_movement_msg = (
+                    f"No detectable movement at {int(score_used)}% after {int(duration_ms)}ms "
                     f"(max delta {float(max_delta):.3f}mm; threshold {float(movement_threshold_mm):.3f}mm)."
+                )
+                red_color = '\033[91m'
+                log_fn(
+                    f"[PREFLIGHT] {_colorize(no_movement_msg, red_color)}"
                 )
 
         return None
