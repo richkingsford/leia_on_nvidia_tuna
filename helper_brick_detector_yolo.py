@@ -30,7 +30,10 @@ import math
 import os
 import logging
 import time
+import colorsys
 from pathlib import Path
+
+from helper_camera_sources import candidate_camera_sources, existing_camera_nodes
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -69,8 +72,73 @@ YOLO_INPUT_SIZE = 640
 # ---------------------------------------------------------------------------
 # HSV segmentation for individual cyan brick detection within YOLO boxes
 # ---------------------------------------------------------------------------
-CYAN_HSV_LOWER = np.array([75, 60, 50])
-CYAN_HSV_UPPER = np.array([115, 255, 255])
+CYAN_SHADE_HEXES = (
+    "018F97",
+    "005A5F",
+    "007179",
+    "049397",
+    "00898F",
+    "017E87",
+)
+
+
+def _hex_to_opencv_hsv(hex_code: str) -> tuple[float, float, float]:
+    text = str(hex_code or "").strip().lstrip("#")
+    if len(text) != 6:
+        raise ValueError(f"Expected 6 hex chars, got {hex_code!r}")
+    red = int(text[0:2], 16) / 255.0
+    green = int(text[2:4], 16) / 255.0
+    blue = int(text[4:6], 16) / 255.0
+    hue, sat, val = colorsys.rgb_to_hsv(red, green, blue)
+    return float(hue * 180.0), float(sat * 255.0), float(val * 255.0)
+
+
+def _cyan_palette_hsv_range(
+    *,
+    hue_margin: int,
+    sat_margin: int,
+    val_margin_lower: int,
+    val_ceiling: int = 255,
+) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    hsv_values = [_hex_to_opencv_hsv(hex_code) for hex_code in CYAN_SHADE_HEXES]
+    min_h = min(value[0] for value in hsv_values)
+    max_h = max(value[0] for value in hsv_values)
+    min_s = min(value[1] for value in hsv_values)
+    min_v = min(value[2] for value in hsv_values)
+    lower = (
+        max(0, int(round(float(min_h) - float(hue_margin)))),
+        max(0, int(round(float(min_s) - float(sat_margin)))),
+        max(0, int(round(float(min_v) - float(val_margin_lower)))),
+    )
+    upper = (
+        min(179, int(round(float(max_h) + float(hue_margin)))),
+        255,
+        min(255, int(val_ceiling)),
+    )
+    return lower, upper
+
+
+CYAN_HSV_TIGHT_LOWER, CYAN_HSV_TIGHT_UPPER = _cyan_palette_hsv_range(
+    hue_margin=3,
+    sat_margin=60,
+    val_margin_lower=25,
+    val_ceiling=255,
+)
+CYAN_HSV_BALANCED_LOWER, CYAN_HSV_BALANCED_UPPER = _cyan_palette_hsv_range(
+    hue_margin=6,
+    sat_margin=110,
+    val_margin_lower=45,
+    val_ceiling=255,
+)
+CYAN_HSV_WIDE_LOWER, CYAN_HSV_WIDE_UPPER = _cyan_palette_hsv_range(
+    hue_margin=10,
+    sat_margin=150,
+    val_margin_lower=65,
+    val_ceiling=255,
+)
+
+CYAN_HSV_LOWER = np.array(CYAN_HSV_BALANCED_LOWER)
+CYAN_HSV_UPPER = np.array(CYAN_HSV_BALANCED_UPPER)
 HSV_ERODE_KERNEL = 5
 HSV_ERODE_ITERATIONS = 2
 HSV_MIN_AREA_RATIO = 0.05       # Min 5% of YOLO bbox area = real brick
@@ -160,21 +228,31 @@ class BrickDetector:
         self.debug_show_all_candidates = False
         self.debug_max_boxes = 1
 
-        # Camera setup — try indices 0-3
+        # Camera setup — probe explicit overrides and real /dev/video* nodes first.
         self.cap = None
-        for idx in range(4):
-            self.log.info("Attempting camera %d...", idx)
-            temp = cv2.VideoCapture(idx)
+        self.camera_source = None
+        tried_sources = []
+        for source in candidate_camera_sources():
+            tried_sources.append(source)
+            self.log.info("Attempting camera %s...", source)
+            temp = cv2.VideoCapture(source)
             if temp.isOpened():
-                self.log.info("Connected to camera %d (%s)", idx,
+                self.log.info("Connected to camera %s (%s)", source,
                               temp.getBackendName())
                 self.cap = temp
+                self.camera_source = source
                 break
             temp.release()
 
         if self.cap is None:
-            self.log.error("No camera found (0-3). Using dummy.")
-            self.cap = cv2.VideoCapture(0)
+            existing_nodes = existing_camera_nodes()
+            self.log.error(
+                "No camera found. Tried sources: %s. Detected nodes: %s. Using dummy.",
+                tried_sources,
+                existing_nodes,
+            )
+            dummy_source = existing_nodes[0] if existing_nodes else 0
+            self.cap = cv2.VideoCapture(dummy_source)
 
         # Frame dimensions
         self.frame_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or DEFAULT_FRAME_W
@@ -466,6 +544,22 @@ class BrickDetector:
         if bbox_height_px <= 0:
             return 999.0
         return (BRICK_HEIGHT_MM * self.focal_px) / float(bbox_height_px)
+
+    def _estimate_offset_x_mm(self, center_x_px, dist_mm):
+        """
+        Estimate camera-space horizontal offset in mm from the camera X center
+        to the detected brick center.
+
+        Positive means the brick center is to the right in the image.
+        """
+        frame_center_x = float(self.frame_w) / 2.0 + float(self.camera_center_offset_px)
+        offset_px = float(center_x_px) - frame_center_x
+        try:
+            focal_px = max(1e-6, float(self.focal_px))
+            dist_signal = float(dist_mm)
+        except (TypeError, ValueError):
+            return 0.0
+        return (offset_px * dist_signal) / focal_px
 
     def _effective_distance_height_px(self, bbox_height_px, partial_kind=None):
         """
@@ -778,6 +872,15 @@ class BrickDetector:
         get the full color contour whose aspect ratio matches the real
         brick face, giving a stable angle.
         """
+        refined_contour = self._refine_primary_contour(frame, primary)
+        if refined_contour is None or len(refined_contour) < 5:
+            return self._estimate_angle_from_rect(primary["rect"])
+
+        rect = cv2.minAreaRect(refined_contour)
+        return self._estimate_angle_from_rect(rect)
+
+    def _refine_primary_contour(self, frame, primary):
+        """Return a tighter primary HSV contour in frame coordinates."""
         bx, by, bw, bh = primary["bbox"]
 
         # Pad the bbox slightly to capture edge pixels
@@ -789,7 +892,7 @@ class BrickDetector:
 
         crop = frame[ry1:ry2, rx1:rx2]
         if crop.size == 0:
-            return self._estimate_angle_from_rect(primary["rect"])
+            return primary.get("contour")
 
         hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
         mask = cv2.inRange(hsv, self._hsv_lower, self._hsv_upper)
@@ -805,7 +908,7 @@ class BrickDetector:
             mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
         if not contours:
-            return self._estimate_angle_from_rect(primary["rect"])
+            return primary.get("contour")
 
         # Pick the contour closest to the primary brick's center (in crop coords)
         pcx = primary["center_x"] - rx1
@@ -823,11 +926,13 @@ class BrickDetector:
                 best_dist = d
                 best_cnt = cnt
 
-        if best_cnt is None or len(best_cnt) < 5:
-            return self._estimate_angle_from_rect(primary["rect"])
+        if best_cnt is None or len(best_cnt) < 3:
+            return primary.get("contour")
 
-        rect = cv2.minAreaRect(best_cnt)
-        return self._estimate_angle_from_rect(rect)
+        cnt_frame = best_cnt.copy()
+        cnt_frame[:, :, 0] += rx1
+        cnt_frame[:, :, 1] += ry1
+        return cnt_frame
 
     def _select_center_brick(self, individual_bricks, frame_w, frame_h):
         """
@@ -1022,10 +1127,8 @@ class BrickDetector:
             dist = self._smooth(raw_dist, self._prev_dist)
             self._prev_dist = dist
 
-            # Horizontal offset (pixel-based)
-            frame_center_x = w_frame / 2.0 + self.camera_center_offset_px
-            offset_px = primary["center_x"] - frame_center_x
-            raw_offset_x = float(offset_px)
+            # Horizontal offset from camera center to brick center in mm.
+            raw_offset_x = self._estimate_offset_x_mm(primary["center_x"], dist)
             offset_x = self._smooth(raw_offset_x, self._prev_offset)
             self._prev_offset = offset_x
 
@@ -1118,8 +1221,7 @@ class BrickDetector:
 
         brick_center_x = (x1 + x2) / 2.0
         frame_center_x = w_frame / 2.0 + self.camera_center_offset_px
-        offset_px = brick_center_x - frame_center_x
-        raw_offset_x = float(offset_px)
+        raw_offset_x = self._estimate_offset_x_mm(brick_center_x, dist)
         offset_x = self._smooth(raw_offset_x, self._prev_offset)
         self._prev_offset = offset_x
 
@@ -1587,16 +1689,30 @@ class BrickDetector:
     def _draw_primary_face_outline(self, frame, primary):
         if not isinstance(primary, dict):
             return
+        contour = primary.get("debug_outline_contour")
+        if contour is None:
+            contour = primary.get("contour")
+        contour_arr = None
+        if contour is not None:
+            try:
+                contour_arr = np.asarray(contour, dtype=np.int32).reshape(-1, 1, 2)
+            except Exception:
+                contour_arr = None
         rect = primary.get("rect")
-        if not rect:
+        if contour_arr is None and not rect:
+            return
+
+        is_partial = bool(primary.get("partial"))
+        outline_color = PARTIAL_COLOR_BGR if is_partial else (0, 255, 0)
+        outline_thickness = 3 if is_partial else 2
+
+        if contour_arr is not None and contour_arr.shape[0] >= 3:
+            cv2.polylines(frame, [contour_arr], True, outline_color, outline_thickness, cv2.LINE_AA)
             return
 
         points = self._ordered_rect_points(rect)
         center = np.asarray(rect[0], dtype=np.float32)
-        is_partial = bool(primary.get("partial"))
         edges = primary.get("partial_edges") or {}
-        outline_color = PARTIAL_COLOR_BGR if is_partial else (0, 255, 0)
-        outline_thickness = 3 if is_partial else 2
 
         shape_profile = str(primary.get("shape_profile") or "").strip().lower()
         if not shape_profile:
@@ -1663,6 +1779,10 @@ class BrickDetector:
         """Draw enhanced debug visualization for HSV-segmented bricks."""
         # Only highlight the selected brick nearest the crosshairs.
         if primary:
+            refined_outline = self._refine_primary_contour(frame, primary)
+            if refined_outline is not None:
+                primary = dict(primary)
+                primary["debug_outline_contour"] = refined_outline
             self._draw_primary_face_outline(frame, primary)
             pcx, pcy = primary["center_x"], primary["center_y"]
             primary_color = PARTIAL_COLOR_BGR if bool(primary.get("partial")) else (0, 255, 0)

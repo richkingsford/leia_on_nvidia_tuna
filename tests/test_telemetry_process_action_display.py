@@ -180,6 +180,28 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
             telemetry_process.telemetry_robot_module.COMMAND_REMAP = orig_remap
         self.assertIn("move forward", line)
 
+    def test_send_robot_command_ignores_stale_runtime_remap(self):
+        world = _DummyWorld()
+        robot = _DummyRobot()
+        orig_remap = getattr(telemetry_process.telemetry_robot_module, "COMMAND_REMAP", None)
+        try:
+            telemetry_process.telemetry_robot_module.COMMAND_REMAP = {"f": "b"}
+            meta = telemetry_process.send_robot_command(
+                robot,
+                world,
+                step="ALIGN_BRICK",
+                cmd="f",
+                speed=0.0,
+                speed_score=telemetry_robot.SPEED_SCORE_MIN,
+                auto_mode=False,
+            )
+        finally:
+            telemetry_process.telemetry_robot_module.COMMAND_REMAP = orig_remap
+
+        self.assertTrue(robot.sent)
+        self.assertEqual(robot.sent[0][0], "f")
+        self.assertEqual(meta.get("cmd_sent"), "f")
+
     def test_send_robot_command_auto_mode_caps_score_to_25(self):
         world = _DummyWorld()
         robot = _DummyRobot()
@@ -517,6 +539,7 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
             f"{telemetry_process.COLOR_ORANGE_BRIGHT}> U 1%{telemetry_process.COLOR_RESET}",
             observe_line,
         )
+        self.assertIn("shared 1% floor", observe_line)
         self.assertNotIn("above our target=+2.50", observe_line)
 
     def test_align_distance_log_uses_absolute_and_delta_values(self):
@@ -604,6 +627,7 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
             f"{telemetry_process.COLOR_ORANGE_BRIGHT}> B 1%{telemetry_process.COLOR_RESET}",
             observe_line,
         )
+        self.assertIn("shared 1% floor", observe_line)
 
     def test_repeated_identical_act_guard_blocks_51st_send(self):
         world = _DummyWorld()

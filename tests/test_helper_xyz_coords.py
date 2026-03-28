@@ -78,6 +78,7 @@ class HelperXyzCoordsTests(unittest.TestCase):
 
         self.assertIn("Supply", svg)
         self.assertNotIn(">Wall<", svg)
+        self.assertNotIn(">?</text>", svg)
         self.assertEqual(state["active_target"]["object_name"], "brick_supply")
         self.assertAlmostEqual(float(state["robot"]["theta_deg"]), -90.0, places=3)
         self.assertAlmostEqual(float(wall_pose["bearing_deg"]), 90.0, places=3)
@@ -106,6 +107,36 @@ class HelperXyzCoordsTests(unittest.TestCase):
 
         self.assertTrue(bool(state["held_brick"]["held"]))
         self.assertIn("Held Brick", svg)
+
+    def test_render_workspace_svg_scales_held_brick_footprint_down_for_bird_view(self):
+        world = _DummyWorld()
+
+        helper_xyz_coords.set_holding_brick(world, True, render=False)
+        state = helper_xyz_coords.workspace_snapshot(world)
+        state["robot"]["theta_deg"] = 0.0
+
+        snapshot = helper_xyz_coords._normalized_render_snapshot(state)
+        project, _view_project, _scale = helper_xyz_coords._project_fn(snapshot)
+        hx, hy = helper_xyz_coords._heading_vector(float(snapshot["robot"]["theta_deg"]))
+        brick_center_x = float(snapshot["robot"]["x_mm"]) + hx * 20.0
+        brick_center_y = float(snapshot["robot"]["y_mm"]) + hy * 20.0
+        expected_rect = helper_xyz_coords._rotated_rect(
+            brick_center_x,
+            brick_center_y,
+            float(snapshot["robot"]["theta_deg"]),
+            float(snapshot["held_brick"]["length_mm"]) * float(helper_xyz_coords.BIRD_HELD_BRICK_RENDER_SCALE),
+            float(snapshot["held_brick"]["width_mm"]) * float(helper_xyz_coords.BIRD_HELD_BRICK_RENDER_SCALE),
+        )
+        expected_points = helper_xyz_coords._polygon_points(
+            [project(x_mm, y_mm) for x_mm, y_mm in expected_rect]
+        )
+
+        svg = helper_xyz_coords.render_workspace_svg(state)
+
+        self.assertIn(
+            f'<polygon points="{expected_points}" fill="#63f2f7" stroke="#18494e" stroke-width="2.5" />',
+            svg,
+        )
 
     def test_reconcile_object_distance_moves_robot_not_supply(self):
         world = _DummyWorld()
@@ -136,59 +167,109 @@ class HelperXyzCoordsTests(unittest.TestCase):
         self.assertEqual([action["cmd"] for action in plan["actions"][:-1]], ["b", "b", "b"])
         self.assertEqual(plan["actions"][-1]["cmd"], "l")
 
-    def test_render_workspace_svg_shows_current_step_history_and_camera_glyph(self):
+    def test_render_workspace_svg_shows_visible_observation_history_only(self):
         world = _DummyWorld()
         helper_xyz_coords.sync_from_world(world, render=False)
+        world.brick["visible"] = True
+        world.brick["confidence"] = 0.9
 
-        helper_xyz_coords.update_from_motion(
-            world,
-            event=SimpleNamespace(action_type="forward", duration_ms=400, speed_score=50),
-            delta=SimpleNamespace(dist_mm=40.0, rot_deg=0.0, lift_mm=0.0),
-            render=False,
-        )
-        helper_xyz_coords.update_from_motion(
-            world,
-            event=SimpleNamespace(action_type="forward", duration_ms=250, speed_score=25),
-            delta=SimpleNamespace(dist_mm=20.0, rot_deg=0.0, lift_mm=0.0),
-            render=False,
-        )
+        world.brick["dist"] = 140.0
+        world.brick["x_axis"] = -20.0
+        helper_xyz_coords.sync_from_world(world, reason="vision", render=False)
+
+        world.brick["dist"] = 132.0
+        world.brick["x_axis"] = -12.0
         helper_xyz_coords.update_from_motion(
             world,
             event=SimpleNamespace(action_type="backward", duration_ms=250, speed_score=15),
             delta=SimpleNamespace(dist_mm=10.0, rot_deg=0.0, lift_mm=0.0),
             render=False,
         )
-        helper_xyz_coords.update_from_motion(
-            world,
-            event=SimpleNamespace(action_type="forward", duration_ms=250, speed_score=15),
-            delta=SimpleNamespace(dist_mm=5.0, rot_deg=0.0, lift_mm=0.0),
-            render=False,
-        )
-        helper_xyz_coords.update_from_motion(
-            world,
-            event=SimpleNamespace(action_type="mast_up", duration_ms=250, speed_score=5),
-            delta=SimpleNamespace(dist_mm=0.0, rot_deg=0.0, lift_mm=8.0),
-            render=False,
-        )
-        state = helper_xyz_coords.update_from_motion(
-            world,
-            event=SimpleNamespace(action_type="backward", duration_ms=250, speed_score=15),
-            delta=SimpleNamespace(dist_mm=5.0, rot_deg=0.0, lift_mm=0.0),
-            render=False,
-        )
+        helper_xyz_coords.sync_from_world(world, reason="vision", render=False)
+
+        world.brick["dist"] = 124.0
+        world.brick["x_axis"] = 3.0
+        state = helper_xyz_coords.sync_from_world(world, reason="vision", render=False)
 
         svg = helper_xyz_coords.render_workspace_svg(state)
         radii = re.findall(r'class="step-history-dot"[^>]* r="([0-9.]+)"', svg)
+        fills = re.findall(r'class="step-history-dot"[^>]* fill="(#[0-9a-fA-F]{6})"', svg)
+        ys = [float(value) for value in re.findall(r'class="step-history-dot"[^>]* cy="([0-9.]+)"', svg)]
 
-        self.assertIn('class="camera-dot"', svg)
-        self.assertEqual(svg.count('class="step-history-dot"'), 5)
-        self.assertEqual(radii[:2], ["2.0", "2.0"])
-        self.assertEqual(radii[2:], ["6.0", "6.0", "6.0"])
+        self.assertNotIn('class="camera-dot"', svg)
+        self.assertNotIn('class="step-history-path"', svg)
+        self.assertEqual(svg.count('class="step-history-dot"'), 3)
+        self.assertEqual(radii, ["6.0", "6.0", "6.0"])
         self.assertNotIn('id="grid"', svg)
+        self.assertEqual(
+            [value.lower() for value in fills],
+            [
+                helper_xyz_coords.BIRD_HISTORY_COLOR_OLDER.lower(),
+                helper_xyz_coords.BIRD_HISTORY_COLOR_OLDER.lower(),
+                helper_xyz_coords.BIRD_HISTORY_COLOR_NEWEST.lower(),
+            ],
+        )
+        self.assertGreater(max(ys) - min(ys), 0.0)
         self.assertIn('data-trend="closer"', svg)
-        self.assertIn('data-trend="further"', svg)
 
-    def test_render_workspace_svg_hides_camera_dot_during_micro_adjust_phase(self):
+    def test_render_workspace_svg_uses_mast_style_stack_card_for_supply(self):
+        world = _DummyWorld()
+
+        svg = helper_xyz_coords.render_workspace_svg(helper_xyz_coords.sync_from_world(world, render=False))
+
+        self.assertIn('fill="#1f4b8f"', svg)
+        self.assertIn('stroke="#122d57"', svg)
+        self.assertIn('stroke-width="3"', svg)
+        self.assertIn('rx="12.0"', svg)
+
+    def test_render_workspace_svg_shifts_supply_stack_left_in_bird_view(self):
+        world = _DummyWorld()
+        state = helper_xyz_coords.sync_from_world(world, render=False)
+        snapshot = helper_xyz_coords._normalized_render_snapshot(state)
+        project, _view_project, _scale = helper_xyz_coords._project_fn(snapshot)
+        supply = snapshot["objects"]["brick_supply"]
+        expected_x, _expected_y = project(float(supply.get("x_mm", 0.0)), float(supply.get("y_mm", 0.0)))
+        expected_x += float(helper_xyz_coords.BIRD_STACK_SHIFT_X_PX)
+        expected_x += float(helper_xyz_coords.BIRD_SUPPLY_RENDER_SHIFT_X_PX)
+
+        svg = helper_xyz_coords.render_workspace_svg(state)
+        match = re.search(r'<text x="([0-9.]+)" y="[0-9.]+"[^>]*>Supply</text>', svg)
+
+        self.assertIsNotNone(match)
+        self.assertAlmostEqual(float(match.group(1)), float(expected_x), places=1)
+
+    def test_bird_distance_track_ratio_clamps_90mm_to_near_side(self):
+        self.assertEqual(helper_xyz_coords._bird_distance_track_ratio(90.0), 0.0)
+        self.assertEqual(helper_xyz_coords._bird_distance_track_ratio(80.0), 0.0)
+        self.assertEqual(helper_xyz_coords._bird_distance_track_ratio(150.0), 1.0)
+        self.assertGreater(helper_xyz_coords._bird_distance_track_ratio(120.0), 0.0)
+
+    def test_render_workspace_svg_labels_sweet_zone_distance_track(self):
+        world = _DummyWorld()
+        svg = helper_xyz_coords.render_workspace_svg(helper_xyz_coords.sync_from_world(world, render=False))
+
+        self.assertIn(">90mm</text>", svg)
+        self.assertIn(">150mm</text>", svg)
+
+    def test_render_workspace_svg_keeps_supply_stack_vertically_anchored(self):
+        world = _DummyWorld()
+        first_svg = helper_xyz_coords.render_workspace_svg(helper_xyz_coords.sync_from_world(world, render=False))
+        first_match = re.search(r'<text x="([0-9.]+)" y="([0-9.]+)"[^>]*>Supply</text>', first_svg)
+        self.assertIsNotNone(first_match)
+
+        world.y = 120.0
+        moved_state = helper_xyz_coords.update_from_motion(
+            world,
+            event=SimpleNamespace(action_type="forward", duration_ms=400, speed_score=20),
+            delta=SimpleNamespace(dist_mm=80.0, rot_deg=0.0, lift_mm=0.0),
+            render=False,
+        )
+        second_svg = helper_xyz_coords.render_workspace_svg(moved_state)
+        second_match = re.search(r'<text x="([0-9.]+)" y="([0-9.]+)"[^>]*>Supply</text>', second_svg)
+        self.assertIsNotNone(second_match)
+        self.assertEqual(first_match.group(2), second_match.group(2))
+
+    def test_render_workspace_svg_does_not_render_camera_dot(self):
         world = _DummyWorld()
         state = helper_xyz_coords.sync_from_world(world, render=False)
         state["micro_adjust_phase"] = True

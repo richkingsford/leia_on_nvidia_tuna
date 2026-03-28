@@ -29,24 +29,29 @@ except Exception:
     _MATPLOTLIB_AVAILABLE = False
 
 from .helper_calibrate import (
+    CALIBRATION_DURATION_LIMIT_MS,
     CalibrationLivePlot,
     build_linear_duration_schedule,
     build_payload as build_shared_payload,
-    build_repeated_trial_plan,
     cleanup_old_run_files,
     coerce_finite_float as shared_coerce_finite_float,
     coerce_float as shared_coerce_float,
     coerce_int as shared_coerce_int,
     ensure_run_dir,
     get_shared_stream_runtime,
+    load_calibration_trial_speed_profile as shared_load_calibration_trial_speed_profile,
     observed_brick_distances_mm as shared_observed_brick_distances_mm,
     planned_durations_ms as shared_planned_durations_ms,
+    prediction_closeness_percentage as shared_prediction_closeness_percentage,
+    prompt_calibration_run_settings as shared_prompt_calibration_run_settings,
     prepare_shared_stream_state,
     plot_offsets as shared_plot_offsets,
     plot_series_phase as shared_plot_series_phase,
+    resolve_calibration_trial_speed_score as shared_resolve_calibration_trial_speed_score,
     trial_label_text as shared_trial_label_text,
     write_results as shared_write_results,
 )
+from helper_close_gaps import load_axis_aruco_calibration
 from helper_manual_config import load_manual_training_config
 from helper_robot_control import Robot
 from helper_stream_server import format_stream_url
@@ -65,18 +70,14 @@ from telemetry_process import (
     _latest_unique_smoothed_frames as telemetry_latest_unique_smoothed_frames,
     lite_gate_unique_frames,
     send_robot_command,
-    send_robot_command_pwm,
     update_world_from_vision,
 )
 from telemetry_robot import (
-    HOTKEY_SPEED_SCORES,
     StepState,
     WorldModel,
-    clamp_pwm,
     draw_telemetry_overlay,
     normalize_speed_score,
-    power_to_pwm,
-    pwm_to_power,
+    one_percent_discovery_note as shared_one_percent_discovery_note,
     speed_power_pwm_for_cmd,
 )
 import helper_xyz_coords
@@ -86,12 +87,16 @@ OBSERVE_TIMEOUT_S = 1.8
 POST_ACT_SETTLE_S = 0.10
 OBSERVE_SAMPLES_DEFAULT = 3
 X_AXIS_TARGET_MM_DEFAULT = 0.0
-SPEED_SCORE_DEFAULT = 20
-DURATION_CEILING_MS = 900
+SPEED_SCORE_DEFAULT = 1
+DURATION_CEILING_MS = CALIBRATION_DURATION_LIMIT_MS
+MIN_DURATION_MS_DEFAULT = 200
+MAX_DURATION_MS_DEFAULT = 1400
 DURATION_STEP_MS_DEFAULT = 10
-X_AXIS_POSITIVE_CMD_DEFAULT = "r"
+# In the shared world x-axis convention used by calibration, logical left turns
+# increase x_axis and logical right turns decrease it.
+X_AXIS_POSITIVE_CMD_DEFAULT = "l"
 X_AXIS_INVERT = False  # Set to True to invert l/r command mapping
-PRIMARY_TRIAL_CMD_SEQUENCE_DEFAULT = ("l", "r", "l", "r")
+TRIAL_CMD_AUTO = "auto"
 
 # reference distance associated with the current regression equation.  The
 # calibration data assume the brick was this far from the camera (mm).  This is
@@ -129,7 +134,25 @@ STREAM_JPEG_QUALITY = int(_MANUAL_CONFIG.get("stream_jpeg_quality", 85))
 STREAM_IMG_WIDTH = int(_MANUAL_CONFIG.get("stream_img_width", 1600))
 
 # Folder where calibration runs deposit live files.
-RUN_DIR = Path("Runs - aruco")
+RUN_DIR_ARUCO = Path("Runs - aruco")
+RUN_DIR_CYAN = Path("Runs - cyan")
+DEFAULT_VISION_MODE = "yolo"
+TRIAL_SPEED_MODE_DISTANCE_CURVE = "distance_curve"
+TRIAL_SPEED_MODE_FIXED = "fixed"
+
+
+def _run_dir_for_vision(vision_mode: str | None) -> Path:
+    mode = str(vision_mode or "").strip().lower()
+    if mode == "aruco":
+        return Path(RUN_DIR_ARUCO)
+    return Path(RUN_DIR_CYAN)
+
+
+def _trial_speed_profile_for_mode(trial_speed_mode: str | None) -> dict | None:
+    mode = str(trial_speed_mode or TRIAL_SPEED_MODE_DISTANCE_CURVE).strip().lower()
+    if mode == TRIAL_SPEED_MODE_FIXED:
+        return None
+    return shared_load_calibration_trial_speed_profile("x_axis")
 
 
 def _cleanup_old_run_files():
@@ -142,9 +165,9 @@ def _cleanup_old_run_files():
     )
 
 
-def _ensure_run_dir():
+def _ensure_run_dir(run_dir: Path):
     ensure_run_dir(
-        run_dir=RUN_DIR,
+        run_dir=Path(run_dir),
         preserve_live_files={
             "calibrate_x_live.json",
             "calibrate_y_live.json",
@@ -160,12 +183,14 @@ PLOT_TICK_FONT_SIZE = 8
 PLOT_LEGEND_FONT_SIZE = 8
 PLOT_ANNOTATION_FONT_SIZE = 7
 ANSI_CYAN_BRIGHT = "\033[96m"
+ANSI_WHITE_BRIGHT = "\033[97m"
 ANSI_BLUE_BRIGHT = "\033[94m"
 ANSI_MAGENTA_BRIGHT = "\033[95m"
 ANSI_GREEN_BRIGHT = "\033[92m"
 ANSI_RED_BRIGHT = "\033[91m"
 ANSI_YELLOW_BRIGHT = "\033[93m"
 ANSI_ORANGE_BRIGHT = "\033[38;5;208m"
+ANSI_GRAY = "\033[90m"
 
 
 @dataclass
@@ -202,36 +227,12 @@ class TrialResult:
     recovery_inverse_acts: int | None = None
     pre_lite_required_frames: int | None = None
     post_lite_required_frames: int | None = None
+    predicted_distance_mm: float | None = None
+    curve_source: str | None = None
+    absolute_difference_mm: float | None = None
+    prediction_closeness_percentage: float | None = None
     phase: str = "primary"
     source_trial: int | None = None
-
-
-@dataclass
-class ResetEffort:
-    trial: int
-    reset_act: int
-    cmd: str
-    score_requested: int
-    cmd_sent: str | None
-    pwm: int | None
-    power: float | None
-    duration_ms: int
-    pre_x_mm: float
-    post_x_mm: float
-    raw_delta_mm: float
-    signed_cmd_delta_mm: float
-    cmd_delta_mm: float
-    wrong_way: bool
-    pre_brick_dist_mm: float
-    post_brick_dist_mm: float
-    pre_confidence: float
-    post_confidence: float
-    pre_pose_source: str | None
-    post_pose_source: str | None
-    post_observation_mode: str | None
-    phase: str = "primary"
-    source_trial: int | None = None
-
 
 def log_line(message: str) -> None:
     print(str(message), flush=True)
@@ -313,6 +314,10 @@ def _highlight_number_text(text: str) -> str:
     return _colorize(str(text), ANSI_CYAN_BRIGHT)
 
 
+def _highlight_score_text(text: str) -> str:
+    return _colorize(str(text), ANSI_WHITE_BRIGHT)
+
+
 def _highlight_mm(value: float, *, signed: bool = False) -> str:
     number = float(value)
     fmt = f"{number:+.2f}mm" if signed else f"{abs(number):.2f}mm"
@@ -328,6 +333,25 @@ def _highlight_turn_letter(cmd: str) -> str:
     if cmd_key == "l":
         return _colorize("L", ANSI_BLUE_BRIGHT)
     return _colorize("R", ANSI_MAGENTA_BRIGHT)
+
+
+def _score_with_motion_details_text(
+    cmd: str | None,
+    score: int,
+    *,
+    pwm: int | None,
+    power: float | None,
+    duration_ms: int,
+) -> str:
+    pwm_text = "?" if pwm is None else str(int(pwm))
+    power_text = "?" if power is None else f"{float(power):.3f}"
+    detail_body = f"(pwm={pwm_text}, pwr={power_text}, t={int(duration_ms)}ms"
+    discovery_note = shared_one_percent_discovery_note(cmd, score)
+    if discovery_note:
+        detail_body += f"; {str(discovery_note)}"
+    detail_body += ")"
+    detail_text = _colorize(detail_body, ANSI_GRAY)
+    return f"{_highlight_score_text(f'{int(score)}%')} {detail_text}"
 
 
 def _highlight_side_text(side: str) -> str:
@@ -356,6 +380,29 @@ def _coerce_float(value, fallback=None):
 
 def _coerce_int(value, fallback=None):
     return shared_coerce_int(value, fallback)
+
+
+def _prediction_metric_color_code(prediction_closeness_percentage: float | None) -> str | None:
+    if prediction_closeness_percentage is None:
+        return None
+    return "\033[92m" if float(prediction_closeness_percentage) < 25.0 else "\033[91m"
+
+
+def _format_prediction_comparison_fields(prediction_comparison: dict) -> str:
+    closeness_value = prediction_comparison.get("prediction_closeness_percentage")
+    absolute_difference_value = prediction_comparison.get("absolute_difference_mm")
+    if closeness_value is None or absolute_difference_value is None:
+        return ""
+    color_code = _prediction_metric_color_code(closeness_value)
+    absolute_difference_text = f"{float(absolute_difference_value):.2f}"
+    prediction_closeness_text = f"{float(closeness_value):.1f}"
+    if color_code is not None:
+        absolute_difference_text = _colorize(absolute_difference_text, color_code)
+        prediction_closeness_text = _colorize(prediction_closeness_text, color_code)
+    return (
+        f"absolute_difference={absolute_difference_text} "
+        f"prediction_closeness={prediction_closeness_text}%"
+    )
 
 
 def _normalize_cmd(value: str, *, allow_auto: bool = False) -> str:
@@ -440,6 +487,24 @@ def _aggregate_pose_samples(poses: list[dict]) -> dict | None:
     }
 
 
+def _pose_meets_multiframe_requirement(
+    pose: dict | None,
+    *,
+    required_samples: int,
+    required_lite_frames: int = MIN_LITE_UNIQUE_FRAMES,
+) -> bool:
+    if not isinstance(pose, dict):
+        return False
+    if str(pose.get("pose_source") or "").strip().lower() != "lite_smoothed":
+        return False
+    samples_used = _coerce_int(pose.get("samples_used"), 0)
+    lite_frames = _coerce_int(pose.get("lite_required_frames"), 0)
+    return bool(
+        int(samples_used) >= int(max(1, int(required_samples)))
+        and int(lite_frames) >= int(max(1, int(required_lite_frames)))
+    )
+
+
 def read_pose(
     vision,
     world,
@@ -476,28 +541,11 @@ def read_pose(
                 time.sleep(OBSERVE_SLEEP_S)
                 continue
             pose = _lite_pose_from_world(world, step=step_label, samples=int(samples), obs_ts=now)
-            if pose is None:
-                pose = _brick_pose_from_world(world, obs_ts=now)
         except Exception:
             pose = None
         if pose is None:
-            found, angle, dist, offset_x, conf, cam_h, _above, _below = vision.read()
-            world.update_vision(found, dist, angle, conf, offset_x, cam_h)
-            if callable(on_vision_update):
-                on_vision_update()
-            if not found:
-                time.sleep(OBSERVE_SLEEP_S)
-                continue
-            pose = {
-                "offset_y": float(cam_h),
-                "offset_x": float(offset_x),
-                "dist": float(dist),
-                "angle": float(angle),
-                "confidence": float(conf),
-                "obs_ts": float(now),
-                "pose_source": "raw_visible",
-                "lite_required_frames": None,
-            }
+            time.sleep(OBSERVE_SLEEP_S)
+            continue
         poses.append(pose)
         if len(poses) < int(target_samples):
             time.sleep(OBSERVE_SLEEP_S)
@@ -519,16 +567,20 @@ def _observe_pose_with_reobserve(
     on_vision_update=None,
 ) -> tuple[dict | None, dict]:
     target_samples = max(1, int(samples))
+    required_samples = max(target_samples, int(MIN_LITE_UNIQUE_FRAMES))
     strict_pose = read_pose(
         vision,
         world,
         samples=target_samples,
         timeout_s=float(timeout_s),
         min_sample_time=min_sample_time,
-        min_samples_required=target_samples,
+        min_samples_required=required_samples,
         on_vision_update=on_vision_update,
     )
-    if strict_pose is not None:
+    if _pose_meets_multiframe_requirement(
+        strict_pose,
+        required_samples=required_samples,
+    ):
         return strict_pose, {
             "mode": "primary_full",
             "reobserved": False,
@@ -544,38 +596,20 @@ def _observe_pose_with_reobserve(
             samples=target_samples,
             timeout_s=max(float(timeout_s), float(relaxed_timeout_s)),
             min_sample_time=None,
-            min_samples_required=1,
+            min_samples_required=required_samples,
             on_vision_update=on_vision_update,
         )
-        if relaxed_pose is None:
+        if not _pose_meets_multiframe_requirement(
+            relaxed_pose,
+            required_samples=required_samples,
+        ):
             if round_idx < rounds:
                 log_line(
                     f"[CALIBRATE_X] Observation hold/reobserve {round_idx}/{rounds}: still no usable pose."
                 )
             continue
 
-        mode = (
-            "hold_reobserve_full"
-            if int(relaxed_pose.get("samples_used") or 0) >= int(target_samples)
-            else "hold_reobserve_partial"
-        )
-        if int(relaxed_pose.get("samples_used") or 0) < int(target_samples):
-            confirm_pose = read_pose(
-                vision,
-                world,
-                samples=target_samples,
-                timeout_s=max(1.0, float(timeout_s)),
-                min_sample_time=None,
-                min_samples_required=1,
-                on_vision_update=on_vision_update,
-            )
-            if confirm_pose is not None and int(confirm_pose.get("samples_used") or 0) >= int(relaxed_pose.get("samples_used") or 0):
-                relaxed_pose = confirm_pose
-                mode = (
-                    "hold_reobserve_confirmed_full"
-                    if int(relaxed_pose.get("samples_used") or 0) >= int(target_samples)
-                    else "hold_reobserve_confirmed_partial"
-                )
+        mode = "hold_reobserve_full"
         log_line(
             f"[CALIBRATE_X] Observation rescue: accepted {int(relaxed_pose.get('samples_used') or 0)}/{int(target_samples)} samples "
             f"via {mode}."
@@ -664,65 +698,13 @@ def _auto_cmd_for_x(
     *,
     center_x_mm: float = 0.0,
 ) -> str:
-    if float(curr_x_mm) > float(center_x_mm):
+    if float(curr_x_mm) < float(center_x_mm):
         return _x_cmd_for_negative_motion()
     return _x_cmd_for_positive_motion()
 
 
 def _turn_label_for_cmd(cmd: str) -> str:
     return "left_turn" if _normalize_cmd(cmd, allow_auto=False) == "l" else "right_turn"
-
-
-def _turn_hotkey_for_cmd(cmd: str) -> str:
-    return "q" if _normalize_cmd(cmd, allow_auto=False) == "l" else "e"
-
-
-def _turn_hotkey_profile(cmd: str, score: int) -> dict | None:
-    cmd_key = _normalize_cmd(cmd, allow_auto=False)
-    if cmd_key not in ("l", "r"):
-        return None
-    hotkey = _turn_hotkey_for_cmd(cmd_key)
-    rows = HOTKEY_SPEED_SCORES if isinstance(HOTKEY_SPEED_SCORES, dict) else {}
-    row = rows.get(hotkey)
-    if not isinstance(row, dict):
-        return None
-    row_cmd = str(row.get("cmd") or "").strip().lower()
-    if row_cmd != cmd_key:
-        return None
-    try:
-        row_score = normalize_speed_score(row.get("score"))
-    except Exception:
-        return None
-    if int(row_score) != int(normalize_speed_score(score)):
-        return None
-
-    pwm = None
-    power = None
-    try:
-        pwm = clamp_pwm(int(round(float(row.get("pwm")))))
-    except (TypeError, ValueError):
-        pwm = None
-    if pwm is None or int(pwm) <= 0:
-        try:
-            power_raw = float(row.get("power"))
-        except (TypeError, ValueError):
-            power_raw = None
-        if power_raw is not None and float(power_raw) > 0.0:
-            pwm_from_power = power_to_pwm(float(power_raw))
-            if pwm_from_power is not None:
-                pwm = clamp_pwm(int(pwm_from_power))
-    if pwm is not None and int(pwm) > 0:
-        power = pwm_to_power(int(pwm))
-        if power is None:
-            power = 0.0
-
-    return {
-        "hotkey": str(hotkey),
-        "cmd": str(cmd_key),
-        "score": int(row_score),
-        "pwm": None if pwm is None or int(pwm) <= 0 else int(pwm),
-        "power": None if power is None else float(power),
-    }
 
 
 def _plot_series_phase(kind: str | None = None) -> str:
@@ -765,6 +747,144 @@ def _plot_offsets(xs: list[float], ys: list[float]) -> list[tuple[float, float]]
 
 def _coerce_finite_float(value) -> float | None:
     return shared_coerce_finite_float(value)
+
+
+def _x_curve_display_name(calibration: dict | None) -> str:
+    if not isinstance(calibration, dict):
+        return "no_curve"
+    calib = dict(calibration)
+    base_name = str(calib.get("source") or "aruco_marker_calibration").strip() or "aruco_marker_calibration"
+    reference_distance_mm = shared_coerce_finite_float(calib.get("reference_distance_mm"))
+    speed_score_pct = shared_coerce_finite_float(calib.get("speed_score_pct"))
+    if reference_distance_mm is not None and speed_score_pct is not None:
+        return (
+            f"{base_name} at {float(reference_distance_mm):.0f}mm distance "
+            f"at {int(round(float(speed_score_pct)))}% speed"
+        )
+    if reference_distance_mm is not None:
+        return f"{base_name} at {float(reference_distance_mm):.0f}mm distance"
+    if speed_score_pct is not None:
+        return f"{base_name} at {int(round(float(speed_score_pct)))}% speed"
+    return base_name
+
+def _load_x_duration_calibration() -> dict | None:
+    calibration = load_axis_aruco_calibration("x")
+    if not isinstance(calibration, dict):
+        return None
+    by_cmd = calibration.get("by_cmd")
+    if not isinstance(by_cmd, dict):
+        return None
+    if not any(isinstance(by_cmd.get(cmd), dict) for cmd in ("l", "r")):
+        return None
+    return dict(calibration)
+
+
+def _predict_movement_from_curve(
+    *,
+    cmd: str,
+    duration_ms: int,
+    x_calibration: dict | None,
+) -> tuple[float | None, str]:
+    cmd_key = _normalize_cmd(cmd, allow_auto=False)
+    calibration = x_calibration if isinstance(x_calibration, dict) else None
+    if not isinstance(calibration, dict):
+        return None, "no_curve"
+    curve_name = _x_curve_display_name(calibration)
+    row = calibration.get("by_cmd", {}).get(cmd_key) if isinstance(calibration.get("by_cmd"), dict) else {}
+    if not isinstance(row, dict):
+        return None, curve_name
+    try:
+        slope = float(row.get("slope_mm_per_ms"))
+        intercept = float(row.get("intercept_mm"))
+    except Exception:
+        return None, curve_name
+    if slope <= 1e-9:
+        return None, curve_name
+    predicted_mm = float(slope) * float(duration_ms) + float(intercept)
+    return max(0.0, predicted_mm), curve_name
+
+
+def _calculate_prediction_comparison(
+    *,
+    actual_distance_mm: float,
+    predicted_distance_mm: float | None,
+    curve_source: str,
+) -> dict:
+    if predicted_distance_mm is None or predicted_distance_mm <= 0.0:
+        return {
+            "predicted_distance_mm": None,
+            "curve_source": curve_source,
+            "absolute_difference_mm": None,
+            "prediction_closeness_percentage": None,
+        }
+    absolute_difference_mm = abs(float(actual_distance_mm) - float(predicted_distance_mm))
+    prediction_closeness = shared_prediction_closeness_percentage(
+        actual_distance_mm=actual_distance_mm,
+        predicted_distance_mm=predicted_distance_mm,
+    )
+    return {
+        "predicted_distance_mm": float(predicted_distance_mm),
+        "curve_source": str(curve_source),
+        "absolute_difference_mm": float(absolute_difference_mm),
+        "prediction_closeness_percentage": (
+            float(prediction_closeness) if prediction_closeness is not None else None
+        ),
+    }
+
+
+def _trials_setup_log_line(
+    *,
+    observed_distance_mm: float | None,
+    closest_curve_name: str,
+) -> str:
+    observed_distance = shared_coerce_finite_float(observed_distance_mm)
+    observed_distance_text = (
+        f"{float(observed_distance):.2f}mm" if observed_distance is not None else "unknown"
+    )
+    message = (
+        "[TRIALS SETUP] "
+        f"observed_distance={observed_distance_text} "
+        f"closest_speed_curve={str(closest_curve_name or 'no_curve')}"
+    )
+    return _colorize(message, "\033[92m")
+
+
+def _evenly_spaced_duration_indices(length: int, count: int) -> list[int]:
+    total = max(0, int(length))
+    needed = max(0, int(count))
+    if total <= 0 or needed <= 0:
+        return []
+    if needed >= total:
+        return list(range(total))
+    if needed == 1:
+        return [0]
+
+    indices: list[int] = []
+    last_idx = -1
+    for idx in range(needed):
+        raw_position = float(idx) * float(total - 1) / float(max(1, needed - 1))
+        candidate = int(round(raw_position))
+        min_allowed = int(last_idx + 1)
+        max_allowed = int(total - (needed - idx))
+        candidate = max(int(min_allowed), min(int(max_allowed), int(candidate)))
+        indices.append(int(candidate))
+        last_idx = int(candidate)
+    return indices
+
+
+def _spread_duration_schedule(durations_ms: list[int], count: int) -> list[int]:
+    source = [int(value) for value in list(durations_ms or [])]
+    remaining = max(0, int(count))
+    if not source or remaining <= 0:
+        return []
+
+    schedule: list[int] = []
+    while remaining > 0:
+        round_count = min(len(source), int(remaining))
+        for idx in _evenly_spaced_duration_indices(len(source), int(round_count)):
+            schedule.append(int(source[idx]))
+        remaining -= int(round_count)
+    return schedule
 
 
 def _plot_title_text(brick_distances_mm: list[float]) -> str:
@@ -839,21 +959,23 @@ def _build_duration_schedule(
     )
 
 
-def _primary_trial_cmd_sequence() -> tuple[str, ...]:
-    return tuple(_normalize_cmd(cmd, allow_auto=False) for cmd in PRIMARY_TRIAL_CMD_SEQUENCE_DEFAULT)
-
-
 def _build_trial_plan(
     *,
     durations_ms: list[int],
     trials: int | None = None,
 ) -> list[dict]:
-    return build_repeated_trial_plan(
-        durations_ms=durations_ms,
-        cmd_sequence=_primary_trial_cmd_sequence(),
-        normalize_cmd=lambda value: _normalize_cmd(value, allow_auto=False),
-        trials=trials,
+    scheduled_durations = (
+        _spread_duration_schedule(durations_ms, max(1, int(trials)))
+        if trials is not None
+        else [int(value) for value in list(durations_ms or [])]
     )
+    return [
+        {
+            "duration_ms": int(duration_ms),
+            "cmd": str(TRIAL_CMD_AUTO),
+        }
+        for duration_ms in scheduled_durations
+    ]
 
 
 def _planned_durations_ms(trial_plan: list[dict]) -> list[int]:
@@ -862,12 +984,6 @@ def _planned_durations_ms(trial_plan: list[dict]) -> list[int]:
 
 def _planned_action_meta(cmd: str, score: int, duration_override_ms: int) -> dict:
     power, pwm, score_used, duration_ms = speed_power_pwm_for_cmd(cmd, score)
-    hotkey_profile = _turn_hotkey_profile(cmd, score)
-    if isinstance(hotkey_profile, dict):
-        if hotkey_profile.get("power") is not None:
-            power = float(hotkey_profile["power"])
-        if hotkey_profile.get("pwm") is not None:
-            pwm = int(hotkey_profile["pwm"])
     if duration_override_ms is not None and int(duration_override_ms) > 0:
         duration_ms = int(duration_override_ms)
     duration_ms = min(int(duration_ms), int(DURATION_CEILING_MS))
@@ -876,7 +992,6 @@ def _planned_action_meta(cmd: str, score: int, duration_override_ms: int) -> dic
         "pwm": int(pwm),
         "score_model": int(score_used),
         "duration_ms": int(duration_ms),
-        "hotkey": str(hotkey_profile.get("hotkey")).upper() if isinstance(hotkey_profile, dict) else None,
     }
 
 
@@ -890,20 +1005,6 @@ def _send_fixed_score_command(
     duration_override_ms: int,
 ) -> dict | None:
     duration_override_ms = min(max(1, int(duration_override_ms)), int(DURATION_CEILING_MS))
-    hotkey_profile = _turn_hotkey_profile(cmd, score)
-    if isinstance(hotkey_profile, dict) and hotkey_profile.get("pwm") is not None and hotkey_profile.get("power") is not None:
-        return send_robot_command_pwm(
-            robot,
-            world,
-            step,
-            cmd,
-            float(hotkey_profile["power"]),
-            int(hotkey_profile["pwm"]),
-            int(duration_override_ms),
-            speed_score=int(score),
-            auto_mode=False,
-            half_first_turn_pulse=False,
-        )
     return send_robot_command(
         robot,
         world,
@@ -1066,7 +1167,6 @@ def _recover_pose_for_trial(
         "inverse_acts": _coerce_int((recovery_meta or {}).get("inverse_acts"), 0),
     }
 
-
 def _diagnose_vision_loss_event(
     trial_label: str,
     cmd: str,
@@ -1110,6 +1210,8 @@ def _run_trial_action(
     plotter=None,
     initial_pre_pose: dict | None = None,
     initial_pre_obs_meta: dict | None = None,
+    x_duration_cal: dict | None = None,
+    trial_speed_profile: dict | None = None,
     compare_to_distance: float | None = None,
     stream_refresh_fn=None,
 ) -> tuple[TrialResult | None, str | None]:
@@ -1148,7 +1250,25 @@ def _run_trial_action(
     if not isinstance(pre_obs_meta, dict):
         pre_obs_meta = {"mode": "unknown", "reobserved": False}
 
-    act_plan = _planned_action_meta(cmd, setup_score, duration_ms)
+    effective_score, effective_score_meta = shared_resolve_calibration_trial_speed_score(
+        observed_distance_mm=_coerce_finite_float(pre_pose.get("dist")),
+        requested_score=int(setup_score),
+        speed_profile=trial_speed_profile,
+    )
+    if str((effective_score_meta or {}).get("source") or "") == "distance_curve":
+        observed_dist_local = _coerce_finite_float(pre_pose.get("dist"))
+        observed_dist_text = (
+            f"{float(observed_dist_local):.2f}mm"
+            if observed_dist_local is not None
+            else "unknown"
+        )
+        log_line(
+            f"[CALIBRATE_X] {trial_label}: trial speed curve "
+            f"dist={observed_dist_text} -> score={int(effective_score)}% "
+            f"(base {int(setup_score)}%)."
+        )
+
+    act_plan = _planned_action_meta(cmd, effective_score, duration_ms)
     pre_x_mm = float(pre_pose.get("offset_x") or 0.0)
     pre_error_mm = float(pre_x_mm) - float(center_target_x_mm)
     pre_offset_mm = abs(float(pre_error_mm))
@@ -1160,8 +1280,8 @@ def _run_trial_action(
     trial_plan_text = "this repeat trial will turn" if phase_key == "repeat" else "this planned trial will turn"
     log_line(
         f"[CALIBRATE_X] {trial_label}: I see that I'm {where_text}, "
-        f"and {trial_plan_text} {_highlight_turn_letter(cmd)} {_highlight_number_text(f'{int(setup_score)}%')} "
-        f"for {_highlight_duration_ms(int(act_plan['duration_ms']))}."
+        f"and {trial_plan_text} {_highlight_turn_letter(cmd)} "
+        f"{_score_with_motion_details_text(cmd, int(effective_score), pwm=act_plan.get('pwm'), power=act_plan.get('power'), duration_ms=int(act_plan['duration_ms']))}."
     )
 
     act_start_ts = time.time()
@@ -1170,7 +1290,7 @@ def _run_trial_action(
         world=world,
         step=str(action_step),
         cmd=cmd,
-        score=int(setup_score),
+        score=int(effective_score),
         duration_override_ms=int(duration_ms),
     )
     if not isinstance(action_meta, dict):
@@ -1182,9 +1302,16 @@ def _run_trial_action(
         {
             "cmd": str(cmd),
             "duration_ms": int(duration_used_ms or 0),
-            "score_requested": int(setup_score),
+            "score_requested": int(effective_score),
             "timestamp": time.time(),
         }
+    )
+    settle_ms = int(round(float(post_act_settle_s) * 1000.0))
+    duration_wait_ms = int(duration_used_ms or 0)
+    total_pause_ms = duration_wait_ms + settle_ms
+    log_line(
+        f"\033[90m[CALIBRATE_X] {trial_label}: {int(total_pause_ms)}ms pause "
+        f"(cmd={int(duration_wait_ms)}ms + settle={int(settle_ms)}ms)\033[0m"
     )
     post_pose, post_obs_meta = _observe_pose_with_reobserve(
         vision=vision,
@@ -1206,7 +1333,7 @@ def _run_trial_action(
             cmd=cmd,
             pre_x_mm=float(pre_pose["offset_x"]),
             center_target_x_mm=float(center_target_x_mm),
-            setup_score=int(setup_score),
+            setup_score=int(effective_score),
             duration_used_ms=int(duration_used_ms or 0),
         )
         post_pose, post_obs_meta = _recover_pose_for_trial(
@@ -1240,7 +1367,7 @@ def _run_trial_action(
         trial=int(trial_idx),
         duration_ms=int(duration_used_ms or 0),
         cmd=str(cmd),
-        score_requested=int(setup_score),
+        score_requested=int(effective_score),
         cmd_sent=str(cmd_sent_effective),
         pwm=_coerce_int(action_meta.get("pwm")),
         power=_coerce_float(action_meta.get("power")),
@@ -1273,6 +1400,21 @@ def _run_trial_action(
         source_trial=_coerce_int(source_trial_value),
     )
 
+    predicted_distance_mm, curve_source = _predict_movement_from_curve(
+        cmd=cmd,
+        duration_ms=int(duration_used_ms or 0),
+        x_calibration=x_duration_cal,
+    )
+    prediction_comparison = _calculate_prediction_comparison(
+        actual_distance_mm=cmd_delta_mm,
+        predicted_distance_mm=predicted_distance_mm,
+        curve_source=curve_source,
+    )
+    row.predicted_distance_mm = prediction_comparison["predicted_distance_mm"]
+    row.curve_source = prediction_comparison["curve_source"]
+    row.absolute_difference_mm = prediction_comparison["absolute_difference_mm"]
+    row.prediction_closeness_percentage = prediction_comparison["prediction_closeness_percentage"]
+
     goal_delta_mm, goal_status = _distance_progress_status(
         pre_x_mm,
         post_x_mm,
@@ -1282,6 +1424,26 @@ def _run_trial_action(
         f"[CALIBRATE_X] {trial_label}: That act resulted in {_highlight_mm(goal_delta_mm)} difference "
         f"and I'm {_highlight_progress_text(goal_status)} "
         f"({_highlight_number_text(f'x_axis={post_x_mm:+.2f}mm')})."
+    )
+    log_line(
+        "[CALIBRATE_X] "
+        f"{_trial_label_text(trial_idx, trials_planned, phase=phase_key, source_trial=source_trial_value)}: "
+        f"cmd={cmd.upper()} score="
+        f"{_score_with_motion_details_text(cmd, int(effective_score), pwm=row.pwm, power=row.power, duration_ms=int(duration_used_ms or 0))} "
+        f"start_x={pre_x_mm:+.2f}mm end_x={post_x_mm:+.2f}mm "
+        f"distance={cmd_delta_mm:.2f}mm signed={signed_cmd_delta_mm:+.2f}mm "
+        f"wrong_way={bool(wrong_way)} raw_delta={raw_delta_mm:+.2f}mm "
+        f"predicted={prediction_comparison['predicted_distance_mm']:.2f}mm "
+        f"curve_source={prediction_comparison['curve_source']} "
+        f"{_format_prediction_comparison_fields(prediction_comparison)}"
+        if prediction_comparison["predicted_distance_mm"] is not None
+        else f"[CALIBRATE_X] {_trial_label_text(trial_idx, trials_planned, phase=phase_key, source_trial=source_trial_value)}: "
+        f"cmd={cmd.upper()} score="
+        f"{_score_with_motion_details_text(cmd, int(effective_score), pwm=row.pwm, power=row.power, duration_ms=int(duration_used_ms or 0))} "
+        f"start_x={pre_x_mm:+.2f}mm end_x={post_x_mm:+.2f}mm "
+        f"distance={cmd_delta_mm:.2f}mm signed={signed_cmd_delta_mm:+.2f}mm "
+        f"wrong_way={bool(wrong_way)} raw_delta={raw_delta_mm:+.2f}mm "
+        f"predicted=None curve_source={prediction_comparison['curve_source']}"
     )
 
     repeat_status = None
@@ -1380,7 +1542,7 @@ def _write_results(path: Path, payload: dict) -> None:
 def _observed_brick_distances_mm(
     *,
     trials: list[TrialResult],
-    reset_efforts: list[ResetEffort],
+    reset_efforts: list,
 ) -> list[float]:
     return shared_observed_brick_distances_mm(trials=trials, reset_efforts=reset_efforts)
 
@@ -1390,7 +1552,7 @@ def _build_payload(
     config: dict,
     durations_ms: list[int],
     trials: list[TrialResult],
-    reset_efforts: list[ResetEffort],
+    reset_efforts: list,
     status: str,
     abort_reason: str | None,
 ) -> dict:
@@ -1410,7 +1572,6 @@ def _exit_as_script(exit_code: int) -> None:
         return
     raise SystemExit(int(exit_code))
 
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Minimal x-axis duration probe with live scatter updates.")
     parser.add_argument(
@@ -1418,6 +1579,15 @@ def main() -> int:
         type=int,
         default=None,
         help="Optional primary-trial cap; default runs the full deterministic duration schedule.",
+    )
+    parser.add_argument(
+        "--speed-score", type=int, default=SPEED_SCORE_DEFAULT, help="Fixed x-axis speed score (default: 1)."
+    )
+    parser.add_argument(
+        "--trial-speed-mode",
+        choices=[TRIAL_SPEED_MODE_DISTANCE_CURVE, TRIAL_SPEED_MODE_FIXED],
+        default=TRIAL_SPEED_MODE_DISTANCE_CURVE,
+        help="How to choose x trial speed: distance_curve (default) or fixed (respect --speed-score).",
     )
     parser.add_argument(
         "--repeat-trials",
@@ -1434,12 +1604,22 @@ def main() -> int:
     parser.add_argument(
         "--vision",
         choices=["leia", "yolo", "aruco"],
-        default="aruco",
-        help="Which vision backend to use: aruco markers (default), leia edges, or yolo cyan bricks.",
+        default=DEFAULT_VISION_MODE,
+        help="Which vision backend to use: yolo cyan bricks (default), aruco markers, or leia edges.",
     )
 
-    parser.add_argument("--min-duration-ms", type=int, default=250, help="Minimum deterministic duration in ms (default: 250).")
-    parser.add_argument("--max-duration-ms", type=int, default=500, help="Maximum deterministic duration in ms (default: 500).")
+    parser.add_argument(
+        "--min-duration-ms",
+        type=int,
+        default=MIN_DURATION_MS_DEFAULT,
+        help=f"Minimum deterministic duration in ms (default: {MIN_DURATION_MS_DEFAULT}).",
+    )
+    parser.add_argument(
+        "--max-duration-ms",
+        type=int,
+        default=MAX_DURATION_MS_DEFAULT,
+        help=f"Maximum deterministic duration in ms (default: {MAX_DURATION_MS_DEFAULT}).",
+    )
     parser.add_argument("--observe-samples", type=int, default=OBSERVE_SAMPLES_DEFAULT, help="Observation samples per pose; use 3 for 3-frame confidence (default: 3).")
     parser.add_argument("--observe-timeout-s", type=float, default=OBSERVE_TIMEOUT_S, help=f"Observation timeout in seconds (default: {OBSERVE_TIMEOUT_S}).")
     parser.add_argument("--post-act-settle-s", type=float, default=POST_ACT_SETTLE_S, help=f"Extra wait after the act before re-observing (default: {POST_ACT_SETTLE_S}).")
@@ -1465,17 +1645,21 @@ def main() -> int:
     parser.add_argument("--reference-distance-mm", type=float, default=None, help="Assumed brick distance (mm) for this calibration set")
     parser.add_argument("--invert-x-axis", action="store_true", help="Invert l/r command mapping.")
     args = parser.parse_args()
-    _ensure_run_dir()
-    # Use a stable live JSON file in the Runs - aruco folder.
+    run_dir = _run_dir_for_vision(args.vision)
+    _ensure_run_dir(run_dir)
+    # Use a stable live JSON file in the vision-specific runs folder.
     if args.results_file is None:
-        args.results_file = str(RUN_DIR / "calibrate_x_live.json")
+        args.results_file = str(Path(run_dir) / "calibrate_x_live.json")
     trials_requested = None if args.trials is None else max(1, int(args.trials))
     repeat_trials_requested = None if args.repeat_trials is None else max(0, int(args.repeat_trials))
-    speed_score = normalize_speed_score(SPEED_SCORE_DEFAULT)
+    speed_score = normalize_speed_score(args.speed_score)
+    requested_speed_score = int(speed_score)
     center_x_mm = float(args.center_x_mm)
-    min_duration_ms = max(1, int(args.min_duration_ms))
-    max_duration_ms = max(min_duration_ms, int(args.max_duration_ms))
     duration_ceiling_ms = max(1, int(DURATION_CEILING_MS))
+    prompted_duration_bounds = False
+    prompted_speed_score = False
+    min_duration_ms = max(1, int(args.min_duration_ms))
+    max_duration_ms = max(int(min_duration_ms), int(args.max_duration_ms))
     if max_duration_ms > duration_ceiling_ms:
         log_line(
             f"[CALIBRATE_X] Clamping requested max_duration_ms={int(max_duration_ms)}ms "
@@ -1498,39 +1682,34 @@ def main() -> int:
     if args.reference_distance_mm is not None:
         global REFERENCE_BRICK_DISTANCE_MM
         REFERENCE_BRICK_DISTANCE_MM = float(args.reference_distance_mm)
+    trial_speed_mode = str(args.trial_speed_mode or TRIAL_SPEED_MODE_DISTANCE_CURVE).strip().lower()
+    trial_speed_profile = _trial_speed_profile_for_mode(trial_speed_mode)
+    x_duration_cal = _load_x_duration_calibration()
     full_durations_ms = _build_duration_schedule(
         trials=None,
         min_duration_ms=min_duration_ms,
         max_duration_ms=max_duration_ms,
     )
-    full_trial_plan = _build_trial_plan(
-        durations_ms=full_durations_ms,
-        trials=None,
-    )
     trial_plan = _build_trial_plan(
         durations_ms=full_durations_ms,
         trials=trials_requested,
     )
-    primary_cmd_sequence = _primary_trial_cmd_sequence()
     durations_ms = _planned_durations_ms(trial_plan)
-    if trials_requested is not None and int(trials_requested) > len(full_trial_plan):
-        log_line(
-            f"[CALIBRATE_X] Requested {int(trials_requested)} trial(s), but the deterministic "
-            f"{int(min_duration_ms)}..{int(max_duration_ms)}ms sweep with per-duration "
-            f"{'/'.join(str(cmd).upper() for cmd in primary_cmd_sequence)} only provides "
-            f"{len(full_trial_plan)} planned trial(s)."
-        )
     trials_planned = len(trial_plan)
     results_path = Path(args.results_file)
     plot_path = Path(args.plot_path) if args.plot_path else None
+    repeat_pass_enabled = bool(repeat_trials_requested is not None and int(repeat_trials_requested) > 0)
+    trial_cmd_schedule = "auto_visibility_by_x_sign"
 
     config = {
         "trials": int(trials_planned),
         "requested_trials": None if trials_requested is None else int(trials_requested),
-        "repeat_pass_enabled": True,
+        "repeat_pass_enabled": bool(repeat_pass_enabled),
         "requested_repeat_trials": None if repeat_trials_requested is None else int(repeat_trials_requested),
         "duration_ceiling_ms": int(duration_ceiling_ms),
         "speed_score": int(speed_score),
+        "requested_speed_score": int(requested_speed_score),
+        "speed_score_source": "arg",
         "center_x_mm": float(center_x_mm),
         "min_duration_ms": int(min_duration_ms),
         "max_duration_ms": int(max_duration_ms),
@@ -1540,52 +1719,22 @@ def main() -> int:
         "observe_samples": int(observe_samples),
         "observe_timeout_s": float(observe_timeout_s),
         "post_act_settle_s": float(post_act_settle_s),
+        "prompted_duration_bounds": bool(prompted_duration_bounds),
         "half_first_turn_pulse": False,
-        "primary_trial_cmd_schedule": "per_duration_sequence",
-        "primary_trial_cmd_sequence": [str(cmd).upper() for cmd in primary_cmd_sequence],
-        "primary_trial_repetitions_per_direction": 2,
+        "trial_cmd_mode": str(TRIAL_CMD_AUTO),
+        "primary_trial_cmd_schedule": str(trial_cmd_schedule),
+        "trial_cmd_rule": "if x_axis < center_x_mm: right_turn else left_turn",
         "x_axis_center_target_mm": float(center_x_mm),
         "plot_path": str(plot_path) if plot_path is not None else None,
         "brick_distance_source": str(BRICK_DISTANCE_SOURCE),
         "brick_distance_definition": str(BRICK_DISTANCE_DEFINITION),
+        "trial_speed_mode": str(trial_speed_mode),
+        "trial_speed_score_source": "distance_curve" if isinstance(trial_speed_profile, dict) else "arg",
     }
     if REFERENCE_BRICK_DISTANCE_MM is not None:
         config["reference_brick_distance_mm"] = float(REFERENCE_BRICK_DISTANCE_MM)
-
-    log_line("[CALIBRATE_X] Starting x-axis duration probe.")
-    log_line(
-        f"[CALIBRATE_X] trials={trials_planned} score={int(speed_score)}% durations_ms={durations_ms} "
-        f"observe_samples={observe_samples}"
-    )
-    log_line(
-        f"[CALIBRATE_X] deterministic duration climb: start={int(min_duration_ms)}ms "
-        f"stop={int(max_duration_ms)}ms step={int(DURATION_STEP_MS_DEFAULT)}ms."
-    )
-    log_line(
-        f"[CALIBRATE_X] x-axis motion sign: {_turn_label_for_cmd(_x_cmd_for_positive_motion())} increases x_axis, "
-        f"{_turn_label_for_cmd(_x_cmd_for_negative_motion())} decreases x_axis."
-    )
-    log_line(
-        f"[CALIBRATE_X] repeat_pass=enabled; repeats are deferred until all {int(trials_planned)} "
-        f"primary trial(s) finish."
-    )
-    log_line("[CALIBRATE_X] duration fidelity: exact requested turn duration is used; first-turn halving is disabled.")
-    log_line(f"[CALIBRATE_X] center target: x_axis={float(center_x_mm):+.2f}mm.")
-    log_line("[CALIBRATE_X] turn source: left turns follow hotkey Q; right turns follow hotkey E.")
-    log_line(
-        f"[CALIBRATE_X] primary trial command schedule: per duration run "
-        f"{_turn_label_for_cmd(primary_cmd_sequence[0])}, "
-        f"{_turn_label_for_cmd(primary_cmd_sequence[1])}, "
-        f"{_turn_label_for_cmd(primary_cmd_sequence[2])}, "
-        f"{_turn_label_for_cmd(primary_cmd_sequence[3])}."
-    )
-    if bool(args.show_plot):
-        if _MATPLOTLIB_AVAILABLE:
-            log_line("[CALIBRATE_X] Live plot enabled.")
-        else:
-            log_line("[CALIBRATE_X] Matplotlib unavailable; continuing without live plot.")
-    if plot_path is not None:
-        log_line(f"[CALIBRATE_X] Plot PNG will update at {plot_path}")
+    if isinstance(trial_speed_profile, dict):
+        config["trial_speed_score_profile"] = json.loads(json.dumps(trial_speed_profile))
 
     plotter = LivePlot(show_plot=bool(args.show_plot), plot_path=plot_path)
     robot = None
@@ -1593,12 +1742,17 @@ def main() -> int:
     world = None
     recent_acts = deque(maxlen=32)
     trial_rows: list[TrialResult] = []
-    reset_rows: list[ResetEffort] = []
+    reset_rows: list = []
     status = "completed"
     abort_reason = None
     stream_server = None
     stream_state = None
     stream_url = format_stream_url(str(args.stream_host), int(args.stream_port))
+    stream_score_line = (
+        "Score: distance curve"
+        if isinstance(trial_speed_profile, dict)
+        else f"Score: {int(speed_score)}%"
+    )
 
     try:
         world = WorldModel()
@@ -1643,7 +1797,7 @@ def main() -> int:
                 lines = [
                     f"X calibration",
                     f"Trials: {len(trial_rows)}/{int(trials_planned)}",
-                    f"Score: {int(speed_score)}%",
+                    str(stream_score_line),
                 ]
                 lines.extend(list(stream_extra_lines))
                 _refresh_stream_state(
@@ -1715,22 +1869,237 @@ def main() -> int:
         else:
             log_line("[CALIBRATE_X] Preflight check skipped (use --preflight-check to enable).")
 
+        initial_trial_pre_pose = None
+        initial_trial_pre_obs_meta = None
+        if status != "aborted" and trials_planned > 0:
+            _live_refresh(
+                [
+                    "TRIALS SETUP",
+                    "Observing current distance...",
+                ]
+            )
+            initial_trial_pre_pose, initial_trial_pre_obs_meta = _observe_pose_with_reobserve(
+                vision=vision,
+                world=world,
+                samples=observe_samples,
+                timeout_s=observe_timeout_s,
+                on_vision_update=_live_refresh,
+            )
+            if initial_trial_pre_pose is None:
+                initial_trial_pre_pose, initial_trial_pre_obs_meta = _recover_pose_for_trial(
+                    vision=vision,
+                    world=world,
+                    robot=robot,
+                    recent_acts=recent_acts,
+                    trial_idx=1,
+                    trials_requested=trials_planned,
+                    stage_label="before trials",
+                    trial_label="TRIALS SETUP",
+                    on_vision_update=_live_refresh,
+                )
+            if initial_trial_pre_pose is None:
+                status = "aborted"
+                abort_reason = "pre_pose_unavailable_before_trials"
+                log_line("[CALIBRATE_X] TRIALS SETUP: unable to observe current distance. Aborting.")
+            else:
+                setup_distance_mm = _coerce_finite_float(initial_trial_pre_pose.get("dist"))
+                setup_curve_name = _x_curve_display_name(x_duration_cal)
+                log_line(
+                    _trials_setup_log_line(
+                        observed_distance_mm=setup_distance_mm,
+                        closest_curve_name=setup_curve_name,
+                    )
+                )
+                prompted_settings = shared_prompt_calibration_run_settings(
+                    prefix="CALIBRATE_X",
+                    observed_distance_mm=setup_distance_mm,
+                    default_speed_score=int(requested_speed_score),
+                    default_min_duration_ms=int(min_duration_ms),
+                    default_max_duration_ms=int(max_duration_ms),
+                    duration_ceiling_ms=int(duration_ceiling_ms),
+                    log=log_line,
+                )
+                speed_score = normalize_speed_score(int(prompted_settings["speed_score"]))
+                requested_speed_score = int(speed_score)
+                min_duration_ms = max(1, int(prompted_settings["min_duration_ms"]))
+                max_duration_ms = max(int(min_duration_ms), int(prompted_settings["max_duration_ms"]))
+                prompted_speed_score = bool(prompted_settings.get("prompted_speed_score"))
+                prompted_duration_bounds = bool(prompted_settings.get("prompted_duration_bounds"))
+                full_durations_ms = _build_duration_schedule(
+                    trials=None,
+                    min_duration_ms=min_duration_ms,
+                    max_duration_ms=max_duration_ms,
+                )
+                trial_plan = _build_trial_plan(
+                    durations_ms=full_durations_ms,
+                    trials=trials_requested,
+                )
+                durations_ms = _planned_durations_ms(trial_plan)
+                trials_planned = len(trial_plan)
+                stream_score_line = (
+                    f"Score: distance curve (base {int(speed_score)}%)"
+                    if isinstance(trial_speed_profile, dict)
+                    else f"Score: {int(speed_score)}%"
+                )
+                config = {
+                    "trials": int(trials_planned),
+                    "requested_trials": None if trials_requested is None else int(trials_requested),
+                    "repeat_pass_enabled": bool(repeat_pass_enabled),
+                    "requested_repeat_trials": None if repeat_trials_requested is None else int(repeat_trials_requested),
+                    "duration_ceiling_ms": int(duration_ceiling_ms),
+                    "speed_score": int(speed_score),
+                    "requested_speed_score": int(requested_speed_score),
+                    "speed_score_source": "prompt" if bool(prompted_speed_score) else "arg",
+                    "prompted_speed_score": bool(prompted_speed_score),
+                    "center_x_mm": float(center_x_mm),
+                    "min_duration_ms": int(min_duration_ms),
+                    "max_duration_ms": int(max_duration_ms),
+                    "duration_step_ms": int(DURATION_STEP_MS_DEFAULT),
+                    "x_axis_positive_cmd": str(_x_cmd_for_positive_motion()),
+                    "x_axis_negative_cmd": str(_x_cmd_for_negative_motion()),
+                    "observe_samples": int(observe_samples),
+                    "observe_timeout_s": float(observe_timeout_s),
+                    "post_act_settle_s": float(post_act_settle_s),
+                    "prompted_duration_bounds": bool(prompted_duration_bounds),
+                    "half_first_turn_pulse": False,
+                    "trial_cmd_mode": str(TRIAL_CMD_AUTO),
+                    "primary_trial_cmd_schedule": str(trial_cmd_schedule),
+                    "trial_cmd_rule": "if x_axis < center_x_mm: right_turn else left_turn",
+                    "x_axis_center_target_mm": float(center_x_mm),
+                    "plot_path": str(plot_path) if plot_path is not None else None,
+                    "brick_distance_source": str(BRICK_DISTANCE_SOURCE),
+                    "brick_distance_definition": str(BRICK_DISTANCE_DEFINITION),
+                    "trial_speed_mode": str(trial_speed_mode),
+                    "trial_speed_score_source": "distance_curve" if isinstance(trial_speed_profile, dict) else "arg",
+                }
+                if REFERENCE_BRICK_DISTANCE_MM is not None:
+                    config["reference_brick_distance_mm"] = float(REFERENCE_BRICK_DISTANCE_MM)
+                if isinstance(trial_speed_profile, dict):
+                    config["trial_speed_score_profile"] = json.loads(json.dumps(trial_speed_profile))
+                log_line("[CALIBRATE_X] Starting x-axis duration probe.")
+                log_line(
+                    f"[CALIBRATE_X] trials={trials_planned} score={int(speed_score)}% durations_ms={durations_ms} "
+                    f"observe_samples={observe_samples}"
+                )
+                log_line(
+                    f"[CALIBRATE_X] deterministic duration climb: start={int(min_duration_ms)}ms "
+                    f"stop={int(max_duration_ms)}ms step={int(DURATION_STEP_MS_DEFAULT)}ms."
+                )
+                log_line(
+                    f"[CALIBRATE_X] x-axis motion sign: {_turn_label_for_cmd(_x_cmd_for_positive_motion())} increases x_axis, "
+                    f"{_turn_label_for_cmd(_x_cmd_for_negative_motion())} decreases x_axis."
+                )
+                if bool(repeat_pass_enabled):
+                    log_line(
+                        f"[CALIBRATE_X] repeat_pass=enabled; repeats are deferred until all {int(trials_planned)} "
+                        f"primary trial(s) finish."
+                    )
+                else:
+                    log_line("[CALIBRATE_X] repeat_pass=disabled by default; use --repeat-trials N to enable.")
+                log_line("[CALIBRATE_X] duration fidelity: exact requested turn duration is used; first-turn halving is disabled.")
+                log_line(f"[CALIBRATE_X] center target: x_axis={float(center_x_mm):+.2f}mm.")
+                log_line("[CALIBRATE_X] turn source: left turns follow hotkey Q; right turns follow hotkey E.")
+                log_line(
+                    "[CALIBRATE_X] primary trial command selection: auto by x sign; "
+                    f"if x_axis < {float(center_x_mm):+.2f}mm use {_turn_label_for_cmd(_x_cmd_for_negative_motion())}, "
+                    f"else use {_turn_label_for_cmd(_x_cmd_for_positive_motion())}."
+                )
+                if isinstance(trial_speed_profile, dict):
+                    curve_points = list(trial_speed_profile.get("curve_points") or [])
+                    if len(curve_points) >= 2:
+                        first_point = curve_points[0]
+                        last_point = curve_points[-1]
+                        log_line(
+                            f"[CALIBRATE_X] trial speed curve: "
+                            f"<= {float(first_point.get('distance_mm')):.0f}mm -> {int(first_point.get('speed_score'))}% ; "
+                            f">= {float(last_point.get('distance_mm')):.0f}mm -> {int(last_point.get('speed_score'))}% ; "
+                            "linear between points."
+                        )
+                else:
+                    log_line(
+                        f"[CALIBRATE_X] trial speed mode: fixed; using score={int(speed_score)}% for every trial."
+                    )
+                if bool(args.show_plot):
+                    if _MATPLOTLIB_AVAILABLE:
+                        log_line("[CALIBRATE_X] Live plot enabled.")
+                    else:
+                        log_line("[CALIBRATE_X] Matplotlib unavailable; continuing without live plot.")
+                if plot_path is not None:
+                    log_line(f"[CALIBRATE_X] Plot PNG will update at {plot_path}")
+                _live_refresh(
+                    [
+                        "TRIALS SETUP",
+                        f"Observed dist: {float(setup_distance_mm):.2f}mm"
+                        if setup_distance_mm is not None
+                        else "Observed dist: unknown",
+                        f"Closest curve: {setup_curve_name}",
+                        str(stream_score_line),
+                        f"Durations: {int(min_duration_ms)}..{int(max_duration_ms)}ms",
+                    ]
+                )
+
         if status == "aborted":
             pass  # skip to cleanup
         else:
             for trial_idx, plan_step in enumerate(trial_plan, start=1):
                 trial_label = _trial_label_text(trial_idx, trials_planned)
-                cmd = str(plan_step.get("cmd") or "")
                 duration_ms = max(1, int(_coerce_int(plan_step.get("duration_ms"), 1) or 1))
-                log_line(
-                    f"[CALIBRATE_X] {trial_label}: scheduled cmd={str(cmd).upper()} "
-                    f"({_turn_label_for_cmd(cmd)}) for {_highlight_duration_ms(int(duration_ms))}."
+                pre_pose = (
+                    dict(initial_trial_pre_pose)
+                    if trial_idx == 1 and isinstance(initial_trial_pre_pose, dict)
+                    else None
+                )
+                pre_obs_meta = (
+                    dict(initial_trial_pre_obs_meta)
+                    if trial_idx == 1 and isinstance(initial_trial_pre_obs_meta, dict)
+                    else None
                 )
                 _live_refresh(
                     [
                         f"Trial {int(trial_idx)}/{int(trials_planned)}",
-                        f"Planned: {str(cmd).upper()} {int(duration_ms)}ms",
                         "Observing...",
+                    ]
+                )
+                if pre_pose is None:
+                    pre_pose, pre_obs_meta = _observe_pose_with_reobserve(
+                        vision=vision,
+                        world=world,
+                        samples=observe_samples,
+                        timeout_s=observe_timeout_s,
+                        on_vision_update=_live_refresh,
+                    )
+                if pre_pose is None:
+                    pre_pose, pre_obs_meta = _recover_pose_for_trial(
+                        vision=vision,
+                        world=world,
+                        robot=robot,
+                        recent_acts=recent_acts,
+                        trial_idx=trial_idx,
+                        trials_requested=trials_planned,
+                        stage_label="before command selection",
+                        trial_label=trial_label,
+                        on_vision_update=_live_refresh,
+                    )
+                if pre_pose is None:
+                    status = "aborted"
+                    abort_reason = f"pre_pose_unavailable_trial_{trial_idx}"
+                    log_line(f"[CALIBRATE_X] {trial_label}: recovery failed before command selection. Aborting.")
+                    break
+                curr_x = float(pre_pose.get("offset_x") or 0.0)
+                cmd = _auto_cmd_for_x(
+                    curr_x,
+                    center_x_mm=float(center_x_mm),
+                )
+                log_line(
+                    f"[CALIBRATE_X] {trial_label}: auto visibility selection "
+                    f"current_x={curr_x:+.2f}mm target_x={float(center_x_mm):+.2f}mm "
+                    f"-> cmd={str(cmd).upper()} ({_turn_label_for_cmd(cmd)})."
+                )
+                _live_refresh(
+                    [
+                        f"Trial {int(trial_idx)}/{int(trials_planned)}",
+                        f"Current x: {float(curr_x):+.2f}mm",
+                        f"Planned: {str(cmd).upper()} {int(duration_ms)}ms",
                     ]
                 )
 
@@ -1754,6 +2123,10 @@ def main() -> int:
                     observe_timeout_s=observe_timeout_s,
                     post_act_settle_s=post_act_settle_s,
                     plotter=plotter,
+                    initial_pre_pose=pre_pose,
+                    initial_pre_obs_meta=pre_obs_meta,
+                    x_duration_cal=x_duration_cal,
+                    trial_speed_profile=trial_speed_profile,
                     stream_refresh_fn=_live_refresh,
                 )
                 if row is None:
@@ -1790,15 +2163,12 @@ def main() -> int:
                     ),
                 )
 
-        if status == "completed":
+        if status == "completed" and bool(repeat_pass_enabled):
             repeat_plan_source = [row for row in trial_rows if str(getattr(row, "phase", "primary")) != "repeat"]
-            if repeat_trials_requested is None:
-                repeat_plan = list(repeat_plan_source)
-            else:
-                repeat_plan = []
-                if repeat_plan_source and int(repeat_trials_requested) > 0:
-                    for idx in range(int(repeat_trials_requested)):
-                        repeat_plan.append(repeat_plan_source[idx % len(repeat_plan_source)])
+            repeat_plan = []
+            if repeat_plan_source and int(repeat_trials_requested or 0) > 0:
+                for idx in range(int(repeat_trials_requested or 0)):
+                    repeat_plan.append(repeat_plan_source[idx % len(repeat_plan_source)])
             log_line(
                 f"[CALIBRATE_X] Primary pass complete. Starting repeat pass over "
                 f"{len(repeat_plan)} recorded trial(s)."
@@ -1837,6 +2207,8 @@ def main() -> int:
                     observe_timeout_s=observe_timeout_s,
                     post_act_settle_s=post_act_settle_s,
                     plotter=plotter,
+                    x_duration_cal=x_duration_cal,
+                    trial_speed_profile=trial_speed_profile,
                     compare_to_distance=float(source_row.cmd_delta_mm),
                     stream_refresh_fn=_live_refresh,
                 )

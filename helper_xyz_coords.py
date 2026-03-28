@@ -27,6 +27,7 @@ DEFAULT_WALL_RENDER_LENGTH_MM = 320.0
 DEFAULT_STACK_RENDER_FOOTPRINT_MM = 54.0
 DEFAULT_STACK_HEIGHT_MM = 44.0
 DEFAULT_BRICK_MM = {"length_mm": 44.0, "width_mm": 22.0, "height_mm": 22.0}
+BIRD_HELD_BRICK_RENDER_SCALE = 0.5
 DEFAULT_WORKSPACE_STEP_TARGETS = (
     (1, 2, "wall"),
     (3, 9, "brick_supply"),
@@ -40,20 +41,26 @@ BIRDSEYE_VIEW_MARGIN_MM = 6.0
 BIRDSEYE_MIN_SPAN_X_MM = 68.0
 BIRDSEYE_MIN_SPAN_Y_MM = 52.0
 BIRD_STACK_SHIFT_X_PX = 200.0
+BIRD_SUPPLY_RENDER_SHIFT_X_PX = -36.0
+BIRD_HISTORY_MAX_POINTS = 18
+BIRD_HISTORY_COLOR_OLDER = "#63d7ff"
+BIRD_HISTORY_COLOR_NEWEST = "#0b3d91"
 STEP_HISTORY_COLOR_CLOSER = "#2f9e44"
 STEP_HISTORY_COLOR_FURTHER = "#d94841"
 STEP_HISTORY_COLOR_NEUTRAL = "#c59d2a"
 STEP_HISTORY_COLOR_UNKNOWN = "#7b7668"
-STEP_HISTORY_RECENT_MEDIUM_DOTS = 3
-STEP_HISTORY_DOT_RADIUS_TINY_PX = 2.0
-STEP_HISTORY_DOT_RADIUS_MEDIUM_PX = 6.0
+BIRD_HISTORY_DOT_RADIUS_PX = 6.0
+BIRD_DIST_TRACK_NEAR_MM = 90.0
 BIRD_DIST_TRACK_MAX_MM = 150.0
 BIRD_DIST_TRACK_MARGIN_PX = 42.0
 BIRD_DIST_TRACK_STACK_GAP_PX = 16.0
+BIRD_X_AXIS_TRACK_EXTENT_MM = 140.0
+BIRD_X_AXIS_TRACK_HALF_SPAN_PX = 54.0
 
 SVG_WIDTH = 980
 BIRD_SVG_HEIGHT = 228
 BIRD_SVG_PADDING = 28
+BIRD_STACK_CENTER_Y_PX = 118.0
 SVG_PADDING = 80
 MAST_SVG_HEIGHT = 360
 MAST_VIEW_MIN_MM = 0.0
@@ -361,6 +368,14 @@ def _append_history(state: dict, entry: dict, *, maxlen: int = 60) -> None:
     row.setdefault("camera_height_mm", float(_coerce_float(leia.get("z_mm"), DEFAULT_CAMERA_Z_MM) or DEFAULT_CAMERA_Z_MM))
     row.setdefault("current_lift_mm", float(_coerce_float(robot.get("lift_mm"), 0.0) or 0.0))
     row.setdefault("target_visible", bool(last_visible.get("visible", False)))
+    dist_mm = _coerce_float(last_visible.get("dist_mm"), None)
+    if dist_mm is not None:
+        row.setdefault("dist_mm", float(dist_mm))
+        row.setdefault("target_range_mm", float(dist_mm))
+    x_axis_mm = _coerce_float(last_visible.get("x_axis_mm"), None)
+    row.setdefault("x_axis_mm", x_axis_mm)
+    if x_axis_mm is not None:
+        row.setdefault("x_axis_abs_mm", abs(float(x_axis_mm)))
     y_axis_mm = _coerce_float(last_visible.get("y_axis_mm"), None)
     row.setdefault("y_axis_mm", y_axis_mm)
     if y_axis_mm is not None:
@@ -1025,6 +1040,36 @@ def _polygon_points(points: list[tuple[float, float]]) -> str:
     return " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
 
 
+def _screen_bounds(points: list[tuple[float, float]]) -> tuple[float, float, float, float]:
+    if not points:
+        return 0.0, 0.0, 0.0, 0.0
+    xs = [float(point[0]) for point in points]
+    ys = [float(point[1]) for point in points]
+    return min(xs), max(xs), min(ys), max(ys)
+
+
+def _anchor_stack_screen_points(
+    points: list[tuple[float, float]],
+    *,
+    center_y_px: float = BIRD_STACK_CENTER_Y_PX,
+) -> list[tuple[float, float]]:
+    if not points:
+        return []
+    _, _, min_y, max_y = _screen_bounds(points)
+    current_center_y = (float(min_y) + float(max_y)) * 0.5
+    shift_y = float(center_y_px) - float(current_center_y)
+    return [(float(x), float(y) + float(shift_y)) for x, y in points]
+
+
+def _bird_distance_track_ratio(dist_mm: float | None) -> float:
+    distance_val = _coerce_float(dist_mm, None)
+    if distance_val is None:
+        distance_val = float(BIRD_DIST_TRACK_MAX_MM)
+    near_mm = float(BIRD_DIST_TRACK_NEAR_MM)
+    far_mm = max(float(near_mm) + 1.0, float(BIRD_DIST_TRACK_MAX_MM))
+    return max(0.0, min(1.0, (float(distance_val) - float(near_mm)) / (float(far_mm) - float(near_mm))))
+
+
 def _rotated_rect(center_x: float, center_y: float, theta_deg: float, length_mm: float, width_mm: float) -> list[tuple[float, float]]:
     hx, hy = _heading_vector(theta_deg)
     px, py = -hy, hx
@@ -1144,13 +1189,48 @@ def _step_history_color(trend: str) -> str:
     return STEP_HISTORY_COLOR_UNKNOWN
 
 
-def _history_dot_radius(index: int, history_count: int) -> float:
-    is_recent = int(index) >= max(0, int(history_count) - int(STEP_HISTORY_RECENT_MEDIUM_DOTS))
-    return (
-        float(STEP_HISTORY_DOT_RADIUS_MEDIUM_PX)
-        if is_recent
-        else float(STEP_HISTORY_DOT_RADIUS_TINY_PX)
-    )
+def _bird_history_fill_color(index: int, history_count: int) -> str:
+    is_most_recent = int(index) >= max(0, int(history_count) - 1)
+    if is_most_recent:
+        return str(BIRD_HISTORY_COLOR_NEWEST)
+    return str(BIRD_HISTORY_COLOR_OLDER)
+
+
+def _current_step_observation_history(state: dict) -> list[dict]:
+    history = state.get("history") or []
+    active = state.get("active_target") or {}
+    current_seq = _coerce_int(active.get("history_step_seq"), None)
+    current_step = _normalize_step_key(active.get("step_name"))
+    filtered = []
+    for entry in history:
+        if not isinstance(entry, dict):
+            continue
+        action_type = str(entry.get("action_type") or "").strip().lower()
+        if action_type in {"mast_up", "mast_down"}:
+            continue
+        entry_type = str(entry.get("type") or "").strip().lower()
+        if entry_type not in {"sync", "observation"}:
+            continue
+        if entry_type == "sync" and not bool(entry.get("target_visible", False)):
+            continue
+        entry_seq = _coerce_int(entry.get("step_seq"), None)
+        entry_step = _normalize_step_key(entry.get("step_name"))
+        if current_seq is not None and entry_seq is not None:
+            if int(entry_seq) != int(current_seq):
+                continue
+        elif current_step and entry_step != current_step:
+            continue
+        dist_mm = _coerce_float(entry.get("dist_mm", entry.get("target_range_mm")), None)
+        x_axis_mm = _coerce_float(entry.get("x_axis_mm"), None)
+        if dist_mm is None or x_axis_mm is None:
+            continue
+        filtered.append(entry)
+    return filtered
+
+
+def _current_step_bird_history(state: dict) -> list[dict]:
+    observed = _current_step_observation_history(state)
+    return observed[-int(BIRD_HISTORY_MAX_POINTS):]
 
 
 def _current_step_mast_history(state: dict) -> list[dict]:
@@ -1263,14 +1343,56 @@ def _mast_history_screen_points(
     ]
 
 
+def _stack_visual_style(stack_name: str | None) -> dict:
+    key = str(stack_name or "").strip().lower()
+    if key == "wall":
+        return {
+            "fill": "#cc3a2b",
+            "stroke": "#7d241b",
+            "label": "Wall",
+        }
+    return {
+        "fill": "#1f4b8f",
+        "stroke": "#122d57",
+        "label": "Supply",
+    }
+
+
+def _stack_card_svg(
+    *,
+    center_x: float,
+    center_y: float,
+    size_px: float,
+    label: str,
+    fill: str,
+    stroke: str,
+    count_text: str | None = None,
+    label_gap_px: float = 14.0,
+    corner_radius_px: float = 12.0,
+    count_font_size: float = 36.0,
+    count_y_nudge: float = 16.0,
+) -> list[str]:
+    top = float(center_y) - (float(size_px) * 0.5)
+    left = float(center_x) - (float(size_px) * 0.5)
+    svg_parts = [
+        f'<rect x="{left:.1f}" y="{top:.1f}" width="{float(size_px):.1f}" height="{float(size_px):.1f}" '
+        f'fill="{fill}" stroke="{stroke}" stroke-width="3" rx="{float(corner_radius_px):.1f}" />',
+        f'<text x="{float(center_x):.1f}" y="{top - float(label_gap_px):.1f}" text-anchor="middle" font-size="28" font-weight="600" fill="#1d2830">{html.escape(str(label))}</text>',
+    ]
+    if count_text not in (None, ""):
+        svg_parts.append(
+            f'<text x="{float(center_x):.1f}" y="{float(center_y) + float(count_y_nudge):.1f}" text-anchor="middle" font-size="{float(count_font_size):.1f}" font-weight="700" fill="#ffffff">{html.escape(str(count_text))}</text>'
+        )
+    return svg_parts
+
+
 def render_workspace_svg(state: dict | None) -> str:
     snapshot = _normalized_render_snapshot(state)
     project, view_project, scale = _project_fn(snapshot)
     min_x, max_x, min_y, max_y = _build_viewbox(snapshot)
     active_target = snapshot.get("active_target") or {}
     active_name = active_target.get("object_name")
-    step_history = _current_step_motion_history(snapshot)
-    dot_history = _all_motion_history(snapshot)
+    bird_history = _current_step_bird_history(snapshot)
     
     svg_parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{SVG_WIDTH}" height="{BIRD_SVG_HEIGHT}" viewBox="0 0 {SVG_WIDTH} {BIRD_SVG_HEIGHT}">',
@@ -1302,24 +1424,27 @@ def render_workspace_svg(state: dict | None) -> str:
         wall_rect = _wall_render_points(wall)
         wall_screen = [project(x, y) for x, y in wall_rect]
         wall_screen = [(sx + float(BIRD_STACK_SHIFT_X_PX), sy) for sx, sy in wall_screen]
+        wall_screen = _anchor_stack_screen_points(wall_screen)
         stack_screen = list(wall_screen)
-        stack_center = (float(w_tx), float(w_ty)) if "w_tx" in locals() and "w_ty" in locals() else None
-        wall_top_y = min(float(pt[1]) for pt in wall_screen)
-        wall_label_y = max(float(wall_top_y) - 16.0, 68.0)
-        wall_fill = "#cc3a2b"
-        wall_stroke = "#7d241b"
-        svg_parts.append(
-            f'<polygon points="{_polygon_points(wall_screen)}" fill="{wall_fill}" stroke="{wall_stroke}" stroke-width="4.5" />'
-        )
         w_tx, w_ty = project(wall_cx, wall_cy)
         w_tx = float(w_tx) + float(BIRD_STACK_SHIFT_X_PX)
-        stack_center = (float(w_tx), float(w_ty))
-        svg_parts.append(
-            f'<text x="{w_tx:.1f}" y="{wall_label_y:.1f}" text-anchor="middle" font-size="28" font-weight="600" fill="#1d2830">Wall</text>'
-        )
-        wall_count = "?" if wall.get("count") is None else str(int(wall["count"]))
-        svg_parts.append(
-            f'<text x="{w_tx:.1f}" y="{w_ty + 8:.1f}" text-anchor="middle" font-size="22" font-weight="700" fill="#ffffff">{wall_count}</text>'
+        stack_center = (float(w_tx), float(BIRD_STACK_CENTER_Y_PX))
+        wall_style = _stack_visual_style("wall")
+        wall_count_text = None if wall.get("count") is None else str(int(wall["count"]))
+        min_x, max_x, min_y, max_y = _screen_bounds(wall_screen)
+        wall_size_px = max(float(max_x) - float(min_x), float(max_y) - float(min_y))
+        svg_parts.extend(
+            _stack_card_svg(
+                center_x=float(w_tx),
+                center_y=float(BIRD_STACK_CENTER_Y_PX),
+                size_px=float(wall_size_px),
+                label=str(wall_style["label"]),
+                fill=str(wall_style["fill"]),
+                stroke=str(wall_style["stroke"]),
+                count_text=wall_count_text,
+                count_font_size=24.0,
+                count_y_nudge=10.0,
+            )
         )
 
     supply = snapshot["objects"]["brick_supply"]
@@ -1332,28 +1457,40 @@ def render_workspace_svg(state: dict | None) -> str:
             54.0,
         )
         supply_screen = [project(x, y) for x, y in supply_rect]
-        supply_screen = [(sx + float(BIRD_STACK_SHIFT_X_PX), sy) for sx, sy in supply_screen]
+        supply_screen = [
+            (sx + float(BIRD_STACK_SHIFT_X_PX) + float(BIRD_SUPPLY_RENDER_SHIFT_X_PX), sy)
+            for sx, sy in supply_screen
+        ]
+        supply_screen = _anchor_stack_screen_points(supply_screen)
         stack_screen = list(supply_screen)
-        supply_top_y = min(float(pt[1]) for pt in supply_screen)
-        supply_label_y = float(supply_top_y) - 16.0
-        supply_stroke = "#122d57"
-        svg_parts.append(
-            f'<polygon points="{_polygon_points(supply_screen)}" fill="#1f4b8f" stroke="{supply_stroke}" stroke-width="4.5" />'
-        )
         supply_tx, supply_ty = project(float(supply.get("x_mm", 0.0)), float(supply.get("y_mm", 0.0)))
-        supply_tx = float(supply_tx) + float(BIRD_STACK_SHIFT_X_PX)
-        stack_center = (float(supply_tx), float(supply_ty))
-        svg_parts.append(f'<text x="{supply_tx:.1f}" y="{supply_label_y:.1f}" text-anchor="middle" font-size="28" font-weight="600" fill="#1d2830">Supply</text>')
-        count_text = "?" if supply.get("count") is None else str(int(supply["count"]))
-        svg_parts.append(
-            f'<text x="{supply_tx:.1f}" y="{supply_ty + 16:.1f}" text-anchor="middle" font-size="36" font-weight="700" fill="#ffffff">{count_text}</text>'
+        supply_tx = (
+            float(supply_tx)
+            + float(BIRD_STACK_SHIFT_X_PX)
+            + float(BIRD_SUPPLY_RENDER_SHIFT_X_PX)
+        )
+        stack_center = (float(supply_tx), float(BIRD_STACK_CENTER_Y_PX))
+        supply_style = _stack_visual_style("brick_supply")
+        supply_count_text = None if supply.get("count") is None else str(int(supply["count"]))
+        min_x, max_x, min_y, max_y = _screen_bounds(supply_screen)
+        supply_size_px = max(float(max_x) - float(min_x), float(max_y) - float(min_y))
+        svg_parts.extend(
+            _stack_card_svg(
+                center_x=float(supply_tx),
+                center_y=float(BIRD_STACK_CENTER_Y_PX),
+                size_px=float(supply_size_px),
+                label=str(supply_style["label"]),
+                fill=str(supply_style["fill"]),
+                stroke=str(supply_style["stroke"]),
+                count_text=supply_count_text,
+            )
         )
 
     robot = snapshot["robot"]
     target_obj = (snapshot.get("objects") or {}).get(active_name) if active_name in {"wall", "brick_supply"} else None
 
-    # Build a dedicated distance track so 0mm sits by the stack edge and
-    # 150mm maps to the far side of the diagram.
+    # Build a dedicated observation chart so distance maps left/right and
+    # x-axis maps up/down relative to the stack-centered baseline.
     def _bird_history_screen_point(entry: dict) -> tuple[float, float]:
         try:
             if not isinstance(entry, dict):
@@ -1361,17 +1498,14 @@ def render_workspace_svg(state: dict | None) -> str:
             if not isinstance(stack_screen, list) or len(stack_screen) < 3:
                 raise ValueError("stack")
 
-            xs = [float(pt[0]) for pt in stack_screen]
-            ys = [float(pt[1]) for pt in stack_screen]
-            min_x = min(xs)
-            max_x = max(xs)
+            min_x, max_x, min_y, max_y = _screen_bounds(stack_screen)
             center_x = (min_x + max_x) * 0.5
 
             track_y = None
             if isinstance(stack_center, tuple) and len(stack_center) == 2:
                 track_y = float(stack_center[1])
             if track_y is None:
-                track_y = (min(ys) + max(ys)) * 0.5
+                track_y = (float(min_y) + float(max_y)) * 0.5
             track_y = max(58.0, min(float(BIRD_SVG_HEIGHT) - 26.0, float(track_y)))
 
             if center_x <= (float(SVG_WIDTH) * 0.5):
@@ -1385,7 +1519,7 @@ def render_workspace_svg(state: dict | None) -> str:
                 near_x = float(SVG_WIDTH) * 0.5
                 far_x = near_x + 120.0
 
-            dist_mm = _coerce_float(entry.get("target_range_mm"), None)
+            dist_mm = _coerce_float(entry.get("dist_mm", entry.get("target_range_mm")), None)
             if dist_mm is None and isinstance(target_obj, dict):
                 ex = _coerce_float(entry.get("x_mm"), None)
                 ey = _coerce_float(entry.get("y_mm"), None)
@@ -1396,73 +1530,48 @@ def render_workspace_svg(state: dict | None) -> str:
             if dist_mm is None:
                 dist_mm = BIRD_DIST_TRACK_MAX_MM
 
-            ratio = max(0.0, min(1.0, float(dist_mm) / float(BIRD_DIST_TRACK_MAX_MM)))
+            ratio = _bird_distance_track_ratio(dist_mm)
             px = float(near_x) + (float(far_x) - float(near_x)) * ratio
-            return float(px), float(track_y)
+            x_axis_mm = _coerce_float(entry.get("x_axis_mm"), None)
+            if x_axis_mm is None:
+                return float(px), float(track_y)
+            x_ratio = max(-1.0, min(1.0, float(x_axis_mm) / float(BIRD_X_AXIS_TRACK_EXTENT_MM)))
+            py = float(track_y) - (x_ratio * float(BIRD_X_AXIS_TRACK_HALF_SPAN_PX))
+            py = max(58.0, min(float(BIRD_SVG_HEIGHT) - 26.0, float(py)))
+            return float(px), float(py)
         except Exception:
             return project(float(entry.get("x_mm", 0.0)), float(entry.get("y_mm", 0.0)))
 
     if isinstance(stack_screen, list) and len(stack_screen) >= 3:
-        guide_start = _bird_history_screen_point({"target_range_mm": 0.0})
+        guide_start = _bird_history_screen_point({"target_range_mm": float(BIRD_DIST_TRACK_NEAR_MM)})
         guide_end = _bird_history_screen_point({"target_range_mm": float(BIRD_DIST_TRACK_MAX_MM)})
         svg_parts.append(
             f'<line x1="{guide_start[0]:.1f}" y1="{guide_start[1]:.1f}" x2="{guide_end[0]:.1f}" y2="{guide_end[1]:.1f}" stroke="#b7aea0" stroke-width="1.6" stroke-dasharray="4 4" opacity="0.7" />'
         )
         svg_parts.append(
-            f'<text x="{guide_start[0]:.1f}" y="{guide_start[1] - 10:.1f}" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">0mm</text>'
+            f'<text x="{guide_start[0]:.1f}" y="{guide_start[1] - 10:.1f}" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">{int(BIRD_DIST_TRACK_NEAR_MM)}mm</text>'
         )
         svg_parts.append(
-            f'<text x="{guide_end[0]:.1f}" y="{guide_end[1] - 10:.1f}" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">150mm</text>'
+            f'<text x="{guide_end[0]:.1f}" y="{guide_end[1] - 10:.1f}" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">{int(BIRD_DIST_TRACK_MAX_MM)}mm</text>'
+        )
+        svg_parts.append(
+            f'<text x="{guide_start[0] - 14.0:.1f}" y="{guide_start[1] + 4.0:.1f}" text-anchor="end" font-size="12" font-weight="700" fill="#5d676e">x=0</text>'
         )
 
-    current_trend = "unknown"
-    current_dot_color = "#2c6fbb"
-    if dot_history:
+    if bird_history:
         previous_entry = None
-        history_count = len(dot_history)
-        for idx, entry in enumerate(dot_history):
+        history_count = len(bird_history)
+        for idx, entry in enumerate(bird_history):
             trend = _step_history_trend(previous_entry, entry)
-            color = _step_history_color(trend)
+            color = _bird_history_fill_color(idx, history_count)
             hx, hy = _bird_history_screen_point(entry)
-            radius = _history_dot_radius(idx, history_count)
-            opacity = 0.5 + 0.4 * ((float(idx) + 1.0) / float(history_count))
             svg_parts.append(
                 f'<circle class="step-history-dot" data-trend="{trend}" cx="{hx:.1f}" cy="{hy:.1f}" '
-                f'r="{radius:.1f}" fill="{color}" fill-opacity="{opacity:.2f}" '
+                f'r="{float(BIRD_HISTORY_DOT_RADIUS_PX):.1f}" fill="{color}" fill-opacity="0.98" '
                 'stroke="#f9f6ef" stroke-width="2" />'
             )
             previous_entry = entry
-            current_trend = trend
-            current_dot_color = color
-    if step_history:
-        svg_parts.append('<g id="step-history">')
-        history_points = [
-            _bird_history_screen_point(entry)
-            for entry in step_history
-        ]
-        if len(history_points) >= 2:
-            svg_parts.append(
-                f'<polyline class="step-history-path" points="{_polygon_points(history_points)}" '
-                'fill="none" stroke="#b7aea0" stroke-width="2.4" stroke-linecap="round" '
-                'stroke-linejoin="round" opacity="0.85" />'
-            )
-        svg_parts.append("</g>")
-    hx, hy = _heading_vector(float(robot.get("theta_deg", 0.0)))
-    camera_x = float(robot.get("x_mm", 0.0))
-    camera_y = float(robot.get("y_mm", 0.0))
-    stem_tail_x = camera_x - hx * float(ROBOT_NOSE_TO_TAIL_MM)
-    stem_tail_y = camera_y - hy * float(ROBOT_NOSE_TO_TAIL_MM)
-    stem_x2, stem_y2 = project(camera_x, camera_y)
-    hide_camera_dot = bool(snapshot.get("micro_adjust_phase", False))
-    if not hide_camera_dot:
-        dot_radius = max(3.0, 6.0 * scale / 100.0)
-        svg_parts.append('<g id="camera-glyph">')
-        svg_parts.append(
-            f'<circle class="camera-dot" data-trend="{current_trend}" cx="{stem_x2:.1f}" cy="{stem_y2:.1f}" '
-            f'r="{dot_radius:.1f}" fill="{current_dot_color}" stroke="#233843" stroke-width="2.2" />'
-        )
-        svg_parts.append("</g>")
-    
+
     # Add distance displays
     robot_x = float(robot.get("x_mm", 0.0))
     robot_y = float(robot.get("y_mm", 0.0))
@@ -1488,12 +1597,20 @@ def render_workspace_svg(state: dict | None) -> str:
         hx, hy = _heading_vector(float(robot.get("theta_deg", 0.0)))
         brick_center_x = float(robot.get("x_mm", 0.0)) + hx * 20.0
         brick_center_y = float(robot.get("y_mm", 0.0)) + hy * 20.0
+        held_length_mm = (
+            float(snapshot["held_brick"].get("length_mm", DEFAULT_BRICK_MM["length_mm"]))
+            * float(BIRD_HELD_BRICK_RENDER_SCALE)
+        )
+        held_width_mm = (
+            float(snapshot["held_brick"].get("width_mm", DEFAULT_BRICK_MM["width_mm"]))
+            * float(BIRD_HELD_BRICK_RENDER_SCALE)
+        )
         held_rect = _rotated_rect(
             brick_center_x,
             brick_center_y,
             float(robot.get("theta_deg", 0.0)),
-            float(snapshot["held_brick"].get("length_mm", DEFAULT_BRICK_MM["length_mm"])),
-            float(snapshot["held_brick"].get("width_mm", DEFAULT_BRICK_MM["width_mm"])),
+            float(held_length_mm),
+            float(held_width_mm),
         )
         held_screen = [project(x, y) for x, y in held_rect]
         svg_parts.append(
@@ -1563,17 +1680,19 @@ def render_mast_svg(state: dict | None) -> str:
     title_x = SVG_WIDTH * 0.5
     svg_parts.append(f'<text x="{title_x:.1f}" y="52.0" text-anchor="middle" font-size="28" font-weight="900" fill="#233843">Mast View</text>')
     # Single-brick reference: 0mm is at the square center.
-    stack_fill = "#1f4b8f" if show_stack == "brick_supply" else "#cc3a2b"
-    stack_stroke = "#122d57" if show_stack == "brick_supply" else "#7d241b"
-    stack_label = "Supply" if show_stack == "brick_supply" else "Wall"
+    stack_style = _stack_visual_style(show_stack)
     square_top = float(zero_y) - (stack_size_px * 0.5)
     zero_guide_right_x = max(plot_left + 24.0, stack_x - (stack_size_px * 0.5) - 8.0)
-    svg_parts.append(
-        f'<rect x="{stack_x - stack_size_px * 0.5:.1f}" y="{square_top:.1f}" width="{stack_size_px:.1f}" height="{stack_size_px:.1f}" '
-        f'fill="{stack_fill}" stroke="{stack_stroke}" stroke-width="3" rx="12" />'
-    )
-    svg_parts.append(
-        f'<text x="{stack_x:.1f}" y="{square_top - 14.0:.1f}" text-anchor="middle" font-size="28" font-weight="600" fill="#1d2830">{stack_label}</text>'
+    svg_parts.extend(
+        _stack_card_svg(
+            center_x=float(stack_x),
+            center_y=float(zero_y),
+            size_px=float(stack_size_px),
+            label=str(stack_style["label"]),
+            fill=str(stack_style["fill"]),
+            stroke=str(stack_style["stroke"]),
+            count_text=None,
+        )
     )
     svg_parts.append(
         f'<line class="mast-zero-guide" x1="{plot_left:.1f}" y1="{zero_y:.1f}" '

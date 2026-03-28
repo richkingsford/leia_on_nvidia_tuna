@@ -8,8 +8,6 @@ that your Arduino firmware expects (e.g., "f 200 50").
 import serial
 import time
 import sys
-import json
-from pathlib import Path
 import telemetry_robot as telemetry_robot_module
 from telemetry_robot import (
     MIN_PWM,
@@ -22,14 +20,15 @@ from telemetry_robot import (
 )
 
 
+VALID_MOTION_COMMANDS = frozenset({"f", "b", "l", "r", "u", "d"})
+
+
 class Robot:
     def __init__(self):
         self.SERIAL_PORT = '/dev/ttyCH341USB0' 
         self.BAUD_RATE = 115200
         self.ser = None
         self._last_turn_cmd = None
-        self._command_remap_cache = None
-        self._command_remap_mtime = None
         # Timed serial commands are fire-and-forget; this transport does not queue
         # multiple timed pulses for guaranteed sequential execution.
         self.supports_timed_command_queue = False
@@ -48,49 +47,9 @@ class Robot:
             self.ser = serial.Serial(self.SERIAL_PORT, self.BAUD_RATE, timeout=1)
             time.sleep(2) 
             self.ser.reset_input_buffer()
-            self._command_remap()
         except Exception as e:
             print(f"[ROBOT] ERROR: {e}")
             sys.exit(1)
-
-    def _command_remap(self):
-        model_path = getattr(telemetry_robot_module, "ROBOT_MODEL_FILE", None)
-        if isinstance(model_path, Path) and model_path.exists():
-            try:
-                mtime = float(model_path.stat().st_mtime)
-            except OSError:
-                mtime = None
-            if (
-                mtime is not None
-                and self._command_remap_cache is not None
-                and self._command_remap_mtime is not None
-                and abs(mtime - float(self._command_remap_mtime)) < 1e-6
-            ):
-                return dict(self._command_remap_cache)
-            mapping = {}
-            try:
-                raw = json.loads(model_path.read_text())
-            except (OSError, json.JSONDecodeError):
-                raw = {}
-            if isinstance(raw, dict):
-                candidate = raw.get("command_remap")
-                if isinstance(candidate, dict):
-                    for key, value in candidate.items():
-                        if key is None or value is None:
-                            continue
-                        mapping[str(key)] = str(value)
-            self._command_remap_cache = dict(mapping)
-            self._command_remap_mtime = mtime
-            try:
-                telemetry_robot_module.COMMAND_REMAP = dict(mapping)
-            except Exception:
-                pass
-            return dict(mapping)
-
-        mapping = getattr(telemetry_robot_module, "COMMAND_REMAP", None)
-        if isinstance(mapping, dict):
-            return dict(mapping)
-        return {}
 
     def _send(self, command_str):
         """Internal helper to write the string to Serial"""
@@ -101,6 +60,18 @@ class Robot:
                 self.ser.write(command_str.encode('utf-8'))
             except Exception as e:
                 print(f"[ROBOT] Write Error: {e}")
+
+    def _wire_command(self, cmd_char):
+        logical_cmd = str(cmd_char or "").strip().lower()
+        if logical_cmd not in VALID_MOTION_COMMANDS:
+            return logical_cmd
+        wire_map = getattr(telemetry_robot_module, "ROBOT_WIRE_COMMAND_MAP", None)
+        if not isinstance(wire_map, dict):
+            return logical_cmd
+        mapped_cmd = str(wire_map.get(logical_cmd, logical_cmd)).strip().lower()
+        if mapped_cmd not in VALID_MOTION_COMMANDS:
+            return logical_cmd
+        return mapped_cmd
 
     def normalize_speed(self, cmd_char, speed):
         try:
@@ -126,7 +97,7 @@ class Robot:
         cmd_char: f, b, l, r, u, d
         speed: 0.0 to 1.0
         """
-        real_hw_cmd = self._command_remap().get(cmd_char, cmd_char)
+        real_hw_cmd = self._wire_command(cmd_char)
         speed, pwm = self.normalize_speed(cmd_char, speed)
         duration = self.CMD_DURATION if duration_ms is None else int(duration_ms)
         if speed <= 0.0:
@@ -140,7 +111,7 @@ class Robot:
 
     def send_command_pwm(self, cmd_char, pwm, duration_ms=None):
         """Send a command using a precomputed PWM value from world_model_robot."""
-        real_hw_cmd = self._command_remap().get(cmd_char, cmd_char)
+        real_hw_cmd = self._wire_command(cmd_char)
         try:
             pwm_val = int(round(pwm))
         except (TypeError, ValueError):
@@ -184,8 +155,8 @@ class Robot:
         # Stop everything. 'f 0' usually stops the base?
         # Let's send a stop for drive and lift to be sure.
         self._last_turn_cmd = None
-        self._send(f"f 0 {self.CMD_DURATION}\n")
-        self._send(f"u 0 {self.CMD_DURATION}\n")
+        self._send(f"{self._wire_command('f')} 0 {self.CMD_DURATION}\n")
+        self._send(f"{self._wire_command('u')} 0 {self.CMD_DURATION}\n")
 
     def close(self):
         self.stop()

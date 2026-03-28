@@ -1,24 +1,24 @@
 {
-  "updated_at": 1774490739.3135302,
+  "updated_at": 1774656261.482727,
   "robot": {
-    "x_mm": 21.648047058706226,
-    "y_mm": -77.71235765816809,
+    "x_mm": 1.978452708452415,
+    "y_mm": -77.09711777417947,
     "z_mm": 0.0,
-    "theta_deg": -81.03535476105483,
+    "theta_deg": -88.74186732657202,
     "lift_mm": 0.0
   },
   "raw_robot": {
-    "x_mm": 52.05627731995394,
-    "y_mm": 5.143028909159836,
+    "x_mm": 158.4946158737665,
+    "y_mm": 3.4276881865151885,
     "z_mm": 0.0,
-    "theta_deg": 8.964645238945232,
+    "theta_deg": 1.2581326734279918,
     "lift_mm": 0.0
   },
   "leia": {
-    "x_mm": 21.648047058706226,
-    "y_mm": -77.71235765816809,
-    "z_mm": 0.0,
-    "theta_deg": -81.03535476105483,
+    "x_mm": 1.978452708452415,
+    "y_mm": -77.09711777417947,
+    "z_mm": 145.0,
+    "theta_deg": -88.74186732657202,
     "label": "Leia"
   },
   "objects": {
@@ -36,7 +36,7 @@
       "fixed": true,
       "render_footprint_mm": 54.0,
       "source": "default_layout_seed",
-      "last_seen_ts": 1774490739.313453
+      "last_seen_ts": 1774656244.8946085
     },
     "wall": {
       "name": "wall",
@@ -53,10 +53,10 @@
       "valid": true,
       "fixed": true,
       "source": "ALIGN_BRICK",
-      "last_seen_ts": 1774490561.8959122,
+      "last_seen_ts": 1774656234.4573271,
       "count": 1,
-      "observed_world_x_mm": 106.66069158077038,
-      "observed_world_y_mm": -15.815715498846277,
+      "observed_world_x_mm": 195.43043946450086,
+      "observed_world_y_mm": 1.168304528299272,
       "observed_world_theta_deg": 180.0
     }
   },
@@ -76,9 +76,9 @@
   "wall_reverse_plan": {
     "ok": true,
     "reason": "planned",
-    "wall_behind_mm": 52.08788730384509,
+    "wall_behind_mm": 73.16974898726824,
     "target_wall_distance_mm": 45.0,
-    "reverse_gap_mm": 7.087887303845093,
+    "reverse_gap_mm": 28.169748987268235,
     "reverse_acts": 1,
     "actions": [
       {
@@ -93,11 +93,11 @@
     ]
   },
   "last_visible_brick": {
-    "visible": true,
-    "dist_mm": 104.5533343194108,
-    "x_axis_mm": -39.955005787765046,
-    "y_axis_mm": 7.758366644433032,
-    "confidence": 69.05190199613571,
-    "angle_deg": -1.3568716517732533
+    "visible": false,
+    "dist_mm": 0.0,
+    "x_axis_mm": -0.0,
+    "y_axis_mm": -0.0,
+    "confidence": 0.0,
+    "angle_deg": 0.0
   }
 }

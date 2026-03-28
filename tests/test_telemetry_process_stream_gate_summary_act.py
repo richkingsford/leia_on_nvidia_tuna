@@ -126,6 +126,16 @@ class TestTelemetryProcessStreamGateSummaryAct(unittest.TestCase):
         self.assertIn("pwm=", text)
         self.assertIn("ms", text)
 
+    def test_action_sent_display_text_reports_shared_one_percent_floor_note(self):
+        text = telemetry_process.action_sent_display_text(
+            "f",
+            1,
+            cmd_sent="b",
+            pwm=103,
+            duration_ms=255,
+        )
+        self.assertIn("shared 1% floor", text)
+
     def test_stream_summary_act_uses_alignment_cmd_instead_of_hold(self):
         world = _DummyWorld()
         world.process_rules = {

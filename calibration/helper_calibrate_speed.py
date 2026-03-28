@@ -180,13 +180,7 @@ def _set_score_entry(score_map, score, pwm, *, min_pwm, max_pwm):
     }
 
 
-def _hw_cmd(cmd, cmd_remap):
-    if isinstance(cmd_remap, dict) and cmd in cmd_remap:
-        return str(cmd_remap.get(cmd) or cmd)
-    return cmd
-
-
-def _print_minmax_menu(model_path, cmd_remap, cmd_speed, *, speed_map_key, speed_map_label):
+def _print_minmax_menu(model_path, cmd_speed, *, speed_map_key, speed_map_label):
     slow_pwm = cmd_speed.get("slow_pwm", 0)
     fast_pwm = cmd_speed.get("fast_pwm", 0)
     pwm_3 = interp_pwm_for_score(3, slow_pwm, fast_pwm) or 0
@@ -203,8 +197,7 @@ def _print_minmax_menu(model_path, cmd_remap, cmd_speed, *, speed_map_key, speed
     print("Demo commands (uses current selected PWM):")
     for cmd in CMD_KEYS:
         label = CMD_LABELS.get(cmd, cmd)
-        hw = _hw_cmd(cmd, cmd_remap)
-        print(f"  {cmd.upper()} = {label:9s} (hw {hw.upper()})")
+        print(f"  {cmd.upper()} = {label:9s}")
     print("")
 
 
@@ -240,7 +233,6 @@ def main():
 
     model_path = Path(args.model)
     model = _load_model(model_path)
-    cmd_remap = model.get("command_remap") if isinstance(model, dict) else {}
 
     min_pwm = model.get("min_pwm", DEFAULT_SPEED_MODEL.get("min_pwm", 0))
     max_pwm = model.get("max_pwm", DEFAULT_SPEED_MODEL.get("max_pwm", 255))
@@ -308,7 +300,6 @@ def main():
             cmd_speed = {"slow_pwm": endpoints[1], "fast_pwm": endpoints[100]}
             _print_minmax_menu(
                 model_path,
-                cmd_remap,
                 cmd_speed,
                 speed_map_key=speed_map_key,
                 speed_map_label=speed_map_label,
@@ -316,11 +307,10 @@ def main():
 
             cmd = demo_cmd
             label = CMD_LABELS.get(cmd, cmd)
-            hw = _hw_cmd(cmd, cmd_remap)
             pwm = _clamp_pwm(pwm, max_pwm)
             power = _pwm_to_power(pwm, min_pwm, max_pwm)
 
-            print(f"\n[{label}] cmd {cmd.upper()} (hw {hw.upper()})")
+            print(f"\n[{label}] cmd {cmd.upper()}")
             print(f"Editing: {target_score}% ({speed_map_label}) | step {step_pwm} | pwm {pwm} | power {power:.3f}")
             print("Keys: d demo | ↑/↓ pwm | ←/→ step | t toggle 1/100 | f/b/l/r demo cmd | s save | x quit")
             print("Input: ", end="", flush=True)

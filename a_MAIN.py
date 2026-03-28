@@ -1,5 +1,6 @@
 import argparse
 import cv2
+import html
 import json
 import math
 import numpy as np
@@ -19,7 +20,16 @@ from helper_demo_log_utils import load_demo_logs, normalize_step_label, prune_lo
 from helper_gate_utils import format_gatecheck_stream_lines, load_process_steps
 from helper_streaming import start_stream_server
 from helper_vision_aruco import ArucoBrickVision
-from helper_brick_detector_yolo import BrickDetector as YoloBrickDetector
+from helper_brick_detector_yolo import (
+    BrickDetector as YoloBrickDetector,
+    CYAN_SHADE_HEXES,
+    CYAN_HSV_BALANCED_LOWER,
+    CYAN_HSV_BALANCED_UPPER,
+    CYAN_HSV_TIGHT_LOWER,
+    CYAN_HSV_TIGHT_UPPER,
+    CYAN_HSV_WIDE_LOWER,
+    CYAN_HSV_WIDE_UPPER,
+)
 from helper_manual_config import load_manual_training_config
 from helper_vision_config import (
     active_vision_mode as _world_model_active_vision_mode,
@@ -37,6 +47,15 @@ from helper_next import (
 from helper_mini_hotkey_motion_calibrate import (
     RUN_LOG_FILE_DEFAULT as MINI_HOTKEY_MOTION_LOG_DEFAULT,
     run_mini_hotkey_motion_calibration,
+)
+from helper_manual_drive_assist import (
+    build_manual_drive_assist_plan,
+    execute_manual_drive_assist_plan,
+    format_manual_drive_assist_line,
+)
+from helper_manual_drive_breakaway_test import (
+    RUN_LOG_FILE_DEFAULT as DRIVE_BREAKAWAY_TEST_LOG_DEFAULT,
+    run_interactive_drive_breakaway_test,
 )
 import helper_calibrate_speed_curve
 import telemetry_robot as telemetry_robot_module
@@ -235,8 +254,8 @@ CYAN_PROFILE_PRESETS = {
         "smoothing_alpha": 0.30,
         "hsv_enabled": True,
         "hsv_erode_iterations": 2,
-        "hsv_lower": [75, 60, 50],
-        "hsv_upper": [115, 255, 255],
+        "hsv_lower": list(CYAN_HSV_BALANCED_LOWER),
+        "hsv_upper": list(CYAN_HSV_BALANCED_UPPER),
     },
     "config2_no_erosion": {
         "hsv_erode_iterations": 0,
@@ -248,12 +267,12 @@ CYAN_PROFILE_PRESETS = {
         "hsv_erode_iterations": 3,
     },
     "config5_tight_cyan_range": {
-        "hsv_lower": [80, 80, 60],
-        "hsv_upper": [110, 255, 255],
+        "hsv_lower": list(CYAN_HSV_TIGHT_LOWER),
+        "hsv_upper": list(CYAN_HSV_TIGHT_UPPER),
     },
     "config6_wide_cyan_range": {
-        "hsv_lower": [70, 40, 40],
-        "hsv_upper": [120, 255, 255],
+        "hsv_lower": list(CYAN_HSV_WIDE_LOWER),
+        "hsv_upper": list(CYAN_HSV_WIDE_UPPER),
     },
     "config7_smooth": {
         "smoothing_alpha": 0.15,
@@ -262,8 +281,8 @@ CYAN_PROFILE_PRESETS = {
         "smoothing_alpha": 0.50,
     },
     "config9_tight_light_smooth": {
-        "hsv_lower": [80, 80, 60],
-        "hsv_upper": [110, 255, 255],
+        "hsv_lower": list(CYAN_HSV_TIGHT_LOWER),
+        "hsv_upper": list(CYAN_HSV_TIGHT_UPPER),
         "hsv_erode_iterations": 1,
         "smoothing_alpha": 0.20,
     },
@@ -292,7 +311,7 @@ _CYAN_PROFILE_ALIASES = {
     "8": "config8_responsive",
     "9": "config9_tight_light_smooth",
     "10": "config10_hsv_disabled",
-    "default": "config1_defaults",
+    "default": CYAN_PROFILE_DEFAULT,
     "baseline": "config1_defaults",
     # Backward-compatibility for old profile ids in existing local config.
     "balanced": "config1_defaults",
@@ -467,8 +486,9 @@ def normalize_cyan_profile(value, fallback=CYAN_PROFILE_DEFAULT):
 
 def cyan_profile_settings(profile):
     profile_key = normalize_cyan_profile(profile, fallback=_DEFAULT_CYAN_PROFILE)
-    settings = CYAN_PROFILE_PRESETS.get(profile_key) or CYAN_PROFILE_PRESETS[CYAN_PROFILE_DEFAULT]
-    return profile_key, dict(settings)
+    settings = dict(CYAN_PROFILE_PRESETS.get("config1_defaults") or {})
+    settings.update(dict(CYAN_PROFILE_PRESETS.get(profile_key) or CYAN_PROFILE_PRESETS[CYAN_PROFILE_DEFAULT]))
+    return profile_key, settings
 
 
 def cyan_profile_runtime_summary(runtime):
@@ -682,9 +702,13 @@ def _command_preview_text(cmd, *, speed_score=None, pwm=None, power=None, durati
             parts.append(f"t={int(round(float(duration_ms)))}ms")
         except (TypeError, ValueError):
             pass
+    discovery_note = telemetry_robot_module.one_percent_discovery_note(cmd_key, speed_score)
     if len(parts) == 1:
-        return parts[0]
-    return f"{parts[0]} ({', '.join(parts[1:])})"
+        return parts[0] if not discovery_note else f"{parts[0]} [{discovery_note}]"
+    detail_text = ", ".join(parts[1:])
+    if discovery_note:
+        detail_text = f"{detail_text}; {discovery_note}"
+    return f"{parts[0]} ({detail_text})"
 
 
 def _fmt_bool_text(value):
@@ -1216,6 +1240,32 @@ def run_lift_preflight_check_if_needed(app_state, *, cmd=None, force=False):
     return True
 
 
+def run_drive_breakaway_test_command(app_state):
+    if app_state.robot is None or app_state.vision is None:
+        log_line("[BREAKAWAY TEST] Skipped (robot/vision unavailable).")
+        return {"ok": False, "error": "robot/vision unavailable"}
+
+    log_line("[BREAKAWAY TEST] Starting low-speed drive/turn hotkey movement test...")
+    with app_state.vision_io_lock:
+        result = run_interactive_drive_breakaway_test(
+            robot=app_state.robot,
+            vision=app_state.vision,
+            world=app_state.world,
+            prompt_fn=prompt_line,
+            log_fn=log_line,
+            log_path=DRIVE_BREAKAWAY_TEST_LOG_DEFAULT,
+        )
+    refresh_brick_telemetry(app_state, read_vision=False)
+    if isinstance(result, dict):
+        write_error = result.get("write_error")
+        if write_error:
+            log_line(f"[BREAKAWAY TEST] Log write failed ({write_error}).")
+        else:
+            log_line(f"[BREAKAWAY TEST] Wrote results to {DRIVE_BREAKAWAY_TEST_LOG_DEFAULT}")
+        return result
+    return {"ok": False, "error": "invalid result"}
+
+
 def _begin_auto_demo_logging(app_state, obj_enum):
     ensure_log_open(app_state)
     marker = ATTEMPT_MARKERS["NOMINAL"][0]
@@ -1607,6 +1657,43 @@ def maybe_prompt_hotkey_var_update(app_state, cmd, score, *, enter_edit=False, h
     return int(score_used)
 
 
+def _send_manual_drive_hotkey_with_assist(
+    app_state,
+    *,
+    cmd,
+    score_used,
+    hotkey,
+    duration_override_ms,
+    pwm_override,
+):
+    plan = build_manual_drive_assist_plan(
+        hotkey=hotkey,
+        cmd=cmd,
+        score=score_used,
+        hold_duration_ms=duration_override_ms,
+        pwm_override=pwm_override,
+    )
+    if not isinstance(plan, dict):
+        return None
+
+    plan_line = format_manual_drive_assist_line(plan)
+    if plan_line:
+        log_line(plan_line)
+    return execute_manual_drive_assist_plan(
+        robot=app_state.robot,
+        world=app_state.world,
+        step_state=app_state.world.step_state,
+        hotkey=hotkey,
+        cmd=cmd,
+        score=score_used,
+        hold_duration_ms=plan.get("hold_duration_ms"),
+        pwm_override=pwm_override,
+        send_robot_command_fn=send_robot_command,
+        send_robot_command_pwm_fn=send_robot_command_pwm,
+        sleep_fn=time.sleep,
+    )
+
+
 def format_step_codes_line():
     parts = [format_step_code_entry(idx, obj, include_emoji=True) for idx, obj in enumerate(DEMO_STEPS)]
     return "[CMD] Step codes: " + ", ".join(parts)
@@ -1757,6 +1844,37 @@ def _footer_section_html(title, lines):
     )
 
 
+def _cyan_shade_footer_lines():
+    lines = []
+    for shade_hex_raw in CYAN_SHADE_HEXES:
+        shade_hex = "#" + str(shade_hex_raw).strip().lstrip("#")
+        dot_style = (
+            "display:inline-block;width:11px;height:11px;border-radius:999px;"
+            f"background:{shade_hex};border:1px solid rgba(255,255,255,0.38);"
+            "box-shadow:0 0 0 1px rgba(0,0,0,0.35) inset;"
+        )
+        shade_html = html.escape(str(shade_hex))
+        lines.append(
+            "<span style='display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;'>"
+            f"<span aria-hidden='true' style='{dot_style}'></span>"
+            f"<span style='color:#8fb6d6;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;'>{shade_html}</span>"
+            "</span>"
+        )
+    return lines
+
+
+def _one_percent_discovery_footer_lines():
+    lines = []
+    for row_text in telemetry_robot_module.one_percent_discovery_lines():
+        safe_text = html.escape(str(row_text))
+        lines.append(
+            "<span style='color:#8fb6d6;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;'>"
+            f"{safe_text}"
+            "</span>"
+        )
+    return lines
+
+
 def stream_footer_html():
     sections = []
     keys_line = format_hotkey_speeds()
@@ -1773,6 +1891,12 @@ def stream_footer_html():
             [format_step_code_entry(idx, obj, include_emoji=True) for idx, obj in enumerate(DEMO_STEPS)],
         )
     )
+    cyan_shade_lines = _cyan_shade_footer_lines()
+    if cyan_shade_lines:
+        sections.append(_footer_section_html("Cyan Shades", cyan_shade_lines))
+    one_pct_lines = _one_percent_discovery_footer_lines()
+    if one_pct_lines:
+        sections.append(_footer_section_html("Shared 1% Floor", one_pct_lines))
     sections = [section for section in sections if section]
     if not sections:
         return ""
@@ -3115,6 +3239,8 @@ def cyan_stream_debug_lines(app_state, vision):
     conf_threshold = getattr(vision, "conf_threshold", None)
     smooth_alpha = getattr(vision, "_smooth_alpha", None)
     input_size = getattr(vision, "input_size", None)
+    partial_labels = getattr(vision, "last_partial_labels", None)
+    primary_partial_label = str(getattr(vision, "last_primary_partial_label", "") or "").strip()
 
     raw_text = str(int(raw_count)) if isinstance(raw_count, (int, float)) else "-"
     candidate_text = str(int(candidate_count)) if isinstance(candidate_count, (int, float)) else "-"
@@ -3137,11 +3263,26 @@ def cyan_stream_debug_lines(app_state, vision):
         smooth_text = "-"
     input_text = f"{int(input_size)}" if isinstance(input_size, (int, float)) else "-"
 
-    return [
+    lines = [
         f"[ML] PROFILE: {profile_text} | MODEL: {model_name}",
         f"[ML] SEARCH: {status} | RAW:{raw_text} >THR:{candidate_text} NMS:{nms_text}",
         f"[ML] TOP CONF: {top_conf_text} | MAX RAW: {raw_max_conf_text} | MIN CONF: {threshold_text} | SMOOTH: {smooth_text} | INPUT: {input_text}px",
     ]
+    if isinstance(partial_labels, (list, tuple)) and partial_labels:
+        counts = {}
+        for label in partial_labels:
+            label_text = str(label or "").strip()
+            if not label_text:
+                continue
+            counts[label_text] = int(counts.get(label_text, 0)) + 1
+        parts = []
+        if primary_partial_label:
+            parts.append(f"PRIMARY {primary_partial_label}")
+        for label_text in sorted(counts):
+            parts.append(f"{label_text} x{int(counts[label_text])}")
+        if parts:
+            lines.append(("[ML] PARTIALS: " + " | ".join(parts), (0, 165, 255)))
+    return lines
 
 
 def markerless_stream_debug_lines(app_state, vision):
@@ -3423,6 +3564,7 @@ def print_command_help(app_state=None):
     log_line(f"[CMD] Auto-continue: after a successful auto-step, next step auto-queues in {float(AUTO_CONTINUE_WAIT_S):.1f}s unless cancelled.")
     log_line("[CMD] Hotkey tuning: press a movement hotkey, then press y to edit that hotkey's vars.")
     log_line("[CMD] Lift preflight: :liftcal (discover O/K micro movement + find ground level).")
+    log_line("[CMD] Drive breakaway test: :drivebreak (find the first low-speed score that moves reliably).")
     log_line("[CMD] End attempt: press ':' to finish and return to the command prompt.")
     log_line("[CMD] Press 'b' to enter calibration mode.")
     log_step_codes_list(prefix="[CMD]")
@@ -3478,6 +3620,7 @@ def handle_command_line(app_state, cmd):
     exit_mode = False
     ended_info = None
     run_lift_preflight_cmd = False
+    run_drive_breakaway_cmd = False
 
     with app_state.lock:
         if cmd_lower in ("", ":"):
@@ -3501,6 +3644,8 @@ def handle_command_line(app_state, cmd):
             messages.append(f"[STATE] Step={step_label(obj)} Attempt={attempt}")
         elif cmd_lower in ("liftcal", "lift_cal", "lift-ground", "groundlift"):
             run_lift_preflight_cmd = True
+        elif cmd_lower in ("drivebreak", "drive_break", "breakaway", "drivebreakaway"):
+            run_drive_breakaway_cmd = True
         elif cmd_lower in ("end", "stop", "done"):
             ok, msg, obj_enum, attempt_type, should_close = end_attempt(app_state)
             messages.append(msg)
@@ -3533,6 +3678,13 @@ def handle_command_line(app_state, cmd):
             messages.append("[PREFLIGHT LIFT] Already running.")
         else:
             messages.append(f"[PREFLIGHT LIFT] Failed ({result.get('error')}).")
+
+    if run_drive_breakaway_cmd:
+        result = run_drive_breakaway_test_command(app_state)
+        if bool(result.get("ok")):
+            messages.append("[BREAKAWAY TEST] Complete.")
+        else:
+            messages.append(f"[BREAKAWAY TEST] Failed ({result.get('error')}).")
 
     return exit_mode, do_help, messages, ended_info
 
@@ -5086,7 +5238,16 @@ def command_loop(app_state):
         ):
             ease_for_hotkey = hotkey_uses_ease_in_out(hotkey)
             send_result = None
-            if pwm_override is not None:
+            if hotkey and cmd in ("f", "b"):
+                send_result = _send_manual_drive_hotkey_with_assist(
+                    app_state,
+                    cmd=cmd,
+                    score_used=score_used,
+                    hotkey=hotkey,
+                    duration_override_ms=duration_override_ms,
+                    pwm_override=pwm_override,
+                )
+            if send_result is None and pwm_override is not None:
                 try:
                     pwm_override_val = telemetry_robot_module.clamp_pwm(int(pwm_override))
                 except (TypeError, ValueError):
@@ -5133,7 +5294,7 @@ def command_loop(app_state):
                         duration_override_ms=duration_override_ms,
                         ease_in_out_enabled=ease_for_hotkey,
                     )
-            else:
+            elif send_result is None:
                 send_result = send_robot_command(
                     app_state.robot,
                     app_state.world,
@@ -5161,7 +5322,11 @@ def command_loop(app_state):
             if (
                 hotkey
                 and isinstance(send_result, dict)
-                and (pwm_override is not None or duration_override_ms is not None)
+                and (
+                    pwm_override is not None
+                    or duration_override_ms is not None
+                    or bool(send_result.get("segments"))
+                )
             ):
                 try:
                     pwm_sent = int(round(float(send_result.get("pwm"))))
@@ -5174,6 +5339,29 @@ def command_loop(app_state):
                 cmd_sent = str(send_result.get("cmd_sent") or cmd).strip().lower()
                 wire = getattr(app_state.robot, "last_command", None)
                 wire_text = str(wire).strip() if wire else ""
+                segments = send_result.get("segments")
+                if isinstance(segments, list) and segments:
+                    segment_parts = []
+                    for seg in segments:
+                        if not isinstance(seg, dict):
+                            continue
+                        seg_cmd = str(seg.get("cmd_sent") or cmd_sent).strip().lower()
+                        try:
+                            seg_pwm = int(round(float(seg.get("pwm"))))
+                        except (TypeError, ValueError):
+                            seg_pwm = None
+                        try:
+                            seg_dur = int(round(float(seg.get("duration_ms"))))
+                        except (TypeError, ValueError):
+                            seg_dur = None
+                        pieces = [seg_cmd]
+                        if seg_pwm is not None:
+                            pieces.append(str(int(seg_pwm)))
+                        if seg_dur is not None:
+                            pieces.append(str(int(seg_dur)))
+                        segment_parts.append(" ".join([piece for piece in pieces if piece]))
+                    if segment_parts:
+                        wire_text = " | ".join(segment_parts)
                 if not wire_text:
                     pieces = [str(cmd_sent)]
                     if pwm_sent is not None:

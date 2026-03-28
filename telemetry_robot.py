@@ -70,6 +70,12 @@ MAST_INTENSITY_KEY_MAST_UP = "mast_intensity_posts_mast_up"
 MAST_INTENSITY_KEY_MAST_DOWN = "mast_intensity_posts_mast_down"
 
 ROBOT_MODEL_FILE = Path(__file__).resolve().parent / "world_model_robot.json"
+BREAKAWAY_TEST_FILE = Path(__file__).resolve().parent / "world_model_drive_breakaway_test.json"
+_BREAKAWAY_TEST_CACHE = {
+    "path": None,
+    "mtime_ns": None,
+    "payload": None,
+}
 DEFAULT_SPEED_MODEL = {
     "min_pwm": MIN_PWM,
     "max_pwm": MAX_PWM,
@@ -420,6 +426,22 @@ def _coerce_hotkeys(raw, fallback, score_levels):
     return cleaned
 
 
+def _coerce_wire_command_map(raw) -> dict[str, str]:
+    valid_cmds = {"f", "b", "l", "r", "u", "d"}
+    if not isinstance(raw, dict):
+        return {}
+    cleaned: dict[str, str] = {}
+    for logical_cmd, wire_cmd in raw.items():
+        logical_key = str(logical_cmd or "").strip().lower()
+        wire_key = str(wire_cmd or "").strip().lower()
+        if logical_key not in valid_cmds or wire_key not in valid_cmds:
+            continue
+        if logical_key == wire_key:
+            continue
+        cleaned[str(logical_key)] = str(wire_key)
+    return cleaned
+
+
 def _coerce_score_seconds(raw, fallback):
     if not isinstance(raw, dict):
         raw = fallback if isinstance(fallback, dict) else {}
@@ -433,17 +455,6 @@ def _coerce_score_seconds(raw, fallback):
         if seconds <= 0:
             continue
         cleaned[normalize_speed_score(score_key, default=score_key)] = float(seconds)
-    return cleaned
-
-
-def _coerce_command_remap(raw):
-    if not isinstance(raw, dict):
-        return {}
-    cleaned = {}
-    for key, value in raw.items():
-        if key is None or value is None:
-            continue
-        cleaned[str(key)] = str(value)
     return cleaned
 
 
@@ -842,7 +853,10 @@ def _load_speed_model(path):
     turn_eff = model.get("turn_efficiency", DEFAULT_SPEED_MODEL["turn_efficiency"])
     if not isinstance(turn_eff, dict):
         turn_eff = DEFAULT_SPEED_MODEL["turn_efficiency"]
-    cmd_remap = _coerce_command_remap(model.get("command_remap"))
+    # Logical motion commands are the wire commands. Do not introduce a second
+    # remap layer here; any physical inversion must be fixed at the real source.
+    cmd_remap = {}
+    wire_command_map = _coerce_wire_command_map(model.get("wire_command_map"))
     act_duration_ms = duration_ms_by_score.get(SPEED_SCORE_DEFAULT, DEFAULT_ACT_DURATION_MS)
     boost_raw = model.get("auto_turn_speed_boost_pct", DEFAULT_SPEED_MODEL.get("auto_turn_speed_boost_pct", 0.0))
     try:
@@ -877,6 +891,7 @@ def _load_speed_model(path):
         min_pwm,
         max_pwm,
         min_turn_power,
+        wire_command_map,
     )
 
 
@@ -906,7 +921,11 @@ def _load_speed_model(path):
     MIN_PWM,
     MAX_PWM,
     MIN_TURN_POWER,
+    ROBOT_WIRE_COMMAND_MAP,
 ) = _load_speed_model(ROBOT_MODEL_FILE)
+
+# Legacy compatibility export only. The runtime send path now sends logical
+# commands directly and does not honor a secondary command-remap layer.
 
 _SCORE_POWER_PWM_TURN_LOADED_ID = id(SCORE_POWER_PWM_TURN)
 _SPEED_SCORE_DURATION_MS_LOADED_ID = id(SPEED_SCORE_DURATION_MS)
@@ -1215,6 +1234,126 @@ def speed_power_pwm_for_cmd(cmd, score):
     power = _pwm_to_power(pwm) or 0.0
     duration_ms = _duration_ms_for_score(cmd, score)
     return power, pwm, score, duration_ms
+
+
+def _breakaway_hotkey_for_cmd(cmd):
+    cmd_key = str(cmd or "").strip().lower()
+    return {
+        "f": "r",
+        "b": "f",
+        "l": "q",
+        "r": "e",
+    }.get(cmd_key)
+
+
+def _load_breakaway_test_payload(path: Path | None = None):
+    file_path = Path(path) if path is not None else BREAKAWAY_TEST_FILE
+    try:
+        stat = file_path.stat()
+    except OSError:
+        return None
+    cache_key = str(file_path.resolve())
+    if (
+        _BREAKAWAY_TEST_CACHE.get("path") == cache_key
+        and _BREAKAWAY_TEST_CACHE.get("mtime_ns") == int(stat.st_mtime_ns)
+    ):
+        payload = _BREAKAWAY_TEST_CACHE.get("payload")
+        return payload if isinstance(payload, dict) else None
+    try:
+        payload = json.loads(file_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        payload = None
+    _BREAKAWAY_TEST_CACHE["path"] = cache_key
+    _BREAKAWAY_TEST_CACHE["mtime_ns"] = int(stat.st_mtime_ns)
+    _BREAKAWAY_TEST_CACHE["payload"] = payload if isinstance(payload, dict) else None
+    return payload if isinstance(payload, dict) else None
+
+
+def breakaway_score_summary_for_cmd(cmd, *, score=SPEED_SCORE_MIN):
+    hotkey = _breakaway_hotkey_for_cmd(cmd)
+    if not hotkey:
+        return None
+    payload = _load_breakaway_test_payload()
+    if not isinstance(payload, dict):
+        return None
+    by_hotkey = ((payload.get("summary") or {}).get("by_hotkey") or {})
+    hotkey_summary = by_hotkey.get(hotkey)
+    if not isinstance(hotkey_summary, dict):
+        return None
+    scores = hotkey_summary.get("scores") or []
+    if not isinstance(scores, list):
+        return None
+    try:
+        score_key = normalize_speed_score(score)
+    except Exception:
+        score_key = SPEED_SCORE_MIN
+    selected = None
+    for row in scores:
+        if not isinstance(row, dict):
+            continue
+        try:
+            row_score = normalize_speed_score(row.get("score"))
+        except Exception:
+            row_score = None
+        if row_score == score_key:
+            selected = row
+            break
+    if selected is None and len(scores) == 1 and isinstance(scores[0], dict):
+        selected = scores[0]
+    return dict(selected) if isinstance(selected, dict) else None
+
+
+def one_percent_discovery_note(cmd, score):
+    try:
+        raw_score = float(score)
+    except (TypeError, ValueError):
+        return None
+    if raw_score < float(SPEED_SCORE_MIN) or raw_score > float(SPEED_SCORE_MAX):
+        return None
+    score_key = normalize_speed_score(raw_score)
+    cmd_key = str(cmd or "").strip().lower()
+    if score_key != SPEED_SCORE_MIN or cmd_key not in ("f", "b", "l", "r", "u", "d"):
+        return None
+    if cmd_key in ("u", "d"):
+        return "shared 1% floor"
+    summary = breakaway_score_summary_for_cmd(cmd_key, score=score_key)
+    if not isinstance(summary, dict):
+        return "shared 1% floor"
+    try:
+        success_count = int(summary.get("success_count"))
+        trial_count = int(summary.get("trial_count"))
+    except (TypeError, ValueError):
+        success_count = 0
+        trial_count = 0
+    if success_count > 0 and trial_count > 0:
+        return f"shared 1% floor; breakaway {success_count}/{trial_count}"
+    return "shared 1% floor"
+
+
+def one_percent_discovery_lines():
+    rows = []
+    for cmd, label, hotkey in (
+        ("f", "Forward", "R"),
+        ("b", "Backward", "F"),
+        ("l", "Left", "Q"),
+        ("r", "Right", "E"),
+    ):
+        power, pwm, _, duration_ms = speed_power_pwm_for_cmd(cmd, SPEED_SCORE_MIN)
+        summary = breakaway_score_summary_for_cmd(cmd, score=SPEED_SCORE_MIN)
+        ratio_text = None
+        if isinstance(summary, dict):
+            try:
+                ratio_text = f"{int(summary.get('success_count'))}/{int(summary.get('trial_count'))}"
+            except (TypeError, ValueError):
+                ratio_text = None
+        line = (
+            f"{label} ({hotkey}): pwm={int(pwm)}, pwr={float(power):.3f}, "
+            f"t={int(duration_ms)}ms"
+        )
+        if ratio_text:
+            line += f", breakaway {ratio_text}"
+        rows.append(line)
+    return rows
 
 
 def quantize_speed(cmd, speed=None, score=None):

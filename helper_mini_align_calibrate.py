@@ -1713,11 +1713,7 @@ class XAxisCalibrator:
         )
 
     def _log_act(self, pending: PendingAct, sent: dict | None):
-        hw_cmd = None
-        try:
-            hw_cmd = (getattr(telemetry_robot_module, "COMMAND_REMAP", {}) or {}).get(pending.cmd, pending.cmd)
-        except Exception:
-            hw_cmd = pending.cmd
+        hw_cmd = pending.cmd
         event = {
             "type": "act",
             "run_id": self.run_id,

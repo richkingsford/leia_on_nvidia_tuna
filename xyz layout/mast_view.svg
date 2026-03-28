@@ -2,73 +2,73 @@
 <rect width="100%" height="100%" fill="#f4efe4" />
 <rect x="22" y="22" width="936" height="316" rx="24" fill="#f9f6ef" stroke="#d7d1c4" stroke-width="1.5" />
 <text x="490.0" y="52.0" text-anchor="middle" font-size="28" font-weight="900" fill="#233843">Mast View</text>
-<rect x="170.0" y="148.0" width="92.0" height="92.0" fill="#1f4b8f" stroke="#122d57" stroke-width="3" rx="12" />
+<rect x="170.0" y="148.0" width="92.0" height="92.0" fill="#1f4b8f" stroke="#122d57" stroke-width="3" rx="12.0" />
 <text x="216.0" y="134.0" text-anchor="middle" font-size="28" font-weight="600" fill="#1d2830">Supply</text>
 <line class="mast-zero-guide" x1="86.0" y1="194.0" x2="162.0" y2="194.0" stroke="#c8c2b5" stroke-width="2.6" stroke-linecap="round" />
 <text x="76.0" y="199.0" text-anchor="end" font-size="12" font-weight="700" fill="#5d676e">0mm</text>
 <text x="76.0" y="95.5" text-anchor="end" font-size="11" font-weight="600" fill="#5d676e">+20mm</text>
 <text x="76.0" y="300.5" text-anchor="end" font-size="11" font-weight="600" fill="#5d676e">-20mm</text>
 <g id="mast-history">
-<line class="mast-history-lead" x1="264.0" y1="154.2" x2="272.0" y2="154.2" stroke="#0b3d91" stroke-width="1.4" stroke-linecap="round" opacity="0.95" />
-<polyline class="mast-history-trace" points="272.0,154.2 282.1,154.2 292.3,154.2 302.4,154.2 312.5,154.2 322.7,154.2 332.8,154.2 342.9,154.2 353.1,154.2 363.2,154.2 373.4,154.2 383.5,154.2 393.6,154.2 403.8,154.2 413.9,154.2 424.0,154.2 434.2,154.2 444.3,154.2 454.4,154.2 464.6,154.2 474.7,154.2 484.8,154.2 495.0,154.2 505.1,154.2 515.3,154.2 525.4,154.2 535.5,154.2 545.7,154.2 555.8,154.3 565.9,154.2 576.1,154.3 586.2,154.3 596.3,154.3 606.5,154.3 616.6,154.3 626.7,154.3 636.9,154.3 647.0,154.3 657.2,154.3 667.3,154.3 677.4,154.3 687.6,154.3 697.7,154.3 707.8,154.3 718.0,154.3 728.1,154.3 738.2,154.3 748.4,154.3 758.5,154.3 768.6,154.3 778.8,154.3 788.9,154.2 799.1,154.2 809.2,154.2 819.3,154.2 829.5,154.2 839.6,154.2 849.7,154.2 859.9,154.2 870.0,154.2" fill="none" stroke="#9db4da" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.55" />
-<line class="mast-history-segment" data-recency="older" x1="870.0" y1="154.2" x2="859.9" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="859.9" y1="154.2" x2="849.7" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="849.7" y1="154.2" x2="839.6" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="839.6" y1="154.2" x2="829.5" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="829.5" y1="154.2" x2="819.3" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="819.3" y1="154.2" x2="809.2" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="809.2" y1="154.2" x2="799.1" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="799.1" y1="154.2" x2="788.9" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="788.9" y1="154.2" x2="778.8" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="778.8" y1="154.3" x2="768.6" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="768.6" y1="154.3" x2="758.5" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="758.5" y1="154.3" x2="748.4" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="748.4" y1="154.3" x2="738.2" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="738.2" y1="154.3" x2="728.1" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="728.1" y1="154.3" x2="718.0" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="718.0" y1="154.3" x2="707.8" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="707.8" y1="154.3" x2="697.7" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="697.7" y1="154.3" x2="687.6" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="687.6" y1="154.3" x2="677.4" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="677.4" y1="154.3" x2="667.3" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="667.3" y1="154.3" x2="657.2" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="657.2" y1="154.3" x2="647.0" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="647.0" y1="154.3" x2="636.9" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="636.9" y1="154.3" x2="626.7" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="626.7" y1="154.3" x2="616.6" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="616.6" y1="154.3" x2="606.5" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="606.5" y1="154.3" x2="596.3" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="596.3" y1="154.3" x2="586.2" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="586.2" y1="154.3" x2="576.1" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="576.1" y1="154.3" x2="565.9" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="565.9" y1="154.2" x2="555.8" y2="154.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="555.8" y1="154.3" x2="545.7" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="545.7" y1="154.2" x2="535.5" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="535.5" y1="154.2" x2="525.4" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="525.4" y1="154.2" x2="515.3" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="515.3" y1="154.2" x2="505.1" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="505.1" y1="154.2" x2="495.0" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="495.0" y1="154.2" x2="484.8" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="484.8" y1="154.2" x2="474.7" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="474.7" y1="154.2" x2="464.6" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="464.6" y1="154.2" x2="454.4" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="454.4" y1="154.2" x2="444.3" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="444.3" y1="154.2" x2="434.2" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="434.2" y1="154.2" x2="424.0" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="424.0" y1="154.2" x2="413.9" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="413.9" y1="154.2" x2="403.8" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="403.8" y1="154.2" x2="393.6" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="393.6" y1="154.2" x2="383.5" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="383.5" y1="154.2" x2="373.4" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="373.4" y1="154.2" x2="363.2" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="363.2" y1="154.2" x2="353.1" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="353.1" y1="154.2" x2="342.9" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="342.9" y1="154.2" x2="332.8" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="332.8" y1="154.2" x2="322.7" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="322.7" y1="154.2" x2="312.5" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="older" x1="312.5" y1="154.2" x2="302.4" y2="154.2" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="n-2" x1="302.4" y1="154.2" x2="292.3" y2="154.2" stroke="#63d7ff" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="n-1" x1="292.3" y1="154.2" x2="282.1" y2="154.2" stroke="#2563eb" stroke-width="1" stroke-linecap="round" />
-<line class="mast-history-segment" data-recency="current" x1="282.1" y1="154.2" x2="272.0" y2="154.2" stroke="#0b3d91" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-lead" x1="264.0" y1="194.0" x2="272.0" y2="194.0" stroke="#0b3d91" stroke-width="1.4" stroke-linecap="round" opacity="0.95" />
+<polyline class="mast-history-trace" points="272.0,194.0 282.1,194.0 292.3,194.0 302.4,194.0 312.5,194.0 322.7,194.0 332.8,194.0 342.9,194.0 353.1,194.0 363.2,194.0 373.4,194.0 383.5,194.0 393.6,194.0 403.8,194.0 413.9,194.0 424.0,194.0 434.2,194.0 444.3,194.0 454.4,194.0 464.6,194.0 474.7,194.0 484.8,194.0 495.0,194.0 505.1,194.0 515.3,194.0 525.4,194.0 535.5,194.0 545.7,194.0 555.8,194.0 565.9,194.0 576.1,194.0 586.2,194.0 596.3,194.0 606.5,194.0 616.6,194.0 626.7,194.0 636.9,194.0 647.0,194.0 657.2,194.0 667.3,194.0 677.4,194.0 687.6,194.0 697.7,194.0 707.8,194.0 718.0,194.0 728.1,194.0 738.2,194.0 748.4,194.0 758.5,194.0 768.6,194.0 778.8,194.0 788.9,194.0 799.1,194.0 809.2,194.0 819.3,194.0 829.5,194.0 839.6,194.0 849.7,194.0 859.9,194.0 870.0,194.0" fill="none" stroke="#9db4da" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.55" />
+<line class="mast-history-segment" data-recency="older" x1="870.0" y1="194.0" x2="859.9" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="859.9" y1="194.0" x2="849.7" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="849.7" y1="194.0" x2="839.6" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="839.6" y1="194.0" x2="829.5" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="829.5" y1="194.0" x2="819.3" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="819.3" y1="194.0" x2="809.2" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="809.2" y1="194.0" x2="799.1" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="799.1" y1="194.0" x2="788.9" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="788.9" y1="194.0" x2="778.8" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="778.8" y1="194.0" x2="768.6" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="768.6" y1="194.0" x2="758.5" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="758.5" y1="194.0" x2="748.4" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="748.4" y1="194.0" x2="738.2" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="738.2" y1="194.0" x2="728.1" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="728.1" y1="194.0" x2="718.0" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="718.0" y1="194.0" x2="707.8" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="707.8" y1="194.0" x2="697.7" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="697.7" y1="194.0" x2="687.6" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="687.6" y1="194.0" x2="677.4" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="677.4" y1="194.0" x2="667.3" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="667.3" y1="194.0" x2="657.2" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="657.2" y1="194.0" x2="647.0" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="647.0" y1="194.0" x2="636.9" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="636.9" y1="194.0" x2="626.7" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="626.7" y1="194.0" x2="616.6" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="616.6" y1="194.0" x2="606.5" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="606.5" y1="194.0" x2="596.3" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="596.3" y1="194.0" x2="586.2" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="586.2" y1="194.0" x2="576.1" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="576.1" y1="194.0" x2="565.9" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="565.9" y1="194.0" x2="555.8" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="555.8" y1="194.0" x2="545.7" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="545.7" y1="194.0" x2="535.5" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="535.5" y1="194.0" x2="525.4" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="525.4" y1="194.0" x2="515.3" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="515.3" y1="194.0" x2="505.1" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="505.1" y1="194.0" x2="495.0" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="495.0" y1="194.0" x2="484.8" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="484.8" y1="194.0" x2="474.7" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="474.7" y1="194.0" x2="464.6" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="464.6" y1="194.0" x2="454.4" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="454.4" y1="194.0" x2="444.3" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="444.3" y1="194.0" x2="434.2" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="434.2" y1="194.0" x2="424.0" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="424.0" y1="194.0" x2="413.9" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="413.9" y1="194.0" x2="403.8" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="403.8" y1="194.0" x2="393.6" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="393.6" y1="194.0" x2="383.5" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="383.5" y1="194.0" x2="373.4" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="373.4" y1="194.0" x2="363.2" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="363.2" y1="194.0" x2="353.1" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="353.1" y1="194.0" x2="342.9" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="342.9" y1="194.0" x2="332.8" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="332.8" y1="194.0" x2="322.7" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="322.7" y1="194.0" x2="312.5" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="312.5" y1="194.0" x2="302.4" y2="194.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="n-2" x1="302.4" y1="194.0" x2="292.3" y2="194.0" stroke="#63d7ff" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="n-1" x1="292.3" y1="194.0" x2="282.1" y2="194.0" stroke="#2563eb" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="current" x1="282.1" y1="194.0" x2="272.0" y2="194.0" stroke="#0b3d91" stroke-width="1" stroke-linecap="round" />
 </g>
 </svg>

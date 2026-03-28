@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-import setup_manual_training
+import a_MAIN as setup_manual_training
 
 
 class _DummyAppState:
@@ -47,7 +47,7 @@ class TestSetupManualTrainingHotkeyDisplay(unittest.TestCase):
         line = str(messages[0])
         self.assertRegex(
             line,
-            r"^\[HOTKEY\] f 1% \(pwm=\d+, pwr=\d+\.\d{3}, t=\d+ms\) - press y to edit vars$",
+            r"^\[HOTKEY\] f 1% \(pwm=\d+, pwr=\d+\.\d{3}, t=\d+ms; shared 1% floor(?:; breakaway \d+/\d+)?\) - press y to edit vars$",
         )
         self.assertNotIn("wire=", line)
         self.assertNotIn("power=", line)

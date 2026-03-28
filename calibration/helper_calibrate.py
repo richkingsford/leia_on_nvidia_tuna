@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import math
 import statistics
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -28,6 +29,7 @@ RUN_FOLDERS_DEFAULT = (
 ROBOT_MODEL_FILE = Path(__file__).resolve().parents[1] / "world_model_robot.json"
 PREFLIGHT_DURATION_MS = 250
 ADDITIONAL_PAUSE_MS = 250
+CALIBRATION_DURATION_LIMIT_MS = 9999
 PREFLIGHT_SCORE_CANDIDATES = (
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
     21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50,
@@ -106,6 +108,127 @@ def coerce_finite_float(value) -> float | None:
 def _normalize_trial_speed_score(score, default: int = 50) -> int:
     value = coerce_int(score, default)
     return max(1, min(100, int(value)))
+
+
+def stdin_supports_interactive_input() -> bool:
+    stream = getattr(sys, "stdin", None)
+    if stream is None:
+        return False
+    isatty = getattr(stream, "isatty", None)
+    if not callable(isatty):
+        return False
+    try:
+        return bool(isatty())
+    except Exception:
+        return False
+
+
+def prompt_int_with_default(
+    prompt: str,
+    *,
+    default: int,
+    minimum: int = 0,
+    maximum: int | None = None,
+    log: Callable[[str], None] | None = None,
+) -> int:
+    emit = log if callable(log) else print
+    default_value = int(default)
+    min_value = int(minimum)
+    max_value = None if maximum is None else int(maximum)
+    while True:
+        raw_value = input(f"{str(prompt).rstrip()} [{int(default_value)}]: ").strip()
+        if not raw_value:
+            return int(default_value)
+        try:
+            parsed = int(raw_value)
+        except ValueError:
+            limit_text = (
+                f" between {int(min_value)} and {int(max_value)}"
+                if max_value is not None
+                else f" >= {int(min_value)}"
+            )
+            emit(f"Please enter a whole number{limit_text}.")
+            continue
+        if int(parsed) < int(min_value):
+            limit_text = (
+                f" between {int(min_value)} and {int(max_value)}"
+                if max_value is not None
+                else f" >= {int(min_value)}"
+            )
+            emit(f"Please enter a whole number{limit_text}.")
+            continue
+        if max_value is not None and int(parsed) > int(max_value):
+            emit(f"Please enter a whole number between {int(min_value)} and {int(max_value)}.")
+            continue
+        return int(parsed)
+
+
+def prompt_calibration_run_settings(
+    *,
+    prefix: str,
+    observed_distance_mm: float | None,
+    default_speed_score: int,
+    default_min_duration_ms: int,
+    default_max_duration_ms: int,
+    duration_ceiling_ms: int,
+    log: Callable[[str], None] | None = None,
+) -> dict:
+    speed_default = int(_normalize_trial_speed_score(default_speed_score))
+    min_default = max(1, int(default_min_duration_ms))
+    ceiling = max(1, int(duration_ceiling_ms))
+    min_default = min(int(min_default), int(ceiling))
+    max_default = max(int(min_default), int(default_max_duration_ms))
+    max_default = min(int(max_default), int(ceiling))
+
+    result = {
+        "speed_score": int(speed_default),
+        "min_duration_ms": int(min_default),
+        "max_duration_ms": int(max_default),
+        "prompted_speed_score": False,
+        "prompted_duration_bounds": False,
+        "prompted_any": False,
+    }
+    if not stdin_supports_interactive_input():
+        return result
+
+    emit = log if callable(log) else print
+    observed_text = (
+        f"{float(observed_distance_mm):.2f}mm"
+        if coerce_finite_float(observed_distance_mm) is not None
+        else "unknown"
+    )
+    emit(f"[{str(prefix)}] Observed dist before prompts: {observed_text}.")
+    emit(f"[{str(prefix)}] Enter run settings for this calibration.")
+
+    speed_score = prompt_int_with_default(
+        "  Speed score %",
+        default=int(speed_default),
+        minimum=1,
+        maximum=100,
+        log=emit,
+    )
+    min_duration_ms = prompt_int_with_default(
+        "  Min duration ms",
+        default=int(min_default),
+        minimum=1,
+        maximum=int(ceiling),
+        log=emit,
+    )
+    max_duration_ms = prompt_int_with_default(
+        "  Max duration ms",
+        default=int(max_default),
+        minimum=int(min_duration_ms),
+        maximum=int(ceiling),
+        log=emit,
+    )
+    return {
+        "speed_score": int(_normalize_trial_speed_score(speed_score)),
+        "min_duration_ms": int(min_duration_ms),
+        "max_duration_ms": int(max_duration_ms),
+        "prompted_speed_score": True,
+        "prompted_duration_bounds": True,
+        "prompted_any": True,
+    }
 
 
 def _coerce_trial_speed_curve_points(raw_points) -> list[dict]:
@@ -522,6 +645,24 @@ def aggregate_pose_samples(poses: list[dict]) -> dict | None:
     }
 
 
+def pose_meets_multiframe_requirement(
+    pose: dict | None,
+    *,
+    required_samples: int,
+    required_lite_frames: int = 3,
+) -> bool:
+    if not isinstance(pose, dict):
+        return False
+    if str(pose.get("pose_source") or "").strip().lower() != "lite_smoothed":
+        return False
+    samples_used = coerce_int(pose.get("samples_used"), 0)
+    lite_frames = coerce_int(pose.get("lite_required_frames"), 0)
+    return bool(
+        int(samples_used) >= int(max(1, int(required_samples)))
+        and int(lite_frames) >= int(max(1, int(required_lite_frames)))
+    )
+
+
 def read_pose(
     vision,
     world,
@@ -575,28 +716,11 @@ def read_pose(
                 process_rules=getattr(world, "process_rules", None),
                 min_lite_unique_frames=int(min_lite_unique_frames),
             )
-            if pose is None:
-                pose = brick_pose_from_world(world, obs_ts=now)
         except Exception:
             pose = None
         if pose is None:
-            found, angle, dist, offset_x, conf, cam_h, _above, _below = vision.read()
-            world.update_vision(found, dist, angle, conf, offset_x, cam_h)
-            if callable(on_vision_update):
-                on_vision_update()
-            if not found:
-                time.sleep(float(observe_sleep_s))
-                continue
-            pose = {
-                "offset_y": float(cam_h),
-                "offset_x": float(offset_x),
-                "dist": float(dist),
-                "angle": float(angle),
-                "confidence": float(conf),
-                "obs_ts": float(now),
-                "pose_source": "raw_visible",
-                "lite_required_frames": None,
-            }
+            time.sleep(float(observe_sleep_s))
+            continue
         poses.append(pose)
         if len(poses) < int(target_samples):
             time.sleep(float(observe_sleep_s))
@@ -621,16 +745,20 @@ def observe_pose_with_reobserve(
     on_vision_update: Callable[[], None] | None = None,
 ) -> tuple[dict | None, dict]:
     target_samples = max(1, int(samples))
+    required_samples = max(target_samples, 3)
     strict_pose = read_pose_fn(
         vision,
         world,
         samples=target_samples,
         timeout_s=float(timeout_s),
         min_sample_time=min_sample_time,
-        min_samples_required=target_samples,
+        min_samples_required=required_samples,
         on_vision_update=on_vision_update,
     )
-    if strict_pose is not None:
+    if pose_meets_multiframe_requirement(
+        strict_pose,
+        required_samples=required_samples,
+    ):
         return strict_pose, {
             "mode": "primary_full",
             "reobserved": False,
@@ -646,40 +774,20 @@ def observe_pose_with_reobserve(
             samples=target_samples,
             timeout_s=max(float(timeout_s), float(relaxed_timeout_s)),
             min_sample_time=None,
-            min_samples_required=1,
+            min_samples_required=required_samples,
             on_vision_update=on_vision_update,
         )
-        if relaxed_pose is None:
+        if not pose_meets_multiframe_requirement(
+            relaxed_pose,
+            required_samples=required_samples,
+        ):
             if round_idx < rounds:
                 log_fn(
                     f"{str(log_prefix)} Observation hold/reobserve {round_idx}/{rounds}: still no usable pose."
                 )
             continue
 
-        mode = (
-            "hold_reobserve_full"
-            if int(relaxed_pose.get("samples_used") or 0) >= int(target_samples)
-            else "hold_reobserve_partial"
-        )
-        if int(relaxed_pose.get("samples_used") or 0) < int(target_samples):
-            confirm_pose = read_pose_fn(
-                vision,
-                world,
-                samples=target_samples,
-                timeout_s=max(1.0, float(timeout_s)),
-                min_sample_time=None,
-                min_samples_required=1,
-                on_vision_update=on_vision_update,
-            )
-            if confirm_pose is not None and int(confirm_pose.get("samples_used") or 0) >= int(
-                relaxed_pose.get("samples_used") or 0
-            ):
-                relaxed_pose = confirm_pose
-                mode = (
-                    "hold_reobserve_confirmed_full"
-                    if int(relaxed_pose.get("samples_used") or 0) >= int(target_samples)
-                    else "hold_reobserve_confirmed_partial"
-                )
+        mode = "hold_reobserve_full"
         log_fn(
             f"{str(log_prefix)} Observation rescue: accepted {int(relaxed_pose.get('samples_used') or 0)}/{int(target_samples)} samples "
             f"via {mode}."

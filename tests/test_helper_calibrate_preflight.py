@@ -283,14 +283,7 @@ class Check1PctSpeedMovementTests(unittest.TestCase):
 
         def _fake_update_world_from_vision(world_obj, _vision, log=False):
             self.assertFalse(log)
-            world_obj.brick = {
-                "visible": True,
-                "offset_y": 1.0,
-                "offset_x": 2.0,
-                "dist": 100.0,
-                "angle": 0.0,
-                "confidence": 90.0,
-            }
+            return None
 
         pose = helper_calibrate.read_pose(
             vision=object(),
@@ -302,14 +295,56 @@ class Check1PctSpeedMovementTests(unittest.TestCase):
             observe_sleep_s=0.0,
             fallback_step_label="ALIGN_BRICK",
             update_world_from_vision=_fake_update_world_from_vision,
-            latest_unique_smoothed_frames=lambda *_args, **_kwargs: [],
-            average_smoothed_frames=lambda *_args, **_kwargs: {},
+            latest_unique_smoothed_frames=lambda *_args, **_kwargs: [
+                {
+                    "frame_id": 1,
+                    "visible": True,
+                    "offset_y": 1.0,
+                    "offset_x": 2.0,
+                    "dist": 100.0,
+                    "angle": 0.0,
+                    "confidence": 90.0,
+                }
+            ],
+            average_smoothed_frames=lambda frames, **_kwargs: dict(frames[-1]),
             lite_gate_unique_frames=lambda _step: 1,
             on_vision_update=lambda: callback_hits.append("tick"),
         )
 
         self.assertIsNotNone(pose)
         self.assertEqual(callback_hits, ["tick"])
+
+    def test_shared_pose_meets_multiframe_requirement_rejects_raw_and_partial(self):
+        self.assertTrue(
+            helper_calibrate.pose_meets_multiframe_requirement(
+                {
+                    "pose_source": "lite_smoothed",
+                    "samples_used": 3,
+                    "lite_required_frames": 3,
+                },
+                required_samples=3,
+            )
+        )
+        self.assertFalse(
+            helper_calibrate.pose_meets_multiframe_requirement(
+                {
+                    "pose_source": "raw_visible",
+                    "samples_used": 3,
+                    "lite_required_frames": None,
+                },
+                required_samples=3,
+            )
+        )
+        self.assertFalse(
+            helper_calibrate.pose_meets_multiframe_requirement(
+                {
+                    "pose_source": "lite_smoothed",
+                    "samples_used": 1,
+                    "lite_required_frames": 3,
+                },
+                required_samples=3,
+            )
+        )
 
 
 if __name__ == "__main__":

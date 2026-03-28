@@ -36,6 +36,28 @@ class TestWorldModelRobotHotkeySource(unittest.TestCase):
         self.assertEqual(hotkeys["o"]["cmd"], "u")
         self.assertEqual(hotkeys["k"]["cmd"], "d")
 
+    def test_world_model_robot_exposes_single_wire_command_map(self):
+        self.assertEqual(
+            telemetry_robot.ROBOT_WIRE_COMMAND_MAP,
+            {
+                "f": "b",
+                "b": "f",
+                "l": "r",
+                "r": "l",
+                "u": "d",
+                "d": "u",
+            },
+        )
+
+    def test_one_percent_discovery_lines_report_shared_floor_values(self):
+        lines = telemetry_robot.one_percent_discovery_lines()
+
+        self.assertEqual(len(lines), 4)
+        self.assertIn("Forward (R): pwm=103, pwr=0.306, t=255ms", lines[0])
+        self.assertIn("Backward (F): pwm=103, pwr=0.306, t=255ms", lines[1])
+        self.assertIn("Left (Q): pwm=102, pwr=0.301, t=135ms", lines[2])
+        self.assertIn("Right (E): pwm=102, pwr=0.301, t=65ms", lines[3])
+
 
 if __name__ == "__main__":
     unittest.main()

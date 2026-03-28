@@ -3,10 +3,10 @@ import numpy as np
 import time
 import os
 from dataclasses import dataclass
-from typing import Optional, Tuple, List, Union
+from typing import Optional, Tuple, List
 
+from helper_camera_sources import CameraSource, candidate_camera_sources, existing_camera_nodes
 
-CameraSource = Union[int, str]
 
 @dataclass
 class BrickPose:
@@ -89,33 +89,7 @@ class LeiaVision:
         self.dist_coeffs = np.zeros((4,1))
 
     def _candidate_camera_sources(self, preferred_index: Optional[int]) -> List[CameraSource]:
-        candidates: List[CameraSource] = []
-
-        if preferred_index is not None:
-            candidates.append(int(preferred_index))
-
-        env_source = str(os.getenv("LEIA_CAMERA_SOURCE", "")).strip()
-        if env_source:
-            try:
-                candidates.append(int(env_source))
-            except ValueError:
-                candidates.append(env_source)
-
-        env_index = os.getenv("LEIA_CAMERA_INDEX")
-        if env_index:
-            try:
-                candidates.append(int(env_index))
-            except ValueError:
-                pass
-
-        candidates.extend([0, 1, 2, 3])
-        candidates.extend(["/dev/video0", "/dev/video1", "/dev/video2", "/dev/video3"])
-
-        deduped: List[CameraSource] = []
-        for source in candidates:
-            if source not in deduped:
-                deduped.append(source)
-        return deduped
+        return list(candidate_camera_sources(preferred_index))
 
     def _open_camera(self, source: CameraSource, width: int, height: int):
         backends = []
@@ -137,7 +111,7 @@ class LeiaVision:
 
     def _log_camera_open_failure(self, tried_sources: List[CameraSource]):
         print(f"[VISION] Unable to open camera. Tried sources: {tried_sources}", flush=True)
-        existing_nodes = [p for p in ("/dev/video0", "/dev/video1", "/dev/video2", "/dev/video3") if os.path.exists(p)]
+        existing_nodes = existing_camera_nodes()
         if existing_nodes:
             print(f"[VISION] Detected camera nodes: {existing_nodes}", flush=True)
         else:

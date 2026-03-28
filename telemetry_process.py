@@ -1269,7 +1269,11 @@ def action_sent_display_text(
             ms_val = None
         if ms_val is not None:
             parts.append(f"{ms_val}ms")
-    note_value = ease_note if ease_note else anti_alias_note
+    note_value = _join_action_notes(
+        ease_note,
+        anti_alias_note,
+        telemetry_robot_module.one_percent_discovery_note(cmd_display, speed_score),
+    )
     if note_value:
         parts.append(str(note_value))
     details = ""
@@ -2482,10 +2486,7 @@ def send_robot_command_pwm(
         half_first_turn_pulse=half_first_turn_pulse,
         respect_requested_duration=respect_requested_duration,
     )
-    cmd_remap = getattr(telemetry_robot_module, "COMMAND_REMAP", None)
-    if not isinstance(cmd_remap, dict):
-        cmd_remap = {}
-    cmd_sent = cmd_remap.get(cmd, cmd)
+    cmd_sent = cmd
 
     requested_score = None
     if speed_score is not None:
@@ -2522,39 +2523,28 @@ def send_robot_command_pwm(
         except Exception:
             return None
 
-    # Enforce a minimum non-zero PWM based on score floors for both the logical
-    # command and the actual wire command (after remap).
+    # Enforce a minimum non-zero PWM based on the logical command.
     if cmd in ("f", "b", "l", "r") and pwm_val > 0:
         floor_scores = [getattr(telemetry_robot_module, "SPEED_SCORE_MIN", 1)]
         if requested_score is not None:
             floor_scores.append(int(requested_score))
-        candidate_cmds = []
-        for cmd_key in (cmd, cmd_sent):
-            if cmd_key in ("f", "b", "l", "r") and cmd_key not in candidate_cmds:
-                candidate_cmds.append(cmd_key)
-        for cmd_key in candidate_cmds:
-            for floor_score in floor_scores:
-                floor_pwm = _floor_pwm_for_cmd(cmd_key, floor_score)
-                if floor_pwm is not None and floor_pwm > 0:
-                    pwm_val = max(int(floor_pwm), int(pwm_val))
+        for floor_score in floor_scores:
+            floor_pwm = _floor_pwm_for_cmd(cmd, floor_score)
+            if floor_pwm is not None and floor_pwm > 0:
+                pwm_val = max(int(floor_pwm), int(pwm_val))
 
     if auto_mode and cmd in ("l", "r"):
         floor_scores = [getattr(telemetry_robot_module, "SPEED_SCORE_MIN", 1)]
         if requested_score is not None:
             floor_scores.append(int(requested_score))
-        candidate_cmds = []
-        for cmd_key in (cmd, cmd_sent):
-            if cmd_key in ("l", "r") and cmd_key not in candidate_cmds:
-                candidate_cmds.append(cmd_key)
-        for cmd_key in candidate_cmds:
-            for floor_score in floor_scores:
-                try:
-                    _, _, _, floor_ms = telemetry_robot_module.speed_power_pwm_for_cmd(cmd_key, floor_score)
-                    floor_ms = int(round(float(floor_ms)))
-                except Exception:
-                    floor_ms = None
-                if floor_ms is not None and floor_ms > 0:
-                    duration_used_ms = max(int(duration_used_ms), int(floor_ms))
+        for floor_score in floor_scores:
+            try:
+                _, _, _, floor_ms = telemetry_robot_module.speed_power_pwm_for_cmd(cmd, floor_score)
+                floor_ms = int(round(float(floor_ms)))
+            except Exception:
+                floor_ms = None
+            if floor_ms is not None and floor_ms > 0:
+                duration_used_ms = max(int(duration_used_ms), int(floor_ms))
 
     ease_profile = None
     ease_note = None
@@ -10196,6 +10186,9 @@ def run_alignment_segment(
                 ease_in_out_note = action_meta.get("anti_alias_note")
             if ease_in_out_note:
                 parts.append(str(ease_in_out_note))
+        discovery_note = telemetry_robot_module.one_percent_discovery_note(cmd, score_display)
+        if discovery_note:
+            parts.append(str(discovery_note))
 
         trial_num = int(getattr(world, "loop_id", 0) or 0)
         active_step_label = normalize_step_label(step) or str(step or "ALIGN").strip().upper()

@@ -1,10 +1,12 @@
 import json
 import math
 import random
+import sys
 import tempfile
 import unittest
 from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from calibration import helper_calibrate_y as calibrate_y
@@ -123,6 +125,15 @@ class CalibrateYTests(unittest.TestCase):
         self.assertTrue(math.isnan(offsets[0][0]))
         self.assertTrue(math.isnan(offsets[0][1]))
         self.assertEqual(calibrate_y._plot_offsets([250.0], [3.5]), [(250.0, 3.5)])
+
+    def test_planned_action_meta_uses_central_speed_curve(self):
+        power, pwm, score_used, duration_ms = calibrate_y.speed_power_pwm_for_cmd("u", 1)
+        meta = calibrate_y._planned_action_meta("u", 1, duration_ms)
+
+        self.assertEqual(meta["pwm"], pwm)
+        self.assertAlmostEqual(meta["power"], power)
+        self.assertEqual(meta["score_model"], score_used)
+        self.assertEqual(meta["duration_ms"], duration_ms)
 
     def test_trial_band_status_line_reports_within_and_not_within(self):
         with patch.object(calibrate_y, "_supports_ansi_color", return_value=False):
@@ -350,7 +361,7 @@ class CalibrateYTests(unittest.TestCase):
         )
 
     def test_should_log_command_inversion_detail_only_on_expectation_failure(self):
-        self.assertFalse(
+        self.assertTrue(
             calibrate_y._should_log_command_inversion_detail(
                 logical_cmd="d",
                 wire_cmd="u",
@@ -374,6 +385,14 @@ class CalibrateYTests(unittest.TestCase):
             "Trial 2/2",
         )
         self.assertTrue(
+            calibrate_y._should_log_command_inversion_detail(
+                logical_cmd="d",
+                wire_cmd="u",
+                raw_delta_mm=-0.63,
+                threshold_mm=0.60,
+            )
+        )
+        self.assertFalse(
             calibrate_y._should_log_command_inversion_detail(
                 logical_cmd="d",
                 wire_cmd="u",
@@ -402,8 +421,8 @@ class CalibrateYTests(unittest.TestCase):
             )
         mock_log_line.assert_called_once_with(
             "[CALIBRATE_Y] Trial 59/60: ⚠️  Command inversion detail: "
-            "expected the brick to go upwards on camera, but saw it move downwards "
-            "(0.81mm; raw_delta=-0.81mm). Wire mast_up also implies downwards camera motion."
+            "logical mast_down expects the brick to go upwards on camera, and observed it move upwards "
+            "(0.81mm; raw_delta=-0.81mm). Wire mast_up implies downwards camera motion."
         )
 
     def test_run_trial_action_plots_wrong_way_trials(self):
@@ -419,7 +438,7 @@ class CalibrateYTests(unittest.TestCase):
             "samples_used": 1,
         }
         post_pose = dict(pre_pose)
-        post_pose["offset_y"] = 8.81
+        post_pose["offset_y"] = 7.19
         post_pose["confidence"] = 91.0
         plotter = Mock()
 
@@ -647,6 +666,7 @@ class CalibrateYTests(unittest.TestCase):
         summary_idx = next(
             idx for idx, line in enumerate(logged_lines) if "[CALIBRATE_Y] Trial 5/60: cmd=D score=1%" in line
         )
+        self.assertIn("shared 1% floor", logged_lines[summary_idx])
         detail_idx = next(
             idx
             for idx, line in enumerate(logged_lines)
@@ -764,7 +784,104 @@ class CalibrateYTests(unittest.TestCase):
         self.assertAlmostEqual(pose["dist"], 101.0)
         self.assertEqual(pose["samples_used"], 3)
 
-    def test_observe_pose_with_reobserve_accepts_partial_pose_after_primary_failure(self):
+    def test_pose_meets_multiframe_requirement_requires_lite_smoothed_pose(self):
+        self.assertTrue(
+            calibrate_y._pose_meets_multiframe_requirement(
+                {
+                    "pose_source": "lite_smoothed",
+                    "samples_used": 3,
+                    "lite_required_frames": 3,
+                },
+                required_samples=3,
+            )
+        )
+        self.assertFalse(
+            calibrate_y._pose_meets_multiframe_requirement(
+                {
+                    "pose_source": "raw_visible",
+                    "samples_used": 3,
+                    "lite_required_frames": None,
+                },
+                required_samples=3,
+            )
+        )
+        self.assertFalse(
+            calibrate_y._pose_meets_multiframe_requirement(
+                {
+                    "pose_source": "lite_smoothed",
+                    "samples_used": 1,
+                    "lite_required_frames": 3,
+                },
+                required_samples=3,
+            )
+        )
+
+    def test_read_pose_requires_lite_smoothed_frames_and_never_falls_back_to_raw_frame(self):
+        world = Mock()
+        world.step_state = None
+        world.process_rules = None
+        vision = Mock()
+        vision.read.side_effect = AssertionError("vision.read should not be called")
+
+        with patch.object(calibrate_y, "update_world_from_vision"), patch.object(
+            calibrate_y,
+            "_lite_pose_from_world",
+            return_value=None,
+        ), patch.object(
+            calibrate_y,
+            "_brick_pose_from_world",
+        ) as mock_brick_pose:
+            pose = calibrate_y.read_pose(
+                vision,
+                world,
+                samples=3,
+                timeout_s=0.01,
+            )
+
+        self.assertIsNone(pose)
+        mock_brick_pose.assert_not_called()
+
+    def test_pose_from_measurement_normalizes_world_and_camera_y_into_one_axis(self):
+        world_pose = calibrate_y._pose_from_measurement(
+            {
+                "visible": True,
+                "y_axis": -8.0,
+                "offset_x": 0.0,
+                "dist": 100.0,
+                "angle": 0.0,
+                "confidence": 90.0,
+            },
+            obs_ts=1.0,
+            pose_source="brick_state",
+            measurement_space="world",
+        )
+        camera_pose = calibrate_y._pose_from_measurement(
+            {
+                "visible": True,
+                "cam_h": 8.0,
+                "offset_x": 0.0,
+                "dist": 100.0,
+                "angle": 0.0,
+                "confidence": 90.0,
+            },
+            obs_ts=1.0,
+            pose_source="raw_visible",
+            measurement_space="camera",
+        )
+        self.assertEqual(world_pose["offset_y"], 8.0)
+        self.assertEqual(camera_pose["offset_y"], 8.0)
+
+    def test_camera_direction_from_raw_delta_uses_helper_camera_axis(self):
+        self.assertEqual(
+            calibrate_y._camera_direction_from_raw_delta(0.81, threshold_mm=0.60),
+            "down",
+        )
+        self.assertEqual(
+            calibrate_y._camera_direction_from_raw_delta(-0.81, threshold_mm=0.60),
+            "up",
+        )
+
+    def test_observe_pose_with_reobserve_rejects_partial_pose_after_primary_failure(self):
         partial_pose = {
             "offset_y": 4.2,
             "offset_x": 0.0,
@@ -778,7 +895,7 @@ class CalibrateYTests(unittest.TestCase):
         }
         with patch.object(calibrate_y, "read_pose", side_effect=[None, partial_pose, partial_pose]), patch.object(
             calibrate_y.time, "sleep"
-        ):
+        ), patch.object(calibrate_y, "log_line"):
             pose, meta = calibrate_y._observe_pose_with_reobserve(
                 vision=object(),
                 world=object(),
@@ -786,8 +903,8 @@ class CalibrateYTests(unittest.TestCase):
                 timeout_s=1.8,
                 min_sample_time=None,
             )
-        self.assertIs(pose, partial_pose)
-        self.assertEqual(meta["mode"], "hold_reobserve_confirmed_partial")
+        self.assertIsNone(pose)
+        self.assertEqual(meta["mode"], "unavailable")
         self.assertTrue(meta["reobserved"])
 
     def test_attempt_recovery_reacquires_by_holding_still_before_inverse(self):
@@ -981,6 +1098,97 @@ class CalibrateYTests(unittest.TestCase):
         self.assertEqual(meta["inverse_acts"], 1)
         self.assertEqual(mock_send.call_args.kwargs["cmd"], "d")
         self.assertEqual(mock_send.call_args.kwargs["duration_override_ms"], 320)
+
+    def test_main_uses_prompted_speed_and_duration_after_observing_distance(self):
+        payloads = []
+        setup_pose = {
+            "offset_y": 8.0,
+            "offset_x": 0.0,
+            "dist": 111.0,
+            "angle": 0.0,
+            "confidence": 90.0,
+            "obs_ts": 1.0,
+            "pose_source": "raw_visible",
+            "lite_required_frames": None,
+            "samples_used": 1,
+        }
+        trial_row = SimpleNamespace(
+            wrong_way=False,
+            cmd="u",
+            duration_ms=260,
+            cmd_delta_mm=0.4,
+        )
+
+        with patch.object(sys, "argv", ["helper_calibrate_y.py", "--trials", "1", "--no-livestream"]), patch.object(
+            calibrate_y,
+            "_ensure_run_dir",
+        ), patch.object(
+            calibrate_y,
+            "shared_prompt_calibration_run_settings",
+            return_value={
+                "speed_score": 6,
+                "min_duration_ms": 260,
+                "max_duration_ms": 260,
+                "prompted_speed_score": True,
+                "prompted_duration_bounds": True,
+            },
+        ) as mock_prompt, patch.object(
+            calibrate_y,
+            "WorldModel",
+            return_value=SimpleNamespace(step_state=None, _post_action_observe_delay_s=0.0),
+        ), patch.object(
+            calibrate_y,
+            "Robot",
+            return_value=SimpleNamespace(close=lambda: None),
+        ), patch.object(
+            calibrate_y,
+            "YoloBrickDetector",
+            return_value=SimpleNamespace(close=lambda: None),
+        ), patch.object(
+            calibrate_y,
+            "LivePlot",
+            return_value=SimpleNamespace(finish=lambda: None),
+        ), patch.object(
+            calibrate_y,
+            "_load_y_duration_calibration",
+            return_value={"curves": []},
+        ), patch.object(
+            calibrate_y,
+            "_observe_pose_with_reobserve",
+            return_value=(setup_pose, {"mode": "primary_full", "reobserved": False}),
+        ), patch.object(
+            calibrate_y,
+            "_run_trial_action",
+            return_value=(trial_row, None),
+        ) as mock_run_trial_action, patch.object(
+            calibrate_y,
+            "_build_payload",
+            side_effect=lambda **kwargs: {
+                "config": kwargs["config"],
+                "durations_ms": list(kwargs["durations_ms"]),
+            },
+        ), patch.object(
+            calibrate_y,
+            "_write_results",
+            side_effect=lambda _path, payload: payloads.append(payload),
+        ), patch.object(
+            calibrate_y,
+            "log_line",
+        ):
+            exit_code = calibrate_y.main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(mock_prompt.call_args.kwargs["observed_distance_mm"], 111.0)
+        self.assertEqual(payloads[-1]["config"]["speed_score"], 6)
+        self.assertEqual(payloads[-1]["config"]["requested_speed_score"], 6)
+        self.assertEqual(payloads[-1]["config"]["speed_score_source"], "prompt")
+        self.assertTrue(payloads[-1]["config"]["prompted_speed_score"])
+        self.assertEqual(payloads[-1]["config"]["min_duration_ms"], 260)
+        self.assertEqual(payloads[-1]["config"]["max_duration_ms"], 260)
+        self.assertTrue(payloads[-1]["config"]["prompted_duration_bounds"])
+        self.assertEqual(payloads[-1]["durations_ms"], [260])
+        self.assertEqual(mock_run_trial_action.call_args.kwargs["setup_score"], 6)
+        self.assertEqual(mock_run_trial_action.call_args.kwargs["duration_ms"], 260)
 
 
 if __name__ == "__main__":
