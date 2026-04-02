@@ -63,6 +63,7 @@ from helper_manual_turn_breakaway_test import (
     run_interactive_turn_breakaway_test,
 )
 from helper_x_axis_turn_experiment import (
+    DEFAULT_TARGET_SUCCESS_BAND_MM as X_AXIS_OBSERVE_SUCCESS_BAND_MM,
     MAX_DURATION_MS as X_AXIS_OBSERVE_MAX_DURATION_MS,
     parse_observe_while_moving_trial_input,
     run_observe_while_moving_trial,
@@ -4018,6 +4019,9 @@ class AppState:
         self.auto_continue_source_step = None
         self.auto_continue_target_step = None
         self.auto_continue_last_countdown_second = None
+        self.observe_trial_running = False
+        self.observe_trial_thread = None
+        self.observe_trial_cancel_event = threading.Event()
 
         self.gate_status = []
         self.gate_progress = []
@@ -4560,16 +4564,72 @@ def keyboard_thread(app_state):
 
     def _prompt_observe_while_moving_trial():
         prompt_mode = "[OBSERVE] Mode > "
-        prompt_params = (
-            "[OBSERVE] Params <direction[L/R]> <duration_ms> <target_x_axis_mm> "
-            f"(max {int(X_AXIS_OBSERVE_MAX_DURATION_MS)} ms; spaces required) > "
-        )
+        prompt_params = "[OBSERVE] Params <direction[L/R]> > "
 
         def _fmt(value):
             try:
                 return round(float(value), 3)
             except (TypeError, ValueError):
                 return None
+
+        def _observe_trial_result_messages(result):
+            status = str((result or {}).get("status") or "")
+            if status == "cancelled":
+                last_x = _fmt((result or {}).get("result_x_axis_mm"))
+                if last_x is None:
+                    return ["[OBSERVE] Trial cancelled (Esc)."]
+                return [f"[OBSERVE] Trial cancelled (Esc). Last visible x_axis={last_x} mm."]
+            if status == "never_visible":
+                return ["[OBSERVE] Trial result: failed to ever see the brick."]
+
+            result_x_axis_mm = (result or {}).get("result_x_axis_mm")
+            result_target_error_mm = (result or {}).get("result_target_error_mm")
+            percent_off_target = (result or {}).get("percent_off_target")
+            percent_basis = str((result or {}).get("percent_off_target_basis") or "")
+            first_visible_elapsed_ms = (result or {}).get("first_visible_elapsed_ms")
+            band_hit_elapsed_ms = (result or {}).get("band_hit_elapsed_ms")
+            band_hit_x_axis_mm = (result or {}).get("band_hit_x_axis_mm")
+            band_hit_target_error_mm = (result or {}).get("band_hit_target_error_mm")
+            success_band_mm = _fmt((result or {}).get("target_success_band_mm"))
+            end_pose = (result or {}).get("end_pose") or {}
+            end_visible = bool(end_pose.get("visible")) if isinstance(end_pose, dict) else False
+            x_label = "x_axis" if end_visible else "last visible x_axis"
+            first_seen_text = None
+            try:
+                if first_visible_elapsed_ms is not None:
+                    first_seen_text = f"first saw the brick after {int(round(float(first_visible_elapsed_ms)))} ms; "
+            except (TypeError, ValueError):
+                first_seen_text = None
+            if not first_seen_text:
+                first_seen_text = ""
+            if status == "target_band_reached":
+                return [
+                    "[OBSERVE] Trial result: "
+                    f"{first_seen_text}hit the target band (+/-{success_band_mm} mm) at "
+                    f"{int(round(float(band_hit_elapsed_ms)))} ms; "
+                    f"x_axis={_fmt(band_hit_x_axis_mm)} mm; "
+                    f"target error={_fmt(band_hit_target_error_mm)} mm."
+                ]
+            if percent_off_target is None:
+                return [
+                    "[OBSERVE] Trial result: "
+                    f"{first_seen_text}{x_label}={_fmt(result_x_axis_mm)} mm. "
+                    f"Target error={_fmt(result_target_error_mm)} mm "
+                    f"(target band +/-{success_band_mm} mm not reached)."
+                ]
+            if percent_basis == "start_gap":
+                return [
+                    "[OBSERVE] Trial result: "
+                    f"{first_seen_text}{x_label}={_fmt(result_x_axis_mm)} mm; "
+                    f"{_fmt(percent_off_target)}% off target "
+                    f"(measured against the starting x-axis gap because target=0; target band +/-{success_band_mm} mm not reached)."
+                ]
+            return [
+                "[OBSERVE] Trial result: "
+                f"{first_seen_text}{x_label}={_fmt(result_x_axis_mm)} mm; "
+                f"{_fmt(percent_off_target)}% off target "
+                f"(target band +/-{success_band_mm} mm not reached)."
+            ]
 
         fd_term = sys.stdin.fileno()
         try:
@@ -4593,7 +4653,12 @@ def keyboard_thread(app_state):
             if selection_text != "1":
                 return ["[OBSERVE] Only option '1' is available right now."]
             log_line(
-                "[OBSERVE] Objective: detect whether Leia can track the brick and hit the target x_axis value without completely stopping."
+                "[OBSERVE] Objective: detect whether Leia can track the brick and hit x_axis=0 "
+                f"within +/-{float(X_AXIS_OBSERVE_SUCCESS_BAND_MM):.3f} mm without completely stopping."
+            )
+            log_line(
+                f"[OBSERVE] Safety: no single act will exceed {int(X_AXIS_OBSERVE_MAX_DURATION_MS)} ms, "
+                "but the experiment may start a fresh act and reset that safety clock."
             )
             params_line = input(prompt_params)
         except (EOFError, KeyboardInterrupt):
@@ -4619,58 +4684,54 @@ def keyboard_thread(app_state):
             return ["[OBSERVE] Trial unavailable: robot or vision is not ready."]
 
         with app_state.lock:
+            if bool(app_state.observe_trial_running):
+                return ["[OBSERVE] Trial already running. Press Esc to stop it first."]
             app_state.last_key_time = time.time()
             app_state.auto_prompt = False
             _clear_manual_motion_state_locked(app_state)
+            app_state.observe_trial_cancel_event.clear()
+            app_state.observe_trial_running = True
 
-        result = run_observe_while_moving_trial(
-            robot=app_state.robot,
-            world=app_state.world,
-            vision=app_state.vision,
-            vision_io_lock=app_state.vision_io_lock,
-            direction=params["direction"],
-            duration_ms=params["duration_ms"],
-            target_x_axis_mm=params["target_x_axis_mm"],
-            log_fn=log_line,
+        cancel_event = app_state.observe_trial_cancel_event
+
+        def _observe_trial_worker():
+            result = None
+            try:
+                result = run_observe_while_moving_trial(
+                    robot=app_state.robot,
+                    world=app_state.world,
+                    vision=app_state.vision,
+                    vision_io_lock=app_state.vision_io_lock,
+                    direction=params["direction"],
+                    target_x_axis_mm=params["target_x_axis_mm"],
+                    target_success_band_mm=float(X_AXIS_OBSERVE_SUCCESS_BAND_MM),
+                    max_act_duration_ms=int(X_AXIS_OBSERVE_MAX_DURATION_MS),
+                    cancel_event=cancel_event,
+                    log_fn=log_line,
+                )
+            except Exception as exc:
+                log_line(f"[OBSERVE] Trial failed: {exc}")
+            finally:
+                with app_state.lock:
+                    app_state.observe_trial_running = False
+                    app_state.observe_trial_thread = None
+                    try:
+                        app_state.observe_trial_cancel_event.clear()
+                    except Exception:
+                        pass
+            if result is not None:
+                for msg in _observe_trial_result_messages(result):
+                    log_line(msg)
+
+        observe_thread = threading.Thread(
+            target=_observe_trial_worker,
+            name="observe-while-moving-trial",
+            daemon=True,
         )
-
-        status = str(result.get("status") or "")
-        if status == "never_visible":
-            return ["[OBSERVE] Trial result: failed to ever see the brick."]
-
-        result_x_axis_mm = result.get("result_x_axis_mm")
-        result_target_error_mm = result.get("result_target_error_mm")
-        percent_off_target = result.get("percent_off_target")
-        percent_basis = str(result.get("percent_off_target_basis") or "")
-        first_visible_elapsed_ms = result.get("first_visible_elapsed_ms")
-        end_visible = bool(((result.get("end_pose") or {}) if isinstance(result.get("end_pose"), dict) else {}).get("visible"))
-        x_label = "x_axis" if end_visible else "last visible x_axis"
-        first_seen_text = None
-        try:
-            if first_visible_elapsed_ms is not None:
-                first_seen_text = f"first saw the brick after {int(round(float(first_visible_elapsed_ms)))} ms; "
-        except (TypeError, ValueError):
-            first_seen_text = None
-        if not first_seen_text:
-            first_seen_text = ""
-        if percent_off_target is None:
-            return [
-                "[OBSERVE] Trial result: "
-                f"{first_seen_text}{x_label}={_fmt(result_x_axis_mm)} mm. "
-                f"Target error={_fmt(result_target_error_mm)} mm."
-            ]
-        if percent_basis == "start_gap":
-            return [
-                "[OBSERVE] Trial result: "
-                f"{first_seen_text}{x_label}={_fmt(result_x_axis_mm)} mm; "
-                f"{_fmt(percent_off_target)}% off target "
-                "(measured against the starting x-axis gap because target=0)."
-            ]
-        return [
-            "[OBSERVE] Trial result: "
-            f"{first_seen_text}{x_label}={_fmt(result_x_axis_mm)} mm; "
-            f"{_fmt(percent_off_target)}% off target."
-        ]
+        with app_state.lock:
+            app_state.observe_trial_thread = observe_thread
+        observe_thread.start()
+        return ["[OBSERVE] Trial started. Press Esc to stop it."]
 
     def _parse_custom_runs_input(raw):
         text = str(raw or "").strip()
@@ -4845,21 +4906,41 @@ def keyboard_thread(app_state):
                 auto_continue_cleared_by_input = True
             auto_prompt = app_state.auto_prompt
             auto_confirm_needed = app_state.auto_confirm_needed
+            observe_trial_running = bool(getattr(app_state, "observe_trial_running", False))
 
         messages = []
         pending_hotkey_action = None
         if ch == 'Q':
             _clear_step_code_buffer()
+            robot_to_stop = None
             with app_state.lock:
                 app_state.last_key_time = time.time()
+                if bool(getattr(app_state, "observe_trial_running", False)):
+                    try:
+                        app_state.observe_trial_cancel_event.set()
+                    except Exception:
+                        pass
+                    robot_to_stop = app_state.robot
                 app_state.running = False
+            if robot_to_stop is not None:
+                try:
+                    robot_to_stop.stop()
+                except Exception:
+                    pass
             messages.append("Stopping manual recording...")
         elif ch == '\x1b':
             _clear_step_code_buffer()
             robot_to_stop = None
             with app_state.lock:
                 app_state.last_key_time = time.time()
-                if bool(app_state.auto_running):
+                if bool(getattr(app_state, "observe_trial_running", False)):
+                    try:
+                        app_state.observe_trial_cancel_event.set()
+                    except Exception:
+                        pass
+                    robot_to_stop = app_state.robot
+                    messages.append("[OBSERVE] Cancel requested (Esc). Stopping current trial...")
+                elif bool(app_state.auto_running):
                     app_state.auto_cancel_event.set()
                     app_state.auto_confirm_needed = False
                     app_state.auto_confirm_event.set()
@@ -4882,6 +4963,10 @@ def keyboard_thread(app_state):
                     robot_to_stop.stop()
                 except Exception:
                     pass
+        elif observe_trial_running:
+            with app_state.lock:
+                app_state.last_key_time = time.time()
+            messages.append("[OBSERVE] Trial running. Press Esc to stop it.")
         elif ch in ('\n', '\r'):
             with app_state.lock:
                 app_state.last_key_time = time.time()
