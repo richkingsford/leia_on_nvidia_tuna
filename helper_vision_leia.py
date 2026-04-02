@@ -32,9 +32,9 @@ class LeiaVision:
         self.BRICK_H = 48.0
         self.BRICK_D = 20.0
         
-        # 3D Model Points (Center at 0,0,0) - Flat Face
-        # 12-point face model matching world_model_brick.json
-        # Y=48 is top (Notch), Y=0 is bottom
+        # 3D model points for the legacy flat-face Leia edge detector.
+        # This model is intentionally independent from the crown-brick YOLO
+        # world-model silhouette used for markerless crown-brick tracking.
         self.face_points_3d = np.array([
             [-32, 0, 0], [-32, 38, 0], [-12, 38, 0], [-12, 48, 0], 
             [12, 48, 0], [12, 38, 0], [32, 38, 0], [32, 0, 0], 

@@ -182,6 +182,7 @@ GAP_SWITCH_REASSURE_STEPS = {
 }
 AUTO_SPEED_SCORE_HARD_MAX = 25
 MAX_CONSECUTIVE_IDENTICAL_ACTS = 50
+NO_ACTION_GATECHECK_STUCK_LIMIT = 2
 AUTO_DEMO_SPEED_STEPS = {
     "FIND_WALL",
     "EXIT_WALL",
@@ -1704,6 +1705,142 @@ def _align_local_gate_status_single_source(world, step):
         "dist_err": dist_err,
         "dist_within_tol": dist_within_tol,
         "dist_required": d_required,
+    }
+
+
+def _align_correction_axis_name(*, correction_type=None, cmd=None):
+    ctype = str(correction_type or "").strip().lower()
+    if ctype in {"distance", "dist"}:
+        return "distance"
+    if ctype in {"y_axis", "y"}:
+        return "y_axis"
+    if ctype in {"x_axis", "x"}:
+        return "x_axis"
+    cmd_key = str(cmd or "").strip().lower()
+    if cmd_key in {"f", "b"}:
+        return "distance"
+    if cmd_key in {"u", "d"}:
+        return "y_axis"
+    if cmd_key in {"l", "r"}:
+        return "x_axis"
+    return None
+
+
+def _align_metric_state(local_gate_status, axis_name):
+    local_gate = local_gate_status if isinstance(local_gate_status, dict) else {}
+    axis_key = str(axis_name or "").strip().lower()
+    if axis_key == "x_axis":
+        return {
+            "required": bool(local_gate.get("x_required")),
+            "within_tol": bool(local_gate.get("x_within_tol")),
+            "err_mm": _as_float(local_gate.get("x_abs_err"), None),
+            "tol_mm": abs(float(_as_float(local_gate.get("x_tol"), 0.0) or 0.0)),
+        }
+    if axis_key == "y_axis":
+        return {
+            "required": bool(local_gate.get("y_required")),
+            "within_tol": bool(local_gate.get("y_within_tol")),
+            "err_mm": _as_float(local_gate.get("y_abs_err"), None),
+            "tol_mm": abs(float(_as_float(local_gate.get("y_tol"), 0.0) or 0.0)),
+        }
+    if axis_key == "distance":
+        return {
+            "required": bool(local_gate.get("dist_required")),
+            "within_tol": bool(local_gate.get("dist_within_tol")),
+            "err_mm": _as_float(local_gate.get("dist_err"), None),
+            "tol_mm": abs(float(_as_float(local_gate.get("dist_tol"), 0.0) or 0.0)),
+        }
+    return {
+        "required": False,
+        "within_tol": False,
+        "err_mm": None,
+        "tol_mm": None,
+    }
+
+
+def align_moving_lock_policy(step_rules):
+    cfg = step_rules if isinstance(step_rules, dict) else {}
+    align_policy = cfg.get("align_policy") if isinstance(cfg.get("align_policy"), dict) else {}
+    moving_lock = align_policy.get("moving_lock") if isinstance(align_policy.get("moving_lock"), dict) else {}
+    axes_raw = moving_lock.get("axes")
+    if isinstance(axes_raw, (list, tuple, set)):
+        axes = []
+        for axis in axes_raw:
+            normalized = _align_correction_axis_name(correction_type=axis)
+            if normalized in {"distance", "y_axis"} and normalized not in axes:
+                axes.append(str(normalized))
+    else:
+        axes = ["distance", "y_axis"]
+    enabled = bool(moving_lock.get("enabled")) and bool(axes)
+    return {
+        "enabled": bool(enabled),
+        "axes": tuple(axes),
+        "require_x_within_tol": bool(moving_lock.get("require_x_within_tol", True)),
+        "entry_tol_add_mm": max(0.0, float(_as_float(moving_lock.get("entry_tol_add_mm"), 1.0) or 1.0)),
+        "other_axis_tol_add_mm": max(0.0, float(_as_float(moving_lock.get("other_axis_tol_add_mm"), 1.0) or 1.0)),
+        "x_guard_tol_add_mm": max(0.0, float(_as_float(moving_lock.get("x_guard_tol_add_mm"), 0.0) or 0.0)),
+        "pulse_duration_ms": max(1, int(_as_int(moving_lock.get("pulse_duration_ms"), 180))),
+        "max_pulses_per_burst": max(1, int(_as_int(moving_lock.get("max_pulses_per_burst"), 4))),
+        "max_non_improving_fresh_frames": max(
+            1,
+            int(_as_int(moving_lock.get("max_non_improving_fresh_frames"), 2)),
+        ),
+        "min_improvement_mm": max(0.0, float(_as_float(moving_lock.get("min_improvement_mm"), 0.15) or 0.15)),
+    }
+
+
+def plan_align_moving_lock(local_gate_status, *, step_rules, cmd=None, correction_type=None):
+    policy = align_moving_lock_policy(step_rules)
+    if not bool(policy.get("enabled")):
+        return None
+    local_gate = local_gate_status if isinstance(local_gate_status, dict) else {}
+    if not bool(local_gate.get("visible")):
+        return None
+    axis_name = _align_correction_axis_name(correction_type=correction_type, cmd=cmd)
+    if axis_name not in set(policy.get("axes") or ()):
+        return None
+    if axis_name == "x_axis":
+        return None
+    x_state = _align_metric_state(local_gate, "x_axis")
+    if bool(policy.get("require_x_within_tol")) and bool(x_state.get("required")) and not bool(x_state.get("within_tol")):
+        return None
+    corrected_state = _align_metric_state(local_gate, axis_name)
+    corrected_err_mm = _as_float(corrected_state.get("err_mm"), None)
+    corrected_tol_mm = _as_float(corrected_state.get("tol_mm"), None)
+    if not bool(corrected_state.get("required")) or corrected_err_mm is None or corrected_tol_mm is None:
+        return None
+    if bool(corrected_state.get("within_tol")):
+        return None
+    entry_limit_mm = float(corrected_tol_mm) + float(policy.get("entry_tol_add_mm") or 0.0)
+    if float(corrected_err_mm) > float(entry_limit_mm):
+        return None
+    other_axis = "y_axis" if axis_name == "distance" else "distance"
+    other_state = _align_metric_state(local_gate, other_axis)
+    other_guard_limit_mm = None
+    if bool(other_state.get("required")):
+        other_err_mm = _as_float(other_state.get("err_mm"), None)
+        other_tol_mm = _as_float(other_state.get("tol_mm"), None)
+        if other_err_mm is None or other_tol_mm is None:
+            return None
+        other_guard_limit_mm = float(other_tol_mm) + float(policy.get("other_axis_tol_add_mm") or 0.0)
+        if float(other_err_mm) > float(other_guard_limit_mm):
+            return None
+    x_guard_limit_mm = None
+    if bool(x_state.get("required")):
+        x_tol_mm = _as_float(x_state.get("tol_mm"), None)
+        if x_tol_mm is None:
+            return None
+        x_guard_limit_mm = float(x_tol_mm) + float(policy.get("x_guard_tol_add_mm") or 0.0)
+    return {
+        **policy,
+        "axis": str(axis_name),
+        "cmd": str(cmd or "").strip().lower(),
+        "corrected_err_mm": float(corrected_err_mm),
+        "corrected_tol_mm": float(corrected_tol_mm),
+        "entry_limit_mm": float(entry_limit_mm),
+        "other_axis": str(other_axis),
+        "other_axis_guard_limit_mm": other_guard_limit_mm,
+        "x_guard_limit_mm": x_guard_limit_mm,
     }
 
 
@@ -3328,7 +3465,7 @@ def _gatecheck_next_action_text(cmd, speed_score=None, reason=None):
     return "continuing with adjustment acts"
 
 
-def _align_brick_lite_fail_fallback_action(world, step):
+def _align_brick_lite_fail_fallback_action(world, step, *, prefer_effective_sample=False):
     step_key_local = normalize_step_label(step)
     if step_key_local not in {
         "ALIGN_BRICK",
@@ -3346,49 +3483,75 @@ def _align_brick_lite_fail_fallback_action(world, step):
         return None
 
     measurement, _lite_meta = _lite_gate_measurement_for_step(world, step_key_local)
-    source = measurement if isinstance(measurement, dict) else (getattr(world, "brick", None) or {})
+    current_source = (getattr(world, "brick", None) or {})
+
+    def _best_candidate_for_source(source):
+        if not isinstance(source, dict) or not source:
+            return None
+        best_local = None
+        for metric, stats in success_gates.items():
+            metric_key = str(metric or "").strip()
+            if metric_key in ("dist", "distance"):
+                correction_type = "distance"
+            elif metric_key in ("xAxis_offset_abs", "xAxis_offset", "x_axis"):
+                correction_type = "x_axis"
+            elif metric_key in ("yAxis_offset_abs", "yAxis_offset", "y_axis"):
+                correction_type = "y_axis"
+            else:
+                continue
+            value = gate_utils.metric_value_from_measurement(source, metric_key)
+            if value is None:
+                continue
+            direction = metric_direction(metric_key, step_key_local, process_rules=process_rules)
+            if _gate_entry_matches(metric_key, value, stats, direction):
+                continue
+            distance = _gate_distance_to_success(metric_key, value, stats, direction)
+            try:
+                distance_val = float(distance if distance is not None else 0.0)
+            except (TypeError, ValueError):
+                distance_val = 0.0
+            try:
+                value_num = float(value)
+            except (TypeError, ValueError):
+                continue
+            target = stats.get("target") if isinstance(stats, dict) else None
+            try:
+                target_num = float(target) if target is not None else 0.0
+            except (TypeError, ValueError):
+                target_num = 0.0
+            candidate = {
+                "metric": metric_key,
+                "correction_type": correction_type,
+                "distance": max(0.0, distance_val),
+                "value": value_num,
+                "target": target_num,
+            }
+            if best_local is None or candidate["distance"] > float(best_local.get("distance", 0.0)):
+                best_local = candidate
+        return best_local
 
     best = None
-    for metric, stats in success_gates.items():
-        metric_key = str(metric or "").strip()
-        if metric_key not in ("dist", "xAxis_offset_abs"):
-            continue
-        value = gate_utils.metric_value_from_measurement(source, metric_key)
-        if value is None:
-            continue
-        direction = metric_direction(metric_key, step_key_local, process_rules=process_rules)
-        if _gate_entry_matches(metric_key, value, stats, direction):
-            continue
-        distance = _gate_distance_to_success(metric_key, value, stats, direction)
-        try:
-            distance_val = float(distance if distance is not None else 0.0)
-        except (TypeError, ValueError):
-            distance_val = 0.0
-        try:
-            value_num = float(value)
-        except (TypeError, ValueError):
-            continue
-        target = stats.get("target") if isinstance(stats, dict) else None
-        try:
-            target_num = float(target) if target is not None else 0.0
-        except (TypeError, ValueError):
-            target_num = 0.0
-        candidate = {
-            "metric": metric_key,
-            "distance": max(0.0, distance_val),
-            "value": value_num,
-            "target": target_num,
-        }
-        if best is None or candidate["distance"] > float(best.get("distance", 0.0)):
-            best = candidate
+    source_candidates = []
+    if bool(prefer_effective_sample):
+        source_candidates.append(current_source)
+        if isinstance(measurement, dict):
+            source_candidates.append(measurement)
+    else:
+        if isinstance(measurement, dict):
+            source_candidates.append(measurement)
+        source_candidates.append(current_source)
+    for source in source_candidates:
+        best = _best_candidate_for_source(source)
+        if isinstance(best, dict):
+            break
 
     if not isinstance(best, dict):
         return None
 
-    metric_key = str(best.get("metric") or "")
+    correction_type = str(best.get("correction_type") or "")
     value_num = float(best.get("value", 0.0))
     target_num = float(best.get("target", 0.0))
-    if metric_key == "dist":
+    if correction_type == "distance":
         cmd_local = "b" if value_num < target_num else "f"
         score_local = next_module.align_gap_correction_speed_score(
             "distance",
@@ -3396,6 +3559,14 @@ def _align_brick_lite_fail_fallback_action(world, step):
             cmd=cmd_local,
         )
         reason_local = "lite_fail_fallback_dist"
+    elif correction_type == "y_axis":
+        cmd_local = "u" if value_num < target_num else "d"
+        score_local = next_module.align_gap_correction_speed_score(
+            "y_axis",
+            abs(float(value_num) - float(target_num)),
+            cmd=cmd_local,
+        )
+        reason_local = "lite_fail_fallback_y_axis"
     else:
         cmd_local = "r" if value_num < target_num else "l"
         score_local = next_module.align_gap_correction_speed_score(
@@ -7241,6 +7412,19 @@ def _result_lite_gate_detail(world, step):
         step_key,
         measurement=measurement if isinstance(measurement, dict) else None,
     )
+    effective_rows = _success_gate_state_rows(world, step_key, measurement=None)
+    status = getattr(world, "_gatecheck_status", None)
+    show_effective_fail_detail = bool(
+        isinstance(status, dict)
+        and str(status.get("mode") or "").strip().lower() == "lite"
+        and not bool(status.get("truth_ok", False))
+        and _gate_rows_all_pass(rows)
+        and isinstance(effective_rows, list)
+        and bool(effective_rows)
+        and not _gate_rows_all_pass(effective_rows)
+    )
+    if show_effective_fail_detail:
+        rows = effective_rows
 
     if not rows:
         detail = _auto_diag_lite_gate_detail(world, step)
@@ -7280,9 +7464,20 @@ def _result_lite_gate_detail(world, step):
             f"{value_color}({value_text}){COLOR_RESET}{COLOR_WHITE}){COLOR_RESET}"
         )
 
-    plain = "lite gatecheck: " + "; ".join(row_plain_parts)
+    note_plain = ""
+    note_colored = ""
+    if show_effective_fail_detail:
+        note_plain = "effective sample FAIL; lite precheck PASS; "
+        note_colored = (
+            f"{COLOR_RED}effective sample FAIL{COLOR_RESET}"
+            f"{COLOR_WHITE}; {COLOR_RESET}"
+            f"{COLOR_GREEN}lite precheck PASS{COLOR_RESET}"
+            f"{COLOR_WHITE}; {COLOR_RESET}"
+        )
+    plain = "lite gatecheck: " + note_plain + "; ".join(row_plain_parts)
     colored_text = (
         f"{COLOR_BLUE_BRIGHT}lite gatecheck:{COLOR_RESET} "
+        + note_colored
         + f"{COLOR_WHITE}; {COLOR_RESET}".join(row_colored_parts)
     )
     return {
@@ -7414,6 +7609,12 @@ def _lite_measurement_rows_all_pass(world, step):
     if not rows:
         return False
     return all(str(row.get("status") or "").upper() == "PASS" for row in rows)
+
+
+def _gate_rows_all_pass(rows):
+    if not isinstance(rows, list) or not rows:
+        return False
+    return all(str((row or {}).get("status") or "").upper() == "PASS" for row in rows)
 
 
 def _gap_switch_lite_gate_reassurance(world, step, metric_name_local):
@@ -11318,6 +11519,11 @@ def run_alignment_segment(
         1,
         int(_as_int(align_policy_cfg.get("micro_adjust_focus_guard_reverse_max_acts"), 1)),
     )
+    moving_lock_policy = (
+        align_moving_lock_policy(step_rules)
+        if bool(step_supports_gap_micro_planner)
+        else {"enabled": False, "axes": ()}
+    )
     in_crosshairs_continuity_guard_enabled = bool(
         step_supports_gap_micro_planner
         and bool(align_policy_cfg.get("in_crosshairs_continuity_guard_enabled", False))
@@ -11492,6 +11698,197 @@ def run_alignment_segment(
         if y_axis_num is None:
             return None
         return float(y_axis_num) - float(y_axis_hold_offset_mm)
+
+    def _apply_align_motion_update(cmd_local, speed_local, action_meta_local):
+        segments_local = []
+        if isinstance(action_meta_local, dict) and isinstance(action_meta_local.get("segments"), list):
+            segments_local = [seg for seg in action_meta_local.get("segments") if isinstance(seg, dict)]
+        elif isinstance(action_meta_local, dict):
+            segments_local = [action_meta_local]
+        for seg_local in segments_local:
+            duration_ms_local = (
+                seg_local.get("duration_model_ms")
+                or seg_local.get("duration_ms")
+                or int(CONTROL_DT * 1000)
+            )
+            power_used_local = seg_local.get("power")
+            if power_used_local is None:
+                power_used_local = speed_local
+            evt_local = MotionEvent(
+                cmd_to_motion_type(cmd_local),
+                int(float(power_used_local) * 255),
+                int(duration_ms_local),
+                speed_score=seg_local.get("score_effective") or seg_local.get("score_model"),
+            )
+            world.update_from_motion(evt_local)
+
+    def _moving_lock_guard_status(local_gate_status_local, moving_lock_plan_local):
+        local_gate = local_gate_status_local if isinstance(local_gate_status_local, dict) else {}
+        if not bool(local_gate.get("visible")):
+            return "lost_visibility"
+        x_state_local = _align_metric_state(local_gate, "x_axis")
+        x_guard_limit_local = _as_float((moving_lock_plan_local or {}).get("x_guard_limit_mm"), None)
+        x_err_local = _as_float(x_state_local.get("err_mm"), None)
+        if (
+            bool((moving_lock_plan_local or {}).get("require_x_within_tol"))
+            and bool(x_state_local.get("required"))
+            and x_err_local is not None
+            and x_guard_limit_local is not None
+            and float(x_err_local) > float(x_guard_limit_local)
+        ):
+            return "x_left_guard"
+        other_axis_local = str((moving_lock_plan_local or {}).get("other_axis") or "").strip().lower()
+        other_state_local = _align_metric_state(local_gate, other_axis_local)
+        other_guard_limit_local = _as_float(
+            (moving_lock_plan_local or {}).get("other_axis_guard_limit_mm"),
+            None,
+        )
+        other_err_local = _as_float(other_state_local.get("err_mm"), None)
+        if (
+            bool(other_state_local.get("required"))
+            and other_err_local is not None
+            and other_guard_limit_local is not None
+            and float(other_err_local) > float(other_guard_limit_local)
+        ):
+            return f"{other_axis_local}_left_guard"
+        return None
+
+    def _run_near_target_moving_lock(
+        *,
+        moving_lock_plan_local,
+        cmd_local,
+        speed_local,
+        speed_score_local,
+        cmd_reason_local,
+        initial_action_meta,
+        initial_pre_frame_id,
+    ):
+        pulses_sent_local = 1
+        best_err_local = float(_as_float((moving_lock_plan_local or {}).get("corrected_err_mm"), 0.0) or 0.0)
+        no_improve_streak_local = 0
+        pulse_duration_ms_local = int((moving_lock_plan_local or {}).get("pulse_duration_ms") or 0)
+        max_pulses_local = max(1, int((moving_lock_plan_local or {}).get("max_pulses_per_burst") or 1))
+        min_improvement_mm_local = max(
+            0.0,
+            float(_as_float((moving_lock_plan_local or {}).get("min_improvement_mm"), 0.0) or 0.0),
+        )
+        max_non_improving_local = max(
+            1,
+            int((moving_lock_plan_local or {}).get("max_non_improving_fresh_frames") or 1),
+        )
+        axis_name_local = str((moving_lock_plan_local or {}).get("axis") or "").strip().lower()
+        phase_tag_local = "dist" if axis_name_local == "distance" else "y"
+        if not align_silent:
+            print(
+                format_headline(
+                    (
+                        f"[MOVING_LOCK] {step_key}: entering {phase_tag_local} moving-lock "
+                        f"with {str(cmd_local).upper()} {int(round(float(speed_score_local or 0)))}% "
+                        f"(pulse={int(pulse_duration_ms_local)}ms, max_pulses={int(max_pulses_local)})."
+                    ),
+                    COLOR_ORANGE_BRIGHT,
+                )
+            )
+        action_meta_local = initial_action_meta
+        pre_frame_id_local = int(initial_pre_frame_id or 0)
+        last_frame_local = None
+        local_gate_after_local = _align_local_gate_status_single_source(world, step)
+        exit_reason_local = "max_pulses_reached"
+
+        while True:
+            last_frame_local = post_act_analysis(
+                world,
+                vision,
+                step=step,
+                log=not align_silent,
+                include_pause=False,
+                action_meta=action_meta_local,
+            )
+            if observer:
+                observer("frame", world, vision, None, None, None)
+            post_frame_id_local = int(getattr(world, "_frame_id", 0) or 0)
+            local_gate_after_local = _align_local_gate_status_single_source(world, step)
+            guard_reason_local = _moving_lock_guard_status(local_gate_after_local, moving_lock_plan_local)
+            if guard_reason_local:
+                exit_reason_local = str(guard_reason_local)
+                break
+            if int(post_frame_id_local) <= int(pre_frame_id_local):
+                exit_reason_local = "stale_frame"
+                break
+            corrected_state_local = _align_metric_state(local_gate_after_local, axis_name_local)
+            corrected_err_local = _as_float(corrected_state_local.get("err_mm"), None)
+            corrected_tol_local = _as_float(corrected_state_local.get("tol_mm"), None)
+            if corrected_err_local is None or corrected_tol_local is None:
+                exit_reason_local = f"{axis_name_local}_unknown"
+                break
+            if float(corrected_err_local) <= float(corrected_tol_local):
+                best_err_local = min(float(best_err_local), float(corrected_err_local))
+                exit_reason_local = "axis_in_gate"
+                break
+            if float(best_err_local) - float(corrected_err_local) >= float(min_improvement_mm_local):
+                best_err_local = float(corrected_err_local)
+                no_improve_streak_local = 0
+            else:
+                no_improve_streak_local = int(no_improve_streak_local) + 1
+            if int(no_improve_streak_local) >= int(max_non_improving_local):
+                exit_reason_local = "stalled_progress"
+                break
+            if int(pulses_sent_local) >= int(max_pulses_local):
+                exit_reason_local = "max_pulses_reached"
+                break
+            if observer:
+                observer(
+                    "analysis",
+                    world,
+                    vision,
+                    cmd_local,
+                    speed_local,
+                    f"{cmd_reason_local}_moving_lock",
+                )
+            action_meta_local = send_robot_command(
+                robot,
+                world,
+                step,
+                cmd_local,
+                speed_local,
+                speed_score=speed_score_local,
+                auto_mode=True,
+                duration_override_ms=pulse_duration_ms_local,
+                ease_in_out_enabled=False,
+            )
+            pulses_sent_local = int(pulses_sent_local) + 1
+            _apply_align_motion_update(cmd_local, speed_local, action_meta_local)
+            if observer:
+                observer(
+                    "action",
+                    world,
+                    vision,
+                    cmd_local,
+                    speed_local,
+                    f"{cmd_reason_local}_moving_lock",
+                )
+            pre_frame_id_local = int(getattr(world, "_frame_id", 0) or 0)
+
+        if robot:
+            robot.stop()
+        if not align_silent:
+            print(
+                format_headline(
+                    (
+                        f"[MOVING_LOCK] {step_key}: exit {phase_tag_local} moving-lock "
+                        f"after {int(pulses_sent_local)} pulse(s) "
+                        f"(reason={str(exit_reason_local)}, best_err={float(best_err_local):.2f}mm)."
+                    ),
+                    COLOR_WHITE,
+                )
+            )
+        return {
+            "exit_reason": str(exit_reason_local),
+            "pulses_sent": int(pulses_sent_local),
+            "best_err_mm": float(best_err_local),
+            "last_frame": last_frame_local,
+            "local_gate_after": local_gate_after_local,
+        }
 
     def _observe_descend_crosshair_confident(*, confirm_frames=1):
         # Observe several fresh frames after each pulse and use majority truth.
@@ -13008,6 +13405,7 @@ def run_alignment_segment(
     last_no_action_gatecheck_reason = None
     last_no_action_gatecheck_log_loop = 0
     no_action_lite_failed_reason = None
+    no_action_gatecheck_fail_streak = 0
     progress_mast_start_dist = None
     progress_mast_pending_triggers = [float(v) for v in progress_mast_trigger_fractions]
     near_dist_vis_attempts = 0
@@ -15373,6 +15771,7 @@ def run_alignment_segment(
             no_action_reason = str(cmd_reason or "").strip().lower() or "none"
             if str(no_action_lite_failed_reason or "") != str(no_action_reason):
                 no_action_lite_failed_reason = None
+                no_action_gatecheck_fail_streak = 0
             force_gatecheck_hold = True
             if (
                 bool(progress_mast_active)
@@ -15425,6 +15824,7 @@ def run_alignment_segment(
                 gate_truth_ok = bool((gate_status or {}).get("truth_ok", False)) if isinstance(gate_status, dict) else False
                 if gate_mode == "lite" and not gate_truth_ok:
                     no_action_lite_failed_reason = str(no_action_reason)
+                    no_action_gatecheck_fail_streak = int(no_action_gatecheck_fail_streak) + 1
                     if not align_silent and no_action_reason != "all_gaps_within_gate":
                         _log_gatecheck_next_action(
                             step,
@@ -15436,13 +15836,18 @@ def run_alignment_segment(
                         )
                 time.sleep(CONTROL_DT)
                 continue
-            lite_fallback = _align_brick_lite_fail_fallback_action(world, step)
+            lite_fallback = _align_brick_lite_fail_fallback_action(
+                world,
+                step,
+                prefer_effective_sample=True,
+            )
             if isinstance(lite_fallback, dict):
                 cmd = lite_fallback.get("cmd")
                 speed = float(lite_fallback.get("speed") or 0.0)
                 speed_score = lite_fallback.get("score")
                 cmd_reason = str(lite_fallback.get("reason") or "align")
                 no_action_lite_failed_reason = None
+                no_action_gatecheck_fail_streak = 0
                 if not align_silent:
                     _log_gatecheck_next_action(
                         step,
@@ -15452,8 +15857,26 @@ def run_alignment_segment(
                         reason="single lite gatecheck failed; applying fallback adjustment act",
                         log=True,
                     )
+            else:
+                no_action_gatecheck_fail_streak = int(no_action_gatecheck_fail_streak) + 1
+                if int(no_action_gatecheck_fail_streak) >= int(NO_ACTION_GATECHECK_STUCK_LIMIT):
+                    if robot:
+                        robot.stop()
+                    if not align_silent:
+                        _log_gatecheck_failure(world, step, "align", log=True)
+                        print(
+                            format_headline(
+                                (
+                                    f"[FAIL] {step_key} no-action gatecheck stuck "
+                                    f"(reason={no_action_reason}) after {int(no_action_gatecheck_fail_streak)} failed holds/fallbacks."
+                                ),
+                                COLOR_RED,
+                            )
+                        )
+                    return False, f"no_action_gatecheck_stuck ({no_action_reason})"
         else:
             no_action_lite_failed_reason = None
+            no_action_gatecheck_fail_streak = 0
         cmd, speed, speed_score, cmd_reason = _apply_turn_only_demo_policy(
             cmd,
             speed,
@@ -15528,6 +15951,16 @@ def run_alignment_segment(
                 cmd,
                 fallback=prev_log_correction_type,
             )
+            moving_lock_plan = None
+            if bool(use_micro_align_gap_planner) and not bool(is_search_action):
+                moving_lock_plan = plan_align_moving_lock(
+                    local_gate_before_action,
+                    step_rules=step_rules,
+                    cmd=cmd,
+                    correction_type=planned_corr_type or correction_type_for_stats,
+                )
+                if isinstance(moving_lock_plan, dict):
+                    duration_override_ms = int(moving_lock_plan.get("pulse_duration_ms") or duration_override_ms or 0)
             delta_class_for_stats = _classify_align_delta_class(
                 correction_type=correction_type_for_stats,
                 local_gate_before_action=local_gate_before_action,
@@ -15818,24 +16251,49 @@ def run_alignment_segment(
                 robot.stop()
             last_action_frame = None
             if not bool(is_search_action):
-                last_action_frame = post_act_analysis(
-                    world,
-                    vision,
-                    step=step,
-                    log=not align_silent,
-                    include_pause=True,
-                    action_meta=action_meta,
-                )
-                success_hit = run_full_gatecheck_after_act(
-                    world,
-                    vision,
-                    step,
-                    success_tracker,
-                    phase="align",
-                    log=not align_silent,
-                    observer=observer,
-                    required_new_frames=1,
-                )
+                if isinstance(moving_lock_plan, dict):
+                    moving_lock_result = _run_near_target_moving_lock(
+                        moving_lock_plan_local=moving_lock_plan,
+                        cmd_local=cmd,
+                        speed_local=speed,
+                        speed_score_local=score_effective,
+                        cmd_reason_local=cmd_reason,
+                        initial_action_meta=action_meta,
+                        initial_pre_frame_id=pre_frame_id,
+                    )
+                    last_action_frame = moving_lock_result.get("last_frame")
+                    local_gate_after_moving_lock = moving_lock_result.get("local_gate_after")
+                    success_hit = False
+                    if isinstance(local_gate_after_moving_lock, dict) and bool(local_gate_after_moving_lock.get("ok")):
+                        success_hit = run_full_gatecheck_after_act(
+                            world,
+                            vision,
+                            step,
+                            success_tracker,
+                            phase="align",
+                            log=not align_silent,
+                            observer=observer,
+                            required_new_frames=1,
+                        )
+                else:
+                    last_action_frame = post_act_analysis(
+                        world,
+                        vision,
+                        step=step,
+                        log=not align_silent,
+                        include_pause=True,
+                        action_meta=action_meta,
+                    )
+                    success_hit = run_full_gatecheck_after_act(
+                        world,
+                        vision,
+                        step,
+                        success_tracker,
+                        phase="align",
+                        log=not align_silent,
+                        observer=observer,
+                        required_new_frames=1,
+                    )
             else:
                 if not skip_settle_pause:
                     post_act_settle_pause(world, vision, action_meta=action_meta)

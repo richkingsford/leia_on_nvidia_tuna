@@ -50,7 +50,12 @@ class TestWorldModelRobotHotkeySource(unittest.TestCase):
         )
 
     def test_one_percent_discovery_lines_report_shared_floor_values(self):
-        lines = telemetry_robot.one_percent_discovery_lines()
+        original_turn_breakaway = telemetry_robot.TURN_BREAKAWAY_TEST_FILE
+        try:
+            telemetry_robot.TURN_BREAKAWAY_TEST_FILE = Path(__file__).resolve().parents[1] / "_missing_turn_breakaway_test.json"
+            lines = telemetry_robot.one_percent_discovery_lines()
+        finally:
+            telemetry_robot.TURN_BREAKAWAY_TEST_FILE = original_turn_breakaway
 
         self.assertEqual(len(lines), 4)
         self.assertIn("Forward (R): pwm=103, pwr=0.306, t=255ms", lines[0])

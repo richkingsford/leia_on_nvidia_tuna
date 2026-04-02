@@ -1,142 +1,363 @@
 {
   "ok": true,
-  "seconds": 0.001277923583984375,
+  "seconds": 0.002399444580078125,
   "settings": {
     "hotkeys": [
-      "r",
-      "f",
       "q"
     ],
     "start_score": 1,
-    "max_score": 1,
-    "repeats_per_score": 1,
+    "max_score": 8,
+    "repeats_per_score": 5,
     "duration_ms": 250,
     "movement_threshold_mm": 0.1,
     "required_success_ratio": 0.8,
+    "required_success_count": 4,
     "pause_between_pulses_ms": 0,
     "use_manual_assist": false,
+    "score_search_strategy": "adaptive_bracket",
+    "recenter_before_each_trial": false,
     "recenter_tolerance_dist_mm": 5.0,
     "recenter_tolerance_x_axis_mm": 5.0,
-    "recenter_timeout_s": 20.0
+    "recenter_timeout_s": 5.0,
+    "recovery_max_inverse_acts": 3,
+    "high_trial_duration_scale": 0.3333333333333333,
+    "max_recenter_skips_per_score": 2
   },
   "baseline_pose": {
     "dist_mm": 180.0,
     "x_axis_mm": -12.0
   },
-  "recenter_checkpoints": [
+  "phase_baselines": {
+    "q": {
+      "dist_mm": 180.0,
+      "x_axis_mm": -12.0
+    }
+  },
+  "sign_validation": [
     {
-      "ok": true,
-      "pose": {
-        "dist_mm": 180.0,
-        "x_axis_mm": -12.0
-      },
-      "next_hotkey": "f"
-    },
-    {
-      "ok": true,
-      "pose": {
-        "dist_mm": 180.0,
-        "x_axis_mm": -12.0
-      },
-      "next_hotkey": "q"
+      "hotkey": "q",
+      "score": 8,
+      "duration_ms": 83,
+      "pulse_count": 2,
+      "checkpoints": [
+        {
+          "ok": true,
+          "skipped": false,
+          "pose": {
+            "dist_mm": 180.0,
+            "x_axis_mm": -12.0
+          },
+          "dist_error_mm": 0.0,
+          "x_axis_error_mm": 0.0,
+          "seconds": 1.5020370483398438e-05
+        },
+        {
+          "ok": true,
+          "skipped": false,
+          "pose": {
+            "dist_mm": 180.0,
+            "x_axis_mm": -12.0
+          },
+          "dist_error_mm": 0.0,
+          "x_axis_error_mm": 0.0,
+          "seconds": 5.7220458984375e-06
+        }
+      ],
+      "rows": [
+        {
+          "ok": true,
+          "hotkey": "q",
+          "score": 8,
+          "abs_delta_mm": 0.4,
+          "moved": true,
+          "direction_ok": true,
+          "passes": true,
+          "metric_label": "x_axis",
+          "expected_effect": "increase",
+          "raw_delta_mm": 0.4
+        },
+        {
+          "ok": true,
+          "hotkey": "q",
+          "score": 8,
+          "abs_delta_mm": 0.4,
+          "moved": true,
+          "direction_ok": true,
+          "passes": true,
+          "metric_label": "x_axis",
+          "expected_effect": "increase",
+          "raw_delta_mm": 0.4
+        }
+      ],
+      "ok": false,
+      "reason": "no_directional_signal"
     }
   ],
+  "recenter_checkpoints": [],
+  "score_search_paths": {
+    "q": [
+      1,
+      8,
+      4,
+      6,
+      7
+    ]
+  },
   "rows": [
     {
       "ok": true,
-      "hotkey": "r",
+      "hotkey": "q",
       "score": 1,
-      "abs_delta_mm": 0.2,
-      "moved": true,
-      "direction_ok": true,
-      "passes": true,
-      "metric_label": "dist",
-      "expected_effect": "decrease",
-      "raw_delta_mm": -0.2,
-      "trial_index": 1
-    },
-    {
-      "ok": true,
-      "hotkey": "f",
-      "score": 1,
-      "abs_delta_mm": 0.2,
-      "moved": true,
-      "direction_ok": true,
-      "passes": true,
-      "metric_label": "dist",
+      "abs_delta_mm": 0.05,
+      "moved": false,
+      "direction_ok": false,
+      "passes": false,
+      "metric_label": "x_axis",
       "expected_effect": "increase",
-      "raw_delta_mm": 0.2,
+      "raw_delta_mm": 0.05,
       "trial_index": 1
     },
     {
       "ok": true,
       "hotkey": "q",
       "score": 1,
-      "abs_delta_mm": 0.2,
+      "abs_delta_mm": 0.05,
+      "moved": false,
+      "direction_ok": false,
+      "passes": false,
+      "metric_label": "x_axis",
+      "expected_effect": "increase",
+      "raw_delta_mm": 0.05,
+      "trial_index": 2
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "score": 8,
+      "abs_delta_mm": 0.4,
       "moved": true,
       "direction_ok": true,
       "passes": true,
-      "metric_label": "dist",
+      "metric_label": "x_axis",
       "expected_effect": "increase",
-      "raw_delta_mm": 0.2,
+      "raw_delta_mm": 0.4,
       "trial_index": 1
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "score": 8,
+      "abs_delta_mm": 0.4,
+      "moved": true,
+      "direction_ok": true,
+      "passes": true,
+      "metric_label": "x_axis",
+      "expected_effect": "increase",
+      "raw_delta_mm": 0.4,
+      "trial_index": 2
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "score": 8,
+      "abs_delta_mm": 0.4,
+      "moved": true,
+      "direction_ok": true,
+      "passes": true,
+      "metric_label": "x_axis",
+      "expected_effect": "increase",
+      "raw_delta_mm": 0.4,
+      "trial_index": 3
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "score": 8,
+      "abs_delta_mm": 0.4,
+      "moved": true,
+      "direction_ok": true,
+      "passes": true,
+      "metric_label": "x_axis",
+      "expected_effect": "increase",
+      "raw_delta_mm": 0.4,
+      "trial_index": 4
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "score": 4,
+      "abs_delta_mm": 0.05,
+      "moved": false,
+      "direction_ok": false,
+      "passes": false,
+      "metric_label": "x_axis",
+      "expected_effect": "increase",
+      "raw_delta_mm": 0.05,
+      "trial_index": 1
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "score": 4,
+      "abs_delta_mm": 0.05,
+      "moved": false,
+      "direction_ok": false,
+      "passes": false,
+      "metric_label": "x_axis",
+      "expected_effect": "increase",
+      "raw_delta_mm": 0.05,
+      "trial_index": 2
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "score": 6,
+      "abs_delta_mm": 0.05,
+      "moved": false,
+      "direction_ok": false,
+      "passes": false,
+      "metric_label": "x_axis",
+      "expected_effect": "increase",
+      "raw_delta_mm": 0.05,
+      "trial_index": 1
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "score": 6,
+      "abs_delta_mm": 0.05,
+      "moved": false,
+      "direction_ok": false,
+      "passes": false,
+      "metric_label": "x_axis",
+      "expected_effect": "increase",
+      "raw_delta_mm": 0.05,
+      "trial_index": 2
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "score": 7,
+      "abs_delta_mm": 0.4,
+      "moved": true,
+      "direction_ok": true,
+      "passes": true,
+      "metric_label": "x_axis",
+      "expected_effect": "increase",
+      "raw_delta_mm": 0.4,
+      "trial_index": 1
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "score": 7,
+      "abs_delta_mm": 0.4,
+      "moved": true,
+      "direction_ok": true,
+      "passes": true,
+      "metric_label": "x_axis",
+      "expected_effect": "increase",
+      "raw_delta_mm": 0.4,
+      "trial_index": 2
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "score": 7,
+      "abs_delta_mm": 0.4,
+      "moved": true,
+      "direction_ok": true,
+      "passes": true,
+      "metric_label": "x_axis",
+      "expected_effect": "increase",
+      "raw_delta_mm": 0.4,
+      "trial_index": 3
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "score": 7,
+      "abs_delta_mm": 0.4,
+      "moved": true,
+      "direction_ok": true,
+      "passes": true,
+      "metric_label": "x_axis",
+      "expected_effect": "increase",
+      "raw_delta_mm": 0.4,
+      "trial_index": 4
     }
   ],
   "summary": {
     "required_success_ratio": 0.8,
-    "required_success_count": 1,
+    "required_success_count": 4,
     "by_hotkey": {
-      "r": {
-        "recommended_score": 1,
-        "scores": [
-          {
-            "score": 1,
-            "trial_count": 1,
-            "metric_label": "dist",
-            "expected_effect": "decrease",
-            "moved_count": 1,
-            "direction_ok_count": 1,
-            "success_count": 1,
-            "required_success_count": 1,
-            "passes": true,
-            "median_abs_delta_mm": 0.2,
-            "max_abs_delta_mm": 0.2
-          }
-        ]
-      },
-      "f": {
-        "recommended_score": 1,
-        "scores": [
-          {
-            "score": 1,
-            "trial_count": 1,
-            "metric_label": "dist",
-            "expected_effect": "increase",
-            "moved_count": 1,
-            "direction_ok_count": 1,
-            "success_count": 1,
-            "required_success_count": 1,
-            "passes": true,
-            "median_abs_delta_mm": 0.2,
-            "max_abs_delta_mm": 0.2
-          }
-        ]
-      },
       "q": {
-        "recommended_score": 1,
+        "recommended_score": 7,
         "scores": [
           {
             "score": 1,
-            "trial_count": 1,
-            "metric_label": "dist",
+            "trial_count": 2,
+            "metric_label": "x_axis",
             "expected_effect": "increase",
-            "moved_count": 1,
-            "direction_ok_count": 1,
-            "success_count": 1,
-            "required_success_count": 1,
+            "moved_count": 0,
+            "direction_ok_count": 0,
+            "success_count": 0,
+            "required_success_count": 4,
+            "passes": false,
+            "median_abs_delta_mm": 0.05,
+            "max_abs_delta_mm": 0.05
+          },
+          {
+            "score": 4,
+            "trial_count": 2,
+            "metric_label": "x_axis",
+            "expected_effect": "increase",
+            "moved_count": 0,
+            "direction_ok_count": 0,
+            "success_count": 0,
+            "required_success_count": 4,
+            "passes": false,
+            "median_abs_delta_mm": 0.05,
+            "max_abs_delta_mm": 0.05
+          },
+          {
+            "score": 6,
+            "trial_count": 2,
+            "metric_label": "x_axis",
+            "expected_effect": "increase",
+            "moved_count": 0,
+            "direction_ok_count": 0,
+            "success_count": 0,
+            "required_success_count": 4,
+            "passes": false,
+            "median_abs_delta_mm": 0.05,
+            "max_abs_delta_mm": 0.05
+          },
+          {
+            "score": 7,
+            "trial_count": 4,
+            "metric_label": "x_axis",
+            "expected_effect": "increase",
+            "moved_count": 4,
+            "direction_ok_count": 4,
+            "success_count": 4,
+            "required_success_count": 4,
             "passes": true,
-            "median_abs_delta_mm": 0.2,
-            "max_abs_delta_mm": 0.2
+            "median_abs_delta_mm": 0.4,
+            "max_abs_delta_mm": 0.4
+          },
+          {
+            "score": 8,
+            "trial_count": 4,
+            "metric_label": "x_axis",
+            "expected_effect": "increase",
+            "moved_count": 4,
+            "direction_ok_count": 4,
+            "success_count": 4,
+            "required_success_count": 4,
+            "passes": true,
+            "median_abs_delta_mm": 0.4,
+            "max_abs_delta_mm": 0.4
           }
         ]
       }

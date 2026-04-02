@@ -70,7 +70,9 @@ MAST_INTENSITY_KEY_MAST_UP = "mast_intensity_posts_mast_up"
 MAST_INTENSITY_KEY_MAST_DOWN = "mast_intensity_posts_mast_down"
 
 ROBOT_MODEL_FILE = Path(__file__).resolve().parent / "world_model_robot.json"
-BREAKAWAY_TEST_FILE = Path(__file__).resolve().parent / "world_model_drive_breakaway_test.json"
+DRIVE_BREAKAWAY_TEST_FILE = Path(__file__).resolve().parent / "world_model_drive_breakaway_test.json"
+TURN_BREAKAWAY_TEST_FILE = Path(__file__).resolve().parent / "world_model_turn_breakaway_test.json"
+BREAKAWAY_TEST_FILE = DRIVE_BREAKAWAY_TEST_FILE
 _BREAKAWAY_TEST_CACHE = {
     "path": None,
     "mtime_ns": None,
@@ -87,10 +89,10 @@ DEFAULT_SPEED_MODEL = {
         "f": {"cmd": "b", "score": 1},
         "t": {"cmd": "f", "score": 100},
         "g": {"cmd": "b", "score": 100},
-        "q": {"cmd": "l", "score": 1},
+        "q": {"cmd": "l", "score": 1, "pwm": 133, "power": 0.4429223744292237, "duration_ms": 130},
         "a": {"cmd": "l", "score": 25},
         "z": {"cmd": "l", "score": 100},
-        "e": {"cmd": "r", "score": 1},
+        "e": {"cmd": "r", "score": 1, "pwm": 122, "power": 0.3926940639269406, "duration_ms": 130},
         "d": {"cmd": "r", "score": 25},
         "c": {"cmd": "r", "score": 100},
         "o": {"cmd": "u", "score": 1},
@@ -104,17 +106,17 @@ DEFAULT_SPEED_MODEL = {
         "100": {"power": 1.0, "pwm": 255},
     },
     SPEED_MAP_KEY_TURN: {
-        "1": {"power": 0.064, "pwm": 50},
+        "1": {"power": 0.3926940639269406, "pwm": 122},
         "100": {"power": 1.0, "pwm": 255},
     },
     # Directional turn maps (preferred). Kept separate because L/R motors can
     # respond differently at identical requested scores.
     SPEED_MAP_KEY_TURN_LEFT: {
-        "1": {"power": 0.064, "pwm": 50},
+        "1": {"power": 0.4429223744292237, "pwm": 133},
         "100": {"power": 1.0, "pwm": 255},
     },
     SPEED_MAP_KEY_TURN_RIGHT: {
-        "1": {"power": 0.064, "pwm": 50},
+        "1": {"power": 0.3926940639269406, "pwm": 122},
         "100": {"power": 1.0, "pwm": 255},
     },
     # Optional duration override by score (seconds).
@@ -1207,13 +1209,27 @@ def _duration_ms_for_score(cmd, score):
 
 
 def speed_power_pwm_for_cmd(cmd, score):
-    score = normalize_speed_score(score)
-    hotkey_override = _hotkey_speed_override_for_cmd_score(cmd, score)
+    requested_score = normalize_speed_score(score)
+    cmd_key = str(cmd or "").strip().lower()
+    raw_turn_profile = (
+        breakaway_recommended_turn_profile_for_cmd(cmd_key)
+        if requested_score == SPEED_SCORE_MIN and cmd_key in ("l", "r")
+        else None
+    )
+    if isinstance(raw_turn_profile, dict):
+        pwm = int(raw_turn_profile.get("pwm") or 0)
+        if cmd_key in ("l", "r") and pwm > 0:
+            pwm = max(turn_pwm_floor(), pwm)
+        power = float(_pwm_to_power(pwm) or 0.0)
+        duration_ms = max(1, int(raw_turn_profile.get("duration_ms") or ACT_DURATION_MS))
+        return float(power), int(pwm), int(requested_score), int(duration_ms)
+    effective_score = effective_speed_score_for_cmd(cmd_key, requested_score)
+    hotkey_override = _hotkey_speed_override_for_cmd_score(cmd_key, effective_score)
     if isinstance(hotkey_override, tuple) and len(hotkey_override) == 3:
         power, pwm, duration_ms = hotkey_override
-        return float(power), int(pwm), int(score), int(duration_ms)
+        return float(power), int(pwm), int(requested_score), int(duration_ms)
     score_map = score_power_pwm_for_cmd(cmd)
-    exact_entry = score_map.get(score) if isinstance(score_map, dict) else None
+    exact_entry = score_map.get(effective_score) if isinstance(score_map, dict) else None
     pwm = None
     if isinstance(exact_entry, dict):
         try:
@@ -1223,31 +1239,40 @@ def speed_power_pwm_for_cmd(cmd, score):
     if pwm is None:
         low_pwm, high_pwm = _speed_pwm_endpoints(cmd)
         if low_pwm is None or high_pwm is None:
-            return 0.0, 0, score, int(ACT_DURATION_MS)
-        pwm = interp_pwm_for_score(score, low_pwm, high_pwm)
+            return 0.0, 0, requested_score, int(ACT_DURATION_MS)
+        pwm = interp_pwm_for_score(effective_score, low_pwm, high_pwm)
         if pwm is None:
-            return 0.0, 0, score, int(ACT_DURATION_MS)
+            return 0.0, 0, requested_score, int(ACT_DURATION_MS)
     if cmd in ("l", "r") and pwm > 0:
         pwm = max(turn_pwm_floor(), pwm)
     if cmd in ("f", "b", "l", "r") and pwm > 0:
         pwm = max(int(baseline_pwm_floor_for_cmd(cmd)), int(pwm))
     power = _pwm_to_power(pwm) or 0.0
-    duration_ms = _duration_ms_for_score(cmd, score)
-    return power, pwm, score, duration_ms
+    duration_ms = _duration_ms_for_score(cmd, effective_score)
+    return power, pwm, requested_score, duration_ms
+
+
+def _breakaway_payload_spec_for_cmd(cmd):
+    cmd_key = str(cmd or "").strip().lower()
+    mapping = {
+        "f": {"hotkey": "r", "path": DRIVE_BREAKAWAY_TEST_FILE},
+        "b": {"hotkey": "f", "path": DRIVE_BREAKAWAY_TEST_FILE},
+        "l": {"hotkey": "q", "path": TURN_BREAKAWAY_TEST_FILE},
+        "r": {"hotkey": "e", "path": TURN_BREAKAWAY_TEST_FILE},
+    }
+    spec = mapping.get(cmd_key)
+    return dict(spec) if isinstance(spec, dict) else None
 
 
 def _breakaway_hotkey_for_cmd(cmd):
-    cmd_key = str(cmd or "").strip().lower()
-    return {
-        "f": "r",
-        "b": "f",
-        "l": "q",
-        "r": "e",
-    }.get(cmd_key)
+    spec = _breakaway_payload_spec_for_cmd(cmd)
+    if not isinstance(spec, dict):
+        return None
+    return str(spec.get("hotkey") or "")
 
 
 def _load_breakaway_test_payload(path: Path | None = None):
-    file_path = Path(path) if path is not None else BREAKAWAY_TEST_FILE
+    file_path = Path(path) if path is not None else DRIVE_BREAKAWAY_TEST_FILE
     try:
         stat = file_path.stat()
     except OSError:
@@ -1269,15 +1294,121 @@ def _load_breakaway_test_payload(path: Path | None = None):
     return payload if isinstance(payload, dict) else None
 
 
-def breakaway_score_summary_for_cmd(cmd, *, score=SPEED_SCORE_MIN):
-    hotkey = _breakaway_hotkey_for_cmd(cmd)
-    if not hotkey:
+def _breakaway_hotkey_summary_for_cmd(cmd):
+    spec = _breakaway_payload_spec_for_cmd(cmd)
+    if not isinstance(spec, dict):
         return None
-    payload = _load_breakaway_test_payload()
+    payload = _load_breakaway_test_payload(spec.get("path"))
     if not isinstance(payload, dict):
         return None
     by_hotkey = ((payload.get("summary") or {}).get("by_hotkey") or {})
+    hotkey = str(spec.get("hotkey") or "")
     hotkey_summary = by_hotkey.get(hotkey)
+    return dict(hotkey_summary) if isinstance(hotkey_summary, dict) else None
+
+
+def breakaway_recommended_score_for_cmd(cmd):
+    hotkey_summary = _breakaway_hotkey_summary_for_cmd(cmd)
+    if not isinstance(hotkey_summary, dict):
+        return None
+    raw_recommended_score = hotkey_summary.get("recommended_score")
+    if raw_recommended_score in (None, ""):
+        return None
+    try:
+        return normalize_speed_score(raw_recommended_score)
+    except Exception:
+        return None
+
+
+def breakaway_recommended_turn_profile_for_cmd(cmd):
+    cmd_key = str(cmd or "").strip().lower()
+    if cmd_key not in ("l", "r"):
+        return None
+    hotkey_summary = _breakaway_hotkey_summary_for_cmd(cmd_key)
+    if not isinstance(hotkey_summary, dict):
+        return None
+    recommended_score = breakaway_recommended_score_for_cmd(cmd_key)
+    ceiling_candidate = hotkey_summary.get("ceiling_candidate")
+    profile_source = hotkey_summary
+    if recommended_score is None and isinstance(ceiling_candidate, dict):
+        try:
+            candidate_pwm = int(round(float(ceiling_candidate.get("pwm"))))
+        except (TypeError, ValueError):
+            candidate_pwm = 0
+        if candidate_pwm > 0:
+            profile_source = ceiling_candidate
+    try:
+        pwm_raw = profile_source.get("pwm")
+        if pwm_raw in (None, ""):
+            pwm_raw = hotkey_summary.get("recommended_pwm")
+        pwm = int(round(float(pwm_raw)))
+    except (TypeError, ValueError):
+        pwm = 0
+    if pwm <= 0:
+        return None
+    try:
+        duration_raw = profile_source.get("duration_ms")
+        if duration_raw in (None, ""):
+            duration_raw = hotkey_summary.get("recommended_duration_ms") or 0
+        duration_ms = int(round(float(duration_raw)))
+    except (TypeError, ValueError):
+        duration_ms = 0
+    if duration_ms <= 0:
+        duration_ms = int(_duration_ms_for_score(cmd_key, SPEED_SCORE_MIN))
+    try:
+        power_raw = profile_source.get("power")
+        if power_raw in (None, ""):
+            power_raw = hotkey_summary.get("recommended_power")
+        power = float(power_raw)
+    except (TypeError, ValueError):
+        power = float(_pwm_to_power(pwm) or 0.0)
+    movement_count = None
+    valid_trial_count = None
+    count_source = profile_source if isinstance(profile_source, dict) else hotkey_summary
+    if isinstance(count_source, dict):
+        try:
+            movement_count = int(count_source.get("movement_count"))
+        except (TypeError, ValueError):
+            movement_count = None
+        try:
+            valid_trial_count = int(count_source.get("valid_trial_count"))
+        except (TypeError, ValueError):
+            valid_trial_count = None
+    if (movement_count is None or valid_trial_count is None) and isinstance(ceiling_candidate, dict):
+        try:
+            if movement_count is None:
+                movement_count = int(ceiling_candidate.get("movement_count"))
+        except (TypeError, ValueError):
+            movement_count = None
+        try:
+            if valid_trial_count is None:
+                valid_trial_count = int(ceiling_candidate.get("valid_trial_count"))
+        except (TypeError, ValueError):
+            valid_trial_count = None
+    return {
+        "pwm": int(pwm),
+        "power": float(power),
+        "duration_ms": max(1, int(duration_ms)),
+        "movement_count": movement_count,
+        "valid_trial_count": valid_trial_count,
+    }
+
+
+def effective_speed_score_for_cmd(cmd, score):
+    requested_score = normalize_speed_score(score)
+    cmd_key = str(cmd or "").strip().lower()
+    if requested_score != SPEED_SCORE_MIN:
+        return int(requested_score)
+    if cmd_key not in ("l", "r"):
+        return int(requested_score)
+    recommended_score = breakaway_recommended_score_for_cmd(cmd_key)
+    if recommended_score is None:
+        return int(requested_score)
+    return int(recommended_score)
+
+
+def breakaway_score_summary_for_cmd(cmd, *, score=SPEED_SCORE_MIN):
+    hotkey_summary = _breakaway_hotkey_summary_for_cmd(cmd)
     if not isinstance(hotkey_summary, dict):
         return None
     scores = hotkey_summary.get("scores") or []
@@ -1316,7 +1447,22 @@ def one_percent_discovery_note(cmd, score):
         return None
     if cmd_key in ("u", "d"):
         return "shared 1% floor"
-    summary = breakaway_score_summary_for_cmd(cmd_key, score=score_key)
+    raw_turn_profile = breakaway_recommended_turn_profile_for_cmd(cmd_key) if cmd_key in ("l", "r") else None
+    if isinstance(raw_turn_profile, dict):
+        ratio_text = None
+        try:
+            movement_count = int(raw_turn_profile.get("movement_count"))
+            trial_count = int(raw_turn_profile.get("valid_trial_count"))
+            if movement_count > 0 and trial_count > 0:
+                ratio_text = f"{movement_count}/{trial_count}"
+        except (TypeError, ValueError):
+            ratio_text = None
+        note = f"turn 1%=pwm {int(raw_turn_profile['pwm'])} @ {int(raw_turn_profile['duration_ms'])}ms"
+        if ratio_text:
+            note += f"; breakaway {ratio_text}"
+        return note
+    recommended_score = breakaway_recommended_score_for_cmd(cmd_key) if cmd_key in ("l", "r") else None
+    summary = breakaway_score_summary_for_cmd(cmd_key, score=recommended_score or score_key)
     if not isinstance(summary, dict):
         return "shared 1% floor"
     try:
@@ -1325,6 +1471,10 @@ def one_percent_discovery_note(cmd, score):
     except (TypeError, ValueError):
         success_count = 0
         trial_count = 0
+    if cmd_key in ("l", "r") and recommended_score is not None:
+        if success_count > 0 and trial_count > 0:
+            return f"turn 1%=score {int(recommended_score)}; breakaway {success_count}/{trial_count}"
+        return f"turn 1%=score {int(recommended_score)}"
     if success_count > 0 and trial_count > 0:
         return f"shared 1% floor; breakaway {success_count}/{trial_count}"
     return "shared 1% floor"
@@ -1339,17 +1489,34 @@ def one_percent_discovery_lines():
         ("r", "Right", "E"),
     ):
         power, pwm, _, duration_ms = speed_power_pwm_for_cmd(cmd, SPEED_SCORE_MIN)
-        summary = breakaway_score_summary_for_cmd(cmd, score=SPEED_SCORE_MIN)
         ratio_text = None
-        if isinstance(summary, dict):
+        raw_turn_profile = breakaway_recommended_turn_profile_for_cmd(cmd) if cmd in ("l", "r") else None
+        recommended_score = None if isinstance(raw_turn_profile, dict) else (
+            breakaway_recommended_score_for_cmd(cmd) if cmd in ("l", "r") else None
+        )
+        if isinstance(raw_turn_profile, dict):
             try:
-                ratio_text = f"{int(summary.get('success_count'))}/{int(summary.get('trial_count'))}"
+                movement_count = int(raw_turn_profile.get("movement_count"))
+                trial_count = int(raw_turn_profile.get("valid_trial_count"))
+                if movement_count > 0 and trial_count > 0:
+                    ratio_text = f"{movement_count}/{trial_count}"
             except (TypeError, ValueError):
                 ratio_text = None
+        else:
+            summary = breakaway_score_summary_for_cmd(cmd, score=recommended_score or SPEED_SCORE_MIN)
+            if isinstance(summary, dict):
+                try:
+                    ratio_text = f"{int(summary.get('success_count'))}/{int(summary.get('trial_count'))}"
+                except (TypeError, ValueError):
+                    ratio_text = None
         line = (
             f"{label} ({hotkey}): pwm={int(pwm)}, pwr={float(power):.3f}, "
             f"t={int(duration_ms)}ms"
         )
+        if isinstance(raw_turn_profile, dict):
+            line += f", turn 1%=pwm {int(raw_turn_profile['pwm'])} @ {int(raw_turn_profile['duration_ms'])}ms"
+        elif recommended_score is not None:
+            line += f", turn 1%=score {int(recommended_score)}"
         if ratio_text:
             line += f", breakaway {ratio_text}"
         rows.append(line)

@@ -1,5 +1,6 @@
 import copy
 import unittest
+from pathlib import Path
 
 import telemetry_robot
 
@@ -11,10 +12,12 @@ class TestDirectionalTurnDuration(unittest.TestCase):
         self.orig_turn = telemetry_robot.SPEED_SCORE_DURATION_MS_TURN
         self.orig_left = telemetry_robot.SPEED_SCORE_DURATION_MS_TURN_LEFT
         self.orig_right = telemetry_robot.SPEED_SCORE_DURATION_MS_TURN_RIGHT
+        self.orig_turn_breakaway_path = telemetry_robot.TURN_BREAKAWAY_TEST_FILE
         self.orig_shared_values = copy.deepcopy(self.orig_shared) if isinstance(self.orig_shared, dict) else None
         self.orig_turn_values = copy.deepcopy(self.orig_turn) if isinstance(self.orig_turn, dict) else None
         self.orig_left_values = copy.deepcopy(self.orig_left) if isinstance(self.orig_left, dict) else None
         self.orig_right_values = copy.deepcopy(self.orig_right) if isinstance(self.orig_right, dict) else None
+        telemetry_robot.TURN_BREAKAWAY_TEST_FILE = Path(__file__).resolve().parents[1] / "_missing_turn_breakaway_test.json"
 
     def tearDown(self):
         telemetry_robot.USE_DIRECTIONAL_TURN_DURATION_MAPS = self.orig_use
@@ -22,6 +25,7 @@ class TestDirectionalTurnDuration(unittest.TestCase):
         telemetry_robot.SPEED_SCORE_DURATION_MS_TURN = self.orig_turn
         telemetry_robot.SPEED_SCORE_DURATION_MS_TURN_LEFT = self.orig_left
         telemetry_robot.SPEED_SCORE_DURATION_MS_TURN_RIGHT = self.orig_right
+        telemetry_robot.TURN_BREAKAWAY_TEST_FILE = self.orig_turn_breakaway_path
         if isinstance(self.orig_shared, dict) and isinstance(self.orig_shared_values, dict):
             self.orig_shared.clear()
             self.orig_shared.update(self.orig_shared_values)

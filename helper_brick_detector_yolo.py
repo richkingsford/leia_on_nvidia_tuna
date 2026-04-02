@@ -41,7 +41,7 @@ from helper_camera_sources import candidate_camera_sources, existing_camera_node
 
 # Known brick dimensions (mm) — from world_model_brick.json
 BRICK_WIDTH_MM = 53.0
-BRICK_HEIGHT_MM = 28.0
+BRICK_HEIGHT_MM = 35.4
 BRICK_DEPTH_MM = 20.0
 
 # Camera defaults (overridden at runtime from actual frame size)
@@ -286,6 +286,7 @@ class BrickDetector:
 
         # Canonical brick face shape (world model) for debug/overlay rendering.
         self._face_polygon_model = None
+        self._face_cutouts_model = []
         self._face_lines_model = []
         self._face_shape_templates = {}
         self._load_face_shape_model()
@@ -1413,6 +1414,7 @@ class BrickDetector:
 
     def _load_face_shape_model(self):
         self._face_polygon_model = None
+        self._face_cutouts_model = []
         self._face_lines_model = []
         try:
             import json
@@ -1437,6 +1439,22 @@ class BrickDetector:
                     continue
         if len(points) >= 3:
             self._face_polygon_model = np.asarray(points, dtype=np.float32)
+
+        raw_cutouts = brick.get("faceCutouts")
+        if isinstance(raw_cutouts, list):
+            for raw_cutout in raw_cutouts:
+                if not isinstance(raw_cutout, list):
+                    continue
+                cutout_points = []
+                for row in raw_cutout:
+                    if not isinstance(row, dict):
+                        continue
+                    try:
+                        cutout_points.append([float(row.get("x")), float(row.get("y"))])
+                    except (TypeError, ValueError):
+                        continue
+                if len(cutout_points) >= 3:
+                    self._face_cutouts_model.append(np.asarray(cutout_points, dtype=np.float32))
 
         raw_lines = brick.get("faceLines")
         if isinstance(raw_lines, list):
@@ -1463,6 +1481,28 @@ class BrickDetector:
         if points.ndim != 2 or points.shape[0] < 3 or points.shape[1] != 2:
             return None
         return points.reshape(-1, 1, 2).astype(np.float32)
+
+    def _shape_match_contour(self, points_or_contour):
+        contour = self._contour_from_points(points_or_contour)
+        if contour is None:
+            contour = np.asarray(points_or_contour, dtype=np.float32)
+            if contour.ndim == 2 and contour.shape[1] == 2:
+                contour = contour.reshape(-1, 1, 2)
+        if contour is None or contour.ndim != 3 or contour.shape[0] < 3:
+            return None
+        contour = contour.astype(np.float32)
+        try:
+            perimeter = float(cv2.arcLength(contour, True))
+        except Exception:
+            return contour
+        epsilon = max(0.4, perimeter * 0.01)
+        try:
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+        except Exception:
+            return contour
+        if approx is None or approx.shape[0] < 3:
+            return contour
+        return approx.astype(np.float32)
 
     def _clip_polygon_y(self, points, y_cut, keep_above):
         if not isinstance(points, np.ndarray) or points.ndim != 2 or len(points) < 3:
@@ -1514,11 +1554,17 @@ class BrickDetector:
         top_contour = self._contour_from_points(top_poly)
         bottom_contour = self._contour_from_points(bottom_poly)
 
-        self._face_shape_templates["full"] = cv2.convexHull(full_contour)
+        full_template = self._shape_match_contour(full_contour)
+        if full_template is not None:
+            self._face_shape_templates["full"] = full_template
         if top_contour is not None:
-            self._face_shape_templates["top_half"] = cv2.convexHull(top_contour)
+            top_template = self._shape_match_contour(top_contour)
+            if top_template is not None:
+                self._face_shape_templates["top_half"] = top_template
         if bottom_contour is not None:
-            self._face_shape_templates["bottom_half"] = cv2.convexHull(bottom_contour)
+            bottom_template = self._shape_match_contour(bottom_contour)
+            if bottom_template is not None:
+                self._face_shape_templates["bottom_half"] = bottom_template
 
     def _classify_contour_shape(self, contour):
         templates = getattr(self, "_face_shape_templates", None)
@@ -1532,9 +1578,8 @@ class BrickDetector:
         if contour_arr.ndim != 3 or contour_arr.shape[0] < 3:
             return None, None
 
-        try:
-            candidate_hull = cv2.convexHull(contour_arr)
-        except Exception:
+        candidate_shape = self._shape_match_contour(contour_arr)
+        if candidate_shape is None:
             return None, None
 
         best_profile = None
@@ -1543,7 +1588,7 @@ class BrickDetector:
             try:
                 score = float(
                     cv2.matchShapes(
-                        candidate_hull,
+                        candidate_shape,
                         templ,
                         cv2.CONTOURS_MATCH_I1,
                         0.0,
@@ -1706,8 +1751,11 @@ class BrickDetector:
         outline_color = PARTIAL_COLOR_BGR if is_partial else (0, 255, 0)
         outline_thickness = 3 if is_partial else 2
 
-        if contour_arr is not None and contour_arr.shape[0] >= 3:
-            cv2.polylines(frame, [contour_arr], True, outline_color, outline_thickness, cv2.LINE_AA)
+        # Prioritize model-constrained shape when rect is available.
+        # Only fall back to raw contour if rect is unavailable.
+        if rect is None:
+            if contour_arr is not None and contour_arr.shape[0] >= 3:
+                cv2.polylines(frame, [contour_arr], True, outline_color, outline_thickness, cv2.LINE_AA)
             return
 
         points = self._ordered_rect_points(rect)
@@ -1744,6 +1792,14 @@ class BrickDetector:
                 poly_draw = np.round(poly_proj).astype(np.int32).reshape(-1, 1, 2)
                 cv2.polylines(frame, [poly_draw], True, outline_color, 2, cv2.LINE_AA)
 
+                if shape_profile == "full":
+                    face_cutouts_model = getattr(self, "_face_cutouts_model", None)
+                    if isinstance(face_cutouts_model, list):
+                        for cutout_points in face_cutouts_model:
+                            cutout_proj = self._project_model_points_to_rect(cutout_points, points)
+                            if isinstance(cutout_proj, np.ndarray) and len(cutout_proj) >= 3:
+                                cutout_draw = np.round(cutout_proj).astype(np.int32).reshape(-1, 1, 2)
+                                cv2.polylines(frame, [cutout_draw], True, (220, 245, 255), 1, cv2.LINE_AA)
                 if shape_profile == "full" and isinstance(self._face_lines_model, list) and self._face_lines_model:
                     for p1, p2 in self._face_lines_model:
                         line_points = np.asarray([p1, p2], dtype=np.float32)

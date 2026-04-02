@@ -2096,7 +2096,7 @@ def main() -> int:
         "--vision",
         choices=["leia", "yolo", "aruco"],
         default="yolo",
-        help="Which vision backend to use: yolo cyan bricks (default), aruco markers, or leia edges.",
+        help="Which vision backend to use: yolo crown bricks (default), aruco markers, or leia edges.",
     )
 
     parser.add_argument("--min-duration-ms", type=int, default=200, help="Minimum random duration in ms (default: 200).")
@@ -2340,7 +2340,7 @@ def main() -> int:
                         fps=max(1, int(args.stream_fps)),
                         jpeg_quality=max(1, min(100, int(args.stream_jpeg_quality))),
                         img_width=max(320, int(args.stream_img_width)),
-                        vision_mode_options=[("aruco", "AruCo Markers"), ("cyan", "Cyan Bricks")],
+                        vision_mode_options=[("aruco", "AruCo Markers"), ("cyan", "Crown Bricks")],
                         xyz_workspace_getter=lambda: getattr(world, "_xyz_workspace", None),
                     )
                     log_line(f"[CALIBRATE_Y] Livestream started: {_orange_text(stream_url)}")

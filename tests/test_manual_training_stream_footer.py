@@ -19,7 +19,7 @@ class TestManualTrainingStreamFooter(unittest.TestCase):
     def test_stream_footer_html_includes_cyan_shades_section(self):
         footer_html = a_MAIN.stream_footer_html()
 
-        self.assertIn("Cyan Shades", footer_html)
+        self.assertIn("Crown Brick Shades", footer_html)
         self.assertIn("Shared 1% Floor", footer_html)
         self.assertIn("#018F97", footer_html)
         self.assertIn("#005A5F", footer_html)

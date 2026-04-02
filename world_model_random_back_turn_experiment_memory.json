@@ -1,0 +1,35 @@
+{
+  "updated_ts": 1774922410.168,
+  "stop_reason": "lost_pose_after_move",
+  "controller": {
+    "trusted_cmd": null,
+    "trusted_confirmations": 0,
+    "cmd_stats": {
+      "l": {
+        "recent_improvements_mm": [
+          -0.004,
+          -0.693,
+          -1.065
+        ],
+        "recent_mean_improvement_mm": -0.587,
+        "improve_streak": 0,
+        "worsen_streak": 0,
+        "last_outcome": null,
+        "intensity_scale": 0.4
+      },
+      "r": {
+        "recent_improvements_mm": [
+          0.834,
+          -25.232,
+          -6.831
+        ],
+        "recent_mean_improvement_mm": -10.41,
+        "improve_streak": 0,
+        "worsen_streak": 1,
+        "last_outcome": "worsened",
+        "intensity_scale": 0.4
+      }
+    }
+  },
+  "final_pose": null
+}

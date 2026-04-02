@@ -279,6 +279,47 @@ def _filtered_brick_frame_average(frames, min_frames=BRICK_SMOOTH_FRAMES):
 
 def smoothed_brick_snapshot(world):
     brick = world.brick or {}
+    history = getattr(world, "_smoothed_frame_history", None)
+    if history:
+        keep = []
+        seen_frame_ids = set()
+        for entry in reversed(list(history)):
+            if not isinstance(entry, dict):
+                continue
+            frame_id = int(entry.get("frame_id", 0) or 0)
+            if frame_id > 0:
+                if frame_id in seen_frame_ids:
+                    continue
+                seen_frame_ids.add(frame_id)
+            keep.append(entry)
+            if len(keep) >= max(1, int(BRICK_SMOOTH_FRAMES)):
+                break
+        if keep:
+            keep.reverse()
+
+            def _mean(key):
+                values = [float(frame.get(key, 0.0) or 0.0) for frame in keep]
+                return sum(values) / len(values) if values else 0.0
+
+            def _majority(key):
+                values = [bool(frame.get(key)) for frame in keep]
+                return sum(1 for value in values if value) >= (len(values) / 2.0)
+
+            return {
+                "visible": bool(_majority("visible")),
+                "dist": float(_mean("dist")),
+                "angle": float(_mean("angle")),
+                "confidence": float(_mean("confidence")),
+                "offset_x": float(_mean("offset_x")),
+                "x_axis": float(_mean("x_axis")),
+                "offset_y": float(_mean("offset_y")),
+                "y_axis": float(_mean("y_axis")),
+                # Preserve the stack/crosshair state that higher-level logic already
+                # confirmed on the current world snapshot.
+                "brickAbove": brick.get("brickAbove"),
+                "brickBelow": brick.get("brickBelow"),
+                "inCrosshairs": brick.get("inCrosshairs"),
+            }
     buffer = getattr(world, "_brick_frame_buffer", None)
     if not buffer:
         return brick
@@ -404,8 +445,6 @@ def metric_value(brick, metric):
     if metric in Y_AXIS_GATE_METRICS:
         return brick.get("y_axis", brick.get("offset_y", 0.0))
     if metric == "dist":
-        if "raw_dist" in brick:
-            return brick.get("raw_dist", 0.0)
         return brick.get("dist", 0.0)
     if metric == "visible":
         return 1.0 if brick.get("visible") else 0.0

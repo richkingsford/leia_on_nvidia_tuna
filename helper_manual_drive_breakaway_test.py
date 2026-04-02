@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import json
 import statistics
 import sys
@@ -21,7 +22,7 @@ from helper_vision_config import (
 from helper_robot_control import Robot
 from helper_vision_aruco import ArucoBrickVision
 from helper_vision_leia import LeiaVision
-from telemetry_process import send_robot_command
+from telemetry_process import reset_repeat_act_guard, send_robot_command
 from telemetry_robot import StepState, WorldModel
 
 try:
@@ -71,15 +72,23 @@ DEFAULT_MOVEMENT_THRESHOLD_MM = 0.10
 DEFAULT_REQUIRED_SUCCESS_RATIO = 0.80
 DEFAULT_PAUSE_BETWEEN_PULSES_MS = 500
 DEFAULT_USE_MANUAL_ASSIST = True
+SCORE_SEARCH_STRATEGY_ASCENDING = "ascending"
+SCORE_SEARCH_STRATEGY_ADAPTIVE_BRACKET = "adaptive_bracket"
+DEFAULT_SCORE_SEARCH_STRATEGY = SCORE_SEARCH_STRATEGY_ASCENDING
 OBSERVE_SAMPLE_FRAMES = 3
 OBSERVE_TIMEOUT_S = 1.5
 OBSERVE_SLEEP_S = 0.02
 POST_ACT_SETTLE_S = 0.12
 RECENTER_TOLERANCE_DIST_MM = 5.0
 RECENTER_TOLERANCE_X_AXIS_MM = 5.0
-RECENTER_TIMEOUT_S = 20.0
+RECENTER_TIMEOUT_S = 5.0
 RECENTER_OBSERVE_SAMPLES = 3
 RECENTER_OBSERVE_TIMEOUT_S = 1.2
+RECOVERY_MAX_INVERSE_ACTS = 3
+RECOVERY_OBSERVE_TIMEOUT_S = 0.8
+HIGH_TRIAL_DURATION_SCALE = 1.0 / 3.0
+MAX_RECENTER_SKIPS_PER_SCORE = 2
+SIGN_VALIDATION_PULSES = 2
 DEFAULT_VISION_MODE = normalize_vision_mode(
     world_model_active_vision_mode(),
     fallback=VISION_MODE_CYAN,
@@ -100,6 +109,28 @@ def _clamp_positive_int(value, default: int, *, minimum: int = 1) -> int:
     except (TypeError, ValueError):
         parsed = int(default)
     return int(max(int(minimum), int(parsed)))
+
+
+def _normalize_score_search_strategy(value, default: str = DEFAULT_SCORE_SEARCH_STRATEGY) -> str:
+    token = str(value or "").strip().lower()
+    if token in {
+        SCORE_SEARCH_STRATEGY_ASCENDING,
+        "linear",
+        "sweep",
+        "sequential",
+    }:
+        return SCORE_SEARCH_STRATEGY_ASCENDING
+    if token in {
+        SCORE_SEARCH_STRATEGY_ADAPTIVE_BRACKET,
+        "adaptive",
+        "bracket",
+        "binary",
+        "pingpong",
+        "ping_pong",
+        "ping-pong",
+    }:
+        return SCORE_SEARCH_STRATEGY_ADAPTIVE_BRACKET
+    return str(default or DEFAULT_SCORE_SEARCH_STRATEGY)
 
 
 def _collect_pose_samples(vision, world, *, samples=OBSERVE_SAMPLE_FRAMES, timeout_s=OBSERVE_TIMEOUT_S) -> list[dict]:
@@ -230,11 +261,12 @@ def _movement_flags_for_hotkey(
     raw_delta_mm: float,
     *,
     threshold_mm: float,
+    expected_effect_override: str | None = None,
 ) -> dict:
     spec = _hotkey_spec(hotkey) or {}
     observed_effect = _movement_effect_from_raw_delta(float(raw_delta_mm), threshold_mm=float(threshold_mm))
     moved = bool(observed_effect != "no_change")
-    expected_effect = str(spec.get("expected_effect") or "")
+    expected_effect = str(expected_effect_override or spec.get("expected_effect") or "")
     direction_ok = bool(moved and observed_effect == expected_effect)
     return {
         "observed_effect": str(observed_effect),
@@ -260,12 +292,78 @@ def _default_duration_ms_for_hotkey(hotkey: str) -> int:
     return int(max(1, int(duration_ms or 250)))
 
 
+def _duration_for_trial(
+    *,
+    score: int,
+    start_score: int,
+    max_score: int,
+    duration_ms: int | None,
+) -> int | None:
+    if duration_ms is None:
+        return None
+    try:
+        duration_value = max(1, int(round(float(duration_ms))))
+    except (TypeError, ValueError):
+        return None
+    if int(max_score) > int(start_score) and int(score) == int(max_score):
+        return max(1, int(round(float(duration_value) * float(HIGH_TRIAL_DURATION_SCALE))))
+    return int(duration_value)
+
+
+def _inverse_turn_cmd(cmd: str | None) -> str | None:
+    token = str(cmd or "").strip().lower()
+    if token == "l":
+        return "r"
+    if token == "r":
+        return "l"
+    return None
+
+
+def _required_success_count(repeats_per_score: int, required_success_ratio: float) -> int:
+    return max(1, int(round(float(repeats_per_score) * float(required_success_ratio))))
+
+
+def _score_trial_progress(
+    rows: list[dict],
+    *,
+    hotkey: str,
+    score: int,
+    max_trials: int,
+    required_success_count: int,
+) -> dict:
+    matching = [
+        row
+        for row in list(rows or [])
+        if isinstance(row, dict)
+        and str(row.get("hotkey") or "").strip().lower() == str(hotkey or "").strip().lower()
+        and int(row.get("score") or 0) == int(score)
+    ]
+    trial_count = len(matching)
+    success_count = sum(1 for row in matching if bool(row.get("passes")))
+    remaining_trials = max(0, int(max_trials) - int(trial_count))
+    if int(success_count) >= int(required_success_count):
+        decision = "pass"
+    elif int(success_count) + int(remaining_trials) < int(required_success_count):
+        decision = "fail"
+    else:
+        decision = "undecided"
+    return {
+        "trial_count": int(trial_count),
+        "success_count": int(success_count),
+        "remaining_trials": int(remaining_trials),
+        "decision": str(decision),
+    }
+
+
 def _run_recenter_checkpoint(
     *,
+    robot=None,
     vision,
     world,
     baseline_pose: dict | None,
     next_hotkey: str,
+    checkpoint_label: str | None = None,
+    recent_turn_acts=None,
     timeout_s: float = RECENTER_TIMEOUT_S,
     tolerance_dist_mm: float = RECENTER_TOLERANCE_DIST_MM,
     tolerance_x_axis_mm: float = RECENTER_TOLERANCE_X_AXIS_MM,
@@ -273,7 +371,7 @@ def _run_recenter_checkpoint(
 ) -> dict:
     logger = log_fn if callable(log_fn) else print
     spec = _hotkey_spec(next_hotkey) or {}
-    display_label = str(spec.get("display_label") or str(next_hotkey or "").upper())
+    display_label = str(checkpoint_label or spec.get("display_label") or str(next_hotkey or "").upper())
     if not isinstance(baseline_pose, dict):
         logger(f"[BREAKAWAY TEST] Recenter checkpoint before {display_label}: skipped (baseline unavailable).")
         return {
@@ -290,6 +388,8 @@ def _run_recenter_checkpoint(
     started = time.time()
     last_pose = None
     last_status = None
+    recovery_result = None
+    recovery_attempted = False
     while (time.time() - started) < float(timeout_s):
         pose_samples = _collect_pose_samples(
             vision,
@@ -306,14 +406,32 @@ def _run_recenter_checkpoint(
         )
         last_pose = pose
         last_status = status
-        if bool(status.get("ok")):
-            logger(
-                "[BREAKAWAY TEST] Recenter checkpoint passed: "
-                f"{_format_pose_text(pose)} "
-                f"(dist_err={float(status.get('dist_error_mm') or 0.0):+.2f}mm, "
-                f"x_err={float(status.get('x_axis_error_mm') or 0.0):+.2f}mm)."
+        if not bool(status.get("ok")) and not recovery_attempted:
+            recovery_attempted = True
+            recovery_result = _recover_pose_from_recent_turn_acts(
+                robot=robot,
+                vision=vision,
+                world=world,
+                recent_turn_acts=recent_turn_acts,
+                source_label=f"recenter before {display_label}",
+                target_pose=baseline_pose,
+                tolerance_dist_mm=float(tolerance_dist_mm),
+                tolerance_x_axis_mm=float(tolerance_x_axis_mm),
+                log_fn=logger,
             )
-            return {
+            recovered_pose = (recovery_result or {}).get("pose")
+            if isinstance(recovered_pose, dict):
+                pose = dict(recovered_pose)
+                status = _recenter_status(
+                    pose,
+                    baseline_pose,
+                    tolerance_dist_mm=float(tolerance_dist_mm),
+                    tolerance_x_axis_mm=float(tolerance_x_axis_mm),
+                )
+                last_pose = pose
+                last_status = status
+        if bool(status.get("ok")):
+            result = {
                 "ok": True,
                 "skipped": False,
                 "pose": dict(pose or {}),
@@ -321,15 +439,17 @@ def _run_recenter_checkpoint(
                 "x_axis_error_mm": float(status.get("x_axis_error_mm") or 0.0),
                 "seconds": float(max(0.0, time.time() - started)),
             }
+            if isinstance(recovery_result, dict):
+                result["recovery"] = dict(recovery_result)
+            logger(
+                "[BREAKAWAY TEST] Recenter checkpoint passed: "
+                f"{_format_pose_text(pose)} "
+                f"(dist_err={float(status.get('dist_error_mm') or 0.0):+.2f}mm, "
+                f"x_err={float(status.get('x_axis_error_mm') or 0.0):+.2f}mm)."
+            )
+            return result
 
-    logger(
-        "[BREAKAWAY TEST] Recenter checkpoint timed out: "
-        f"current {_format_pose_text(last_pose)} "
-        f"(dist_err={float((last_status or {}).get('dist_error_mm') or 0.0):+.2f}mm, "
-        f"x_err={float((last_status or {}).get('x_axis_error_mm') or 0.0):+.2f}mm). "
-        "Continuing anyway."
-    )
-    return {
+    result = {
         "ok": False,
         "skipped": False,
         "timed_out": True,
@@ -338,6 +458,297 @@ def _run_recenter_checkpoint(
         "x_axis_error_mm": None if not isinstance(last_status, dict) else last_status.get("x_axis_error_mm"),
         "seconds": float(max(0.0, time.time() - started)),
     }
+    if isinstance(recovery_result, dict):
+        result["recovery"] = dict(recovery_result)
+    logger(
+        "[BREAKAWAY TEST] Recenter checkpoint timed out: "
+        f"current {_format_pose_text(last_pose)} "
+        f"(dist_err={float((last_status or {}).get('dist_error_mm') or 0.0):+.2f}mm, "
+        f"x_err={float((last_status or {}).get('x_axis_error_mm') or 0.0):+.2f}mm). "
+        "Continuing anyway."
+    )
+    return result
+
+
+def _record_recent_turn_act(recent_turn_acts, *, cmd: str, score: int, duration_ms: int) -> None:
+    if recent_turn_acts is None:
+        return
+    cmd_norm = str(cmd or "").strip().lower()
+    if cmd_norm not in {"l", "r"}:
+        return
+    try:
+        score_value = max(1, int(round(float(score))))
+    except (TypeError, ValueError):
+        score_value = 1
+    try:
+        duration_value = max(1, int(round(float(duration_ms))))
+    except (TypeError, ValueError):
+        duration_value = _default_duration_ms_for_hotkey("q" if cmd_norm == "l" else "e")
+    act = {
+        "cmd": str(cmd_norm),
+        "score": int(score_value),
+        "duration_ms": int(duration_value),
+        "timestamp": float(time.time()),
+    }
+    try:
+        recent_turn_acts.append(act)
+    except AttributeError:
+        recent_turn_acts[:] = list(recent_turn_acts[-(int(RECOVERY_MAX_INVERSE_ACTS) - 1) :]) + [act]
+
+
+def _recover_pose_from_recent_turn_acts(
+    *,
+    robot,
+    vision,
+    world,
+    recent_turn_acts,
+    source_label: str,
+    target_pose: dict | None = None,
+    tolerance_dist_mm: float = RECENTER_TOLERANCE_DIST_MM,
+    tolerance_x_axis_mm: float = RECENTER_TOLERANCE_X_AXIS_MM,
+    log_fn=None,
+) -> dict:
+    logger = log_fn if callable(log_fn) else print
+    history = [
+        dict(item)
+        for item in list(recent_turn_acts or [])
+        if isinstance(item, dict) and _inverse_turn_cmd(item.get("cmd")) in {"l", "r"}
+    ]
+    if not history:
+        return {
+            "ok": False,
+            "reason": "no_recent_turn_acts",
+        }
+    plan = []
+    for act in reversed(history[-int(RECOVERY_MAX_INVERSE_ACTS) :]):
+        inverse_cmd = _inverse_turn_cmd(act.get("cmd"))
+        if inverse_cmd not in {"l", "r"}:
+            continue
+        try:
+            score_value = max(1, int(round(float(act.get("score")))))
+        except (TypeError, ValueError):
+            score_value = 1
+        try:
+            duration_value = max(1, int(round(float(act.get("duration_ms")))))
+        except (TypeError, ValueError):
+            duration_value = _default_duration_ms_for_hotkey("q" if inverse_cmd == "l" else "e")
+        plan.append(
+            {
+                "cmd": str(inverse_cmd),
+                "score": int(score_value),
+                "duration_ms": int(duration_value),
+                "origin_cmd": str(act.get("cmd") or ""),
+            }
+        )
+    if not plan:
+        return {
+            "ok": False,
+            "reason": "no_recovery_plan",
+        }
+
+    logger(
+        f"[BREAKAWAY TEST] Recovery: replay inverse of the most recent {int(len(plan))} turn act(s) after {str(source_label)}."
+    )
+    steps = []
+    last_pose = None
+    for index, step in enumerate(plan, start=1):
+        reset_repeat_act_guard(world, robot)
+        send_result = send_robot_command(
+            robot,
+            world,
+            StepState.ALIGN_BRICK,
+            str(step["cmd"]),
+            speed=0.0,
+            speed_score=int(step["score"]),
+            duration_override_ms=int(step["duration_ms"]),
+            auto_mode=False,
+            ease_in_out_enabled=False,
+        )
+        try:
+            send_duration_ms = int(
+                round(float((send_result or {}).get("duration_ms") or step.get("duration_ms") or 0))
+            )
+        except (TypeError, ValueError):
+            send_duration_ms = int(step.get("duration_ms") or 1)
+        time.sleep(max(float(POST_ACT_SETTLE_S), (float(send_duration_ms) / 1000.0) + 0.02))
+        pose = _median_pose_or_none(
+            _collect_pose_samples(
+                vision,
+                world,
+                samples=1,
+                timeout_s=float(RECOVERY_OBSERVE_TIMEOUT_S),
+            )
+        )
+        step_result = {
+            "index": int(index),
+            "cmd": str(step["cmd"]),
+            "score": int(step["score"]),
+            "duration_ms": int(send_duration_ms),
+            "origin_cmd": str(step.get("origin_cmd") or ""),
+            "pose_found": bool(isinstance(pose, dict)),
+        }
+        if isinstance(pose, dict):
+            last_pose = dict(pose)
+            step_result["pose"] = dict(pose)
+            if isinstance(target_pose, dict):
+                step_result["target_status"] = _recenter_status(
+                    pose,
+                    target_pose,
+                    tolerance_dist_mm=float(tolerance_dist_mm),
+                    tolerance_x_axis_mm=float(tolerance_x_axis_mm),
+                )
+        steps.append(step_result)
+        if isinstance(pose, dict):
+            if not isinstance(target_pose, dict) or bool((step_result.get("target_status") or {}).get("ok")):
+                logger(
+                    f"[BREAKAWAY TEST] Recovery step {int(index)}/{int(len(plan))} regained vision with "
+                    f"{str(step['cmd']).upper()} {int(step['score'])}% for {int(send_duration_ms)}ms."
+                )
+                return {
+                    "ok": True,
+                    "pose": dict(pose),
+                    "steps": steps,
+                    "source_label": str(source_label),
+                }
+            logger(
+                f"[BREAKAWAY TEST] Recovery step {int(index)}/{int(len(plan))} regained vision but is still off-baseline "
+                f"({str(step['cmd']).upper()} {int(step['score'])}% for {int(send_duration_ms)}ms)."
+            )
+        logger(
+            f"[BREAKAWAY TEST] Recovery step {int(index)}/{int(len(plan))} did not regain vision "
+            f"({str(step['cmd']).upper()} {int(step['score'])}% for {int(send_duration_ms)}ms)."
+        )
+    return {
+        "ok": False,
+        "reason": "recovery_pose_unavailable" if last_pose is None else "recovery_not_recentered",
+        "pose": last_pose,
+        "steps": steps,
+        "source_label": str(source_label),
+    }
+
+
+def _observe_pose_with_optional_recovery(
+    *,
+    robot,
+    vision,
+    world,
+    recent_turn_acts,
+    source_label: str,
+    log_fn=None,
+) -> tuple[dict | None, dict | None]:
+    pose = _median_pose_or_none(_collect_pose_samples(vision, world))
+    if isinstance(pose, dict):
+        return pose, None
+    recovery_result = _recover_pose_from_recent_turn_acts(
+        robot=robot,
+        vision=vision,
+        world=world,
+        recent_turn_acts=recent_turn_acts,
+        source_label=str(source_label),
+        log_fn=log_fn,
+    )
+    recovered_pose = (recovery_result or {}).get("pose")
+    if isinstance(recovered_pose, dict):
+        return dict(recovered_pose), dict(recovery_result)
+    return None, dict(recovery_result or {})
+
+
+def _run_turn_sign_validation(
+    *,
+    robot,
+    vision,
+    world,
+    hotkey: str,
+    validation_score: int,
+    validation_duration_ms: int | None,
+    movement_threshold_mm: float,
+    baseline_pose: dict | None,
+    recent_turn_acts=None,
+    log_fn=None,
+) -> dict:
+    logger = log_fn if callable(log_fn) else print
+    spec = _hotkey_spec(hotkey) or {}
+    display_label = str(spec.get("display_label") or str(hotkey or "").upper())
+    if str(spec.get("metric_key") or "") != "x_axis_mm":
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "non_turn_hotkey",
+        }
+    result = {
+        "hotkey": str(hotkey),
+        "score": int(validation_score),
+        "duration_ms": None if validation_duration_ms is None else int(validation_duration_ms),
+        "pulse_count": int(SIGN_VALIDATION_PULSES),
+        "checkpoints": [],
+        "rows": [],
+    }
+    directional_counts = {"increase": 0, "decrease": 0}
+    for pulse_index in range(1, int(SIGN_VALIDATION_PULSES) + 1):
+        checkpoint = _run_recenter_checkpoint(
+            robot=robot,
+            vision=vision,
+            world=world,
+            baseline_pose=baseline_pose,
+            next_hotkey=str(hotkey),
+            checkpoint_label=f"{display_label} sign validation {int(pulse_index)}/{int(SIGN_VALIDATION_PULSES)}",
+            recent_turn_acts=recent_turn_acts,
+            log_fn=logger,
+        )
+        result["checkpoints"].append(dict(checkpoint))
+        if not bool((checkpoint or {}).get("ok")):
+            result["ok"] = False
+            result["reason"] = "checkpoint_unavailable"
+            logger(
+                f"[BREAKAWAY TEST] Sign validation for {display_label} skipped because baseline was not restored."
+            )
+            return result
+        row = _raw_trial(
+            robot=robot,
+            vision=vision,
+            world=world,
+            hotkey=str(hotkey),
+            score=int(validation_score),
+            duration_ms=None if validation_duration_ms is None else int(validation_duration_ms),
+            movement_threshold_mm=float(movement_threshold_mm),
+            use_manual_assist=False,
+            recent_turn_acts=recent_turn_acts,
+            log_fn=logger,
+        )
+        result["rows"].append(dict(row))
+        if not bool((row or {}).get("ok")):
+            result["ok"] = False
+            result["reason"] = str((row or {}).get("error") or "validation_failed")
+            logger(
+                f"[BREAKAWAY TEST] Sign validation for {display_label} failed ({result['reason']})."
+            )
+            return result
+        observed_effect = str((row or {}).get("observed_effect") or "")
+        if bool((row or {}).get("moved")) and observed_effect in directional_counts:
+            directional_counts[observed_effect] += 1
+    if directional_counts["increase"] == directional_counts["decrease"] == 0:
+        result["ok"] = False
+        result["reason"] = "no_directional_signal"
+        logger(
+            f"[BREAKAWAY TEST] Sign validation for {display_label} found no directional signal."
+        )
+        return result
+    if directional_counts["increase"] == directional_counts["decrease"]:
+        result["ok"] = False
+        result["reason"] = "ambiguous_directional_signal"
+        result["directional_counts"] = dict(directional_counts)
+        logger(
+            f"[BREAKAWAY TEST] Sign validation for {display_label} was ambiguous: {directional_counts}."
+        )
+        return result
+    expected_effect_override = "increase" if directional_counts["increase"] > directional_counts["decrease"] else "decrease"
+    result["ok"] = True
+    result["directional_counts"] = dict(directional_counts)
+    result["expected_effect_override"] = str(expected_effect_override)
+    logger(
+        f"[BREAKAWAY TEST] Sign validation for {display_label}: use x_axis effect '{expected_effect_override}' for this run."
+    )
+    return result
 
 
 def _raw_trial(
@@ -350,29 +761,51 @@ def _raw_trial(
     duration_ms: int | None,
     movement_threshold_mm: float,
     use_manual_assist: bool,
+    recent_turn_acts=None,
+    expected_effect_override: str | None = None,
+    log_fn=None,
 ) -> dict:
+    logger = log_fn if callable(log_fn) else print
     spec = _hotkey_spec(hotkey)
     if not isinstance(spec, dict):
         return {
             "ok": False,
+            "hotkey": str(hotkey or ""),
+            "score": int(score),
             "error": "unsupported_hotkey",
         }
 
     metric_key = str(spec.get("metric_key") or "dist_mm")
     cmd = str(spec.get("cmd") or "")
-    pre_vals = _collect_pose_samples(vision, world)
-    pre_pose = _median_pose_or_none(pre_vals)
+    base_row = {
+        "ok": False,
+        "hotkey": str(hotkey),
+        "cmd": str(cmd),
+        "score": int(score),
+        "metric_key": str(metric_key),
+        "metric_label": str(spec.get("metric_label") or metric_key),
+        "display_label": str(spec.get("display_label") or str(hotkey).upper()),
+        "expected_effect": str(expected_effect_override or spec.get("expected_effect") or ""),
+    }
+    pre_pose, pre_recovery = _observe_pose_with_optional_recovery(
+        robot=robot,
+        vision=vision,
+        world=world,
+        recent_turn_acts=recent_turn_acts,
+        source_label=f"{str(base_row['display_label'])} score={int(score)}% pre_pose",
+        log_fn=logger,
+    )
     if pre_pose is None:
-        return {
-            "ok": False,
-            "error": "pre_pose_unavailable",
-        }
+        row = dict(base_row)
+        row["error"] = "pre_pose_unavailable"
+        if isinstance(pre_recovery, dict):
+            row["recovery"] = dict(pre_recovery)
+        return row
     pre_metric_mm = pre_pose.get(metric_key)
     if pre_metric_mm is None:
-        return {
-            "ok": False,
-            "error": "pre_metric_unavailable",
-        }
+        row = dict(base_row)
+        row["error"] = "pre_metric_unavailable"
+        return row
 
     if duration_ms is None:
         duration_ms = _default_duration_ms_for_hotkey(hotkey)
@@ -382,6 +815,7 @@ def _raw_trial(
         duration_used_ms = _default_duration_ms_for_hotkey(hotkey)
 
     send_result = None
+    reset_repeat_act_guard(world, robot)
     if bool(use_manual_assist):
         send_result = execute_manual_drive_assist_plan(
             robot=robot,
@@ -408,24 +842,36 @@ def _raw_trial(
         send_duration_ms = int(round(float((send_result or {}).get("duration_ms") or duration_used_ms)))
     except (TypeError, ValueError):
         send_duration_ms = int(duration_used_ms)
+    _record_recent_turn_act(
+        recent_turn_acts,
+        cmd=str(cmd),
+        score=int(score),
+        duration_ms=int(send_duration_ms),
+    )
     wait_s = max(float(POST_ACT_SETTLE_S), (float(send_duration_ms) / 1000.0) + 0.02)
     time.sleep(float(wait_s))
 
-    post_vals = _collect_pose_samples(vision, world)
-    post_pose = _median_pose_or_none(post_vals)
+    post_pose, post_recovery = _observe_pose_with_optional_recovery(
+        robot=robot,
+        vision=vision,
+        world=world,
+        recent_turn_acts=recent_turn_acts,
+        source_label=f"{str(base_row['display_label'])} score={int(score)}% post_pose",
+        log_fn=logger,
+    )
     if post_pose is None:
-        return {
-            "ok": False,
-            "error": "post_pose_unavailable",
-            "pre_metric_mm": float(pre_metric_mm),
-        }
+        row = dict(base_row)
+        row["error"] = "post_pose_unavailable"
+        row["pre_metric_mm"] = float(pre_metric_mm)
+        if isinstance(post_recovery, dict):
+            row["recovery"] = dict(post_recovery)
+        return row
     post_metric_mm = post_pose.get(metric_key)
     if post_metric_mm is None:
-        return {
-            "ok": False,
-            "error": "post_metric_unavailable",
-            "pre_metric_mm": float(pre_metric_mm),
-        }
+        row = dict(base_row)
+        row["error"] = "post_metric_unavailable"
+        row["pre_metric_mm"] = float(pre_metric_mm)
+        return row
 
     raw_delta_mm = float(post_metric_mm) - float(pre_metric_mm)
     abs_delta_mm = abs(float(raw_delta_mm))
@@ -433,6 +879,7 @@ def _raw_trial(
         str(hotkey),
         float(raw_delta_mm),
         threshold_mm=float(movement_threshold_mm),
+        expected_effect_override=str(expected_effect_override or "").strip().lower() or None,
     )
     return {
         "ok": True,
@@ -465,6 +912,264 @@ def _raw_trial(
     }
 
 
+def _log_breakaway_row(logger, row: dict, *, hotkey: str, score: int, repeats_per_score: int) -> None:
+    if bool((row or {}).get("ok")):
+        logger(
+            f"[BREAKAWAY TEST] {str(row.get('display_label') or hotkey.upper())} "
+            f"score={int(score)}% trial={int(row.get('trial_index') or 0)}/{int(repeats_per_score)} "
+            f"{str(row.get('metric_label') or 'metric')} raw_delta={float(row.get('raw_delta_mm') or 0.0):+.3f}mm "
+            f"observed={str(row.get('observed_effect') or 'unknown')} "
+            f"moved={bool(row.get('moved'))} direction_ok={bool(row.get('direction_ok'))} "
+            f"pass={bool(row.get('passes'))}."
+        )
+        return
+    logger(
+        f"[BREAKAWAY TEST] {hotkey.upper()} score={int(score)}% trial={int(row.get('trial_index') or 0)}/{int(repeats_per_score)} "
+        f"failed ({row.get('error')})."
+    )
+
+
+def _run_score_trials(
+    *,
+    robot,
+    vision,
+    world,
+    hotkey: str,
+    score: int,
+    repeats_per_score: int,
+    duration_ms: int | None,
+    movement_threshold_mm: float,
+    use_manual_assist: bool,
+    pause_between_pulses_ms: int,
+    baseline_pose: dict | None,
+    recenter_before_each_trial: bool,
+    recenter_checkpoints: list[dict],
+    rows: list[dict],
+    required_success_count: int,
+    recent_turn_acts=None,
+    expected_effect_override: str | None = None,
+    start_score: int,
+    max_score: int,
+    log_fn=None,
+) -> dict:
+    logger = log_fn if callable(log_fn) else print
+    spec = _hotkey_spec(hotkey) or {}
+    display_label = str(spec.get("display_label") or str(hotkey or "").upper())
+
+    progress = _score_trial_progress(
+        rows,
+        hotkey=str(hotkey),
+        score=int(score),
+        max_trials=int(repeats_per_score),
+        required_success_count=int(required_success_count),
+    )
+    skipped_recenter_attempts = 0
+    while progress["decision"] == "undecided" and progress["trial_count"] < int(repeats_per_score):
+        trial_index = int(progress["trial_count"]) + 1
+        if bool(recenter_before_each_trial):
+            checkpoint = _run_recenter_checkpoint(
+                robot=robot,
+                vision=vision,
+                world=world,
+                baseline_pose=baseline_pose,
+                next_hotkey=str(hotkey),
+                checkpoint_label=f"{display_label} score={int(score)}% trial={int(trial_index)}/{int(repeats_per_score)}",
+                recent_turn_acts=recent_turn_acts,
+                log_fn=logger,
+            )
+            checkpoint["next_hotkey"] = str(hotkey)
+            checkpoint["hotkey"] = str(hotkey)
+            checkpoint["score"] = int(score)
+            checkpoint["trial_index"] = int(trial_index)
+            checkpoint["phase"] = "pre_trial"
+            recenter_checkpoints.append(checkpoint)
+            if not bool((checkpoint or {}).get("ok")):
+                skipped_recenter_attempts += 1
+                logger(
+                    f"[BREAKAWAY TEST] {display_label} score={int(score)}% trial start skipped "
+                    f"(baseline not restored; skip {int(skipped_recenter_attempts)}/{int(MAX_RECENTER_SKIPS_PER_SCORE)})."
+                )
+                if int(skipped_recenter_attempts) >= int(MAX_RECENTER_SKIPS_PER_SCORE):
+                    return {
+                        "trial_count": int(progress["trial_count"]),
+                        "success_count": int(progress["success_count"]),
+                        "remaining_trials": int(max(0, int(repeats_per_score) - int(progress["trial_count"]))),
+                        "decision": "fail",
+                        "reason": "baseline_not_restored",
+                    }
+                continue
+            skipped_recenter_attempts = 0
+        row = _raw_trial(
+            robot=robot,
+            vision=vision,
+            world=world,
+            hotkey=str(hotkey),
+            score=int(score),
+            duration_ms=_duration_for_trial(
+                score=int(score),
+                start_score=int(start_score),
+                max_score=int(max_score),
+                duration_ms=None if duration_ms is None else int(duration_ms),
+            ),
+            movement_threshold_mm=float(movement_threshold_mm),
+            use_manual_assist=bool(use_manual_assist),
+            recent_turn_acts=recent_turn_acts,
+            expected_effect_override=str(expected_effect_override or "").strip().lower() or None,
+            log_fn=logger,
+        )
+        row["trial_index"] = int(trial_index)
+        rows.append(row)
+        _log_breakaway_row(
+            logger,
+            row,
+            hotkey=str(hotkey),
+            score=int(score),
+            repeats_per_score=int(repeats_per_score),
+        )
+        progress = _score_trial_progress(
+            rows,
+            hotkey=str(hotkey),
+            score=int(score),
+            max_trials=int(repeats_per_score),
+            required_success_count=int(required_success_count),
+        )
+        if int(pause_between_pulses_ms) > 0:
+            time.sleep(float(pause_between_pulses_ms) / 1000.0)
+    return progress
+
+
+def _run_hotkey_trials_ascending(
+    *,
+    robot,
+    vision,
+    world,
+    hotkey: str,
+    start_score: int,
+    max_score: int,
+    repeats_per_score: int,
+    duration_ms: int | None,
+    movement_threshold_mm: float,
+    use_manual_assist: bool,
+    pause_between_pulses_ms: int,
+    baseline_pose: dict | None,
+    recenter_before_each_trial: bool,
+    recenter_checkpoints: list[dict],
+    rows: list[dict],
+    required_success_count: int,
+    recent_turn_acts=None,
+    expected_effect_override: str | None = None,
+    log_fn=None,
+) -> list[int]:
+    evaluated_scores = []
+    for score in range(int(start_score), int(max_score) + 1):
+        evaluated_scores.append(int(score))
+        _run_score_trials(
+            robot=robot,
+            vision=vision,
+            world=world,
+            hotkey=str(hotkey),
+            score=int(score),
+            repeats_per_score=int(repeats_per_score),
+            duration_ms=None if duration_ms is None else int(duration_ms),
+            movement_threshold_mm=float(movement_threshold_mm),
+            use_manual_assist=bool(use_manual_assist),
+            pause_between_pulses_ms=int(pause_between_pulses_ms),
+            baseline_pose=baseline_pose,
+            recenter_before_each_trial=bool(recenter_before_each_trial),
+            recenter_checkpoints=recenter_checkpoints,
+            rows=rows,
+            required_success_count=int(required_success_count),
+            recent_turn_acts=recent_turn_acts,
+            expected_effect_override=str(expected_effect_override or "").strip().lower() or None,
+            start_score=int(start_score),
+            max_score=int(max_score),
+            log_fn=log_fn,
+        )
+    return evaluated_scores
+
+
+def _run_hotkey_trials_adaptive_bracket(
+    *,
+    robot,
+    vision,
+    world,
+    hotkey: str,
+    start_score: int,
+    max_score: int,
+    repeats_per_score: int,
+    duration_ms: int | None,
+    movement_threshold_mm: float,
+    use_manual_assist: bool,
+    pause_between_pulses_ms: int,
+    baseline_pose: dict | None,
+    recenter_before_each_trial: bool,
+    recenter_checkpoints: list[dict],
+    rows: list[dict],
+    required_success_count: int,
+    recent_turn_acts=None,
+    expected_effect_override: str | None = None,
+    log_fn=None,
+) -> list[int]:
+    logger = log_fn if callable(log_fn) else print
+    evaluated_scores = []
+    decisions: dict[int, str] = {}
+
+    def _evaluate(score_value: int) -> str:
+        score_key = int(score_value)
+        if score_key in decisions:
+            return str(decisions[score_key])
+        evaluated_scores.append(int(score_key))
+        progress = _run_score_trials(
+            robot=robot,
+            vision=vision,
+            world=world,
+            hotkey=str(hotkey),
+            score=int(score_key),
+            repeats_per_score=int(repeats_per_score),
+            duration_ms=None if duration_ms is None else int(duration_ms),
+            movement_threshold_mm=float(movement_threshold_mm),
+            use_manual_assist=bool(use_manual_assist),
+            pause_between_pulses_ms=int(pause_between_pulses_ms),
+            baseline_pose=baseline_pose,
+            recenter_before_each_trial=bool(recenter_before_each_trial),
+            recenter_checkpoints=recenter_checkpoints,
+            rows=rows,
+            required_success_count=int(required_success_count),
+            recent_turn_acts=recent_turn_acts,
+            expected_effect_override=str(expected_effect_override or "").strip().lower() or None,
+            start_score=int(start_score),
+            max_score=int(max_score),
+            log_fn=logger,
+        )
+        decisions[score_key] = str(progress.get("decision") or "fail")
+        return str(decisions[score_key])
+
+    low = int(start_score)
+    high = int(max_score)
+    low_decision = _evaluate(int(low))
+    if low_decision == "pass" or int(low) >= int(high):
+        return evaluated_scores
+
+    high_decision = _evaluate(int(high))
+    if high_decision != "pass":
+        return evaluated_scores
+
+    logger(
+        f"[BREAKAWAY TEST] Adaptive search bracket for {str((_hotkey_spec(hotkey) or {}).get('display_label') or hotkey.upper())}: "
+        f"{int(low)}% fails, {int(high)}% passes. Narrowing."
+    )
+    while (int(high) - int(low)) > 1:
+        mid = int((int(low) + int(high)) // 2)
+        if mid <= int(low) or mid >= int(high):
+            break
+        mid_decision = _evaluate(int(mid))
+        if mid_decision == "pass":
+            high = int(mid)
+        else:
+            low = int(mid)
+    return evaluated_scores
+
+
 def summarize_breakaway_results(
     rows: list[dict],
     *,
@@ -483,7 +1188,10 @@ def summarize_breakaway_results(
         grouped.setdefault(hotkey, {}).setdefault(int(score), []).append(row)
 
     by_hotkey = {}
-    required_count = max(1, int(round(float(repeats_per_score) * float(required_success_ratio))))
+    required_count = _required_success_count(
+        int(repeats_per_score),
+        float(required_success_ratio),
+    )
     for hotkey, by_score in grouped.items():
         score_summaries = []
         recommended_score = None
@@ -541,6 +1249,8 @@ def run_drive_breakaway_test(
     required_success_ratio: float,
     pause_between_pulses_ms: int,
     use_manual_assist: bool = DEFAULT_USE_MANUAL_ASSIST,
+    score_search_strategy: str = DEFAULT_SCORE_SEARCH_STRATEGY,
+    recenter_before_each_trial: bool = False,
     log_path: Path = RUN_LOG_FILE_DEFAULT,
     log_fn=None,
 ) -> dict:
@@ -567,8 +1277,18 @@ def run_drive_breakaway_test(
     )
     movement_threshold_mm = max(0.01, float(movement_threshold_mm))
     required_success_ratio = max(0.1, min(1.0, float(required_success_ratio)))
+    score_search_strategy = _normalize_score_search_strategy(score_search_strategy)
+    recenter_before_each_trial = bool(recenter_before_each_trial)
     assist_config = load_manual_drive_assist_config() if bool(use_manual_assist) else {}
     assist_enabled = bool(use_manual_assist) and bool((assist_config or {}).get("enabled"))
+    required_success_count = _required_success_count(
+        int(repeats_per_score),
+        float(required_success_ratio),
+    )
+    score_search_paths = {}
+    sign_validation_results = []
+    expected_effect_overrides = {}
+    phase_baselines = {}
 
     logger("[BREAKAWAY TEST] Goal: verify that low-speed hotkeys move reliably in the correct direction.")
     logger("[BREAKAWAY TEST] Keep the robot on its normal surface, keep the brick visible, and do not touch it during the run.")
@@ -583,6 +1303,14 @@ def run_drive_breakaway_test(
         + ("manual hotkey assist enabled." if bool(assist_enabled) else "raw pulses only.")
     )
     logger("[BREAKAWAY TEST] Drive mode uses dist changes; turn mode uses x_axis changes.")
+    if bool(recenter_before_each_trial):
+        logger("[BREAKAWAY TEST] Recenter mode: baseline checkpoint before every trial.")
+    if score_search_strategy == SCORE_SEARCH_STRATEGY_ADAPTIVE_BRACKET:
+        logger("[BREAKAWAY TEST] Search mode: adaptive low/high bracket with narrowing probes.")
+        logger(
+            f"[BREAKAWAY TEST] High-side probes use {float(HIGH_TRIAL_DURATION_SCALE) * 100.0:.1f}% of base duration "
+            "to keep them gentler."
+        )
     baseline_pose = _median_pose_or_none(
         _collect_pose_samples(
             vision,
@@ -600,12 +1328,37 @@ def run_drive_breakaway_test(
         spec = _hotkey_spec(hotkey)
         if not isinstance(spec, dict):
             continue
-        if hotkey_index > 0:
+        phase_recent_turn_acts = deque(maxlen=int(RECOVERY_MAX_INVERSE_ACTS))
+        phase_baseline_pose = baseline_pose
+        if str(spec.get("metric_key") or "") == "x_axis_mm":
+            phase_baseline_pose = _median_pose_or_none(
+                _collect_pose_samples(
+                    vision,
+                    world,
+                    samples=int(RECENTER_OBSERVE_SAMPLES),
+                    timeout_s=float(RECENTER_OBSERVE_TIMEOUT_S),
+                )
+            )
+            phase_baselines[str(hotkey)] = phase_baseline_pose
+            if isinstance(phase_baseline_pose, dict):
+                logger(
+                    f"[BREAKAWAY TEST] Phase baseline for {str(spec.get('display_label') or hotkey.upper())}: "
+                    f"{_format_pose_text(phase_baseline_pose)}."
+                )
+            else:
+                logger(
+                    f"[BREAKAWAY TEST] Phase baseline for {str(spec.get('display_label') or hotkey.upper())}: unavailable."
+                )
+        else:
+            phase_baselines[str(hotkey)] = phase_baseline_pose
+        if hotkey_index > 0 and not bool(recenter_before_each_trial):
             checkpoint = _run_recenter_checkpoint(
+                robot=robot,
                 vision=vision,
                 world=world,
-                baseline_pose=baseline_pose,
+                baseline_pose=phase_baseline_pose,
                 next_hotkey=str(hotkey),
+                recent_turn_acts=phase_recent_turn_acts,
                 log_fn=logger,
             )
             checkpoint["next_hotkey"] = str(hotkey)
@@ -616,36 +1369,73 @@ def run_drive_breakaway_test(
             f"cmd={cmd.upper()} metric={str(spec.get('metric_label') or '')} "
             f"expected={str(spec.get('expected_effect') or '')}."
         )
-        for score in range(int(start_score), int(max_score) + 1):
-            for trial_idx in range(1, int(repeats_per_score) + 1):
-                row = _raw_trial(
-                    robot=robot,
-                    vision=vision,
-                    world=world,
-                    hotkey=str(hotkey),
-                    score=int(score),
+        if str(spec.get("metric_key") or "") == "x_axis_mm":
+            sign_validation = _run_turn_sign_validation(
+                robot=robot,
+                vision=vision,
+                world=world,
+                hotkey=str(hotkey),
+                validation_score=int(max_score),
+                validation_duration_ms=_duration_for_trial(
+                    score=int(max_score),
+                    start_score=int(start_score),
+                    max_score=int(max_score),
                     duration_ms=None if duration_ms is None else int(duration_ms),
-                    movement_threshold_mm=float(movement_threshold_mm),
-                    use_manual_assist=bool(assist_enabled),
-                )
-                row["trial_index"] = int(trial_idx)
-                rows.append(row)
-                if bool(row.get("ok")):
-                    logger(
-                        f"[BREAKAWAY TEST] {str(row.get('display_label') or hotkey.upper())} "
-                        f"score={int(score)}% trial={int(trial_idx)}/{int(repeats_per_score)} "
-                        f"{str(row.get('metric_label') or 'metric')} raw_delta={float(row.get('raw_delta_mm') or 0.0):+.3f}mm "
-                        f"observed={str(row.get('observed_effect') or 'unknown')} "
-                        f"moved={bool(row.get('moved'))} direction_ok={bool(row.get('direction_ok'))} "
-                        f"pass={bool(row.get('passes'))}."
-                    )
-                else:
-                    logger(
-                        f"[BREAKAWAY TEST] {hotkey.upper()} score={int(score)}% trial={int(trial_idx)}/{int(repeats_per_score)} "
-                        f"failed ({row.get('error')})."
-                    )
-                if int(pause_between_pulses_ms) > 0:
-                    time.sleep(float(pause_between_pulses_ms) / 1000.0)
+                ),
+                movement_threshold_mm=float(movement_threshold_mm),
+                baseline_pose=phase_baseline_pose,
+                recent_turn_acts=phase_recent_turn_acts,
+                log_fn=logger,
+            )
+            sign_validation_results.append(sign_validation)
+            override_effect = str((sign_validation or {}).get("expected_effect_override") or "").strip().lower()
+            if override_effect in {"increase", "decrease"}:
+                expected_effect_overrides[str(hotkey)] = str(override_effect)
+        if score_search_strategy == SCORE_SEARCH_STRATEGY_ADAPTIVE_BRACKET:
+            evaluated_scores = _run_hotkey_trials_adaptive_bracket(
+                robot=robot,
+                vision=vision,
+                world=world,
+                hotkey=str(hotkey),
+                start_score=int(start_score),
+                max_score=int(max_score),
+                repeats_per_score=int(repeats_per_score),
+                duration_ms=None if duration_ms is None else int(duration_ms),
+                movement_threshold_mm=float(movement_threshold_mm),
+                use_manual_assist=bool(assist_enabled),
+                pause_between_pulses_ms=int(pause_between_pulses_ms),
+                baseline_pose=phase_baseline_pose,
+                recenter_before_each_trial=bool(recenter_before_each_trial),
+                recenter_checkpoints=recenter_checkpoints,
+                rows=rows,
+                required_success_count=int(required_success_count),
+                recent_turn_acts=phase_recent_turn_acts,
+                expected_effect_override=expected_effect_overrides.get(str(hotkey)),
+                log_fn=logger,
+            )
+        else:
+            evaluated_scores = _run_hotkey_trials_ascending(
+                robot=robot,
+                vision=vision,
+                world=world,
+                hotkey=str(hotkey),
+                start_score=int(start_score),
+                max_score=int(max_score),
+                repeats_per_score=int(repeats_per_score),
+                duration_ms=None if duration_ms is None else int(duration_ms),
+                movement_threshold_mm=float(movement_threshold_mm),
+                use_manual_assist=bool(assist_enabled),
+                pause_between_pulses_ms=int(pause_between_pulses_ms),
+                baseline_pose=phase_baseline_pose,
+                recenter_before_each_trial=bool(recenter_before_each_trial),
+                recenter_checkpoints=recenter_checkpoints,
+                rows=rows,
+                required_success_count=int(required_success_count),
+                recent_turn_acts=phase_recent_turn_acts,
+                expected_effect_override=expected_effect_overrides.get(str(hotkey)),
+                log_fn=logger,
+            )
+        score_search_paths[str(hotkey)] = [int(value) for value in list(evaluated_scores or [])]
 
     summary = summarize_breakaway_results(
         rows,
@@ -677,14 +1467,23 @@ def run_drive_breakaway_test(
             "duration_ms": None if duration_ms is None else int(duration_ms),
             "movement_threshold_mm": float(movement_threshold_mm),
             "required_success_ratio": float(required_success_ratio),
+            "required_success_count": int(required_success_count),
             "pause_between_pulses_ms": int(pause_between_pulses_ms),
             "use_manual_assist": bool(assist_enabled),
+            "score_search_strategy": str(score_search_strategy),
+            "recenter_before_each_trial": bool(recenter_before_each_trial),
             "recenter_tolerance_dist_mm": float(RECENTER_TOLERANCE_DIST_MM),
             "recenter_tolerance_x_axis_mm": float(RECENTER_TOLERANCE_X_AXIS_MM),
             "recenter_timeout_s": float(RECENTER_TIMEOUT_S),
+            "recovery_max_inverse_acts": int(RECOVERY_MAX_INVERSE_ACTS),
+            "high_trial_duration_scale": float(HIGH_TRIAL_DURATION_SCALE),
+            "max_recenter_skips_per_score": int(MAX_RECENTER_SKIPS_PER_SCORE),
         },
         "baseline_pose": baseline_pose,
+        "phase_baselines": phase_baselines,
+        "sign_validation": sign_validation_results,
         "recenter_checkpoints": recenter_checkpoints,
+        "score_search_paths": score_search_paths,
         "rows": rows,
         "summary": summary,
     }

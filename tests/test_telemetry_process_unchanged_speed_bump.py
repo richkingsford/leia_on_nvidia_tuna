@@ -99,6 +99,48 @@ class TestTelemetryProcessUnchangedSpeedBump(unittest.TestCase):
         self.assertEqual(act.get("cmd"), "b")
         self.assertEqual(act.get("score"), 1)
 
+    def test_lite_fail_fallback_can_use_current_effective_y_axis_failure(self):
+        class _World:
+            process_rules = {
+                "ALIGN_BRICK": {
+                    "success_gates": {
+                        "visible": {"min": True},
+                        "xAxis_offset_abs": {"target": 7.1, "tol": 1.4},
+                        "yAxis_offset_abs": {"target": 3.7, "tol": 2.3},
+                        "dist": {"target": 103.6, "tol": 2.3},
+                    }
+                }
+            }
+            brick = {
+                "visible": True,
+                "dist": 104.7,
+                "x_axis": 8.4,
+                "offset_x": 8.4,
+                "y_axis": 6.2,
+                "offset_y": 6.2,
+            }
+
+        orig_lite_measure = telemetry_process._lite_gate_measurement_for_step
+        try:
+            telemetry_process._lite_gate_measurement_for_step = (
+                lambda *_a, **_k: (
+                    {"visible": True, "dist": 104.7, "x_axis": 8.4, "offset_x": 8.4, "y_axis": 5.9, "offset_y": 5.9},
+                    {"enabled": True, "required": 1, "collected": 1},
+                )
+            )
+            act = telemetry_process._align_brick_lite_fail_fallback_action(
+                _World(),
+                "ALIGN_BRICK",
+                prefer_effective_sample=True,
+            )
+        finally:
+            telemetry_process._lite_gate_measurement_for_step = orig_lite_measure
+
+        self.assertIsInstance(act, dict)
+        self.assertEqual(act.get("reason"), "lite_fail_fallback_y_axis")
+        self.assertEqual(act.get("cmd"), "d")
+        self.assertEqual(act.get("score"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

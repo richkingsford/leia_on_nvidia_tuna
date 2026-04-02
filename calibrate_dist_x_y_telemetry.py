@@ -71,7 +71,7 @@ _MANUAL_CONFIG = load_manual_training_config()
 STREAM_IMG_WIDTH = int(_MANUAL_CONFIG.get("stream_img_width", 1600))
 STREAM_VISION_MODE_OPTIONS = [
     ("aruco", "AruCo Markers"),
-    ("cyan", "Cyan Bricks"),
+    ("cyan", "Crown Bricks"),
 ]
 ANSI_ORANGE_BRIGHT = "\033[38;5;208m"
 ANSI_RESET = "\033[0m"

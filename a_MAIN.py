@@ -5,6 +5,7 @@ import json
 import math
 import numpy as np
 import random
+import re
 import sys
 import threading
 import time
@@ -56,6 +57,15 @@ from helper_manual_drive_assist import (
 from helper_manual_drive_breakaway_test import (
     RUN_LOG_FILE_DEFAULT as DRIVE_BREAKAWAY_TEST_LOG_DEFAULT,
     run_interactive_drive_breakaway_test,
+)
+from helper_manual_turn_breakaway_test import (
+    RUN_LOG_FILE_DEFAULT as TURN_BREAKAWAY_TEST_LOG_DEFAULT,
+    run_interactive_turn_breakaway_test,
+)
+from helper_x_axis_turn_experiment import (
+    MAX_DURATION_MS as X_AXIS_OBSERVE_MAX_DURATION_MS,
+    parse_observe_while_moving_trial_input,
+    run_observe_while_moving_trial,
 )
 import helper_calibrate_speed_curve
 import telemetry_robot as telemetry_robot_module
@@ -199,13 +209,16 @@ if not _DEFAULT_STREAM_SUCCESS_GATE_STEP:
 
 CTRL_HELP_LINE = (
     "[CTRL] Drive: W/S 50%, R/F 1%, T/G 100%. Turn: A/D 25%, Q/E 1%, Z/C 100%. "
-    "Lift: O/K 1%, U 50%, P/L 100%. F action, ':' command, b calibration, m auto, y edit hotkey vars, 1 trash log, Q quit"
+    "Lift: O/K 1%, P/L 100%. H observe while moving. U timed hotkey mode. "
+    "F action, ':' command, b calibration, m auto, y custom runs, ? help, 1 trash log, Q quit"
 )
 EASE_IN_OUT_HOTKEYS = frozenset({"t", "g", "z", "c"})
 ANSI_ORANGE_BRIGHT = "\033[38;5;208m"
 ANSI_GREEN_BRIGHT = "\033[92m"
 ANSI_RED_BRIGHT = "\033[91m"
 ANSI_RESET = "\033[0m"
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+STREAM_EXTRA_LINE_LIMIT = 14
 
 MM_METRICS = {
     "xAxis_offset_abs",
@@ -230,96 +243,67 @@ VISION_MODE_CYAN = _VISION_MODE_CYAN_GLOBAL
 VISION_MODE_MARKERLESS = VISION_MODE_CYAN
 STREAM_VISION_MODE_OPTIONS = [
     (VISION_MODE_ARUCO, "AruCo Markers"),
-    (VISION_MODE_CYAN, "Cyan Bricks"),
+    (VISION_MODE_CYAN, "Crown Bricks"),
 ]
-# prefer config2 (no erosion) for cyan vision by default; empirical best during manual testing
-CYAN_PROFILE_DEFAULT = "config2_no_erosion"
+# Keep a single crown-brick runtime preset. Older profile ids remain accepted
+# as aliases so existing local scripts/configs do not break.
+CYAN_PROFILE_DEFAULT = "crown_brick_default"
 CYAN_PROFILE_OPTIONS = [
-    ("config1_defaults", "Config 1 - Defaults (baseline)"),
-    ("config2_no_erosion", "Config 2 - No erosion (best angle, bricks may merge)"),
-    ("config3_light_erosion", "Config 3 - Light erosion (angle vs separation balance)"),
-    ("config4_heavy_erosion", "Config 4 - Heavy erosion (maximum brick separation)"),
-    ("config5_tight_cyan_range", "Config 5 - Tight cyan range (cleaner contours)"),
-    ("config6_wide_cyan_range", "Config 6 - Wide cyan range (catches paint variation)"),
-    ("config7_smooth", "Config 7 - Smooth (very stable, slow to respond)"),
-    ("config8_responsive", "Config 8 - Responsive (tracks motion, noisier)"),
-    ("config9_tight_light_smooth", "Config 9 - Tight + light erosion + smooth (recommended)"),
-    ("config10_hsv_disabled", "Config 10 - HSV disabled (YOLO-only baseline)"),
+    ("crown_brick_default", "Config 2"),
 ]
 CYAN_PROFILE_PRESETS = {
-    # NOTE: values are intentionally expressed in the detector runtime-tuning
-    # API names to keep presets as direct set_runtime_tuning() scenario calls.
-    "config1_defaults": {
+    "crown_brick_default": {
         "confidence": 0.15,
-        "smoothing_alpha": 0.30,
-        "hsv_enabled": True,
-        "hsv_erode_iterations": 2,
-        "hsv_lower": list(CYAN_HSV_BALANCED_LOWER),
-        "hsv_upper": list(CYAN_HSV_BALANCED_UPPER),
-    },
-    "config2_no_erosion": {
-        "hsv_erode_iterations": 0,
-    },
-    "config3_light_erosion": {
-        "hsv_erode_iterations": 1,
-    },
-    "config4_heavy_erosion": {
-        "hsv_erode_iterations": 3,
-    },
-    "config5_tight_cyan_range": {
-        "hsv_lower": list(CYAN_HSV_TIGHT_LOWER),
-        "hsv_upper": list(CYAN_HSV_TIGHT_UPPER),
-    },
-    "config6_wide_cyan_range": {
-        "hsv_lower": list(CYAN_HSV_WIDE_LOWER),
-        "hsv_upper": list(CYAN_HSV_WIDE_UPPER),
-    },
-    "config7_smooth": {
-        "smoothing_alpha": 0.15,
-    },
-    "config8_responsive": {
-        "smoothing_alpha": 0.50,
-    },
-    "config9_tight_light_smooth": {
-        "hsv_lower": list(CYAN_HSV_TIGHT_LOWER),
-        "hsv_upper": list(CYAN_HSV_TIGHT_UPPER),
-        "hsv_erode_iterations": 1,
         "smoothing_alpha": 0.20,
-    },
-    "config10_hsv_disabled": {
-        "hsv_enabled": False,
+        "hsv_enabled": True,
+        "hsv_erode_iterations": 0,
+        "hsv_lower": list(CYAN_HSV_TIGHT_LOWER),
+        "hsv_upper": list(CYAN_HSV_TIGHT_UPPER),
     },
 }
 _CYAN_PROFILE_ALIASES = {
-    "config1": "config1_defaults",
-    "config2": "config2_no_erosion",
-    "config3": "config3_light_erosion",
-    "config4": "config4_heavy_erosion",
-    "config5": "config5_tight_cyan_range",
-    "config6": "config6_wide_cyan_range",
-    "config7": "config7_smooth",
-    "config8": "config8_responsive",
-    "config9": "config9_tight_light_smooth",
-    "config10": "config10_hsv_disabled",
-    "1": "config1_defaults",
-    "2": "config2_no_erosion",
-    "3": "config3_light_erosion",
-    "4": "config4_heavy_erosion",
-    "5": "config5_tight_cyan_range",
-    "6": "config6_wide_cyan_range",
-    "7": "config7_smooth",
-    "8": "config8_responsive",
-    "9": "config9_tight_light_smooth",
-    "10": "config10_hsv_disabled",
+    "config2": "crown_brick_default",
+    "config1": "crown_brick_default",
+    "config3": "crown_brick_default",
+    "config4": "crown_brick_default",
+    "config5": "crown_brick_default",
+    "config6": "crown_brick_default",
+    "config7": "crown_brick_default",
+    "config8": "crown_brick_default",
+    "config9": "crown_brick_default",
+    "config10": "crown_brick_default",
+    "1": "crown_brick_default",
+    "2": "crown_brick_default",
+    "3": "crown_brick_default",
+    "4": "crown_brick_default",
+    "5": "crown_brick_default",
+    "6": "crown_brick_default",
+    "7": "crown_brick_default",
+    "8": "crown_brick_default",
+    "9": "crown_brick_default",
+    "10": "crown_brick_default",
     "default": CYAN_PROFILE_DEFAULT,
-    "baseline": "config1_defaults",
+    "crown": "crown_brick_default",
+    "crown_brick": "crown_brick_default",
+    "crown_bricks": "crown_brick_default",
+    "baseline": "crown_brick_default",
     # Backward-compatibility for old profile ids in existing local config.
-    "balanced": "config1_defaults",
-    "sensitive": "config1_defaults",
-    "aggressive": "config1_defaults",
-    "rescue": "config1_defaults",
-    "stable": "config1_defaults",
-    "legacy": "config1_defaults",
+    "config2_no_erosion": "crown_brick_default",
+    "config1_defaults": "crown_brick_default",
+    "config3_light_erosion": "crown_brick_default",
+    "config4_heavy_erosion": "crown_brick_default",
+    "config5_tight_cyan_range": "crown_brick_default",
+    "config6_wide_cyan_range": "crown_brick_default",
+    "config7_smooth": "crown_brick_default",
+    "config8_responsive": "crown_brick_default",
+    "config9_tight_light_smooth": "crown_brick_default",
+    "config10_hsv_disabled": "crown_brick_default",
+    "balanced": "crown_brick_default",
+    "sensitive": "crown_brick_default",
+    "aggressive": "crown_brick_default",
+    "rescue": "crown_brick_default",
+    "stable": "crown_brick_default",
+    "legacy": "crown_brick_default",
 }
 CYAN_VISIBILITY_AUTO = "auto"
 CYAN_VISIBILITY_GRAY = "gray"
@@ -327,7 +311,7 @@ CYAN_VISIBILITY_CYAN = "cyan"
 CYAN_VISIBILITY_OPTIONS = [
     (CYAN_VISIBILITY_AUTO, "Auto (all available)"),
     (CYAN_VISIBILITY_GRAY, "Gray Brick"),
-    (CYAN_VISIBILITY_CYAN, "Cyan Brick"),
+    (CYAN_VISIBILITY_CYAN, "Crown Brick"),
 ]
 _CYAN_VISIBILITY_ALIASES = {
     "auto": CYAN_VISIBILITY_AUTO,
@@ -335,10 +319,12 @@ _CYAN_VISIBILITY_ALIASES = {
     "both": CYAN_VISIBILITY_AUTO,
     "gray": CYAN_VISIBILITY_GRAY,
     "grey": CYAN_VISIBILITY_GRAY,
+    "crown": CYAN_VISIBILITY_CYAN,
     "cyan": CYAN_VISIBILITY_CYAN,
 }
 _VISION_MODE_ALIASES = {
     "aruco": VISION_MODE_ARUCO,
+    "crown": VISION_MODE_CYAN,
     "cyan": VISION_MODE_CYAN,
     "yolo": VISION_MODE_CYAN,
     "markerless": VISION_MODE_CYAN,
@@ -486,8 +472,7 @@ def normalize_cyan_profile(value, fallback=CYAN_PROFILE_DEFAULT):
 
 def cyan_profile_settings(profile):
     profile_key = normalize_cyan_profile(profile, fallback=_DEFAULT_CYAN_PROFILE)
-    settings = dict(CYAN_PROFILE_PRESETS.get("config1_defaults") or {})
-    settings.update(dict(CYAN_PROFILE_PRESETS.get(profile_key) or CYAN_PROFILE_PRESETS[CYAN_PROFILE_DEFAULT]))
+    settings = dict(CYAN_PROFILE_PRESETS.get(profile_key) or CYAN_PROFILE_PRESETS[CYAN_PROFILE_DEFAULT])
     return profile_key, settings
 
 
@@ -674,6 +659,111 @@ def step_label(obj_enum):
 
 def log_line(message):
     print(str(message).strip(), flush=True)
+
+
+def _strip_ansi_codes(text):
+    return ANSI_ESCAPE_RE.sub("", str(text or ""))
+
+
+def _stream_text_line(text="", *, color=None, segments=None):
+    if isinstance(segments, list) and segments:
+        return {
+            "segments": [
+                {
+                    "text": str((segment or {}).get("text") or ""),
+                    "color": str((segment or {}).get("color") or "#ffffff"),
+                }
+                for segment in segments
+                if isinstance(segment, dict) and str((segment or {}).get("text") or "")
+            ]
+        }
+    line = {"text": str(text or "")}
+    if color:
+        line["color"] = str(color)
+    return line
+
+
+def _compose_stream_text_lines_locked(stream_state):
+    telemetry_lines = list(stream_state.get("telemetry_lines") or [])
+    extra_lines = list(stream_state.get("extra_text_lines") or [])
+    combined = []
+    if telemetry_lines:
+        combined.extend(telemetry_lines)
+    if extra_lines:
+        if combined:
+            combined.append(_stream_text_line(""))
+        combined.extend(extra_lines)
+    stream_state["text_lines"] = combined
+
+
+def _clear_stream_extra_lines(app_state):
+    stream_state = app_state.stream_state if isinstance(app_state.stream_state, dict) else None
+    if not stream_state:
+        return
+    lock = stream_state.get("lock")
+    if lock is None:
+        stream_state["extra_text_lines"] = []
+        _compose_stream_text_lines_locked(stream_state)
+        return
+    with lock:
+        stream_state["extra_text_lines"] = []
+        _compose_stream_text_lines_locked(stream_state)
+
+
+def _append_stream_extra_line(app_state, line_obj):
+    stream_state = app_state.stream_state if isinstance(app_state.stream_state, dict) else None
+    if not stream_state:
+        return
+    lock = stream_state.get("lock")
+
+    def _apply():
+        lines = list(stream_state.get("extra_text_lines") or [])
+        lines.append(line_obj)
+        stream_state["extra_text_lines"] = lines[-int(STREAM_EXTRA_LINE_LIMIT) :]
+        _compose_stream_text_lines_locked(stream_state)
+
+    if lock is None:
+        _apply()
+        return
+    with lock:
+        _apply()
+
+
+def _turn_breakaway_stream_line(message):
+    plain = _strip_ansi_codes(message).strip()
+    if not plain:
+        return None
+    if plain.startswith("Trial ") and "x_delta=" in plain and "; result:" in plain:
+        left, right = plain.split("x_delta=", 1)
+        delta_text, result_text = right.split("; result:", 1)
+        result_norm = str(result_text).strip().lower()
+        delta_color = "#7CFC7C" if result_norm == "movement" else "#ffffff"
+        result_color = "#ff6b6b" if result_norm == "no movement" else "#ffffff"
+        return _stream_text_line(
+            segments=[
+                {"text": left + "x_delta=", "color": "#ffffff"},
+                {"text": str(delta_text).strip(), "color": delta_color},
+                {"text": "; result: ", "color": "#ffffff"},
+                {"text": str(result_text).strip(), "color": result_color},
+            ]
+        )
+    if plain.startswith("[TURN BREAKAWAY TEST]"):
+        return _stream_text_line(plain, color="#f0ad4e")
+    return _stream_text_line(plain, color="#dddddd")
+
+
+def _make_turn_breakaway_log_fn(app_state):
+    def _logger(message):
+        log_line(message)
+        line_obj = _turn_breakaway_stream_line(message)
+        if line_obj is not None:
+            _append_stream_extra_line(app_state, line_obj)
+        try:
+            update_stream_frame(app_state)
+        except Exception:
+            pass
+
+    return _logger
 
 
 def _command_preview_text(cmd, *, speed_score=None, pwm=None, power=None, duration_ms=None):
@@ -1266,6 +1356,42 @@ def run_drive_breakaway_test_command(app_state):
     return {"ok": False, "error": "invalid result"}
 
 
+def run_turn_breakaway_test_command(app_state):
+    if app_state.robot is None or app_state.vision is None:
+        log_line("[TURN BREAKAWAY TEST] Skipped (robot/vision unavailable).")
+        return {"ok": False, "error": "robot/vision unavailable"}
+
+    _clear_stream_extra_lines(app_state)
+    log_line("[TURN BREAKAWAY TEST] Starting raw turn PWM floor search...")
+    _append_stream_extra_line(
+        app_state,
+        _stream_text_line("[TURN BREAKAWAY TEST] Live trial details will appear here.", color="#f0ad4e"),
+    )
+    stream_logger = _make_turn_breakaway_log_fn(app_state)
+    with app_state.vision_io_lock:
+        result = run_interactive_turn_breakaway_test(
+            robot=app_state.robot,
+            vision=app_state.vision,
+            world=app_state.world,
+            prompt_fn=prompt_line,
+            log_fn=stream_logger,
+            log_path=TURN_BREAKAWAY_TEST_LOG_DEFAULT,
+        )
+        try:
+            update_stream_frame(app_state)
+        except Exception:
+            pass
+    refresh_brick_telemetry(app_state, read_vision=False)
+    if isinstance(result, dict):
+        write_error = result.get("write_error")
+        if write_error:
+            log_line(f"[TURN BREAKAWAY TEST] Log write failed ({write_error}).")
+        else:
+            log_line(f"[TURN BREAKAWAY TEST] Wrote results to {TURN_BREAKAWAY_TEST_LOG_DEFAULT}")
+        return result
+    return {"ok": False, "error": "invalid result"}
+
+
 def _begin_auto_demo_logging(app_state, obj_enum):
     ensure_log_open(app_state)
     marker = ATTEMPT_MARKERS["NOMINAL"][0]
@@ -1308,6 +1434,7 @@ def prompt_line(prompt):
     old_attr = termios.tcgetattr(fd_term)
     try:
         attr = termios.tcgetattr(fd_term)
+        attr[0] |= termios.ICRNL
         attr[3] |= termios.ECHO | termios.ICANON
         termios.tcsetattr(fd_term, termios.TCSANOW, attr)
         try:
@@ -1893,7 +2020,7 @@ def stream_footer_html():
     )
     cyan_shade_lines = _cyan_shade_footer_lines()
     if cyan_shade_lines:
-        sections.append(_footer_section_html("Cyan Shades", cyan_shade_lines))
+        sections.append(_footer_section_html("Crown Brick Shades", cyan_shade_lines))
     one_pct_lines = _one_percent_discovery_footer_lines()
     if one_pct_lines:
         sections.append(_footer_section_html("Shared 1% Floor", one_pct_lines))
@@ -3322,7 +3449,7 @@ def _build_cyan_mask_preview(vision, frame):
         return None
 
 
-def _overlay_corner_inset(frame, inset, *, title="CYAN MASK"):
+def _overlay_corner_inset(frame, inset, *, title="CROWN MASK"):
     if frame is None or inset is None:
         return frame
     try:
@@ -3409,12 +3536,13 @@ def update_stream_frame(app_state):
             telemetry_step=stream_step,
         )
         mask_preview = _build_cyan_mask_preview(vision, frame)
-        frame = _overlay_corner_inset(frame, mask_preview, title="CYAN MASK")
+        frame = _overlay_corner_inset(frame, mask_preview, title="CROWN MASK")
         app_state.current_frame = frame
     if app_state.stream_state:
         with app_state.stream_state["lock"]:
             app_state.stream_state["frame"] = frame
-            app_state.stream_state["text_lines"] = stream_lines
+            app_state.stream_state["telemetry_lines"] = list(stream_lines)
+            _compose_stream_text_lines_locked(app_state.stream_state)
             app_state.stream_state["xyz_workspace"] = getattr(app_state.world, "_xyz_workspace", None)
 
 
@@ -3562,10 +3690,16 @@ def print_command_help(app_state=None):
     log_line("[CMD] Auto-run: type the full step number, then press Enter.")
     log_line("[CMD] Auto-run shortcut: blank Enter queues the next step after the last successful auto step.")
     log_line(f"[CMD] Auto-continue: after a successful auto-step, next step auto-queues in {float(AUTO_CONTINUE_WAIT_S):.1f}s unless cancelled.")
-    log_line("[CMD] Hotkey tuning: press a movement hotkey, then press y to edit that hotkey's vars.")
+    log_line("[CMD] Observe while moving: press h, then type '1' to run a semi-manual x-axis trial.")
+    log_line("[CMD] Custom runs: press y, then enter '<steps_csv> <trials>' (example: 3,4,5,6,7 2).")
+    log_line("[CMD] Timed hotkey mode: press u, then type '<hotkey> <duration_ms> [percent]' OR '<hotkey> <percent> <duration_ms>' (examples: e 666 10, e 150 666).")
     log_line("[CMD] Lift preflight: :liftcal (discover O/K micro movement + find ground level).")
     log_line("[CMD] Drive breakaway test: :drivebreak (find the first low-speed score that moves reliably).")
+    log_line("[CMD] Turn breakaway test: :turnbreak (find the slowest raw turn PWM that still moves).")
     log_line("[CMD] End attempt: press ':' to finish and return to the command prompt.")
+    log_line("[CMD] Press 'h' for Observe while moving mode.")
+    log_line("[CMD] Press 'u' for timed hotkey mode, then enter '<hotkey> <duration_ms> [percent]' OR '<hotkey> <percent> <duration_ms>' (examples: e 666 10, e 150 666).")
+    log_line("[CMD] Press 'y' for custom runs, then enter '<steps_csv> <trials>' (example: 3,4,5,6,7 2).")
     log_line("[CMD] Press 'b' to enter calibration mode.")
     log_step_codes_list(prefix="[CMD]")
 
@@ -3582,10 +3716,13 @@ def format_hotkey_speeds():
     key_order = {key: idx for idx, key in enumerate([
         "W", "S", "R", "F", "T", "G",
         "A", "D", "Q", "E", "Z", "C",
-        "O", "K", "U", "P", "L",
+        "O", "K", "P", "L",
     ])}
     grouped = {}
     for key, info in HOTKEY_SPEED_SCORES.items():
+        if str(key).strip().lower() == "u":
+            # 'u' is reserved for timed hotkey mode and no longer shown as a direct movement hotkey.
+            continue
         cmd = info.get("cmd")
         score = info.get("score")
         if cmd not in categories or score is None:
@@ -3621,6 +3758,7 @@ def handle_command_line(app_state, cmd):
     ended_info = None
     run_lift_preflight_cmd = False
     run_drive_breakaway_cmd = False
+    run_turn_breakaway_cmd = False
 
     with app_state.lock:
         if cmd_lower in ("", ":"):
@@ -3646,6 +3784,8 @@ def handle_command_line(app_state, cmd):
             run_lift_preflight_cmd = True
         elif cmd_lower in ("drivebreak", "drive_break", "breakaway", "drivebreakaway"):
             run_drive_breakaway_cmd = True
+        elif cmd_lower in ("turnbreak", "turn_break", "turnbreakaway", "turn-breakaway"):
+            run_turn_breakaway_cmd = True
         elif cmd_lower in ("end", "stop", "done"):
             ok, msg, obj_enum, attempt_type, should_close = end_attempt(app_state)
             messages.append(msg)
@@ -3685,6 +3825,13 @@ def handle_command_line(app_state, cmd):
             messages.append("[BREAKAWAY TEST] Complete.")
         else:
             messages.append(f"[BREAKAWAY TEST] Failed ({result.get('error')}).")
+
+    if run_turn_breakaway_cmd:
+        result = run_turn_breakaway_test_command(app_state)
+        if bool(result.get("ok")):
+            messages.append("[TURN BREAKAWAY TEST] Complete.")
+        else:
+            messages.append(f"[TURN BREAKAWAY TEST] Failed ({result.get('error')}).")
 
     return exit_mode, do_help, messages, ended_info
 
@@ -3881,6 +4028,8 @@ class AppState:
             "frame": None,
             "lock": threading.Lock(),
             "skip_telemetry_process": True,
+            "telemetry_lines": [],
+            "extra_text_lines": [],
             "show_center_line": True,
             "vision_mode": vision_mode_norm,
             "cyan_profile": _DEFAULT_CYAN_PROFILE,
@@ -4049,7 +4198,7 @@ def _resume_manual_runtime_after_calibration(app_state):
             )
         if vision_mode == VISION_MODE_CYAN and visibility_applied:
             log_line(
-                "[VISION] Cyan visibility: "
+                "[VISION] Crown visibility: "
                 f"{cyan_visibility_label(visibility_key)}"
             )
 
@@ -4197,6 +4346,7 @@ def keyboard_thread(app_state):
         try:
             attr_term = termios.tcgetattr(fd_term)
             attr_line = termios.tcgetattr(fd_term)
+            attr_line[0] |= termios.ICRNL
             attr_line[3] |= termios.ECHO | termios.ICANON
             termios.tcsetattr(fd_term, termios.TCSANOW, attr_line)
         except Exception:
@@ -4270,6 +4420,418 @@ def keyboard_thread(app_state):
             step_name = str(getattr(obj_enum, "value", obj_enum or token)).lower()
             return [f"[AUTO] Queued step {step_code} ({step_name})."]
         return msg_list
+
+    def _prompt_hotkey_duration_input():
+        prompt = "[HOTKEY] Timed act <hotkey> <duration_ms> [percent] OR <hotkey> <percent> <duration_ms> (examples: e 666 10, e 150 666) > "
+
+        fd_term = sys.stdin.fileno()
+        try:
+            attr_term = termios.tcgetattr(fd_term)
+            attr_line = termios.tcgetattr(fd_term)
+            attr_line[0] |= termios.ICRNL
+            attr_line[3] |= termios.ECHO | termios.ICANON
+            termios.tcsetattr(fd_term, termios.TCSANOW, attr_line)
+        except Exception:
+            attr_term = None
+
+        line = None
+        try:
+            line = input(prompt)
+        except (EOFError, KeyboardInterrupt):
+            line = None
+        finally:
+            if attr_term is not None:
+                try:
+                    termios.tcsetattr(fd_term, termios.TCSANOW, attr_term)
+                except Exception:
+                    pass
+            try:
+                termios.tcflush(sys.stdin, termios.TCIFLUSH)
+            except Exception:
+                pass
+
+        if line is None:
+            return None, ["[HOTKEY] Timed hotkey mode cancelled."]
+
+        parts = str(line).strip().split()
+        if len(parts) not in (2, 3):
+            return None, ["[HOTKEY] Expected: <hotkey> <duration_ms> [percent] OR <hotkey> <percent> <duration_ms> (examples: e 666 10, e 150 666)."]
+
+        target_hotkey = str(parts[0]).strip().lower()
+        if len(target_hotkey) != 1:
+            return None, ["[HOTKEY] Hotkey must be a single character."]
+
+        entry = HOTKEY_SPEED_SCORES.get(target_hotkey) if isinstance(HOTKEY_SPEED_SCORES, dict) else None
+        if not isinstance(entry, dict):
+            return None, [f"[HOTKEY] Unknown movement hotkey '{target_hotkey}'."]
+
+        duration_ms = None
+        scale_percent = None
+        if len(parts) == 2:
+            try:
+                duration_ms = int(round(float(parts[1])))
+            except (TypeError, ValueError):
+                return None, ["[HOTKEY] Duration must be a number of milliseconds."]
+            if duration_ms <= 0:
+                return None, ["[HOTKEY] Duration must be greater than 0 ms."]
+        else:
+            try:
+                second_num = float(parts[1])
+                third_num = float(parts[2])
+            except (TypeError, ValueError):
+                return None, ["[HOTKEY] For 3 params, duration/percent must be numeric (examples: e 666 10, e 150 666)."]
+
+            # Accept both orders:
+            # 1) <hotkey> <duration_ms> <percent>
+            # 2) <hotkey> <percent> <duration_ms>
+            # Heuristic: value <= 300 is treated as percent when paired with a large duration.
+            if second_num <= 300.0 and third_num > 300.0:
+                scale_percent = float(second_num)
+                duration_ms = int(round(float(third_num)))
+            else:
+                duration_ms = int(round(float(second_num)))
+                scale_percent = float(third_num)
+
+            if duration_ms <= 0:
+                return None, ["[HOTKEY] Duration must be greater than 0 ms."]
+            if scale_percent <= 0:
+                return None, ["[HOTKEY] Percent must be greater than 0."]
+            scale_percent = max(1.0, min(300.0, float(scale_percent)))
+
+        cmd = str(entry.get("cmd", "")).strip().lower()
+        try:
+            score = int(entry.get("score"))
+        except (TypeError, ValueError):
+            score = None
+        try:
+            pwm_override = int(round(float(entry.get("pwm"))))
+        except (TypeError, ValueError):
+            pwm_override = None
+        if pwm_override is not None and pwm_override <= 0:
+            pwm_override = None
+
+        if not cmd or score is None:
+            return None, [f"[HOTKEY] Hotkey '{target_hotkey}' is not configured for movement."]
+
+        scaled_msg = None
+        if scale_percent is not None:
+            try:
+                base_power, base_pwm, _, _ = telemetry_robot_module.speed_power_pwm_for_cmd(cmd, score)
+            except Exception:
+                base_power = None
+                base_pwm = None
+            base_pwm_effective = int(pwm_override) if pwm_override is not None else None
+            if base_pwm_effective is None:
+                try:
+                    base_pwm_effective = int(round(float(base_pwm)))
+                except (TypeError, ValueError):
+                    base_pwm_effective = None
+            if base_pwm_effective is None or base_pwm_effective <= 0:
+                return None, ["[HOTKEY] Could not compute base PWM for that hotkey."]
+            scale_fraction = float(scale_percent) / 100.0
+            pwm_scaled = telemetry_robot_module.clamp_pwm(int(round(float(base_pwm_effective) * scale_fraction)))
+            if pwm_scaled <= 0:
+                pwm_scaled = 1
+            pwm_override = int(pwm_scaled)
+            if base_power is None:
+                try:
+                    base_power = telemetry_robot_module.pwm_to_power(base_pwm_effective)
+                except Exception:
+                    base_power = None
+            try:
+                scaled_power = float(base_power) * scale_fraction if base_power is not None else None
+            except (TypeError, ValueError):
+                scaled_power = None
+            if scaled_power is not None:
+                scaled_msg = (
+                    f"[HOTKEY] Timed act queued: {target_hotkey} for {int(duration_ms)} ms at "
+                    f"{float(scale_percent):.1f}% (PWM {int(pwm_override)}, power {float(scaled_power):.3f})."
+                )
+            else:
+                scaled_msg = (
+                    f"[HOTKEY] Timed act queued: {target_hotkey} for {int(duration_ms)} ms at "
+                    f"{float(scale_percent):.1f}% (PWM {int(pwm_override)})."
+                )
+
+        action = (cmd, score, target_hotkey, int(duration_ms), pwm_override)
+        if scaled_msg:
+            return action, [scaled_msg]
+        return action, [f"[HOTKEY] Timed act queued: {target_hotkey} for {int(duration_ms)} ms."]
+
+    def _prompt_observe_while_moving_trial():
+        prompt_mode = "[OBSERVE] Mode > "
+        prompt_params = (
+            "[OBSERVE] Params <direction[L/R]> <duration_ms> <target_x_axis_mm> "
+            f"(max {int(X_AXIS_OBSERVE_MAX_DURATION_MS)} ms; spaces required) > "
+        )
+
+        def _fmt(value):
+            try:
+                return round(float(value), 3)
+            except (TypeError, ValueError):
+                return None
+
+        fd_term = sys.stdin.fileno()
+        try:
+            attr_term = termios.tcgetattr(fd_term)
+            attr_line = termios.tcgetattr(fd_term)
+            attr_line[0] |= termios.ICRNL
+            attr_line[3] |= termios.ECHO | termios.ICANON
+            termios.tcsetattr(fd_term, termios.TCSANOW, attr_line)
+        except Exception:
+            attr_term = None
+
+        selection = None
+        params_line = None
+        try:
+            selection = input(prompt_mode)
+            if selection is None:
+                return ["[OBSERVE] Observe while moving mode cancelled."]
+            selection_text = str(selection).strip().lower()
+            if selection_text in {"", "q", "quit", "exit"}:
+                return ["[OBSERVE] Observe while moving mode cancelled."]
+            if selection_text != "1":
+                return ["[OBSERVE] Only option '1' is available right now."]
+            log_line(
+                "[OBSERVE] Objective: detect whether Leia can track the brick and hit the target x_axis value without completely stopping."
+            )
+            params_line = input(prompt_params)
+        except (EOFError, KeyboardInterrupt):
+            return ["[OBSERVE] Observe while moving mode cancelled."]
+        finally:
+            if attr_term is not None:
+                try:
+                    termios.tcsetattr(fd_term, termios.TCSANOW, attr_term)
+                except Exception:
+                    pass
+            try:
+                termios.tcflush(sys.stdin, termios.TCIFLUSH)
+            except Exception:
+                pass
+
+        params, err = parse_observe_while_moving_trial_input(
+            params_line,
+            max_duration_ms=int(X_AXIS_OBSERVE_MAX_DURATION_MS),
+        )
+        if err:
+            return [str(err)]
+        if app_state.robot is None or app_state.vision is None:
+            return ["[OBSERVE] Trial unavailable: robot or vision is not ready."]
+
+        with app_state.lock:
+            app_state.last_key_time = time.time()
+            app_state.auto_prompt = False
+            _clear_manual_motion_state_locked(app_state)
+
+        result = run_observe_while_moving_trial(
+            robot=app_state.robot,
+            world=app_state.world,
+            vision=app_state.vision,
+            vision_io_lock=app_state.vision_io_lock,
+            direction=params["direction"],
+            duration_ms=params["duration_ms"],
+            target_x_axis_mm=params["target_x_axis_mm"],
+            log_fn=log_line,
+        )
+
+        status = str(result.get("status") or "")
+        if status == "never_visible":
+            return ["[OBSERVE] Trial result: failed to ever see the brick."]
+
+        result_x_axis_mm = result.get("result_x_axis_mm")
+        result_target_error_mm = result.get("result_target_error_mm")
+        percent_off_target = result.get("percent_off_target")
+        percent_basis = str(result.get("percent_off_target_basis") or "")
+        first_visible_elapsed_ms = result.get("first_visible_elapsed_ms")
+        end_visible = bool(((result.get("end_pose") or {}) if isinstance(result.get("end_pose"), dict) else {}).get("visible"))
+        x_label = "x_axis" if end_visible else "last visible x_axis"
+        first_seen_text = None
+        try:
+            if first_visible_elapsed_ms is not None:
+                first_seen_text = f"first saw the brick after {int(round(float(first_visible_elapsed_ms)))} ms; "
+        except (TypeError, ValueError):
+            first_seen_text = None
+        if not first_seen_text:
+            first_seen_text = ""
+        if percent_off_target is None:
+            return [
+                "[OBSERVE] Trial result: "
+                f"{first_seen_text}{x_label}={_fmt(result_x_axis_mm)} mm. "
+                f"Target error={_fmt(result_target_error_mm)} mm."
+            ]
+        if percent_basis == "start_gap":
+            return [
+                "[OBSERVE] Trial result: "
+                f"{first_seen_text}{x_label}={_fmt(result_x_axis_mm)} mm; "
+                f"{_fmt(percent_off_target)}% off target "
+                "(measured against the starting x-axis gap because target=0)."
+            ]
+        return [
+            "[OBSERVE] Trial result: "
+            f"{first_seen_text}{x_label}={_fmt(result_x_axis_mm)} mm; "
+            f"{_fmt(percent_off_target)}% off target."
+        ]
+
+    def _parse_custom_runs_input(raw):
+        text = str(raw or "").strip()
+        if not text:
+            return None, None, "[CUSTOM RUNS] Expected: <steps_csv> <trials> (example: 3,4,5,6,7 2)."
+        pieces = text.split()
+        if len(pieces) != 2:
+            return None, None, "[CUSTOM RUNS] Expected exactly 2 params: <steps_csv> <trials>."
+        steps_csv, trials_text = pieces
+        step_tokens = [token.strip() for token in steps_csv.split(",") if token.strip()]
+        if not step_tokens:
+            return None, None, "[CUSTOM RUNS] No step codes provided."
+        steps = []
+        for token in step_tokens:
+            obj = resolve_step_token(token)
+            if obj is None:
+                return None, None, f"[CUSTOM RUNS] Unknown step token '{token}'."
+            steps.append(obj)
+        try:
+            trials = int(round(float(trials_text)))
+        except (TypeError, ValueError):
+            return None, None, "[CUSTOM RUNS] Trials must be a number."
+        if trials <= 0:
+            return None, None, "[CUSTOM RUNS] Trials must be >= 1."
+        return steps, int(trials), None
+
+    def _prompt_custom_runs_input():
+        line = prompt_line("[CUSTOM RUNS] Enter <steps_csv> <trials> (steps=comma list, trials=count; example: 3,4,5,6,7 2) > ")
+        steps, trials, err = _parse_custom_runs_input(line)
+        if err:
+            return None, None, [err]
+        return steps, trials, []
+
+    def _wait_for_auto_idle(timeout_s=10.0):
+        deadline = time.time() + max(0.1, float(timeout_s))
+        while app_state.running and time.time() < deadline:
+            with app_state.lock:
+                busy = bool(app_state.auto_running) or (app_state.auto_request is not None)
+            if not busy:
+                return True
+            time.sleep(0.05)
+        return False
+
+    def _queue_auto_step_custom(obj_enum):
+        with app_state.lock:
+            app_state.last_key_time = time.time()
+            app_state.auto_prompt = False
+            try:
+                app_state.auto_cancel_event.clear()
+            except Exception:
+                pass
+            _clear_auto_continue_locked(app_state)
+            app_state.auto_request = obj_enum
+            app_state.active_command = None
+            app_state.active_hotkey = None
+            app_state.active_speed = 0.0
+            app_state.active_speed_score = None
+            app_state.active_duration_ms = None
+            app_state.active_pwm_override = None
+            _set_stream_state_success_gate_step(app_state, obj_enum.value)
+
+    def _wait_for_auto_step_cycle(timeout_s=180.0):
+        deadline = time.time() + max(1.0, float(timeout_s))
+        started = False
+        while app_state.running and time.time() < deadline:
+            with app_state.lock:
+                auto_running_now = bool(app_state.auto_running)
+                auto_request_pending = app_state.auto_request is not None
+            if auto_running_now:
+                started = True
+            if started and (not auto_running_now) and (not auto_request_pending):
+                return True
+            if (not started) and (not auto_running_now) and (not auto_request_pending):
+                return True
+            time.sleep(0.05)
+        return False
+
+    def _custom_reset_left_until_not_visible(max_acts=240):
+        log_line(
+            format_headline(
+                "[EXCEPTION] Custom-runs reset is hardcoded: turning left at 1% until visible=false. Replace with robust reset logic.",
+                COLOR_MAGENTA_BRIGHT,
+            )
+        )
+        reset_hotkey = "q"
+        row = HOTKEY_SPEED_SCORES.get(reset_hotkey) if isinstance(HOTKEY_SPEED_SCORES, dict) else None
+        cmd = str((row or {}).get("cmd") or "l").strip().lower()
+        try:
+            score = int((row or {}).get("score", 1))
+        except (TypeError, ValueError):
+            score = 1
+        score = max(int(telemetry_robot_module.SPEED_SCORE_MIN), int(score))
+
+        acts = 0
+        while app_state.running and acts < int(max_acts):
+            if not _auto_align_visible_now(app_state):
+                log_line(f"[CUSTOM RUNS] Reset complete: visible=false after {int(acts)} left-turn acts.")
+                return True
+            quantized_speed, score_used = quantize_speed(cmd, score=score)
+            speed, _ = app_state.robot.normalize_speed(cmd, quantized_speed)
+            send_result = send_robot_command(
+                app_state.robot,
+                app_state.world,
+                app_state.world.step_state,
+                cmd,
+                speed,
+                speed_score=score_used,
+                duration_override_ms=None,
+                ease_in_out_enabled=hotkey_uses_ease_in_out(reset_hotkey),
+            )
+            _apply_manual_motion_telemetry_from_send(
+                app_state,
+                cmd=cmd,
+                speed=speed,
+                score=score_used,
+                send_result=send_result,
+            )
+            refresh_brick_telemetry(app_state, read_vision=True)
+            acts += 1
+            time.sleep(0.05)
+
+        if not _auto_align_visible_now(app_state):
+            log_line(f"[CUSTOM RUNS] Reset complete: visible=false after {int(acts)} left-turn acts.")
+            return True
+        log_line(f"[CUSTOM RUNS] Reset timeout after {int(acts)} left-turn acts (visible still true).")
+        return False
+
+    def _run_custom_trials(steps, trials):
+        step_codes = ",".join(step_code_for_obj(step) for step in steps)
+        log_line(f"[CUSTOM RUNS] Starting: steps={step_codes} trials={int(trials)}.")
+        if not _wait_for_auto_idle(timeout_s=15.0):
+            log_line("[CUSTOM RUNS] Timed out waiting for auto mode to become idle before initial reset.")
+            return
+        if not _custom_reset_left_until_not_visible():
+            log_line("[CUSTOM RUNS] Stopping custom runs because initial reset did not converge.")
+            return
+        for trial_idx in range(1, int(trials) + 1):
+            if not app_state.running:
+                break
+            log_line(f"[CUSTOM RUNS] Trial {int(trial_idx)}/{int(trials)} begin.")
+            for step_obj in steps:
+                if not app_state.running:
+                    break
+                if not _wait_for_auto_idle(timeout_s=15.0):
+                    log_line("[CUSTOM RUNS] Timed out waiting for auto mode to become idle.")
+                    return
+                step_code = step_code_for_obj(step_obj)
+                step_name = str(getattr(step_obj, "value", step_obj)).lower()
+                log_line(f"[CUSTOM RUNS] Queueing step {step_code} ({step_name}).")
+                _queue_auto_step_custom(step_obj)
+                if not _wait_for_auto_step_cycle(timeout_s=240.0):
+                    log_line(f"[CUSTOM RUNS] Timeout while waiting for step {step_code} ({step_name}) to finish.")
+                    return
+            if not app_state.running:
+                break
+            _wait_for_auto_idle(timeout_s=15.0)
+            if not _custom_reset_left_until_not_visible():
+                log_line("[CUSTOM RUNS] Stopping custom runs because reset did not converge.")
+                return
+            log_line(f"[CUSTOM RUNS] Trial {int(trial_idx)}/{int(trials)} complete.")
+        log_line("[CUSTOM RUNS] Finished.")
 
     while app_state.running:
         ch = getch()
@@ -4377,20 +4939,14 @@ def keyboard_thread(app_state):
             if end_msg:
                 log_line(end_msg)
             log_line("[CMD] Enter command (ex: 4s, 4f, help). Use ':' or blank to exit.")
+            log_line("[CMD] Observe while moving: press 'h', then type '1' to run a semi-manual x-axis trial.")
+            log_line("[CMD] Press 'u' for timed hotkey mode, then enter '<hotkey> <duration_ms> [percent]' OR '<hotkey> <percent> <duration_ms>' (examples: e 666 10, e 150 666).")
+            log_line("[CMD] Press 'y' for custom runs, then enter '<steps_csv> <trials>' (example: 3,4,5,6,7 2).")
             log_line("[CMD] Press 'b' to enter calibration mode.")
             log_step_codes_list(prefix="[CMD]")
-            
-            # Force enable ECHO and ICANON so input() is visible
-            fd_term = sys.stdin.fileno()
-            attr_term = termios.tcgetattr(fd_term)
-            attr_term[3] |= termios.ECHO | termios.ICANON
-            termios.tcsetattr(fd_term, termios.TCSANOW, attr_term)
-            
+
             while app_state.running:
-                try:
-                    cmd = input("[CMD] > ")
-                except (EOFError, KeyboardInterrupt):
-                    cmd = ""
+                cmd = prompt_line("[CMD] > ")
                 exit_mode, do_help, messages, ended_info = handle_command_line(app_state, cmd)
                 if do_help:
                     print_command_help(app_state)
@@ -4436,16 +4992,35 @@ def keyboard_thread(app_state):
             _clear_step_code_buffer()
             with app_state.lock:
                 app_state.last_key_time = time.time()
-                target = app_state.hotkey_edit_target if isinstance(app_state.hotkey_edit_target, dict) else None
-            if not isinstance(target, dict):
-                messages.append("[HOTKEY] Press a movement hotkey first, then press y to edit its vars.")
-            else:
-                cmd = target.get("cmd")
-                score = target.get("score")
-                if cmd is None or score is None:
-                    messages.append("[HOTKEY] No valid hotkey action to edit yet.")
-                else:
-                    maybe_prompt_hotkey_var_update(app_state, cmd, score, enter_edit=True)
+                app_state.auto_prompt = False
+                _clear_manual_motion_state_locked(app_state)
+            steps, trials, custom_msgs = _prompt_custom_runs_input()
+            messages.extend(custom_msgs)
+            if steps and trials:
+                _run_custom_trials(steps, trials)
+        elif ch_lower == 'u':
+            _clear_step_code_buffer()
+            with app_state.lock:
+                app_state.last_key_time = time.time()
+                app_state.active_command = None
+                app_state.active_hotkey = None
+                app_state.active_speed = 0.0
+                app_state.active_speed_score = None
+                app_state.active_duration_ms = None
+                app_state.active_pwm_override = None
+            action, prompt_messages = _prompt_hotkey_duration_input()
+            messages.extend(prompt_messages)
+            if action is not None:
+                pending_hotkey_action = action
+        elif ch_lower == 'h':
+            _clear_step_code_buffer()
+            with app_state.lock:
+                app_state.last_key_time = time.time()
+                app_state.auto_prompt = False
+                _clear_manual_motion_state_locked(app_state)
+            log_line("[OBSERVE] Observe while moving.")
+            log_line("[OBSERVE] Type '1' to run the semi-manual x-axis trial.")
+            messages.extend(_prompt_observe_while_moving_trial())
         else:
             _clear_step_code_buffer()
             with app_state.lock:
@@ -4483,7 +5058,7 @@ def keyboard_thread(app_state):
                     app_state.active_duration_ms = None
                     app_state.active_pwm_override = None
                     pending_hotkey_action = (cmd, score, ch_lower, duration_ms, pwm_override)
-                elif ch_lower in ('h', '?'):
+                elif ch_lower == '?':
                     print_command_help(app_state)
 
         if pending_hotkey_action and app_state.running:
@@ -4871,7 +5446,7 @@ def _apply_markerless_profile(app_state, vision, profile):
 
 def _vision_mode_label(mode):
     if normalize_vision_mode(mode) == VISION_MODE_CYAN:
-        return "Cyan Bricks"
+        return "Crown Bricks"
     return "AruCo Markers"
 
 
@@ -4924,7 +5499,7 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None, show_star
             log_line(f"[VISION] Cyan smoothing experiment: smooth={float(smooth_alpha):.2f}")
     if active_vision_mode == VISION_MODE_CYAN and visibility_applied:
         log_line(
-            "[VISION] Cyan visibility: "
+            "[VISION] Crown visibility: "
             f"{cyan_visibility_label(active_cyan_visibility)}"
         )
     if bool(show_startup_help):
@@ -4988,7 +5563,7 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None, show_star
                 active_cyan_visibility = visibility_key
                 if visibility_applied:
                     log_line(
-                        "[VISION] Cyan visibility: "
+                        "[VISION] Crown visibility: "
                         f"{cyan_visibility_label(active_cyan_visibility)}"
                     )
         requested_vision_mode = _stream_state_vision_mode(app_state, active_vision_mode)
@@ -5063,7 +5638,7 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None, show_star
                         log_line(f"[VISION] Cyan smoothing experiment: smooth={float(smooth_alpha):.2f}")
                 if active_vision_mode == VISION_MODE_CYAN and visibility_applied:
                     log_line(
-                        "[VISION] Cyan visibility: "
+                        "[VISION] Crown visibility: "
                         f"{cyan_visibility_label(active_cyan_visibility)}"
                     )
 
@@ -5372,7 +5947,13 @@ def command_loop(app_state):
                 log_line(
                     f"[HOTKEY SEND] {wire_text}"
                 )
-            refresh_brick_telemetry(app_state, read_vision=False)
+            # Micro-adjustments (1% speed-score) should pull a fresh vision read so
+            # bird/mast views update immediately after each tiny act.
+            read_vision_for_refresh = bool(
+                score_used is not None
+                and int(score_used) <= int(telemetry_robot_module.SPEED_SCORE_MIN)
+            )
+            refresh_brick_telemetry(app_state, read_vision=read_vision_for_refresh)
             # One-shot hotkey behavior: each keypress sends one timed pulse.
             # This prevents command-loop replays when a key remains active.
             with app_state.lock:
@@ -5395,24 +5976,22 @@ def main(argv=None) -> int:
         "--vision",
         dest="brick_vision",
         default=_DEFAULT_VISION_MODE,
-        help="Brick vision model to use (aruco/cyan)",
+        help="Brick vision model to use (aruco/crown)",
     )
     parser.add_argument(
         "--yolo-model",
         default=None,
-        help="Path to YOLO ONNX model (used with --brick-vision cyan)",
+        help="Path to YOLO ONNX model (used with --brick-vision crown)",
     )
     parser.add_argument(
         "--cyan-profile",
         dest="cyan_profile",
-        choices=[value for value, _label in CYAN_PROFILE_OPTIONS],
         default=_DEFAULT_CYAN_PROFILE,
-        help="Cyan tuning profile (applies when vision mode is cyan)",
+        help="Crown-brick tuning profile (applies when vision mode is crown)",
     )
     parser.add_argument(
         "--markerless-profile",
         dest="cyan_profile",
-        choices=[value for value, _label in CYAN_PROFILE_OPTIONS],
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--stream", dest="stream", action="store_true", help="Enable livestreaming")
@@ -5421,10 +6000,13 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     brick_vision_raw = str(args.brick_vision or "").strip().lower()
     if brick_vision_raw and brick_vision_raw not in _VISION_MODE_ALIASES:
-        parser.error("--brick-vision must be one of: aruco, cyan")
+        parser.error("--brick-vision must be one of: aruco, crown")
     vision_mode = normalize_vision_mode(brick_vision_raw, fallback=_DEFAULT_VISION_MODE)
+    cyan_profile_raw = str(args.cyan_profile or "").strip().lower()
+    if cyan_profile_raw and cyan_profile_raw not in CYAN_PROFILE_PRESETS and cyan_profile_raw not in _CYAN_PROFILE_ALIASES:
+        parser.error("--cyan-profile must be a recognized crown-brick profile name or alias")
     cyan_profile = normalize_cyan_profile(
-        args.cyan_profile,
+        cyan_profile_raw,
         fallback=_DEFAULT_CYAN_PROFILE,
     )
 

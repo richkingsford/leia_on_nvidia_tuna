@@ -702,8 +702,8 @@ class TestTelemetryProcessLiteGate(unittest.TestCase):
         ]
         detail_pass = telemetry_process._result_lite_gate_detail(world, "BRICK_LOCK")
         plain_pass = str((detail_pass or {}).get("plain") or "")
-        self.assertIn("xAxis_offset_abs (gate -6.2+/-4.0 saw -6.2mm)", plain_pass)
-        self.assertIn("dist (gate 154.6+/-4.0 saw 154.6mm)", plain_pass)
+        self.assertIn("xAxis_offset_abs (= Expected -6.2+/-4.0 & saw -6.2mm)", plain_pass)
+        self.assertIn("dist (= Expected 154.6+/-4.0 & saw 154.6mm)", plain_pass)
 
         world._smoothed_frame_history = [
             {"frame_id": 61, "visible": True, "dist": 170.0, "x_axis": -6.0, "offset_x": -6.0, "confidence": 95.0},
@@ -712,8 +712,47 @@ class TestTelemetryProcessLiteGate(unittest.TestCase):
         ]
         detail_fail = telemetry_process._result_lite_gate_detail(world, "BRICK_LOCK")
         plain_fail = str((detail_fail or {}).get("plain") or "")
-        self.assertIn("xAxis_offset_abs (gate -6.2+/-4.0 saw -6.0mm)", plain_fail)
-        self.assertIn("dist (gate 154.6+/-4.0 saw 170.0mm)", plain_fail)
+        self.assertIn("xAxis_offset_abs (= Expected -6.2+/-4.0 & saw -6.0mm)", plain_fail)
+        self.assertIn("dist (!= Expected 154.6+/-4.0 & saw 170.0mm)", plain_fail)
+
+    def test_result_lite_gate_detail_reports_effective_sample_failure_when_precheck_passes(self):
+        telemetry_process.apply_lite_gate_check_config({"default_unique_smoothed_frames": 1})
+        world = _DummyWorld()
+        world.process_rules = {
+            "POSITION_BRICK": {
+                "success_gates": {
+                    "visible": {"min": True},
+                    "brickAbove": {"min": True},
+                }
+            }
+        }
+        world._gatecheck_status = {
+            "step": "POSITION_BRICK",
+            "phase": "align",
+            "mode": "lite",
+            "truth_ok": False,
+        }
+        world.brick.update(
+            {
+                "visible": True,
+                "brickAbove": False,
+                "confidence": 95.0,
+            }
+        )
+        world._smoothed_frame_history = [
+            {
+                "frame_id": 91,
+                "visible": True,
+                "confidence": 95.0,
+                "brick_above": True,
+            },
+        ]
+        detail = telemetry_process._result_lite_gate_detail(world, "POSITION_BRICK")
+        plain = str((detail or {}).get("plain") or "")
+        self.assertIn("effective sample FAIL", plain)
+        self.assertIn("lite precheck PASS", plain)
+        self.assertIn("brickAbove", plain)
+        self.assertIn("false", plain)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,7 @@ from calibration import helper_calibrate_x
 from calibration import helper_calibrate_x_axis
 from calibration import helper_calibrate_y
 import helper_manual_drive_breakaway_test
+import helper_manual_turn_breakaway_test
 from helper_manual_config import load_manual_training_config
 from helper_stream_server import format_stream_url
 
@@ -61,6 +62,7 @@ OPTIONS: tuple[CalibrateOption, ...] = (
     CalibrateOption("dist", "Distance duration curve calibration", helper_calibrate_dist.main),
     CalibrateOption("dist-guided", "Distance curve calibration (guided checkpoints)", lambda: run_guided_distance_calibration()),
     CalibrateOption("breakaway", "Drive breakaway test (find first reliable low-speed score)", helper_manual_drive_breakaway_test.main),
+    CalibrateOption("turn-breakaway", "Turn breakaway test (find the slowest raw turn PWM that still moves)", helper_manual_turn_breakaway_test.main),
     CalibrateOption("speed", "Speed endpoint calibration", helper_calibrate_speed.main),
     CalibrateOption("motion", "Motion tick conversion calibration", helper_calibrate_motion.main),
     CalibrateOption("x-axis-legacy", "Legacy X-axis learning experiment", helper_calibrate_x_axis.main),

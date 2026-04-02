@@ -9,5 +9,23 @@
 <text x="317.2" y="108.0" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">90mm</text>
 <text x="938.0" y="108.0" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">150mm</text>
 <text x="303.2" y="122.0" text-anchor="end" font-size="12" font-weight="700" fill="#5d676e">x=0</text>
-<text x="286.1" y="107.3" text-anchor="middle" font-size="16" font-weight="600" fill="#233843" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">103</text>
+<circle class="step-history-dot" data-trend="unknown" cx="464.4" cy="113.7" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="464.4" cy="113.7" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="464.4" cy="113.7" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="464.3" cy="113.7" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="464.3" cy="113.7" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="464.4" cy="113.7" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="464.4" cy="113.7" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="464.4" cy="113.7" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="464.4" cy="113.7" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="464.4" cy="113.7" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="464.4" cy="113.7" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="464.4" cy="113.7" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="464.4" cy="113.7" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="464.4" cy="113.7" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="468.9" cy="114.6" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="468.2" cy="114.3" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="467.7" cy="114.2" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="467.9" cy="114.5" r="6.0" fill="#0b3d91" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<text x="289.0" y="100.0" text-anchor="middle" font-size="16" font-weight="600" fill="#233843" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">105</text>
 </svg>

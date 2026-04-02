@@ -11,6 +11,9 @@ _MODE_ALIASES = {
     "aruco": VISION_MODE_ARUCO,
     "marker": VISION_MODE_ARUCO,
     "markers": VISION_MODE_ARUCO,
+    "crown": VISION_MODE_CYAN,
+    "crown_brick": VISION_MODE_CYAN,
+    "crown_bricks": VISION_MODE_CYAN,
     "cyan": VISION_MODE_CYAN,
     "yolo": VISION_MODE_CYAN,
     "markerless": VISION_MODE_CYAN,
@@ -20,7 +23,7 @@ DEFAULT_VISION_MODEL = {
     "active_mode": VISION_MODE_CYAN,
     "demos_by_mode": {
         VISION_MODE_ARUCO: "demos - aruco",
-        VISION_MODE_CYAN: "Cyan demos",
+        VISION_MODE_CYAN: "Crown demos",
     },
 }
 
@@ -80,12 +83,13 @@ def demos_dir_for_mode(mode=None, *, path=VISION_MODEL_FILE):
     demos_dir = Path(demo_path_raw)
     if not demos_dir.is_absolute():
         demos_dir = Path(__file__).resolve().parent / demos_dir
-    # Compatibility fallback: support both historical "demos - cyan" and
-    # operator-facing "Cyan demos" naming for cyan mode datasets.
+    # Compatibility fallback: support historical cyan-mode dataset names while
+    # the operator-facing mode is now described as crown bricks.
     if not demos_dir.exists() and mode_norm == VISION_MODE_CYAN:
-        legacy_cyan_dir = Path(__file__).resolve().parent / "demos - cyan"
-        if legacy_cyan_dir.exists():
-            return legacy_cyan_dir
+        for legacy_name in ("demos - cyan", "Cyan demos"):
+            legacy_cyan_dir = Path(__file__).resolve().parent / legacy_name
+            if legacy_cyan_dir.exists():
+                return legacy_cyan_dir
     # Compatibility fallback for environments still using the legacy `demos/`
     # folder and no mode-specific directories yet.
     if not demos_dir.exists() and mode_norm == VISION_MODE_ARUCO and LEGACY_DEMOS_DIR.exists():
@@ -98,4 +102,3 @@ def demos_dirs_by_mode(*, path=VISION_MODEL_FILE):
         VISION_MODE_ARUCO: demos_dir_for_mode(VISION_MODE_ARUCO, path=path),
         VISION_MODE_CYAN: demos_dir_for_mode(VISION_MODE_CYAN, path=path),
     }
-

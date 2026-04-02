@@ -1,0 +1,2911 @@
+{
+  "ok": true,
+  "seconds": 131.4067144393921,
+  "settings": {
+    "hotkeys": [
+      "q",
+      "e"
+    ],
+    "duration_ms": 130,
+    "movement_threshold_mm": 3.0,
+    "pause_between_pulses_ms": 500,
+    "initial_consistency_trials": 3,
+    "batch_pwm_step": 5,
+    "ping_pong_max_trials": 10,
+    "seed_mode": "raw_curve_1pct_pwm"
+  },
+  "baseline_pose": {
+    "dist_mm": 205.32,
+    "x_axis_mm": -9.912
+  },
+  "phase_baselines": {
+    "q": {
+      "dist_mm": 205.32,
+      "x_axis_mm": -9.912
+    },
+    "e": null
+  },
+  "candidate_search_paths": {
+    "q": [
+      {
+        "hotkey": "q",
+        "display_label": "Q/LEFT",
+        "phase": "seed",
+        "probe_index": 1,
+        "pwm": 102,
+        "power": 0.3013698630136986,
+        "duration_ms": 130,
+        "valid_trial_count": 3,
+        "movement_count": 0,
+        "median_abs_delta_mm": 0.3444753161090093,
+        "median_raw_delta_mm": 0.0,
+        "result_label": "no movement"
+      },
+      {
+        "hotkey": "q",
+        "display_label": "Q/LEFT",
+        "phase": "coarse_faster",
+        "probe_index": 2,
+        "pwm": 107,
+        "power": 0.3242009132420091,
+        "duration_ms": 130,
+        "valid_trial_count": 3,
+        "movement_count": 0,
+        "median_abs_delta_mm": 0.7145612596984261,
+        "median_raw_delta_mm": 0.7145612596984261,
+        "result_label": "no movement"
+      },
+      {
+        "hotkey": "q",
+        "display_label": "Q/LEFT",
+        "phase": "coarse_faster",
+        "probe_index": 3,
+        "pwm": 112,
+        "power": 0.3470319634703196,
+        "duration_ms": 130,
+        "valid_trial_count": 3,
+        "movement_count": 0,
+        "median_abs_delta_mm": 0.40576986247616276,
+        "median_raw_delta_mm": -0.22220136795344025,
+        "result_label": "no movement"
+      },
+      {
+        "hotkey": "q",
+        "display_label": "Q/LEFT",
+        "phase": "coarse_faster",
+        "probe_index": 4,
+        "pwm": 117,
+        "power": 0.3698630136986301,
+        "duration_ms": 130,
+        "valid_trial_count": 3,
+        "movement_count": 0,
+        "median_abs_delta_mm": 1.6635663644907754,
+        "median_raw_delta_mm": 1.6635663644907754,
+        "result_label": "no movement"
+      },
+      {
+        "hotkey": "q",
+        "display_label": "Q/LEFT",
+        "phase": "coarse_faster",
+        "probe_index": 5,
+        "pwm": 122,
+        "power": 0.3926940639269406,
+        "duration_ms": 130,
+        "valid_trial_count": 3,
+        "movement_count": 0,
+        "median_abs_delta_mm": 1.79843146499746,
+        "median_raw_delta_mm": -0.7947379394987077,
+        "result_label": "no movement"
+      },
+      {
+        "hotkey": "q",
+        "display_label": "Q/LEFT",
+        "phase": "coarse_faster",
+        "probe_index": 6,
+        "pwm": 127,
+        "power": 0.4155251141552511,
+        "duration_ms": 130,
+        "valid_trial_count": 3,
+        "movement_count": 3,
+        "median_abs_delta_mm": 4.910009125577664,
+        "median_raw_delta_mm": -4.910009125577664,
+        "result_label": "movement"
+      },
+      {
+        "hotkey": "q",
+        "display_label": "Q/LEFT",
+        "phase": "ping_pong",
+        "probe_index": 7,
+        "pwm": 124,
+        "power": 0.4018264840182648,
+        "duration_ms": 130,
+        "valid_trial_count": 3,
+        "movement_count": 1,
+        "median_abs_delta_mm": 0.6773592209876966,
+        "median_raw_delta_mm": 0.10836734693878469,
+        "result_label": "no movement"
+      },
+      {
+        "hotkey": "q",
+        "display_label": "Q/LEFT",
+        "phase": "ping_pong",
+        "probe_index": 8,
+        "pwm": 125,
+        "power": 0.4063926940639269,
+        "duration_ms": 130,
+        "valid_trial_count": 2,
+        "movement_count": 0,
+        "median_abs_delta_mm": 1.4606047142401408,
+        "median_raw_delta_mm": -1.4606047142401408,
+        "result_label": "no movement"
+      }
+    ],
+    "e": [
+      {
+        "hotkey": "e",
+        "display_label": "E/RIGHT",
+        "phase": "seed",
+        "probe_index": 1,
+        "pwm": 102,
+        "power": 0.3013698630136986,
+        "duration_ms": 130,
+        "valid_trial_count": 0,
+        "movement_count": 0,
+        "median_abs_delta_mm": null,
+        "median_raw_delta_mm": null,
+        "result_label": "unusable"
+      }
+    ]
+  },
+  "trial_journal": [
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 102,
+      "power": 0.3013698630136986,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -9.912,
+      "post_metric_mm": -9.912,
+      "pre_dist_mm": 205.32,
+      "post_dist_mm": 205.32,
+      "pre_x_axis_mm": -9.912,
+      "post_x_axis_mm": -9.912,
+      "raw_delta_mm": 0.0,
+      "abs_delta_mm": 0.0,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "seed",
+      "probe_index": 1,
+      "trial_index": 1,
+      "trial_number": 1
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 102,
+      "power": 0.3013698630136986,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -5.271867540594059,
+      "post_metric_mm": -4.114714226958415,
+      "pre_dist_mm": 203.9844035643564,
+      "post_dist_mm": 203.52629398693065,
+      "pre_x_axis_mm": -5.271867540594059,
+      "post_x_axis_mm": -4.114714226958415,
+      "raw_delta_mm": 1.1571533136356438,
+      "abs_delta_mm": 1.1571533136356438,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "seed",
+      "probe_index": 1,
+      "trial_index": 2,
+      "trial_number": 2
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 102,
+      "power": 0.3013698630136986,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -5.8475805887100565,
+      "post_metric_mm": -6.192055904819066,
+      "pre_dist_mm": 203.04648899118823,
+      "post_dist_mm": 202.78605696451336,
+      "pre_x_axis_mm": -5.8475805887100565,
+      "post_x_axis_mm": -6.192055904819066,
+      "raw_delta_mm": -0.3444753161090093,
+      "abs_delta_mm": 0.3444753161090093,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "seed",
+      "probe_index": 1,
+      "trial_index": 3,
+      "trial_number": 3
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 107,
+      "power": 0.3242009132420091,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -3.968182659243282,
+      "post_metric_mm": -3.2536213995448557,
+      "pre_dist_mm": 203.0188282543736,
+      "post_dist_mm": 203.19510165560658,
+      "pre_x_axis_mm": -3.968182659243282,
+      "post_x_axis_mm": -3.2536213995448557,
+      "raw_delta_mm": 0.7145612596984261,
+      "abs_delta_mm": 0.7145612596984261,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 2,
+      "trial_index": 1,
+      "trial_number": 4
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 107,
+      "power": 0.3242009132420091,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -6.144700992453899,
+      "post_metric_mm": -6.503872241953344,
+      "pre_dist_mm": 203.07109966995054,
+      "post_dist_mm": 204.54862718679303,
+      "pre_x_axis_mm": -6.144700992453899,
+      "post_x_axis_mm": -6.503872241953344,
+      "raw_delta_mm": -0.359171249499445,
+      "abs_delta_mm": 0.359171249499445,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 2,
+      "trial_index": 2,
+      "trial_number": 5
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 107,
+      "power": 0.3242009132420091,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -2.494696704397025,
+      "post_metric_mm": -1.0859338314918743,
+      "pre_dist_mm": 203.24506952332356,
+      "post_dist_mm": 203.2727024108564,
+      "pre_x_axis_mm": -2.494696704397025,
+      "post_x_axis_mm": -1.0859338314918743,
+      "raw_delta_mm": 1.4087628729051507,
+      "abs_delta_mm": 1.4087628729051507,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 2,
+      "trial_index": 3,
+      "trial_number": 6
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 112,
+      "power": 0.3470319634703196,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -5.968432856999389,
+      "post_metric_mm": -6.190634224952829,
+      "pre_dist_mm": 203.25045551131896,
+      "post_dist_mm": 203.2745498047388,
+      "pre_x_axis_mm": -5.968432856999389,
+      "post_x_axis_mm": -6.190634224952829,
+      "raw_delta_mm": -0.22220136795344025,
+      "abs_delta_mm": 0.22220136795344025,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 3,
+      "trial_index": 1,
+      "trial_number": 7
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 112,
+      "power": 0.3470319634703196,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -1.549000823479272,
+      "post_metric_mm": 0.16039654658549826,
+      "pre_dist_mm": 204.09853244247094,
+      "post_dist_mm": 203.70376887997307,
+      "pre_x_axis_mm": -1.549000823479272,
+      "post_x_axis_mm": 0.16039654658549826,
+      "raw_delta_mm": 1.7093973700647702,
+      "abs_delta_mm": 1.7093973700647702,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 3,
+      "trial_index": 2,
+      "trial_number": 8
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 112,
+      "power": 0.3470319634703196,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -7.033159029925951,
+      "post_metric_mm": -7.438928892402114,
+      "pre_dist_mm": 201.9019226057446,
+      "post_dist_mm": 201.59194207681483,
+      "pre_x_axis_mm": -7.033159029925951,
+      "post_x_axis_mm": -7.438928892402114,
+      "raw_delta_mm": -0.40576986247616276,
+      "abs_delta_mm": 0.40576986247616276,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 3,
+      "trial_index": 3,
+      "trial_number": 9
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 117,
+      "power": 0.3698630136986301,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -2.532064481721119,
+      "post_metric_mm": -0.8684981172303436,
+      "pre_dist_mm": 203.69940700912997,
+      "post_dist_mm": 203.48914507803804,
+      "pre_x_axis_mm": -2.532064481721119,
+      "post_x_axis_mm": -0.8684981172303436,
+      "raw_delta_mm": 1.6635663644907754,
+      "abs_delta_mm": 1.6635663644907754,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 4,
+      "trial_index": 1,
+      "trial_number": 10
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 117,
+      "power": 0.3698630136986301,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -8.638944855604487,
+      "post_metric_mm": -9.146069617770642,
+      "pre_dist_mm": 201.73912541632092,
+      "post_dist_mm": 202.46319095548006,
+      "pre_x_axis_mm": -8.638944855604487,
+      "post_x_axis_mm": -9.146069617770642,
+      "raw_delta_mm": -0.5071247621661552,
+      "abs_delta_mm": 0.5071247621661552,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 4,
+      "trial_index": 2,
+      "trial_number": 11
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 117,
+      "power": 0.3698630136986301,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -3.3350214366412305,
+      "post_metric_mm": -1.6051276039356992,
+      "pre_dist_mm": 203.91161615794178,
+      "post_dist_mm": 203.50132790653043,
+      "pre_x_axis_mm": -3.3350214366412305,
+      "post_x_axis_mm": -1.6051276039356992,
+      "raw_delta_mm": 1.7298938327055313,
+      "abs_delta_mm": 1.7298938327055313,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 4,
+      "trial_index": 3,
+      "trial_number": 12
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 122,
+      "power": 0.3926940639269406,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -11.92070230620985,
+      "post_metric_mm": -12.715440245708558,
+      "pre_dist_mm": 204.35136386314286,
+      "post_dist_mm": 204.56085483476096,
+      "pre_x_axis_mm": -11.92070230620985,
+      "post_x_axis_mm": -12.715440245708558,
+      "raw_delta_mm": -0.7947379394987077,
+      "abs_delta_mm": 0.7947379394987077,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 5,
+      "trial_index": 1,
+      "trial_number": 13
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 122,
+      "power": 0.3926940639269406,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -6.691301443862731,
+      "post_metric_mm": -4.607735376053954,
+      "pre_dist_mm": 205.06413418590031,
+      "post_dist_mm": 204.19547366932815,
+      "pre_x_axis_mm": -6.691301443862731,
+      "post_x_axis_mm": -4.607735376053954,
+      "raw_delta_mm": 2.0835660678087766,
+      "abs_delta_mm": 2.0835660678087766,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 5,
+      "trial_index": 2,
+      "trial_number": 14
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 122,
+      "power": 0.3926940639269406,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -18.334133963085407,
+      "post_metric_mm": -20.132565428082867,
+      "pre_dist_mm": 204.14647024242885,
+      "post_dist_mm": 203.70820606235446,
+      "pre_x_axis_mm": -18.334133963085407,
+      "post_x_axis_mm": -20.132565428082867,
+      "raw_delta_mm": -1.79843146499746,
+      "abs_delta_mm": 1.79843146499746,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 5,
+      "trial_index": 3,
+      "trial_number": 15
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 127,
+      "power": 0.4155251141552511,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -12.657611091655339,
+      "post_metric_mm": -16.414701003764595,
+      "pre_dist_mm": 206.12085004324197,
+      "post_dist_mm": 209.3440133039624,
+      "pre_x_axis_mm": -12.657611091655339,
+      "post_x_axis_mm": -16.414701003764595,
+      "raw_delta_mm": -3.7570899121092562,
+      "abs_delta_mm": 3.7570899121092562,
+      "moved": true,
+      "result_label": "movement",
+      "phase": "coarse_faster",
+      "probe_index": 6,
+      "trial_index": 1,
+      "trial_number": 16
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 127,
+      "power": 0.4155251141552511,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -11.37913915928536,
+      "post_metric_mm": -16.289148284863025,
+      "pre_dist_mm": 207.12599683801358,
+      "post_dist_mm": 209.85941552602648,
+      "pre_x_axis_mm": -11.37913915928536,
+      "post_x_axis_mm": -16.289148284863025,
+      "raw_delta_mm": -4.910009125577664,
+      "abs_delta_mm": 4.910009125577664,
+      "moved": true,
+      "result_label": "movement",
+      "phase": "coarse_faster",
+      "probe_index": 6,
+      "trial_index": 2,
+      "trial_number": 17
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 127,
+      "power": 0.4155251141552511,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -12.446378864706922,
+      "post_metric_mm": -19.373674222122776,
+      "pre_dist_mm": 207.2277377544357,
+      "post_dist_mm": 210.62629505698573,
+      "pre_x_axis_mm": -12.446378864706922,
+      "post_x_axis_mm": -19.373674222122776,
+      "raw_delta_mm": -6.927295357415854,
+      "abs_delta_mm": 6.927295357415854,
+      "moved": true,
+      "result_label": "movement",
+      "phase": "coarse_faster",
+      "probe_index": 6,
+      "trial_index": 3,
+      "trial_number": 18
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 124,
+      "power": 0.4018264840182648,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -16.10153799781402,
+      "post_metric_mm": -34.967450161978924,
+      "pre_dist_mm": 209.44250553987604,
+      "post_dist_mm": 210.55899268878792,
+      "pre_x_axis_mm": -16.10153799781402,
+      "post_x_axis_mm": -34.967450161978924,
+      "raw_delta_mm": -18.865912164164904,
+      "abs_delta_mm": 18.865912164164904,
+      "moved": true,
+      "result_label": "movement",
+      "phase": "ping_pong",
+      "probe_index": 7,
+      "trial_index": 1,
+      "trial_number": 19
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 124,
+      "power": 0.4018264840182648,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -55.26734693877551,
+      "post_metric_mm": -55.158979591836726,
+      "pre_dist_mm": 209.51020408163265,
+      "post_dist_mm": 209.51020408163265,
+      "pre_x_axis_mm": -55.26734693877551,
+      "post_x_axis_mm": -55.158979591836726,
+      "raw_delta_mm": 0.10836734693878469,
+      "abs_delta_mm": 0.10836734693878469,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "ping_pong",
+      "probe_index": 7,
+      "trial_index": 2,
+      "trial_number": 20
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 124,
+      "power": 0.4018264840182648,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -77.3111007535018,
+      "post_metric_mm": -76.63374153251411,
+      "pre_dist_mm": 216.1241610282337,
+      "post_dist_mm": 215.65302211551045,
+      "pre_x_axis_mm": -77.3111007535018,
+      "post_x_axis_mm": -76.63374153251411,
+      "raw_delta_mm": 0.6773592209876966,
+      "abs_delta_mm": 0.6773592209876966,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "ping_pong",
+      "probe_index": 7,
+      "trial_index": 3,
+      "trial_number": 21
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 125,
+      "power": 0.4063926940639269,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -86.67805070641049,
+      "post_metric_mm": -89.58316922579986,
+      "pre_dist_mm": 213.82076068938994,
+      "post_dist_mm": 216.1691940143968,
+      "pre_x_axis_mm": -86.67805070641049,
+      "post_x_axis_mm": -89.58316922579986,
+      "raw_delta_mm": -2.905118519389376,
+      "abs_delta_mm": 2.905118519389376,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "ping_pong",
+      "probe_index": 8,
+      "trial_index": 1,
+      "trial_number": 22
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 125,
+      "power": 0.4063926940639269,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -118.0,
+      "post_metric_mm": -118.0160909090909,
+      "pre_dist_mm": 244.42857142857142,
+      "post_dist_mm": 241.09545454545452,
+      "pre_x_axis_mm": -118.0,
+      "post_x_axis_mm": -118.0160909090909,
+      "raw_delta_mm": -0.016090909090905825,
+      "abs_delta_mm": 0.016090909090905825,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "ping_pong",
+      "probe_index": 8,
+      "trial_index": 2,
+      "trial_number": 23
+    },
+    {
+      "ok": false,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 125,
+      "power": 0.4063926940639269,
+      "duration_ms": 130,
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "error": "pre_pose_unavailable",
+      "recovery": {
+        "ok": false,
+        "reason": "recovery_pose_unavailable",
+        "pose": null,
+        "steps": [
+          {
+            "index": 1,
+            "cmd": "r",
+            "pwm": 125,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": false
+          },
+          {
+            "index": 2,
+            "cmd": "r",
+            "pwm": 125,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": false
+          },
+          {
+            "index": 3,
+            "cmd": "r",
+            "pwm": 124,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": false
+          }
+        ],
+        "source_label": "Q/LEFT pwm=125 pre_pose"
+      },
+      "phase": "ping_pong",
+      "probe_index": 8,
+      "trial_index": 3,
+      "trial_number": 24
+    },
+    {
+      "ok": false,
+      "hotkey": "e",
+      "cmd": "r",
+      "pwm": 102,
+      "power": 0.3013698630136986,
+      "duration_ms": 130,
+      "display_label": "E/RIGHT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "error": "pre_pose_unavailable",
+      "recovery": {
+        "ok": false,
+        "reason": "no_recent_turn_acts"
+      },
+      "phase": "seed",
+      "probe_index": 1,
+      "trial_index": 1,
+      "trial_number": 25
+    },
+    {
+      "ok": false,
+      "hotkey": "e",
+      "cmd": "r",
+      "pwm": 102,
+      "power": 0.3013698630136986,
+      "duration_ms": 130,
+      "display_label": "E/RIGHT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "error": "pre_pose_unavailable",
+      "recovery": {
+        "ok": false,
+        "reason": "no_recent_turn_acts"
+      },
+      "phase": "seed",
+      "probe_index": 1,
+      "trial_index": 2,
+      "trial_number": 26
+    },
+    {
+      "ok": false,
+      "hotkey": "e",
+      "cmd": "r",
+      "pwm": 102,
+      "power": 0.3013698630136986,
+      "duration_ms": 130,
+      "display_label": "E/RIGHT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "error": "pre_pose_unavailable",
+      "recovery": {
+        "ok": false,
+        "reason": "no_recent_turn_acts"
+      },
+      "phase": "seed",
+      "probe_index": 1,
+      "trial_index": 3,
+      "trial_number": 27
+    }
+  ],
+  "recenter_checkpoints": [
+    {
+      "ok": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 205.32,
+        "x_axis_mm": -9.912
+      },
+      "dist_error_mm": 0.0,
+      "x_axis_error_mm": 0.0,
+      "seconds": 0.6609365940093994,
+      "phase": "seed",
+      "pwm": 102,
+      "trial_index": 1
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 205.32,
+        "x_axis_mm": -8.1066
+      },
+      "dist_error_mm": 0.0,
+      "x_axis_error_mm": 1.8054000000000006,
+      "seconds": 0.6607728004455566,
+      "phase": "seed",
+      "pwm": 102,
+      "trial_index": 2
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 202.79602724004877,
+        "x_axis_mm": -4.983520261308348
+      },
+      "dist_error_mm": -2.5239727599512207,
+      "x_axis_error_mm": 4.928479738691653,
+      "seconds": 2.988492250442505,
+      "recovery": {
+        "ok": false,
+        "reason": "recovery_not_recentered",
+        "pose": {
+          "dist_mm": 203.52444872364464,
+          "x_axis_mm": -2.5960553656402303
+        },
+        "steps": [
+          {
+            "index": 1,
+            "cmd": "r",
+            "pwm": 102,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 203.62615729969036,
+              "x_axis_mm": -2.655937856531231
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": -1.6938427003096308,
+              "x_axis_error_mm": 7.256062143468769
+            }
+          },
+          {
+            "index": 2,
+            "cmd": "r",
+            "pwm": 102,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 203.52444872364464,
+              "x_axis_mm": -2.5960553656402303
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": -1.7955512763553543,
+              "x_axis_error_mm": 7.31594463435977
+            }
+          }
+        ],
+        "source_label": "recenter before Q/LEFT seed pwm=102 trial 3/3"
+      },
+      "phase": "seed",
+      "pwm": 102,
+      "trial_index": 3
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 203.59372435638755,
+        "x_axis_mm": -5.5320817669720075
+      },
+      "dist_error_mm": -1.7262756436124391,
+      "x_axis_error_mm": 4.379918233027993,
+      "seconds": 0.7751648426055908,
+      "phase": "coarse_faster",
+      "pwm": 107,
+      "trial_index": 1
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 202.44465779839143,
+        "x_axis_mm": -5.050735043738897
+      },
+      "dist_error_mm": -2.875342201608561,
+      "x_axis_error_mm": 4.861264956261103,
+      "seconds": 3.5862274169921875,
+      "recovery": {
+        "ok": false,
+        "reason": "recovery_not_recentered",
+        "pose": {
+          "dist_mm": 203.4887323444347,
+          "x_axis_mm": 0.11532715185717202
+        },
+        "steps": [
+          {
+            "index": 1,
+            "cmd": "r",
+            "pwm": 107,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 203.69856469565383,
+              "x_axis_mm": -0.4950916522443528
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": -1.6214353043461642,
+              "x_axis_error_mm": 9.416908347755648
+            }
+          },
+          {
+            "index": 2,
+            "cmd": "r",
+            "pwm": 102,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 203.57513390081905,
+              "x_axis_mm": -0.13596919046675138
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": -1.744866099180939,
+              "x_axis_error_mm": 9.77603080953325
+            }
+          },
+          {
+            "index": 3,
+            "cmd": "r",
+            "pwm": 102,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 203.4887323444347,
+              "x_axis_mm": 0.11532715185717202
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": -1.8312676555652843,
+              "x_axis_error_mm": 10.027327151857174
+            }
+          }
+        ],
+        "source_label": "recenter before Q/LEFT coarse_faster pwm=107 trial 2/3"
+      },
+      "phase": "coarse_faster",
+      "pwm": 107,
+      "trial_index": 2
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 204.01865476863435,
+        "x_axis_mm": -5.572356384111405
+      },
+      "dist_error_mm": -1.3013452313656444,
+      "x_axis_error_mm": 4.339643615888596,
+      "seconds": 0.7552695274353027,
+      "phase": "coarse_faster",
+      "pwm": 107,
+      "trial_index": 3
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 203.1802097579083,
+        "x_axis_mm": -5.7662055261381955
+      },
+      "dist_error_mm": -2.139790242091692,
+      "x_axis_error_mm": 4.145794473861805,
+      "seconds": 4.385667324066162,
+      "recovery": {
+        "ok": false,
+        "reason": "recovery_not_recentered",
+        "pose": {
+          "dist_mm": 203.28594064486725,
+          "x_axis_mm": 0.9901902552930506
+        },
+        "steps": [
+          {
+            "index": 1,
+            "cmd": "r",
+            "pwm": 107,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 203.28470408429163,
+              "x_axis_mm": 0.5616025927477891
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": -2.0352959157083603,
+              "x_axis_error_mm": 10.47360259274779
+            }
+          },
+          {
+            "index": 2,
+            "cmd": "r",
+            "pwm": 107,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 203.28543147286553,
+              "x_axis_mm": 0.8137123627983465
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": -2.034568527134468,
+              "x_axis_error_mm": 10.725712362798347
+            }
+          },
+          {
+            "index": 3,
+            "cmd": "r",
+            "pwm": 107,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 203.28594064486725,
+              "x_axis_mm": 0.9901902552930506
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": -2.03405935513274,
+              "x_axis_error_mm": 10.902190255293052
+            }
+          }
+        ],
+        "source_label": "recenter before Q/LEFT coarse_faster pwm=112 trial 1/3"
+      },
+      "phase": "coarse_faster",
+      "pwm": 112,
+      "trial_index": 1
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 203.89267553352045,
+        "x_axis_mm": -5.113820488162299
+      },
+      "dist_error_mm": -1.427324466479547,
+      "x_axis_error_mm": 4.798179511837702,
+      "seconds": 0.8086292743682861,
+      "phase": "coarse_faster",
+      "pwm": 112,
+      "trial_index": 2
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 202.0824251641984,
+        "x_axis_mm": -5.8330511073904425
+      },
+      "dist_error_mm": -3.2375748358015812,
+      "x_axis_error_mm": 4.078948892609558,
+      "seconds": 4.555763006210327,
+      "recovery": {
+        "ok": false,
+        "reason": "recovery_not_recentered",
+        "pose": {
+          "dist_mm": 203.38716401699241,
+          "x_axis_mm": 1.3486879229299156
+        },
+        "steps": [
+          {
+            "index": 1,
+            "cmd": "r",
+            "pwm": 112,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 203.49128239475115,
+              "x_axis_mm": 1.3783167981420965
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": -1.8287176052488405,
+              "x_axis_error_mm": 11.290316798142097
+            }
+          },
+          {
+            "index": 2,
+            "cmd": "r",
+            "pwm": 112,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 203.4300362901872,
+              "x_axis_mm": 1.1752666238272473
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": -1.889963709812804,
+              "x_axis_error_mm": 11.087266623827247
+            }
+          },
+          {
+            "index": 3,
+            "cmd": "r",
+            "pwm": 107,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 203.38716401699241,
+              "x_axis_mm": 1.3486879229299156
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": -1.9328359830075783,
+              "x_axis_error_mm": 11.260687922929916
+            }
+          }
+        ],
+        "source_label": "recenter before Q/LEFT coarse_faster pwm=112 trial 3/3"
+      },
+      "phase": "coarse_faster",
+      "pwm": 112,
+      "trial_index": 3
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 203.22621795052927,
+        "x_axis_mm": -6.330847582059012
+      },
+      "dist_error_mm": -2.093782049470718,
+      "x_axis_error_mm": 3.581152417940989,
+      "seconds": 0.7368226051330566,
+      "phase": "coarse_faster",
+      "pwm": 117,
+      "trial_index": 1
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 202.29339682486,
+        "x_axis_mm": -7.183160623888396
+      },
+      "dist_error_mm": -3.0266031751399964,
+      "x_axis_error_mm": 2.7288393761116048,
+      "seconds": 3.64178729057312,
+      "recovery": {
+        "ok": false,
+        "reason": "recovery_not_recentered",
+        "pose": {
+          "dist_mm": 203.73066859951015,
+          "x_axis_mm": 2.895346063822437
+        },
+        "steps": [
+          {
+            "index": 1,
+            "cmd": "r",
+            "pwm": 117,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 203.32108160336486,
+              "x_axis_mm": 2.466552856584764
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": -1.9989183966351334,
+              "x_axis_error_mm": 12.378552856584765
+            }
+          },
+          {
+            "index": 2,
+            "cmd": "r",
+            "pwm": 112,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 203.92075712235538,
+              "x_axis_mm": 2.781349536449104
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": -1.3992428776446104,
+              "x_axis_error_mm": 12.693349536449105
+            }
+          },
+          {
+            "index": 3,
+            "cmd": "r",
+            "pwm": 112,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 203.73066859951015,
+              "x_axis_mm": 2.895346063822437
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": -1.58933140048984,
+              "x_axis_error_mm": 12.807346063822438
+            }
+          }
+        ],
+        "source_label": "recenter before Q/LEFT coarse_faster pwm=117 trial 2/3"
+      },
+      "phase": "coarse_faster",
+      "pwm": 117,
+      "trial_index": 2
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 204.2365612664065,
+        "x_axis_mm": -7.775305261101725
+      },
+      "dist_error_mm": -1.083438733593482,
+      "x_axis_error_mm": 2.136694738898276,
+      "seconds": 0.776416540145874,
+      "phase": "coarse_faster",
+      "pwm": 117,
+      "trial_index": 3
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 204.21442210906102,
+        "x_axis_mm": -9.779141278535509
+      },
+      "dist_error_mm": -1.1055778909389744,
+      "x_axis_error_mm": 0.1328587214644923,
+      "seconds": 3.5529119968414307,
+      "recovery": {
+        "ok": false,
+        "reason": "recovery_not_recentered",
+        "pose": {
+          "dist_mm": 203.7500287355454,
+          "x_axis_mm": 3.7144421500448312
+        },
+        "steps": [
+          {
+            "index": 1,
+            "cmd": "r",
+            "pwm": 117,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 204.2318226366961,
+              "x_axis_mm": 2.9760778695260823
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": -1.0881773633038847,
+              "x_axis_error_mm": 12.888077869526082
+            }
+          },
+          {
+            "index": 2,
+            "cmd": "r",
+            "pwm": 117,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 203.94841445954864,
+              "x_axis_mm": 3.3491412191068353
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": -1.371585540451349,
+              "x_axis_error_mm": 13.261141219106836
+            }
+          },
+          {
+            "index": 3,
+            "cmd": "r",
+            "pwm": 117,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 203.7500287355454,
+              "x_axis_mm": 3.7144421500448312
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": -1.5699712644545798,
+              "x_axis_error_mm": 13.626442150044833
+            }
+          }
+        ],
+        "source_label": "recenter before Q/LEFT coarse_faster pwm=122 trial 1/3"
+      },
+      "phase": "coarse_faster",
+      "pwm": 122,
+      "trial_index": 1
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 204.95447740842903,
+        "x_axis_mm": -11.351169348943513
+      },
+      "dist_error_mm": -0.365522591570965,
+      "x_axis_error_mm": -1.439169348943512,
+      "seconds": 0.7523541450500488,
+      "phase": "coarse_faster",
+      "pwm": 122,
+      "trial_index": 2
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 205.0408869364582,
+        "x_axis_mm": -13.089150761594958
+      },
+      "dist_error_mm": -0.2791130635417858,
+      "x_axis_error_mm": -3.177150761594957,
+      "seconds": 4.080110311508179,
+      "recovery": {
+        "ok": false,
+        "reason": "recovery_not_recentered",
+        "pose": {
+          "dist_mm": 205.68736231139607,
+          "x_axis_mm": 3.808880304614551
+        },
+        "steps": [
+          {
+            "index": 1,
+            "cmd": "r",
+            "pwm": 122,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 205.180887834018,
+              "x_axis_mm": 2.386958918252267
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": -0.13911216598199871,
+              "x_axis_error_mm": 12.298958918252268
+            }
+          },
+          {
+            "index": 2,
+            "cmd": "r",
+            "pwm": 122,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 205.8448033019944,
+              "x_axis_mm": 3.1614715425496493
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": 0.5248033019944103,
+              "x_axis_error_mm": 13.073471542549651
+            }
+          },
+          {
+            "index": 3,
+            "cmd": "r",
+            "pwm": 117,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 205.68736231139607,
+              "x_axis_mm": 3.808880304614551
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": 0.36736231139607867,
+              "x_axis_error_mm": 13.720880304614552
+            }
+          }
+        ],
+        "source_label": "recenter before Q/LEFT coarse_faster pwm=122 trial 3/3"
+      },
+      "phase": "coarse_faster",
+      "pwm": 122,
+      "trial_index": 3
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 206.95438784335096,
+        "x_axis_mm": -14.727667601624708
+      },
+      "dist_error_mm": 1.6343878433509644,
+      "x_axis_error_mm": -4.815667601624707,
+      "seconds": 1.2281954288482666,
+      "recovery": {
+        "ok": true,
+        "pose": {
+          "dist_mm": 206.95438784335096,
+          "x_axis_mm": -14.727667601624708
+        },
+        "steps": [
+          {
+            "index": 1,
+            "cmd": "r",
+            "pwm": 122,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 206.95438784335096,
+              "x_axis_mm": -14.727667601624708
+            },
+            "target_status": {
+              "ok": true,
+              "dist_error_mm": 1.6343878433509644,
+              "x_axis_error_mm": -4.815667601624707
+            }
+          }
+        ],
+        "source_label": "recenter before Q/LEFT coarse_faster pwm=127 trial 1/3"
+      },
+      "phase": "coarse_faster",
+      "pwm": 127,
+      "trial_index": 1
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 208.77135574294985,
+        "x_axis_mm": -13.922249288088768
+      },
+      "dist_error_mm": 3.4513557429498576,
+      "x_axis_error_mm": -4.010249288088767,
+      "seconds": 1.1978800296783447,
+      "recovery": {
+        "ok": true,
+        "pose": {
+          "dist_mm": 208.77135574294985,
+          "x_axis_mm": -13.922249288088768
+        },
+        "steps": [
+          {
+            "index": 1,
+            "cmd": "r",
+            "pwm": 127,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 208.77135574294985,
+              "x_axis_mm": -13.922249288088768
+            },
+            "target_status": {
+              "ok": true,
+              "dist_error_mm": 3.4513557429498576,
+              "x_axis_error_mm": -4.010249288088767
+            }
+          }
+        ],
+        "source_label": "recenter before Q/LEFT coarse_faster pwm=127 trial 2/3"
+      },
+      "phase": "coarse_faster",
+      "pwm": 127,
+      "trial_index": 2
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 209.06797649053615,
+        "x_axis_mm": -14.603313490400087
+      },
+      "dist_error_mm": 3.7479764905361606,
+      "x_axis_error_mm": -4.691313490400086,
+      "seconds": 1.2604126930236816,
+      "recovery": {
+        "ok": true,
+        "pose": {
+          "dist_mm": 209.06797649053615,
+          "x_axis_mm": -14.603313490400087
+        },
+        "steps": [
+          {
+            "index": 1,
+            "cmd": "r",
+            "pwm": 127,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 209.06797649053615,
+              "x_axis_mm": -14.603313490400087
+            },
+            "target_status": {
+              "ok": true,
+              "dist_error_mm": 3.7479764905361606,
+              "x_axis_error_mm": -4.691313490400086
+            }
+          }
+        ],
+        "source_label": "recenter before Q/LEFT coarse_faster pwm=127 trial 3/3"
+      },
+      "phase": "coarse_faster",
+      "pwm": 127,
+      "trial_index": 3
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 207.11716490415088,
+        "x_axis_mm": -14.763178737957375
+      },
+      "dist_error_mm": 1.7971649041508897,
+      "x_axis_error_mm": -4.851178737957374,
+      "seconds": 1.9728062152862549,
+      "recovery": {
+        "ok": true,
+        "pose": {
+          "dist_mm": 207.11716490415088,
+          "x_axis_mm": -14.763178737957375
+        },
+        "steps": [
+          {
+            "index": 1,
+            "cmd": "r",
+            "pwm": 127,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 208.98768347785895,
+              "x_axis_mm": -16.420960616267166
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": 3.667683477858958,
+              "x_axis_error_mm": -6.508960616267165
+            }
+          },
+          {
+            "index": 2,
+            "cmd": "r",
+            "pwm": 127,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 207.88737843450127,
+              "x_axis_mm": -15.580734697168593
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": 2.567378434501279,
+              "x_axis_error_mm": -5.668734697168592
+            }
+          },
+          {
+            "index": 3,
+            "cmd": "r",
+            "pwm": 127,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 207.11716490415088,
+              "x_axis_mm": -14.763178737957375
+            },
+            "target_status": {
+              "ok": true,
+              "dist_error_mm": 1.7971649041508897,
+              "x_axis_error_mm": -4.851178737957374
+            }
+          }
+        ],
+        "source_label": "recenter before Q/LEFT ping_pong pwm=124 trial 1/3"
+      },
+      "phase": "ping_pong",
+      "pwm": 124,
+      "trial_index": 1
+    },
+    {
+      "ok": false,
+      "timed_out": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 209.87321830843672,
+        "x_axis_mm": -55.62118390066061
+      },
+      "dist_error_mm": 4.553218308436726,
+      "x_axis_error_mm": -45.70918390066061,
+      "seconds": 5.386213064193726,
+      "recovery": {
+        "ok": false,
+        "reason": "recovery_not_recentered",
+        "pose": {
+          "dist_mm": 210.79157426256558,
+          "x_axis_mm": -34.05520270693773
+        },
+        "steps": [
+          {
+            "index": 1,
+            "cmd": "r",
+            "pwm": 124,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 212.12524526721012,
+              "x_axis_mm": -35.798466710403794
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": 6.805245267210125,
+              "x_axis_error_mm": -25.886466710403795
+            }
+          },
+          {
+            "index": 2,
+            "cmd": "r",
+            "pwm": 127,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 211.34073291153686,
+              "x_axis_mm": -34.78788802269306
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": 6.020732911536868,
+              "x_axis_error_mm": -24.87588802269306
+            }
+          },
+          {
+            "index": 3,
+            "cmd": "r",
+            "pwm": 127,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 210.79157426256558,
+              "x_axis_mm": -34.05520270693773
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": 5.471574262565582,
+              "x_axis_error_mm": -24.14320270693773
+            }
+          }
+        ],
+        "source_label": "recenter before Q/LEFT ping_pong pwm=124 trial 2/3"
+      },
+      "phase": "ping_pong",
+      "pwm": 124,
+      "trial_index": 2
+    },
+    {
+      "ok": false,
+      "timed_out": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 217.08488331079332,
+        "x_axis_mm": -78.59282184615168
+      },
+      "dist_error_mm": 11.764883310793323,
+      "x_axis_error_mm": -68.68082184615167,
+      "seconds": 5.024744749069214,
+      "recovery": {
+        "ok": false,
+        "reason": "recovery_not_recentered",
+        "pose": {
+          "dist_mm": 211.67010309278348,
+          "x_axis_mm": -44.15876288659794
+        },
+        "steps": [
+          {
+            "index": 1,
+            "cmd": "r",
+            "pwm": 124,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 211.67010309278348,
+              "x_axis_mm": -44.15876288659794
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": 6.350103092783485,
+              "x_axis_error_mm": -34.24676288659794
+            }
+          },
+          {
+            "index": 2,
+            "cmd": "r",
+            "pwm": 124,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 211.67010309278348,
+              "x_axis_mm": -44.15876288659794
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": 6.350103092783485,
+              "x_axis_error_mm": -34.24676288659794
+            }
+          },
+          {
+            "index": 3,
+            "cmd": "r",
+            "pwm": 127,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 211.67010309278348,
+              "x_axis_mm": -44.15876288659794
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": 6.350103092783485,
+              "x_axis_error_mm": -34.24676288659794
+            }
+          }
+        ],
+        "source_label": "recenter before Q/LEFT ping_pong pwm=124 trial 3/3"
+      },
+      "phase": "ping_pong",
+      "pwm": 124,
+      "trial_index": 3
+    },
+    {
+      "ok": false,
+      "timed_out": true,
+      "hotkey": "q",
+      "pose": {
+        "dist_mm": 208.4192024643412,
+        "x_axis_mm": -80.45887124825904
+      },
+      "dist_error_mm": 3.0992024643412037,
+      "x_axis_error_mm": -70.54687124825904,
+      "seconds": 5.536524772644043,
+      "recovery": {
+        "ok": false,
+        "reason": "recovery_not_recentered",
+        "pose": {
+          "dist_mm": 213.87499999999997,
+          "x_axis_mm": -64.3505625
+        },
+        "steps": [
+          {
+            "index": 1,
+            "cmd": "r",
+            "pwm": 124,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 213.875,
+              "x_axis_mm": -64.1625
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": 8.555000000000007,
+              "x_axis_error_mm": -54.250499999999995
+            }
+          },
+          {
+            "index": 2,
+            "cmd": "r",
+            "pwm": 124,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 213.87499999999997,
+              "x_axis_mm": -64.273125
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": 8.554999999999978,
+              "x_axis_error_mm": -54.361124999999994
+            }
+          },
+          {
+            "index": 3,
+            "cmd": "r",
+            "pwm": 124,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 213.87499999999997,
+              "x_axis_mm": -64.3505625
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": 8.554999999999978,
+              "x_axis_error_mm": -54.438562499999996
+            }
+          }
+        ],
+        "source_label": "recenter before Q/LEFT ping_pong pwm=125 trial 1/3"
+      },
+      "phase": "ping_pong",
+      "pwm": 125,
+      "trial_index": 1
+    },
+    {
+      "ok": false,
+      "timed_out": true,
+      "hotkey": "q",
+      "pose": {},
+      "dist_error_mm": null,
+      "x_axis_error_mm": null,
+      "seconds": 5.898544073104858,
+      "recovery": {
+        "ok": false,
+        "reason": "recovery_not_recentered",
+        "pose": {
+          "dist_mm": 218.91887267909118,
+          "x_axis_mm": -82.28836729626265
+        },
+        "steps": [
+          {
+            "index": 1,
+            "cmd": "r",
+            "pwm": 125,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 221.8254114825706,
+              "x_axis_mm": -84.85701086383357
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": 16.505411482570594,
+              "x_axis_error_mm": -74.94501086383356
+            }
+          },
+          {
+            "index": 2,
+            "cmd": "r",
+            "pwm": 124,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 220.11568277464153,
+              "x_axis_mm": -83.42287781095041
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": 14.795682774641534,
+              "x_axis_error_mm": -73.5108778109504
+            }
+          },
+          {
+            "index": 3,
+            "cmd": "r",
+            "pwm": 124,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 218.91887267909118,
+              "x_axis_mm": -82.28836729626265
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": 13.598872679091187,
+              "x_axis_error_mm": -72.37636729626264
+            }
+          }
+        ],
+        "source_label": "recenter before Q/LEFT ping_pong pwm=125 trial 2/3"
+      },
+      "phase": "ping_pong",
+      "pwm": 125,
+      "trial_index": 2
+    },
+    {
+      "ok": false,
+      "timed_out": true,
+      "hotkey": "q",
+      "pose": {},
+      "dist_error_mm": null,
+      "x_axis_error_mm": null,
+      "seconds": 6.040489435195923,
+      "recovery": {
+        "ok": false,
+        "reason": "recovery_not_recentered",
+        "pose": {
+          "dist_mm": 238.97811491423346,
+          "x_axis_mm": -126.92959046481626
+        },
+        "steps": [
+          {
+            "index": 1,
+            "cmd": "r",
+            "pwm": 125,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 244.86906568767495,
+              "x_axis_mm": -131.57018164835307
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": 39.549065687674954,
+              "x_axis_error_mm": -121.65818164835306
+            }
+          },
+          {
+            "index": 2,
+            "cmd": "r",
+            "pwm": 125,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 241.403800526827,
+              "x_axis_mm": -129.05888144140272
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": 36.08380052682702,
+              "x_axis_error_mm": -119.14688144140271
+            }
+          },
+          {
+            "index": 3,
+            "cmd": "r",
+            "pwm": 124,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": true,
+            "pose": {
+              "dist_mm": 238.97811491423346,
+              "x_axis_mm": -126.92959046481626
+            },
+            "target_status": {
+              "ok": false,
+              "dist_error_mm": 33.658114914233465,
+              "x_axis_error_mm": -117.01759046481625
+            }
+          }
+        ],
+        "source_label": "recenter before Q/LEFT ping_pong pwm=125 trial 3/3"
+      },
+      "phase": "ping_pong",
+      "pwm": 125,
+      "trial_index": 3
+    },
+    {
+      "ok": false,
+      "skipped": true,
+      "reason": "baseline_unavailable",
+      "hotkey": "e",
+      "phase": "seed",
+      "pwm": 102,
+      "trial_index": 1
+    },
+    {
+      "ok": false,
+      "skipped": true,
+      "reason": "baseline_unavailable",
+      "hotkey": "e",
+      "phase": "seed",
+      "pwm": 102,
+      "trial_index": 2
+    },
+    {
+      "ok": false,
+      "skipped": true,
+      "reason": "baseline_unavailable",
+      "hotkey": "e",
+      "phase": "seed",
+      "pwm": 102,
+      "trial_index": 3
+    }
+  ],
+  "rows": [
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 102,
+      "power": 0.3013698630136986,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -9.912,
+      "post_metric_mm": -9.912,
+      "pre_dist_mm": 205.32,
+      "post_dist_mm": 205.32,
+      "pre_x_axis_mm": -9.912,
+      "post_x_axis_mm": -9.912,
+      "raw_delta_mm": 0.0,
+      "abs_delta_mm": 0.0,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "seed",
+      "probe_index": 1,
+      "trial_index": 1,
+      "trial_number": 1
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 102,
+      "power": 0.3013698630136986,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -5.271867540594059,
+      "post_metric_mm": -4.114714226958415,
+      "pre_dist_mm": 203.9844035643564,
+      "post_dist_mm": 203.52629398693065,
+      "pre_x_axis_mm": -5.271867540594059,
+      "post_x_axis_mm": -4.114714226958415,
+      "raw_delta_mm": 1.1571533136356438,
+      "abs_delta_mm": 1.1571533136356438,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "seed",
+      "probe_index": 1,
+      "trial_index": 2,
+      "trial_number": 2
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 102,
+      "power": 0.3013698630136986,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -5.8475805887100565,
+      "post_metric_mm": -6.192055904819066,
+      "pre_dist_mm": 203.04648899118823,
+      "post_dist_mm": 202.78605696451336,
+      "pre_x_axis_mm": -5.8475805887100565,
+      "post_x_axis_mm": -6.192055904819066,
+      "raw_delta_mm": -0.3444753161090093,
+      "abs_delta_mm": 0.3444753161090093,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "seed",
+      "probe_index": 1,
+      "trial_index": 3,
+      "trial_number": 3
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 107,
+      "power": 0.3242009132420091,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -3.968182659243282,
+      "post_metric_mm": -3.2536213995448557,
+      "pre_dist_mm": 203.0188282543736,
+      "post_dist_mm": 203.19510165560658,
+      "pre_x_axis_mm": -3.968182659243282,
+      "post_x_axis_mm": -3.2536213995448557,
+      "raw_delta_mm": 0.7145612596984261,
+      "abs_delta_mm": 0.7145612596984261,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 2,
+      "trial_index": 1,
+      "trial_number": 4
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 107,
+      "power": 0.3242009132420091,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -6.144700992453899,
+      "post_metric_mm": -6.503872241953344,
+      "pre_dist_mm": 203.07109966995054,
+      "post_dist_mm": 204.54862718679303,
+      "pre_x_axis_mm": -6.144700992453899,
+      "post_x_axis_mm": -6.503872241953344,
+      "raw_delta_mm": -0.359171249499445,
+      "abs_delta_mm": 0.359171249499445,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 2,
+      "trial_index": 2,
+      "trial_number": 5
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 107,
+      "power": 0.3242009132420091,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -2.494696704397025,
+      "post_metric_mm": -1.0859338314918743,
+      "pre_dist_mm": 203.24506952332356,
+      "post_dist_mm": 203.2727024108564,
+      "pre_x_axis_mm": -2.494696704397025,
+      "post_x_axis_mm": -1.0859338314918743,
+      "raw_delta_mm": 1.4087628729051507,
+      "abs_delta_mm": 1.4087628729051507,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 2,
+      "trial_index": 3,
+      "trial_number": 6
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 112,
+      "power": 0.3470319634703196,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -5.968432856999389,
+      "post_metric_mm": -6.190634224952829,
+      "pre_dist_mm": 203.25045551131896,
+      "post_dist_mm": 203.2745498047388,
+      "pre_x_axis_mm": -5.968432856999389,
+      "post_x_axis_mm": -6.190634224952829,
+      "raw_delta_mm": -0.22220136795344025,
+      "abs_delta_mm": 0.22220136795344025,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 3,
+      "trial_index": 1,
+      "trial_number": 7
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 112,
+      "power": 0.3470319634703196,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -1.549000823479272,
+      "post_metric_mm": 0.16039654658549826,
+      "pre_dist_mm": 204.09853244247094,
+      "post_dist_mm": 203.70376887997307,
+      "pre_x_axis_mm": -1.549000823479272,
+      "post_x_axis_mm": 0.16039654658549826,
+      "raw_delta_mm": 1.7093973700647702,
+      "abs_delta_mm": 1.7093973700647702,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 3,
+      "trial_index": 2,
+      "trial_number": 8
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 112,
+      "power": 0.3470319634703196,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -7.033159029925951,
+      "post_metric_mm": -7.438928892402114,
+      "pre_dist_mm": 201.9019226057446,
+      "post_dist_mm": 201.59194207681483,
+      "pre_x_axis_mm": -7.033159029925951,
+      "post_x_axis_mm": -7.438928892402114,
+      "raw_delta_mm": -0.40576986247616276,
+      "abs_delta_mm": 0.40576986247616276,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 3,
+      "trial_index": 3,
+      "trial_number": 9
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 117,
+      "power": 0.3698630136986301,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -2.532064481721119,
+      "post_metric_mm": -0.8684981172303436,
+      "pre_dist_mm": 203.69940700912997,
+      "post_dist_mm": 203.48914507803804,
+      "pre_x_axis_mm": -2.532064481721119,
+      "post_x_axis_mm": -0.8684981172303436,
+      "raw_delta_mm": 1.6635663644907754,
+      "abs_delta_mm": 1.6635663644907754,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 4,
+      "trial_index": 1,
+      "trial_number": 10
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 117,
+      "power": 0.3698630136986301,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -8.638944855604487,
+      "post_metric_mm": -9.146069617770642,
+      "pre_dist_mm": 201.73912541632092,
+      "post_dist_mm": 202.46319095548006,
+      "pre_x_axis_mm": -8.638944855604487,
+      "post_x_axis_mm": -9.146069617770642,
+      "raw_delta_mm": -0.5071247621661552,
+      "abs_delta_mm": 0.5071247621661552,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 4,
+      "trial_index": 2,
+      "trial_number": 11
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 117,
+      "power": 0.3698630136986301,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -3.3350214366412305,
+      "post_metric_mm": -1.6051276039356992,
+      "pre_dist_mm": 203.91161615794178,
+      "post_dist_mm": 203.50132790653043,
+      "pre_x_axis_mm": -3.3350214366412305,
+      "post_x_axis_mm": -1.6051276039356992,
+      "raw_delta_mm": 1.7298938327055313,
+      "abs_delta_mm": 1.7298938327055313,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 4,
+      "trial_index": 3,
+      "trial_number": 12
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 122,
+      "power": 0.3926940639269406,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -11.92070230620985,
+      "post_metric_mm": -12.715440245708558,
+      "pre_dist_mm": 204.35136386314286,
+      "post_dist_mm": 204.56085483476096,
+      "pre_x_axis_mm": -11.92070230620985,
+      "post_x_axis_mm": -12.715440245708558,
+      "raw_delta_mm": -0.7947379394987077,
+      "abs_delta_mm": 0.7947379394987077,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 5,
+      "trial_index": 1,
+      "trial_number": 13
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 122,
+      "power": 0.3926940639269406,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -6.691301443862731,
+      "post_metric_mm": -4.607735376053954,
+      "pre_dist_mm": 205.06413418590031,
+      "post_dist_mm": 204.19547366932815,
+      "pre_x_axis_mm": -6.691301443862731,
+      "post_x_axis_mm": -4.607735376053954,
+      "raw_delta_mm": 2.0835660678087766,
+      "abs_delta_mm": 2.0835660678087766,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 5,
+      "trial_index": 2,
+      "trial_number": 14
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 122,
+      "power": 0.3926940639269406,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -18.334133963085407,
+      "post_metric_mm": -20.132565428082867,
+      "pre_dist_mm": 204.14647024242885,
+      "post_dist_mm": 203.70820606235446,
+      "pre_x_axis_mm": -18.334133963085407,
+      "post_x_axis_mm": -20.132565428082867,
+      "raw_delta_mm": -1.79843146499746,
+      "abs_delta_mm": 1.79843146499746,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "coarse_faster",
+      "probe_index": 5,
+      "trial_index": 3,
+      "trial_number": 15
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 127,
+      "power": 0.4155251141552511,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -12.657611091655339,
+      "post_metric_mm": -16.414701003764595,
+      "pre_dist_mm": 206.12085004324197,
+      "post_dist_mm": 209.3440133039624,
+      "pre_x_axis_mm": -12.657611091655339,
+      "post_x_axis_mm": -16.414701003764595,
+      "raw_delta_mm": -3.7570899121092562,
+      "abs_delta_mm": 3.7570899121092562,
+      "moved": true,
+      "result_label": "movement",
+      "phase": "coarse_faster",
+      "probe_index": 6,
+      "trial_index": 1,
+      "trial_number": 16
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 127,
+      "power": 0.4155251141552511,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -11.37913915928536,
+      "post_metric_mm": -16.289148284863025,
+      "pre_dist_mm": 207.12599683801358,
+      "post_dist_mm": 209.85941552602648,
+      "pre_x_axis_mm": -11.37913915928536,
+      "post_x_axis_mm": -16.289148284863025,
+      "raw_delta_mm": -4.910009125577664,
+      "abs_delta_mm": 4.910009125577664,
+      "moved": true,
+      "result_label": "movement",
+      "phase": "coarse_faster",
+      "probe_index": 6,
+      "trial_index": 2,
+      "trial_number": 17
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 127,
+      "power": 0.4155251141552511,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -12.446378864706922,
+      "post_metric_mm": -19.373674222122776,
+      "pre_dist_mm": 207.2277377544357,
+      "post_dist_mm": 210.62629505698573,
+      "pre_x_axis_mm": -12.446378864706922,
+      "post_x_axis_mm": -19.373674222122776,
+      "raw_delta_mm": -6.927295357415854,
+      "abs_delta_mm": 6.927295357415854,
+      "moved": true,
+      "result_label": "movement",
+      "phase": "coarse_faster",
+      "probe_index": 6,
+      "trial_index": 3,
+      "trial_number": 18
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 124,
+      "power": 0.4018264840182648,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -16.10153799781402,
+      "post_metric_mm": -34.967450161978924,
+      "pre_dist_mm": 209.44250553987604,
+      "post_dist_mm": 210.55899268878792,
+      "pre_x_axis_mm": -16.10153799781402,
+      "post_x_axis_mm": -34.967450161978924,
+      "raw_delta_mm": -18.865912164164904,
+      "abs_delta_mm": 18.865912164164904,
+      "moved": true,
+      "result_label": "movement",
+      "phase": "ping_pong",
+      "probe_index": 7,
+      "trial_index": 1,
+      "trial_number": 19
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 124,
+      "power": 0.4018264840182648,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -55.26734693877551,
+      "post_metric_mm": -55.158979591836726,
+      "pre_dist_mm": 209.51020408163265,
+      "post_dist_mm": 209.51020408163265,
+      "pre_x_axis_mm": -55.26734693877551,
+      "post_x_axis_mm": -55.158979591836726,
+      "raw_delta_mm": 0.10836734693878469,
+      "abs_delta_mm": 0.10836734693878469,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "ping_pong",
+      "probe_index": 7,
+      "trial_index": 2,
+      "trial_number": 20
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 124,
+      "power": 0.4018264840182648,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -77.3111007535018,
+      "post_metric_mm": -76.63374153251411,
+      "pre_dist_mm": 216.1241610282337,
+      "post_dist_mm": 215.65302211551045,
+      "pre_x_axis_mm": -77.3111007535018,
+      "post_x_axis_mm": -76.63374153251411,
+      "raw_delta_mm": 0.6773592209876966,
+      "abs_delta_mm": 0.6773592209876966,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "ping_pong",
+      "probe_index": 7,
+      "trial_index": 3,
+      "trial_number": 21
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 125,
+      "power": 0.4063926940639269,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -86.67805070641049,
+      "post_metric_mm": -89.58316922579986,
+      "pre_dist_mm": 213.82076068938994,
+      "post_dist_mm": 216.1691940143968,
+      "pre_x_axis_mm": -86.67805070641049,
+      "post_x_axis_mm": -89.58316922579986,
+      "raw_delta_mm": -2.905118519389376,
+      "abs_delta_mm": 2.905118519389376,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "ping_pong",
+      "probe_index": 8,
+      "trial_index": 1,
+      "trial_number": 22
+    },
+    {
+      "ok": true,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 125,
+      "power": 0.4063926940639269,
+      "duration_ms": 130,
+      "cmd_sent": "r",
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "pre_metric_mm": -118.0,
+      "post_metric_mm": -118.0160909090909,
+      "pre_dist_mm": 244.42857142857142,
+      "post_dist_mm": 241.09545454545452,
+      "pre_x_axis_mm": -118.0,
+      "post_x_axis_mm": -118.0160909090909,
+      "raw_delta_mm": -0.016090909090905825,
+      "abs_delta_mm": 0.016090909090905825,
+      "moved": false,
+      "result_label": "no movement",
+      "phase": "ping_pong",
+      "probe_index": 8,
+      "trial_index": 2,
+      "trial_number": 23
+    },
+    {
+      "ok": false,
+      "hotkey": "q",
+      "cmd": "l",
+      "pwm": 125,
+      "power": 0.4063926940639269,
+      "duration_ms": 130,
+      "display_label": "Q/LEFT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "error": "pre_pose_unavailable",
+      "recovery": {
+        "ok": false,
+        "reason": "recovery_pose_unavailable",
+        "pose": null,
+        "steps": [
+          {
+            "index": 1,
+            "cmd": "r",
+            "pwm": 125,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": false
+          },
+          {
+            "index": 2,
+            "cmd": "r",
+            "pwm": 125,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": false
+          },
+          {
+            "index": 3,
+            "cmd": "r",
+            "pwm": 124,
+            "duration_ms": 130,
+            "origin_cmd": "l",
+            "pose_found": false
+          }
+        ],
+        "source_label": "Q/LEFT pwm=125 pre_pose"
+      },
+      "phase": "ping_pong",
+      "probe_index": 8,
+      "trial_index": 3,
+      "trial_number": 24
+    },
+    {
+      "ok": false,
+      "hotkey": "e",
+      "cmd": "r",
+      "pwm": 102,
+      "power": 0.3013698630136986,
+      "duration_ms": 130,
+      "display_label": "E/RIGHT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "error": "pre_pose_unavailable",
+      "recovery": {
+        "ok": false,
+        "reason": "no_recent_turn_acts"
+      },
+      "phase": "seed",
+      "probe_index": 1,
+      "trial_index": 1,
+      "trial_number": 25
+    },
+    {
+      "ok": false,
+      "hotkey": "e",
+      "cmd": "r",
+      "pwm": 102,
+      "power": 0.3013698630136986,
+      "duration_ms": 130,
+      "display_label": "E/RIGHT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "error": "pre_pose_unavailable",
+      "recovery": {
+        "ok": false,
+        "reason": "no_recent_turn_acts"
+      },
+      "phase": "seed",
+      "probe_index": 1,
+      "trial_index": 2,
+      "trial_number": 26
+    },
+    {
+      "ok": false,
+      "hotkey": "e",
+      "cmd": "r",
+      "pwm": 102,
+      "power": 0.3013698630136986,
+      "duration_ms": 130,
+      "display_label": "E/RIGHT",
+      "metric_key": "x_axis_mm",
+      "metric_label": "x_axis",
+      "error": "pre_pose_unavailable",
+      "recovery": {
+        "ok": false,
+        "reason": "no_recent_turn_acts"
+      },
+      "phase": "seed",
+      "probe_index": 1,
+      "trial_index": 3,
+      "trial_number": 27
+    }
+  ],
+  "summary": {
+    "required_success_ratio": null,
+    "required_success_count": null,
+    "by_hotkey": {
+      "q": {
+        "recommended_score": null,
+        "recommended_pwm": 102,
+        "recommended_power": 0.332,
+        "recommended_duration_ms": 130,
+        "seed_curve_score": 1,
+        "seed_curve_pwm": 102,
+        "seed_curve_power": 0.3013698630136986,
+        "seed_curve_duration_ms": 130,
+        "movement_threshold_mm": 3.0,
+        "scores": [],
+        "floor_candidate": {
+          "hotkey": "q",
+          "display_label": "Q/LEFT",
+          "phase": "ping_pong",
+          "probe_index": 8,
+          "pwm": 125,
+          "power": 0.4063926940639269,
+          "duration_ms": 130,
+          "valid_trial_count": 2,
+          "movement_count": 0,
+          "median_abs_delta_mm": 1.4606047142401408,
+          "median_raw_delta_mm": -1.4606047142401408,
+          "result_label": "no movement"
+        },
+        "ceiling_candidate": {
+          "hotkey": "q",
+          "display_label": "Q/LEFT",
+          "phase": "coarse_faster",
+          "probe_index": 6,
+          "pwm": 127,
+          "power": 0.4155251141552511,
+          "duration_ms": 130,
+          "valid_trial_count": 3,
+          "movement_count": 3,
+          "median_abs_delta_mm": 4.910009125577664,
+          "median_raw_delta_mm": -4.910009125577664,
+          "result_label": "movement"
+        },
+        "error": "dead_direction_abort",
+        "abort_info": {
+          "reason": "dead_direction_abort",
+          "consecutive_dead_candidates": 2,
+          "timed_out_count": 3,
+          "max_abs_x_axis_error_mm": 70.54687124825904,
+          "max_abs_dist_error_mm": 3.0992024643412037
+        }
+      },
+      "e": {
+        "recommended_score": null,
+        "recommended_pwm": 102,
+        "recommended_power": 0.332,
+        "recommended_duration_ms": 130,
+        "seed_curve_score": 1,
+        "seed_curve_pwm": 102,
+        "seed_curve_power": 0.3013698630136986,
+        "seed_curve_duration_ms": 130,
+        "movement_threshold_mm": 3.0,
+        "scores": [],
+        "floor_candidate": {
+          "hotkey": "e",
+          "display_label": "E/RIGHT",
+          "phase": "ping_pong",
+          "probe_index": 7,
+          "pwm": 120,
+          "power": 0.3835616438356164,
+          "duration_ms": 130,
+          "valid_trial_count": 1,
+          "movement_count": 0,
+          "median_abs_delta_mm": 0.0,
+          "median_raw_delta_mm": 0.0,
+          "result_label": "no movement"
+        },
+        "ceiling_candidate": {
+          "hotkey": "e",
+          "display_label": "E/RIGHT",
+          "phase": "coarse_faster",
+          "probe_index": 5,
+          "pwm": 122,
+          "power": 0.3926940639269406,
+          "duration_ms": 130,
+          "valid_trial_count": 2,
+          "movement_count": 2,
+          "median_abs_delta_mm": 4.708702271491628,
+          "median_raw_delta_mm": 4.708702271491628,
+          "result_label": "movement"
+        },
+        "error": "dead_direction_abort",
+        "abort_info": {
+          "reason": "dead_direction_abort",
+          "consecutive_dead_candidates": 2,
+          "timed_out_count": 3,
+          "max_abs_x_axis_error_mm": 121.93726273726273,
+          "max_abs_dist_error_mm": 120.50499500499501
+        }
+      }
+    }
+  }
+}

@@ -58,11 +58,11 @@ class TestSetupManualTrainingCyanProfiles(unittest.TestCase):
         for idx, (value, label) in enumerate(options, start=1):
             self.assertEqual(label, f"{idx}. {value}")
 
-    def test_cyan_profile_dropdown_contains_requested_10_configs(self):
+    def test_cyan_profile_dropdown_exposes_only_config2(self):
         options = setup_manual_training.CYAN_PROFILE_OPTIONS
-        self.assertEqual(len(options), 10)
-        self.assertEqual(options[0][0], "config1_defaults")
-        self.assertEqual(options[-1][0], "config10_hsv_disabled")
+        self.assertEqual(len(options), 1)
+        self.assertEqual(options[0][0], "crown_brick_default")
+        self.assertEqual(options[0][1], "Config 2")
         self.assertEqual(setup_manual_training.MARKERLESS_PROFILE_OPTIONS, options)
 
     def test_apply_cyan_profile_uses_exact_runtime_tuning_payload(self):
@@ -74,15 +74,15 @@ class TestSetupManualTrainingCyanProfiles(unittest.TestCase):
             key, runtime, applied = setup_manual_training._apply_cyan_profile(
                 app,
                 vision,
-                "config9_tight_light_smooth",
+                "crown_brick_default",
             )
         finally:
             setup_manual_training.YoloBrickDetector = original_cls
 
         self.assertTrue(applied)
-        self.assertEqual(key, "config9_tight_light_smooth")
-        self.assertEqual(app.stream_state.get("cyan_profile"), "config9_tight_light_smooth")
-        self.assertEqual(app.stream_state.get("markerless_profile"), "config9_tight_light_smooth")
+        self.assertEqual(key, "crown_brick_default")
+        self.assertEqual(app.stream_state.get("cyan_profile"), "crown_brick_default")
+        self.assertEqual(app.stream_state.get("markerless_profile"), "crown_brick_default")
         self.assertEqual(
             vision.calls[-1],
             {
@@ -91,62 +91,53 @@ class TestSetupManualTrainingCyanProfiles(unittest.TestCase):
                 "hsv_enabled": True,
                 "hsv_lower": list(setup_manual_training.CYAN_HSV_TIGHT_LOWER),
                 "hsv_upper": list(setup_manual_training.CYAN_HSV_TIGHT_UPPER),
-                "hsv_erode_iterations": 1,
+                "hsv_erode_iterations": 0,
             },
         )
         self.assertEqual(float(runtime.get("smooth_alpha")), 0.20)
-        self.assertEqual(int(runtime.get("hsv_erode_iterations")), 1)
+        self.assertEqual(int(runtime.get("hsv_erode_iterations")), 0)
         self.assertIsNone(vision._prev_angle)
         self.assertIsNone(vision._prev_dist)
         self.assertIsNone(vision._prev_offset)
 
-    def test_apply_cyan_profile_restores_hsv_after_disabled_profile(self):
+    def test_apply_cyan_profile_legacy_alias_restores_config2_runtime(self):
         app = _DummyApp()
         vision = _FakeYolo()
         original_cls = setup_manual_training.YoloBrickDetector
         try:
             setup_manual_training.YoloBrickDetector = _FakeYolo
-            setup_manual_training._apply_cyan_profile(
-                app,
-                vision,
-                "config10_hsv_disabled",
-            )
             key, runtime, applied = setup_manual_training._apply_cyan_profile(
                 app,
                 vision,
-                "config2_no_erosion",
+                "config10_hsv_disabled",
             )
         finally:
             setup_manual_training.YoloBrickDetector = original_cls
 
         self.assertTrue(applied)
-        self.assertEqual(key, "config2_no_erosion")
+        self.assertEqual(key, "crown_brick_default")
         self.assertEqual(
             vision.calls[-1],
             {
                 "confidence": 0.15,
-                "smoothing_alpha": 0.30,
+                "smoothing_alpha": 0.20,
                 "hsv_enabled": True,
-                "hsv_lower": list(setup_manual_training.CYAN_HSV_BALANCED_LOWER),
-                "hsv_upper": list(setup_manual_training.CYAN_HSV_BALANCED_UPPER),
+                "hsv_lower": list(setup_manual_training.CYAN_HSV_TIGHT_LOWER),
+                "hsv_upper": list(setup_manual_training.CYAN_HSV_TIGHT_UPPER),
                 "hsv_erode_iterations": 0,
             },
         )
         self.assertTrue(bool(runtime.get("hsv_enabled")))
-        self.assertEqual(list(runtime.get("hsv_lower")), list(setup_manual_training.CYAN_HSV_BALANCED_LOWER))
-        self.assertEqual(list(runtime.get("hsv_upper")), list(setup_manual_training.CYAN_HSV_BALANCED_UPPER))
+        self.assertEqual(float(runtime.get("smooth_alpha")), 0.20)
+        self.assertEqual(list(runtime.get("hsv_lower")), list(setup_manual_training.CYAN_HSV_TIGHT_LOWER))
+        self.assertEqual(list(runtime.get("hsv_upper")), list(setup_manual_training.CYAN_HSV_TIGHT_UPPER))
 
-    def test_apply_cyan_profile_switches_from_tight_profile_back_to_wide_defaults(self):
+    def test_apply_cyan_profile_legacy_wide_alias_resolves_to_config2(self):
         app = _DummyApp()
         vision = _FakeYolo()
         original_cls = setup_manual_training.YoloBrickDetector
         try:
             setup_manual_training.YoloBrickDetector = _FakeYolo
-            setup_manual_training._apply_cyan_profile(
-                app,
-                vision,
-                "config9_tight_light_smooth",
-            )
             key, runtime, applied = setup_manual_training._apply_cyan_profile(
                 app,
                 vision,
@@ -156,22 +147,22 @@ class TestSetupManualTrainingCyanProfiles(unittest.TestCase):
             setup_manual_training.YoloBrickDetector = original_cls
 
         self.assertTrue(applied)
-        self.assertEqual(key, "config6_wide_cyan_range")
+        self.assertEqual(key, "crown_brick_default")
         self.assertEqual(
             vision.calls[-1],
             {
                 "confidence": 0.15,
-                "smoothing_alpha": 0.30,
+                "smoothing_alpha": 0.20,
                 "hsv_enabled": True,
-                "hsv_lower": list(setup_manual_training.CYAN_HSV_WIDE_LOWER),
-                "hsv_upper": list(setup_manual_training.CYAN_HSV_WIDE_UPPER),
-                "hsv_erode_iterations": 2,
+                "hsv_lower": list(setup_manual_training.CYAN_HSV_TIGHT_LOWER),
+                "hsv_upper": list(setup_manual_training.CYAN_HSV_TIGHT_UPPER),
+                "hsv_erode_iterations": 0,
             },
         )
-        self.assertEqual(float(runtime.get("smooth_alpha")), 0.30)
-        self.assertEqual(int(runtime.get("hsv_erode_iterations")), 2)
-        self.assertEqual(list(runtime.get("hsv_lower")), list(setup_manual_training.CYAN_HSV_WIDE_LOWER))
-        self.assertEqual(list(runtime.get("hsv_upper")), list(setup_manual_training.CYAN_HSV_WIDE_UPPER))
+        self.assertEqual(float(runtime.get("smooth_alpha")), 0.20)
+        self.assertEqual(int(runtime.get("hsv_erode_iterations")), 0)
+        self.assertEqual(list(runtime.get("hsv_lower")), list(setup_manual_training.CYAN_HSV_TIGHT_LOWER))
+        self.assertEqual(list(runtime.get("hsv_upper")), list(setup_manual_training.CYAN_HSV_TIGHT_UPPER))
 
     def test_apply_cyan_profile_legacy_detector_path_restores_full_snapshot(self):
         app = _DummyApp()
@@ -198,23 +189,23 @@ class TestSetupManualTrainingCyanProfiles(unittest.TestCase):
             key, runtime, applied = setup_manual_training._apply_cyan_profile(
                 app,
                 vision,
-                "config2_no_erosion",
+                "crown_brick_default",
             )
         finally:
             setup_manual_training.YoloBrickDetector = original_cls
 
         self.assertTrue(applied)
-        self.assertEqual(key, "config2_no_erosion")
+        self.assertEqual(key, "crown_brick_default")
         self.assertEqual(float(runtime.get("conf_threshold")), 0.15)
-        self.assertEqual(float(runtime.get("smooth_alpha")), 0.30)
-        self.assertEqual(list(runtime.get("hsv_lower")), list(setup_manual_training.CYAN_HSV_BALANCED_LOWER))
-        self.assertEqual(list(runtime.get("hsv_upper")), list(setup_manual_training.CYAN_HSV_BALANCED_UPPER))
+        self.assertEqual(float(runtime.get("smooth_alpha")), 0.20)
+        self.assertEqual(list(runtime.get("hsv_lower")), list(setup_manual_training.CYAN_HSV_TIGHT_LOWER))
+        self.assertEqual(list(runtime.get("hsv_upper")), list(setup_manual_training.CYAN_HSV_TIGHT_UPPER))
         self.assertTrue(bool(runtime.get("hsv_enabled")))
         self.assertEqual(int(runtime.get("hsv_erode_iterations")), 0)
         self.assertEqual(vision.conf_threshold, 0.15)
-        self.assertEqual(vision._smooth_alpha, 0.30)
-        self.assertEqual(list(vision._hsv_lower), list(setup_manual_training.CYAN_HSV_BALANCED_LOWER))
-        self.assertEqual(list(vision._hsv_upper), list(setup_manual_training.CYAN_HSV_BALANCED_UPPER))
+        self.assertEqual(vision._smooth_alpha, 0.20)
+        self.assertEqual(list(vision._hsv_lower), list(setup_manual_training.CYAN_HSV_TIGHT_LOWER))
+        self.assertEqual(list(vision._hsv_upper), list(setup_manual_training.CYAN_HSV_TIGHT_UPPER))
         self.assertTrue(bool(vision._hsv_enabled))
         self.assertEqual(int(vision._hsv_erode_iterations), 0)
         self.assertIsNone(vision._prev_angle)
@@ -240,41 +231,45 @@ class TestSetupManualTrainingCyanProfiles(unittest.TestCase):
             self.assertEqual(len(list(settings["hsv_lower"])), 3)
             self.assertEqual(len(list(settings["hsv_upper"])), 3)
 
-    def test_hsv_disabled_profile_still_resolves_full_baseline_settings(self):
+    def test_hsv_disabled_alias_still_resolves_config2_settings(self):
         profile_key, settings = setup_manual_training.cyan_profile_settings("config10_hsv_disabled")
-        self.assertEqual(profile_key, "config10_hsv_disabled")
+        self.assertEqual(profile_key, "crown_brick_default")
         self.assertEqual(float(settings["confidence"]), 0.15)
-        self.assertEqual(float(settings["smoothing_alpha"]), 0.30)
-        self.assertEqual(list(settings["hsv_lower"]), list(setup_manual_training.CYAN_HSV_BALANCED_LOWER))
-        self.assertEqual(list(settings["hsv_upper"]), list(setup_manual_training.CYAN_HSV_BALANCED_UPPER))
-        self.assertFalse(bool(settings["hsv_enabled"]))
-        self.assertEqual(int(settings["hsv_erode_iterations"]), 2)
+        self.assertEqual(float(settings["smoothing_alpha"]), 0.20)
+        self.assertEqual(list(settings["hsv_lower"]), list(setup_manual_training.CYAN_HSV_TIGHT_LOWER))
+        self.assertEqual(list(settings["hsv_upper"]), list(setup_manual_training.CYAN_HSV_TIGHT_UPPER))
+        self.assertTrue(bool(settings["hsv_enabled"]))
+        self.assertEqual(int(settings["hsv_erode_iterations"]), 0)
 
     def test_cyan_profile_normalization_supports_numeric_and_legacy_aliases(self):
         self.assertEqual(
             setup_manual_training.normalize_cyan_profile("config2"),
-            "config2_no_erosion",
+            "crown_brick_default",
         )
         self.assertEqual(
             setup_manual_training.normalize_cyan_profile("default"),
-            "config2_no_erosion",
+            "crown_brick_default",
+        )
+        self.assertEqual(
+            setup_manual_training.normalize_cyan_profile("config2_no_erosion"),
+            "crown_brick_default",
         )
         self.assertEqual(
             setup_manual_training.normalize_cyan_profile("8"),
-            "config8_responsive",
+            "crown_brick_default",
         )
         self.assertEqual(
             setup_manual_training.normalize_cyan_profile("balanced"),
-            "config1_defaults",
+            "crown_brick_default",
         )
         self.assertEqual(
             setup_manual_training.normalize_markerless_profile("balanced"),
-            "config1_defaults",
+            "crown_brick_default",
         )
 
     def test_cyan_profile_default_constant_uses_config2(self):
-        self.assertEqual(setup_manual_training.CYAN_PROFILE_DEFAULT, "config2_no_erosion")
-        self.assertEqual(setup_manual_training._DEFAULT_CYAN_PROFILE, "config2_no_erosion")
+        self.assertEqual(setup_manual_training.CYAN_PROFILE_DEFAULT, "crown_brick_default")
+        self.assertEqual(setup_manual_training._DEFAULT_CYAN_PROFILE, "crown_brick_default")
 
     def test_cyan_stream_state_getter_accepts_legacy_markerless_key(self):
         app = _DummyApp()
@@ -282,7 +277,7 @@ class TestSetupManualTrainingCyanProfiles(unittest.TestCase):
         app.stream_state["markerless_profile"] = "config8_responsive"
         self.assertEqual(
             setup_manual_training._stream_state_cyan_profile(app, setup_manual_training.CYAN_PROFILE_DEFAULT),
-            "config8_responsive",
+            "crown_brick_default",
         )
 
     def test_cyan_smoothing_experiment_caps_high_alpha(self):

@@ -330,15 +330,15 @@
                     "min": true
                 },
                 "xAxis_offset_abs": {
-                    "target": 3.44,
+                    "target": 7.13,
                     "tol": 1.4
                 },
                 "yAxis_offset_abs": {
-                    "target": -1.18,
+                    "target": 3.74,
                     "tol": 2.3
                 },
                 "dist": {
-                    "target": 69.55,
+                    "target": 103.61,
                     "tol": 2.3
                 }
             }
@@ -632,7 +632,22 @@
                 "target_lock_center_y_worse_margin_mm": 2.0,
                 "micro_adjust_focus_guard_enabled": true,
                 "micro_adjust_focus_guard_confirm_frames": 3,
-                "micro_adjust_focus_guard_reverse_max_acts": 1
+                "micro_adjust_focus_guard_reverse_max_acts": 1,
+                "moving_lock": {
+                    "enabled": true,
+                    "axes": [
+                        "distance",
+                        "y_axis"
+                    ],
+                    "require_x_within_tol": true,
+                    "entry_tol_add_mm": 1.0,
+                    "other_axis_tol_add_mm": 1.0,
+                    "x_guard_tol_add_mm": 0.0,
+                    "pulse_duration_ms": 180,
+                    "max_pulses_per_burst": 4,
+                    "max_non_improving_fresh_frames": 2,
+                    "min_improvement_mm": 0.15
+                }
             },
             "success_gates": {
                 "visible": {

@@ -60,7 +60,7 @@ from helper_vision_leia import LeiaVision
 
 # The Yolo brick detector is used by manual training; it's optional here and
 # only imported if the module is available.  Using Yolo often gives much more
-# robust cyan‑brick tracking than the simple LeiaVision edge detector.
+# robust crown-brick tracking than the simple LeiaVision edge detector.
 try:
     from helper_brick_detector_yolo import BrickDetector as YoloBrickDetector
 except ImportError:
@@ -1605,7 +1605,7 @@ def main() -> int:
         "--vision",
         choices=["leia", "yolo", "aruco"],
         default=DEFAULT_VISION_MODE,
-        help="Which vision backend to use: yolo cyan bricks (default), aruco markers, or leia edges.",
+        help="Which vision backend to use: yolo crown bricks (default), aruco markers, or leia edges.",
     )
 
     parser.add_argument(
@@ -1822,7 +1822,7 @@ def main() -> int:
                         fps=max(1, int(args.stream_fps)),
                         jpeg_quality=max(1, min(100, int(args.stream_jpeg_quality))),
                         img_width=max(320, int(args.stream_img_width)),
-                        vision_mode_options=[("aruco", "AruCo Markers"), ("cyan", "Cyan Bricks")],
+                        vision_mode_options=[("aruco", "AruCo Markers"), ("cyan", "Crown Bricks")],
                         xyz_workspace_getter=lambda: getattr(world, "_xyz_workspace", None),
                     )
                     log_line(f"[CALIBRATE_X] Livestream started: {_orange_text(stream_url)}")

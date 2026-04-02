@@ -44,6 +44,27 @@ class TestManualTrainingDriveBreakawayCommand(unittest.TestCase):
             a_MAIN.log_line = original_log_line
 
         self.assertTrue(any(":drivebreak" in str(line) for line in lines))
+        self.assertTrue(any(":turnbreak" in str(line) for line in lines))
+
+    def test_handle_command_line_runs_turn_breakaway_command(self):
+        app_state = _DummyAppState()
+        calls = []
+        original_runner = a_MAIN.run_turn_breakaway_test_command
+        try:
+            def _fake_runner(app):
+                calls.append(app)
+                return {"ok": True}
+
+            a_MAIN.run_turn_breakaway_test_command = _fake_runner
+            exit_mode, do_help, messages, ended_info = a_MAIN.handle_command_line(app_state, "turnbreak")
+        finally:
+            a_MAIN.run_turn_breakaway_test_command = original_runner
+
+        self.assertFalse(exit_mode)
+        self.assertFalse(do_help)
+        self.assertIsNone(ended_info)
+        self.assertEqual(calls, [app_state])
+        self.assertIn("[TURN BREAKAWAY TEST] Complete.", messages)
 
 
 if __name__ == "__main__":

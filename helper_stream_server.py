@@ -95,7 +95,7 @@ class StreamServer:
         self.vision_mode_setter = vision_mode_setter
         self.vision_mode_options = self._normalize_options(vision_mode_options)
         if (self.vision_mode_getter is not None or self.vision_mode_setter is not None) and not self.vision_mode_options:
-            self.vision_mode_options = [("cyan", "Cyan Bricks"), ("aruco", "AruCo Markers")]
+            self.vision_mode_options = [("cyan", "Crown Bricks"), ("aruco", "AruCo Markers")]
         self._vision_mode_allowed = {value for value, _label in self.vision_mode_options}
         if cyan_profile_getter is None:
             cyan_profile_getter = markerless_profile_getter
@@ -501,7 +501,7 @@ class StreamServer:
         has_vision_mode_control = bool(self.vision_mode_options) and (
             self.vision_mode_getter is not None or self.vision_mode_setter is not None
         )
-        has_cyan_profile_control = bool(self.cyan_profile_options) and (
+        has_cyan_profile_control = len(self.cyan_profile_options) > 1 and (
             self.cyan_profile_getter is not None or self.cyan_profile_setter is not None
         )
         has_cyan_visibility_control = bool(self.cyan_visibility_options) and (
@@ -544,7 +544,7 @@ class StreamServer:
                     option_parts.append(f"<option value='{value_escaped}'>{label_escaped}</option>")
                 controls_parts.append(
                     "<label class='control-item'>"
-                    "Cyan Config: "
+                    "Crown Config: "
                     "<select id='cyanProfile' class='control-select'>"
                     + "".join(option_parts)
                     + "</select>"
@@ -1221,7 +1221,7 @@ class StreamServer:
     def _brick_shape_panel_html(self):
         fallback_html = (
             "<div class='shape-panel'>"
-            "<div class='shape-title'>Target Brick Shape</div>"
+            "<div class='shape-title'>Target Crown Brick Shape</div>"
             "<div class='shape-wrap'><div style='color:#bbb;font-size:11px;'>shape coords unavailable</div></div>"
             "</div>"
         )
@@ -1236,6 +1236,7 @@ class StreamServer:
             return fallback_html
 
         face_polygon_raw = brick.get("facePolygon")
+        face_cutouts_raw = brick.get("faceCutouts")
         face_lines_raw = brick.get("faceLines")
         if not isinstance(face_polygon_raw, list):
             return fallback_html
@@ -1278,6 +1279,30 @@ class StreamServer:
 
         polygon_points = " ".join(f"{map_x(x):.2f},{map_y(y):.2f}" for x, y in points)
 
+        face_cutout_svg = ""
+        if isinstance(face_cutouts_raw, list):
+            cutout_parts = []
+            for cutout in face_cutouts_raw:
+                if not isinstance(cutout, list):
+                    continue
+                cutout_points = []
+                for row in cutout:
+                    if not isinstance(row, dict):
+                        continue
+                    try:
+                        cutout_points.append((float(row.get("x")), float(row.get("y"))))
+                    except (TypeError, ValueError):
+                        continue
+                if len(cutout_points) < 3:
+                    continue
+                cutout_svg_points = " ".join(
+                    f"{map_x(x):.2f},{map_y(y):.2f}" for x, y in cutout_points
+                )
+                cutout_parts.append(
+                    f"<polygon points='{cutout_svg_points}' fill='#11181d' stroke='#def7ff' stroke-width='1.6'/>"
+                )
+            face_cutout_svg = "".join(cutout_parts)
+
         face_line_svg = ""
         if isinstance(face_lines_raw, list):
             line_parts = []
@@ -1303,9 +1328,10 @@ class StreamServer:
 
         svg_html = (
             "<svg class='shape-svg' viewBox='0 0 260 140' width='250' height='134' xmlns='http://www.w3.org/2000/svg' "
-            "role='img' aria-label='Brick shape reference from world model coordinates'>"
+            "role='img' aria-label='Crown brick shape reference from world model coordinates'>"
             "<rect x='1' y='1' width='258' height='138' rx='8' fill='#11181d' stroke='#2f4a54' stroke-width='1.2'/>"
             f"<polygon points='{polygon_points}' fill='#1f9db1' stroke='#c7f6ff' stroke-width='2.0'/>"
+            f"{face_cutout_svg}"
             f"{face_line_svg}"
             "<text x='14' y='16' fill='#d8fbff' font-size='10.5' font-family='monospace'>source: world_model_brick.json</text>"
             "</svg>"
@@ -1313,7 +1339,7 @@ class StreamServer:
 
         return (
             "<div class='shape-panel'>"
-            "<div class='shape-title'>Target Brick Shape</div>"
+            "<div class='shape-title'>Target Crown Brick Shape</div>"
             f"<div class='shape-wrap'>{svg_html}</div>"
             "</div>"
         )
