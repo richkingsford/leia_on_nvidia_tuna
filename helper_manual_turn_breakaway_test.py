@@ -40,9 +40,12 @@ RUN_LOG_FILE_DEFAULT = Path(__file__).resolve().parent / "world_model_turn_break
 TURN_HOTKEYS_DEFAULT = ("q", "e")
 TURN_BREAKAWAY_ACT_DURATION_MS = 130
 DEFAULT_DURATION_MS = TURN_BREAKAWAY_ACT_DURATION_MS
-TURN_INITIAL_CONSISTENCY_TRIALS = 3
-TURN_PING_PONG_MAX_TRIALS = 10
+TURN_COARSE_SEARCH_TRIALS = 1
+TURN_REFINE_SEARCH_TRIALS = 2
+TURN_TRIAL_BUDGET_PER_HOTKEY = 20
 TURN_PWM_BATCH_STEP = 5
+TURN_COARSE_PWM_STEP_INITIAL = 12
+TURN_FINAL_BRACKET_TOLERANCE_PWM = 2
 DEFAULT_MOVEMENT_THRESHOLD_MM = 3.0
 TURN_ABORT_CONSECUTIVE_DEAD_CANDIDATES = 2
 TURN_ABORT_X_DRIFT_MM = 12.0
@@ -99,6 +102,18 @@ def _turn_candidate_from_pwm(base_candidate: dict, *, pwm: int, phase: str, prob
     candidate["power"] = float(telemetry_robot_module.pwm_to_power(pwm_value) or 0.0)
     candidate["duration_ms"] = int(base_candidate.get("duration_ms") or DEFAULT_DURATION_MS)
     return candidate
+
+
+def _next_coarse_pwm_step(previous_step: int, remaining_gap: int) -> int:
+    gap = max(0, int(remaining_gap))
+    if gap <= 0:
+        return 0
+    base_step = max(int(TURN_PWM_BATCH_STEP), int(TURN_COARSE_PWM_STEP_INITIAL))
+    if int(previous_step) <= 0:
+        next_step = int(base_step)
+    else:
+        next_step = max(int(base_step), int(previous_step) * 2)
+    return max(1, min(int(gap), int(next_step)))
 
 
 def _log_turn_trial(logger, row: dict) -> None:
@@ -799,7 +814,8 @@ def run_turn_breakaway_test(
     vision,
     world,
     hotkeys: tuple[str, ...] = TURN_HOTKEYS_DEFAULT,
-    ping_pong_max_trials: int = TURN_PING_PONG_MAX_TRIALS,
+    trial_budget: int | None = None,
+    ping_pong_max_trials: int | None = None,
     duration_ms: int = DEFAULT_DURATION_MS,
     movement_threshold_mm: float = DEFAULT_MOVEMENT_THRESHOLD_MM,
     pause_between_pulses_ms: int = DEFAULT_PAUSE_BETWEEN_PULSES_MS,
@@ -814,9 +830,11 @@ def run_turn_breakaway_test(
     trial_journal = []
     phase_baselines = {}
     hotkeys_norm = tuple(str(item).strip().lower() for item in hotkeys if str(item).strip())
-    ping_pong_max_trials = _clamp_positive_int(
-        ping_pong_max_trials,
-        TURN_PING_PONG_MAX_TRIALS,
+    if trial_budget is None:
+        trial_budget = ping_pong_max_trials
+    trial_budget = _clamp_positive_int(
+        trial_budget,
+        TURN_TRIAL_BUDGET_PER_HOTKEY,
         minimum=1,
     )
     duration_ms = _clamp_turn_breakaway_duration_ms(duration_ms, DEFAULT_DURATION_MS)
@@ -829,9 +847,9 @@ def run_turn_breakaway_test(
 
     logger("[TURN BREAKAWAY TEST] Goal: find the slowest raw turn PWM that still moves the brick on x_axis.")
     logger(
-        f"[TURN BREAKAWAY TEST] Seed from the raw turn 1% curve row, test {int(TURN_INITIAL_CONSISTENCY_TRIALS)} times per candidate, "
-        f"use fixed {int(duration_ms)}ms acts, threshold={float(movement_threshold_mm):.2f}mm, "
-        f"batch_step={int(TURN_PWM_BATCH_STEP)} PWM, ping_pong_trials={int(ping_pong_max_trials)}."
+        f"[TURN BREAKAWAY TEST] Seed from the raw turn 1% curve row, push upward quickly to find a movement ceiling, "
+        f"then narrow downward toward the floor. Fixed {int(duration_ms)}ms acts, threshold={float(movement_threshold_mm):.2f}mm, "
+        f"coarse_step={int(TURN_COARSE_PWM_STEP_INITIAL)} PWM, budget={int(trial_budget)} trial(s) per hotkey."
     )
 
     baseline_pose = _median_pose_or_none(
@@ -894,32 +912,63 @@ def run_turn_breakaway_test(
         )
 
         probe_index = 1
+        hotkey_trial_count = 0
         floor_result = None
         ceiling_result = None
         dead_candidate_streak = 0
         abort_info = None
 
-        seed_result = _evaluate_turn_candidate(
-            robot=robot,
-            vision=vision,
-            world=world,
-            candidate=_turn_candidate_from_pwm(
+        def _remaining_trials() -> int:
+            return max(0, int(trial_budget) - int(hotkey_trial_count))
+
+        def _evaluate_budgeted(candidate: dict, *, requested_trials: int) -> dict | None:
+            nonlocal hotkey_trial_count
+            remaining_trials = _remaining_trials()
+            if remaining_trials <= 0:
+                logger(
+                    f"[TURN BREAKAWAY TEST] {display_label}: trial budget exhausted after "
+                    f"{int(hotkey_trial_count)}/{int(trial_budget)} trial(s)."
+                )
+                return None
+            actual_trials = max(1, min(int(requested_trials), int(remaining_trials)))
+            result = _evaluate_turn_candidate(
+                robot=robot,
+                vision=vision,
+                world=world,
+                candidate=dict(candidate),
+                baseline_pose=phase_baseline,
+                recent_turn_acts=phase_recent_turn_acts,
+                rows=rows,
+                recenter_checkpoints=recenter_checkpoints,
+                trial_journal=trial_journal,
+                consistency_trials=int(actual_trials),
+                movement_threshold_mm=float(movement_threshold_mm),
+                pause_between_pulses_ms=int(pause_between_pulses_ms),
+                log_fn=logger,
+            )
+            hotkey_trial_count += int(actual_trials)
+            candidate_search_paths[str(hotkey)].append(_candidate_snapshot(result))
+            return result
+
+        seed_result = _evaluate_budgeted(
+            _turn_candidate_from_pwm(
                 seed_candidate,
                 pwm=int(seed_candidate["curve_pwm"]),
                 phase="seed",
                 probe_index=int(probe_index),
             ),
-            baseline_pose=phase_baseline,
-            recent_turn_acts=phase_recent_turn_acts,
-            rows=rows,
-            recenter_checkpoints=recenter_checkpoints,
-            trial_journal=trial_journal,
-            consistency_trials=int(TURN_INITIAL_CONSISTENCY_TRIALS),
-            movement_threshold_mm=float(movement_threshold_mm),
-            pause_between_pulses_ms=int(pause_between_pulses_ms),
-            log_fn=logger,
+            requested_trials=int(TURN_COARSE_SEARCH_TRIALS),
         )
-        candidate_search_paths[str(hotkey)].append(_candidate_snapshot(seed_result))
+        if seed_result is None:
+            summary_by_hotkey[str(hotkey)] = _build_hotkey_summary(
+                seed_candidate=seed_candidate,
+                duration_ms=int(duration_ms),
+                movement_threshold_mm=float(movement_threshold_mm),
+                floor_result=None,
+                ceiling_result=None,
+                error="trial_budget_exhausted",
+            )
+            continue
         if not bool(seed_result.get("ok")):
             logger(f"[TURN BREAKAWAY TEST] Seed for {display_label}: unusable; stopping this hotkey.")
             summary_by_hotkey[str(hotkey)] = _build_hotkey_summary(
@@ -948,116 +997,116 @@ def run_turn_breakaway_test(
                 abort_info=abort_info,
             )
             continue
+        max_pwm = int(getattr(robot, "MAX_PWM", 255) or 255)
         if bool(seed_result.get("moved")):
             ceiling_result = seed_result
-            next_pwm = max(1, int(seed_result["candidate"]["pwm"]) - int(TURN_PWM_BATCH_STEP))
-            while int(next_pwm) < int(ceiling_result["candidate"]["pwm"]):
-                probe_index += 1
-                probe_result = _evaluate_turn_candidate(
-                    robot=robot,
-                    vision=vision,
-                    world=world,
-                    candidate=_turn_candidate_from_pwm(
-                        seed_candidate,
-                        pwm=int(next_pwm),
-                        phase="coarse_slower",
-                        probe_index=int(probe_index),
-                    ),
-                    baseline_pose=phase_baseline,
-                    recent_turn_acts=phase_recent_turn_acts,
-                    rows=rows,
-                    recenter_checkpoints=recenter_checkpoints,
-                    trial_journal=trial_journal,
-                    consistency_trials=int(TURN_INITIAL_CONSISTENCY_TRIALS),
-                    movement_threshold_mm=float(movement_threshold_mm),
-                    pause_between_pulses_ms=int(pause_between_pulses_ms),
-                    log_fn=logger,
-                )
-                candidate_search_paths[str(hotkey)].append(_candidate_snapshot(probe_result))
-                if not bool(probe_result.get("ok")):
-                    logger(
-                        f"[TURN BREAKAWAY TEST] {display_label} slower probe pwm={int(next_pwm)} was unusable; stopping coarse search."
-                    )
-                    break
-                dead_candidate_streak = 0 if bool(probe_result.get("moved")) else int(dead_candidate_streak) + 1
-                abort_info = _dead_direction_abort_info(probe_result, dead_candidate_streak)
-                if isinstance(abort_info, dict):
-                    logger(
-                        f"[TURN BREAKAWAY TEST] {display_label}: stopping early after {int(abort_info['consecutive_dead_candidates'])} "
-                        "dead candidate(s) with recenter drift."
-                    )
-                    floor_result = probe_result
-                    break
-                if bool(probe_result.get("moved")):
-                    ceiling_result = probe_result
-                    if int(next_pwm) <= 1:
-                        floor_result = {
-                            "candidate": _turn_candidate_from_pwm(
-                                seed_candidate,
-                                pwm=1,
-                                phase="synthetic_floor",
-                                probe_index=int(probe_index + 1),
-                            ),
-                            "valid_trial_count": 0,
-                            "movement_count": 0,
-                            "median_abs_delta_mm": None,
-                            "median_raw_delta_mm": None,
-                            "moved": False,
-                            "result_label": "assumed below floor",
-                        }
-                        break
-                    next_pwm = max(1, int(next_pwm) - int(TURN_PWM_BATCH_STEP))
-                    continue
-                floor_result = probe_result
-                break
         else:
             floor_result = seed_result
-            max_pwm = int(getattr(robot, "MAX_PWM", 255) or 255)
-            next_pwm = min(int(max_pwm), int(seed_result["candidate"]["pwm"]) + int(TURN_PWM_BATCH_STEP))
-            while int(next_pwm) > int(floor_result["candidate"]["pwm"]) and int(next_pwm) <= int(max_pwm):
-                probe_index += 1
-                probe_result = _evaluate_turn_candidate(
-                    robot=robot,
-                    vision=vision,
-                    world=world,
-                    candidate=_turn_candidate_from_pwm(
-                        seed_candidate,
-                        pwm=int(next_pwm),
-                        phase="coarse_faster",
-                        probe_index=int(probe_index),
-                    ),
-                    baseline_pose=phase_baseline,
-                    recent_turn_acts=phase_recent_turn_acts,
-                    rows=rows,
-                    recenter_checkpoints=recenter_checkpoints,
-                    trial_journal=trial_journal,
-                    consistency_trials=int(TURN_INITIAL_CONSISTENCY_TRIALS),
-                    movement_threshold_mm=float(movement_threshold_mm),
-                    pause_between_pulses_ms=int(pause_between_pulses_ms),
-                    log_fn=logger,
-                )
-                candidate_search_paths[str(hotkey)].append(_candidate_snapshot(probe_result))
-                if not bool(probe_result.get("ok")):
-                    logger(
-                        f"[TURN BREAKAWAY TEST] {display_label} faster probe pwm={int(next_pwm)} was unusable; stopping coarse search."
+
+        coarse_step = int(TURN_COARSE_PWM_STEP_INITIAL)
+        if not isinstance(abort_info, dict):
+            if ceiling_result is None:
+                current_pwm = int((floor_result.get("candidate") or {}).get("pwm") or 0)
+                while ceiling_result is None and int(current_pwm) < int(max_pwm):
+                    remaining_gap = int(max_pwm) - int(current_pwm)
+                    step_size = _next_coarse_pwm_step(int(coarse_step), int(remaining_gap))
+                    if step_size <= 0:
+                        break
+                    next_pwm = min(int(max_pwm), int(current_pwm) + int(step_size))
+                    if int(next_pwm) <= int(current_pwm):
+                        break
+                    probe_index += 1
+                    probe_result = _evaluate_budgeted(
+                        _turn_candidate_from_pwm(
+                            seed_candidate,
+                            pwm=int(next_pwm),
+                            phase="coarse_faster",
+                            probe_index=int(probe_index),
+                        ),
+                        requested_trials=int(TURN_COARSE_SEARCH_TRIALS),
                     )
-                    break
-                dead_candidate_streak = 0 if bool(probe_result.get("moved")) else int(dead_candidate_streak) + 1
-                abort_info = _dead_direction_abort_info(probe_result, dead_candidate_streak)
-                if isinstance(abort_info, dict):
-                    logger(
-                        f"[TURN BREAKAWAY TEST] {display_label}: stopping early after {int(abort_info['consecutive_dead_candidates'])} "
-                        "dead candidate(s) with recenter drift."
+                    if probe_result is None:
+                        break
+                    if not bool(probe_result.get("ok")):
+                        logger(
+                            f"[TURN BREAKAWAY TEST] {display_label} faster probe pwm={int(next_pwm)} was unusable; stopping coarse search."
+                        )
+                        break
+                    dead_candidate_streak = 0 if bool(probe_result.get("moved")) else int(dead_candidate_streak) + 1
+                    abort_info = _dead_direction_abort_info(probe_result, dead_candidate_streak)
+                    if isinstance(abort_info, dict):
+                        logger(
+                            f"[TURN BREAKAWAY TEST] {display_label}: stopping early after {int(abort_info['consecutive_dead_candidates'])} "
+                            "dead candidate(s) with recenter drift."
+                        )
+                        floor_result = probe_result
+                        break
+                    if bool(probe_result.get("moved")):
+                        ceiling_result = probe_result
+                        break
+                    floor_result = probe_result
+                    current_pwm = int(next_pwm)
+                    coarse_step = int(step_size)
+
+            if ceiling_result is not None and floor_result is None:
+                current_pwm = int((ceiling_result.get("candidate") or {}).get("pwm") or 0)
+                while int(current_pwm) > 1:
+                    remaining_gap = int(current_pwm) - 1
+                    step_size = _next_coarse_pwm_step(int(coarse_step), int(remaining_gap))
+                    if step_size <= 0:
+                        break
+                    next_pwm = max(1, int(current_pwm) - int(step_size))
+                    if int(next_pwm) >= int(current_pwm):
+                        break
+                    probe_index += 1
+                    probe_result = _evaluate_budgeted(
+                        _turn_candidate_from_pwm(
+                            seed_candidate,
+                            pwm=int(next_pwm),
+                            phase="coarse_slower",
+                            probe_index=int(probe_index),
+                        ),
+                        requested_trials=int(TURN_COARSE_SEARCH_TRIALS),
                     )
+                    if probe_result is None:
+                        break
+                    if not bool(probe_result.get("ok")):
+                        logger(
+                            f"[TURN BREAKAWAY TEST] {display_label} slower probe pwm={int(next_pwm)} was unusable; stopping coarse search."
+                        )
+                        break
+                    dead_candidate_streak = 0 if bool(probe_result.get("moved")) else int(dead_candidate_streak) + 1
+                    abort_info = _dead_direction_abort_info(probe_result, dead_candidate_streak)
+                    if isinstance(abort_info, dict):
+                        logger(
+                            f"[TURN BREAKAWAY TEST] {display_label}: stopping early after {int(abort_info['consecutive_dead_candidates'])} "
+                            "dead candidate(s) with recenter drift."
+                        )
+                        floor_result = probe_result
+                        break
+                    if bool(probe_result.get("moved")):
+                        ceiling_result = probe_result
+                        current_pwm = int(next_pwm)
+                        coarse_step = int(step_size)
+                        if int(next_pwm) <= 1:
+                            floor_result = {
+                                "candidate": _turn_candidate_from_pwm(
+                                    seed_candidate,
+                                    pwm=1,
+                                    phase="synthetic_floor",
+                                    probe_index=int(probe_index + 1),
+                                ),
+                                "valid_trial_count": 0,
+                                "movement_count": 0,
+                                "median_abs_delta_mm": None,
+                                "median_raw_delta_mm": None,
+                                "moved": False,
+                                "result_label": "assumed below floor",
+                            }
+                            break
+                        continue
                     floor_result = probe_result
                     break
-                if bool(probe_result.get("moved")):
-                    ceiling_result = probe_result
-                    break
-                floor_result = probe_result
-                if int(next_pwm) >= int(max_pwm):
-                    break
-                next_pwm = min(int(max_pwm), int(next_pwm) + int(TURN_PWM_BATCH_STEP))
 
         if not isinstance(abort_info, dict) and isinstance(floor_result, dict) and isinstance(ceiling_result, dict):
             floor_pwm = int((floor_result.get("candidate") or {}).get("pwm") or 0)
@@ -1066,41 +1115,29 @@ def run_turn_breakaway_test(
                 f"[TURN BREAKAWAY TEST] Initial bracket for {display_label}: "
                 f"floor pwm={int(floor_pwm)}, ceiling pwm={int(ceiling_pwm)}."
             )
-            ping_pong_runs = 0
-            while int(ping_pong_runs) < int(ping_pong_max_trials):
+            while _remaining_trials() > 0:
                 floor_pwm = int((floor_result.get("candidate") or {}).get("pwm") or 0)
                 ceiling_pwm = int((ceiling_result.get("candidate") or {}).get("pwm") or 0)
-                if int(ceiling_pwm) - int(floor_pwm) <= 1:
+                if int(ceiling_pwm) - int(floor_pwm) <= int(TURN_FINAL_BRACKET_TOLERANCE_PWM):
                     break
                 midpoint_pwm = int(floor_pwm + ((int(ceiling_pwm) - int(floor_pwm)) // 2))
                 if int(midpoint_pwm) in {int(floor_pwm), int(ceiling_pwm)}:
                     break
                 probe_index += 1
-                ping_pong_runs += 1
-                probe_result = _evaluate_turn_candidate(
-                    robot=robot,
-                    vision=vision,
-                    world=world,
-                    candidate=_turn_candidate_from_pwm(
+                probe_result = _evaluate_budgeted(
+                    _turn_candidate_from_pwm(
                         seed_candidate,
                         pwm=int(midpoint_pwm),
-                        phase="ping_pong",
+                        phase="refine_downward",
                         probe_index=int(probe_index),
                     ),
-                    baseline_pose=phase_baseline,
-                    recent_turn_acts=phase_recent_turn_acts,
-                    rows=rows,
-                    recenter_checkpoints=recenter_checkpoints,
-                    trial_journal=trial_journal,
-                    consistency_trials=int(TURN_INITIAL_CONSISTENCY_TRIALS),
-                    movement_threshold_mm=float(movement_threshold_mm),
-                    pause_between_pulses_ms=int(pause_between_pulses_ms),
-                    log_fn=logger,
+                    requested_trials=int(TURN_REFINE_SEARCH_TRIALS),
                 )
-                candidate_search_paths[str(hotkey)].append(_candidate_snapshot(probe_result))
+                if probe_result is None:
+                    break
                 if not bool(probe_result.get("ok")):
                     logger(
-                        f"[TURN BREAKAWAY TEST] {display_label} ping-pong probe pwm={int(midpoint_pwm)} was unusable; stopping ping-pong."
+                        f"[TURN BREAKAWAY TEST] {display_label} downward refinement probe pwm={int(midpoint_pwm)} was unusable; stopping refinement."
                     )
                     break
                 dead_candidate_streak = 0 if bool(probe_result.get("moved")) else int(dead_candidate_streak) + 1
@@ -1153,9 +1190,12 @@ def run_turn_breakaway_test(
             "duration_ms": int(duration_ms),
             "movement_threshold_mm": float(movement_threshold_mm),
             "pause_between_pulses_ms": int(pause_between_pulses_ms),
-            "initial_consistency_trials": int(TURN_INITIAL_CONSISTENCY_TRIALS),
+            "trial_budget_per_hotkey": int(trial_budget),
+            "coarse_search_trials": int(TURN_COARSE_SEARCH_TRIALS),
+            "refine_search_trials": int(TURN_REFINE_SEARCH_TRIALS),
             "batch_pwm_step": int(TURN_PWM_BATCH_STEP),
-            "ping_pong_max_trials": int(ping_pong_max_trials),
+            "coarse_pwm_step_initial": int(TURN_COARSE_PWM_STEP_INITIAL),
+            "final_bracket_tolerance_pwm": int(TURN_FINAL_BRACKET_TOLERANCE_PWM),
             "seed_mode": "raw_curve_1pct_pwm",
         },
         "baseline_pose": baseline_pose,
@@ -1188,14 +1228,14 @@ def run_interactive_turn_breakaway_test(
 ) -> dict:
     logger = log_fn if callable(log_fn) else print
     logger("[TURN BREAKAWAY TEST] Raw turn PWM floor search for Q/E.")
-    logger("[TURN BREAKAWAY TEST] Fixed 130ms acts. Seed from the raw turn 1% curve row, then search slower/faster PWM.")
+    logger("[TURN BREAKAWAY TEST] Fixed 130ms acts. Seed from the raw turn 1% curve row, climb quickly to a movement ceiling, then narrow downward to the floor.")
     logger(
-        f"[TURN BREAKAWAY TEST] Each candidate runs {int(TURN_INITIAL_CONSISTENCY_TRIALS)} trials, then up to {int(TURN_PING_PONG_MAX_TRIALS)} ping-pong probes."
+        f"[TURN BREAKAWAY TEST] Coarse ceiling probes use {int(TURN_COARSE_SEARCH_TRIALS)} trial each, downward refinement uses {int(TURN_REFINE_SEARCH_TRIALS)} trial(s), and each hotkey is capped at {int(TURN_TRIAL_BUDGET_PER_HOTKEY)} total trials."
     )
 
-    ping_pong_max_trials = _clamp_positive_int(
-        _prompt_with_default(prompt_fn, "  Ping-pong trial cap", str(TURN_PING_PONG_MAX_TRIALS)),
-        TURN_PING_PONG_MAX_TRIALS,
+    trial_budget = _clamp_positive_int(
+        _prompt_with_default(prompt_fn, "  Trial budget per hotkey", str(TURN_TRIAL_BUDGET_PER_HOTKEY)),
+        TURN_TRIAL_BUDGET_PER_HOTKEY,
         minimum=1,
     )
     movement_threshold_mm = max(
@@ -1213,7 +1253,7 @@ def run_interactive_turn_breakaway_test(
         vision=vision,
         world=world,
         hotkeys=TURN_HOTKEYS_DEFAULT,
-        ping_pong_max_trials=int(ping_pong_max_trials),
+        trial_budget=int(trial_budget),
         duration_ms=int(DEFAULT_DURATION_MS),
         movement_threshold_mm=float(movement_threshold_mm),
         pause_between_pulses_ms=int(DEFAULT_PAUSE_BETWEEN_PULSES_MS),
@@ -1224,7 +1264,8 @@ def run_interactive_turn_breakaway_test(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run a raw-turn PWM floor search for Q/E hotkeys.")
-    parser.add_argument("--ping-pong-trials", type=int, default=TURN_PING_PONG_MAX_TRIALS)
+    parser.add_argument("--trial-budget", type=int, default=TURN_TRIAL_BUDGET_PER_HOTKEY)
+    parser.add_argument("--ping-pong-trials", dest="trial_budget", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--movement-threshold-mm", type=float, default=DEFAULT_MOVEMENT_THRESHOLD_MM)
     parser.add_argument("--log", type=str, default=str(RUN_LOG_FILE_DEFAULT))
     parser.add_argument(
@@ -1246,7 +1287,7 @@ def main() -> int:
             vision=vision,
             world=world,
             hotkeys=TURN_HOTKEYS_DEFAULT,
-            ping_pong_max_trials=args.ping_pong_trials,
+            trial_budget=args.trial_budget,
             duration_ms=int(DEFAULT_DURATION_MS),
             movement_threshold_mm=args.movement_threshold_mm,
             pause_between_pulses_ms=DEFAULT_PAUSE_BETWEEN_PULSES_MS,

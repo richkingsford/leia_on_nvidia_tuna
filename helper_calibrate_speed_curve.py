@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Helper calibration launcher for motion curve discovery.
+"""Helper calibration launcher for motion and telemetry workflows.
 
-This helper discovers how long motor commands take to achieve distance and
-position movements. It can run as a standalone script or be invoked from the
-main manual-training tool as an interactive calibration mode.
-
-For telemetry and sensor-value calibration (detecting actual distances and
-positions from sensor readings), use calibrate_dist_x_y_telemetry.py instead.
+This helper can run as a standalone script or be invoked from the main
+manual-training tool as an interactive calibration mode. Motion-duration
+calibrations and telemetry-value calibrations both live here so operators can
+stay in one menu and one livestream.
 """
 
 from __future__ import annotations
@@ -25,6 +23,7 @@ from calibration import helper_calibrate_speed
 from calibration import helper_calibrate_x
 from calibration import helper_calibrate_x_axis
 from calibration import helper_calibrate_y
+import helper_calibrate_telemetry
 import helper_manual_drive_breakaway_test
 import helper_manual_turn_breakaway_test
 from helper_manual_config import load_manual_training_config
@@ -60,12 +59,13 @@ OPTIONS: tuple[CalibrateOption, ...] = (
     CalibrateOption("x", "X-axis duration curve calibration", helper_calibrate_x.main),
     CalibrateOption("y", "Y-axis duration curve calibration", helper_calibrate_y.main),
     CalibrateOption("dist", "Distance duration curve calibration", helper_calibrate_dist.main),
+    CalibrateOption("telemetry", "Telemetry value calibration (dist/x/y)", helper_calibrate_telemetry.main),
     CalibrateOption("dist-guided", "Distance curve calibration (guided checkpoints)", lambda: run_guided_distance_calibration()),
     CalibrateOption("breakaway", "Drive breakaway test (find first reliable low-speed score)", helper_manual_drive_breakaway_test.main),
     CalibrateOption("turn-breakaway", "Turn breakaway test (find the slowest raw turn PWM that still moves)", helper_manual_turn_breakaway_test.main),
     CalibrateOption("speed", "Speed endpoint calibration", helper_calibrate_speed.main),
     CalibrateOption("motion", "Motion tick conversion calibration", helper_calibrate_motion.main),
-    CalibrateOption("x-axis-legacy", "Legacy X-axis learning experiment", helper_calibrate_x_axis.main),
+    CalibrateOption("x-axis-legacy", "Legacy X-axis turn-score learning experiment", helper_calibrate_x_axis.main),
 )
 
 
@@ -215,9 +215,9 @@ def run_guided_distance_calibration() -> int:
 
 
 def _print_menu() -> None:
-    print("\nMotion Duration Curve Calibration Options")
-    print("------------------------------------------")
-    print("Calibrate how long motor commands take to achieve distance/position movements.\n")
+    print("\nCalibration Options")
+    print("-------------------")
+    print("Run motion-duration, breakaway, and telemetry-value calibrations.\n")
     for index, option in enumerate(OPTIONS, start=1):
         print(f"  {index}. {option.label} [{option.key}]")
     print("  q. Quit")
@@ -330,42 +330,65 @@ def _print_stream_banner(shared_stream_url: str | None = None) -> None:
     print(f"[CALIBRATE] Livestream URL: {_orange_text(active_url)}")
 
 
+def pick_interactive_option() -> CalibrateOption | None:
+    _restore_tty_line_input_mode()
+    return _pick_interactive()
+
+
+def run_option(
+    option: CalibrateOption,
+    *,
+    passthrough_args: list[str] | None = None,
+    shared_stream_state: dict | None = None,
+    shared_stream_url: str | None = None,
+    shared_context: dict | None = None,
+) -> int:
+    run_args = list(passthrough_args or [])
+    run_args.extend(_interactive_trial_args(option, list(run_args)))
+    print(f"Running: {option.label}")
+    with use_shared_stream_runtime(
+        stream_state=shared_stream_state,
+        stream_url=shared_stream_url,
+        context=shared_context,
+    ):
+        return _run_selected(option, run_args)
+
+
 def run_interactive_session(
     *,
     passthrough_args: list[str] | None = None,
     show_banner: bool = True,
     shared_stream_state: dict | None = None,
     shared_stream_url: str | None = None,
+    shared_context: dict | None = None,
 ) -> int:
     if bool(show_banner):
         _print_stream_banner(shared_stream_url=shared_stream_url)
 
     base_args = list(passthrough_args or [])
     exit_code = 0
-    with use_shared_stream_runtime(
-        stream_state=shared_stream_state,
-        stream_url=shared_stream_url,
-    ):
-        while True:
-            _restore_tty_line_input_mode()
-            selected = _pick_interactive()
-            if selected is None:
-                print("[CALIBRATE] Leaving calibration mode.")
-                return int(exit_code)
+    while True:
+        selected = pick_interactive_option()
+        if selected is None:
+            print("[CALIBRATE] Leaving calibration mode.")
+            return int(exit_code)
 
-            run_args = list(base_args)
-            run_args.extend(_interactive_trial_args(selected, list(run_args)))
-            print(f"Running: {selected.label}")
-            step_code = _run_selected(selected, run_args)
-            exit_code = int(step_code) if int(step_code) != 0 else int(exit_code)
-            if int(step_code) == 0:
-                print(f"[CALIBRATE] Completed: {selected.label}")
-            else:
-                print(f"[CALIBRATE] {selected.label} ended with code={int(step_code)}")
+        step_code = run_option(
+            selected,
+            passthrough_args=list(base_args),
+            shared_stream_state=shared_stream_state,
+            shared_stream_url=shared_stream_url,
+            shared_context=shared_context,
+        )
+        exit_code = int(step_code) if int(step_code) != 0 else int(exit_code)
+        if int(step_code) == 0:
+            print(f"[CALIBRATE] Completed: {selected.label}")
+        else:
+            print(f"[CALIBRATE] {selected.label} ended with code={int(step_code)}")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Interactive calibration launcher for motion duration curves")
+    parser = argparse.ArgumentParser(description="Interactive calibration launcher for robot calibrations")
     parser.add_argument(
         "--choice",
         type=str,

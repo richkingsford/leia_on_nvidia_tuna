@@ -18,16 +18,27 @@ class TestWorldModelRobotHotkeySource(unittest.TestCase):
             model,
             "Production hotkeys must not be globally inverted in world_model_robot.json.",
         )
+        self.assertNotIn(
+            "wire_command_map",
+            model,
+            "Per-motor Uno transport mappings must live in helper_robot_control.py, not world_model_robot.json.",
+        )
 
     def test_default_loaded_hotkeys_have_no_runtime_remap(self):
         loaded = telemetry_robot._load_speed_model(telemetry_robot.ROBOT_MODEL_FILE)
         hotkeys = loaded[0]
         cmd_remap = loaded[15]
+        wire_map = loaded[25]
 
         self.assertEqual(
             cmd_remap,
             {},
             "Repo defaults should not rewrite logical hotkey commands at the wire layer.",
+        )
+        self.assertEqual(
+            wire_map,
+            {},
+            "Repo defaults should not carry a secondary wire-command map for the Uno transport.",
         )
         self.assertEqual(hotkeys["w"]["cmd"], "f")
         self.assertEqual(hotkeys["s"]["cmd"], "b")
@@ -36,18 +47,8 @@ class TestWorldModelRobotHotkeySource(unittest.TestCase):
         self.assertEqual(hotkeys["o"]["cmd"], "u")
         self.assertEqual(hotkeys["k"]["cmd"], "d")
 
-    def test_world_model_robot_exposes_single_wire_command_map(self):
-        self.assertEqual(
-            telemetry_robot.ROBOT_WIRE_COMMAND_MAP,
-            {
-                "f": "b",
-                "b": "f",
-                "l": "r",
-                "r": "l",
-                "u": "d",
-                "d": "u",
-            },
-        )
+    def test_world_model_robot_exposes_empty_wire_command_map(self):
+        self.assertEqual(telemetry_robot.ROBOT_WIRE_COMMAND_MAP, {})
 
     def test_one_percent_discovery_lines_report_shared_floor_values(self):
         original_turn_breakaway = telemetry_robot.TURN_BREAKAWAY_TEST_FILE
@@ -60,8 +61,8 @@ class TestWorldModelRobotHotkeySource(unittest.TestCase):
         self.assertEqual(len(lines), 4)
         self.assertIn("Forward (R): pwm=103, pwr=0.306, t=255ms", lines[0])
         self.assertIn("Backward (F): pwm=103, pwr=0.306, t=255ms", lines[1])
-        self.assertIn("Left (Q): pwm=102, pwr=0.301, t=135ms", lines[2])
-        self.assertIn("Right (E): pwm=102, pwr=0.301, t=65ms", lines[3])
+        self.assertIn("Left (Q): pwm=133, pwr=0.443, t=135ms", lines[2])
+        self.assertIn("Right (E): pwm=133, pwr=0.443, t=65ms", lines[3])
 
 
 if __name__ == "__main__":

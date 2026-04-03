@@ -26,10 +26,7 @@
     },
     "q": {
       "cmd": "l",
-      "score": 1,
-      "pwm": 133,
-      "power": 0.4429223744292237,
-      "duration_ms": 130
+      "score": 1
     },
     "a": {
       "cmd": "l",
@@ -41,10 +38,7 @@
     },
     "e": {
       "cmd": "r",
-      "score": 1,
-      "pwm": 122,
-      "power": 0.3926940639269406,
-      "duration_ms": 130
+      "score": 1
     },
     "d": {
       "cmd": "r",
@@ -78,7 +72,7 @@
     },
     "l": {
       "cmd": "d",
-      "score": 25
+      "score": 100
     }
   },
   "manual_low_speed_drive_assist": {
@@ -108,13 +102,34 @@
       }
     }
   },
-  "wire_command_map": {
-    "f": "b",
-    "b": "f",
-    "l": "r",
-    "r": "l",
-    "u": "d",
-    "d": "u"
+  "manual_turn_arc_assist": {
+    "enabled": true,
+    "hotkey_profiles": {
+      "q": {
+        "inner_ratio": 0.0,
+        "outer_ratio": 1.0
+      },
+      "e": {
+        "inner_ratio": 0.0,
+        "outer_ratio": 1.0
+      },
+      "a": {
+        "inner_ratio": 0.55,
+        "outer_ratio": 1.0
+      },
+      "d": {
+        "inner_ratio": 0.55,
+        "outer_ratio": 1.0
+      },
+      "z": {
+        "inner_ratio": 0.25,
+        "outer_ratio": 1.0
+      },
+      "c": {
+        "inner_ratio": 0.25,
+        "outer_ratio": 1.0
+      }
+    }
   },
   "min_pwm": 36,
   "max_pwm": 255,
@@ -451,93 +466,84 @@
   },
   "telemetry_observation_calibration": {
     "schema_version": 1,
-    "updated_at": 1774390819.1296782,
-    "latest_variable": "y",
+    "updated_at": 1775258779.0502026,
+    "latest_variable": "dist",
     "by_variable": {
       "dist": {
         "schema_version": 1,
-        "run_id": 1774386735,
-        "timestamp": 1774386735.2262409,
+        "run_id": 1775258779,
+        "timestamp": 1775258779.0466835,
         "variable": "dist",
         "config": {
           "variable": "dist",
-          "vision": "leia",
-          "requested_points": 5,
-          "captured_points": 5,
-          "observe_samples": 7,
+          "vision": "cyan",
+          "requested_points": 0,
+          "captured_points": 4,
+          "observe_samples": 5,
           "observe_timeout_s": 2.8,
           "manual_motion": true,
           "motion_method": "operator_hotkeys",
           "commit_world_model": true,
           "allow_partial_commit": true,
-          "plot_path": "Runs - cyan/calibrate_telemetry_dist_live.png"
+          "plot_path": "Runs - cyan/calibrate_telemetry_dist_live.png",
+          "incremental_capture_mode": "append_single_point"
         },
         "fit": {
-          "equation": "expected = 0.018069 * observed + 101.593064",
-          "slope": 0.01806942842421952,
-          "intercept": 101.59306360211343,
-          "r2": 0.009077758765552946
+          "equation": "expected = 1.139495 * observed + -3.947739",
+          "slope": 1.139494664171532,
+          "intercept": -3.9477390980894,
+          "r2": 0.952487764461206
         },
         "summary": {
-          "mean_error_mm": 57.46278823050256,
-          "median_error_mm": 68.22145899669653,
-          "mae_mm": 126.95246797373368,
-          "max_abs_error_mm": 199.74759519108065,
-          "residual_mean_error_mm": 7.105427357601002e-15,
-          "residual_mae_mm": 17.100641649643592,
-          "residual_max_abs_error_mm": 42.751604124109,
-          "mean_confidence": 0.5162280840382915
+          "mean_error_mm": -10.766628399064082,
+          "median_error_mm": -12.357058710334684,
+          "mae_mm": 10.93526113595582,
+          "max_abs_error_mm": 18.689661649370436,
+          "residual_mean_error_mm": -1.0658141036401503e-14,
+          "residual_mae_mm": 5.681251088025046,
+          "residual_max_abs_error_mm": 11.362502176050072,
+          "mean_confidence": 70.5684570223093
         },
         "curve_points": [
           {
             "index": 1,
-            "expected_value": 63.6,
-            "observed_variable": 263.34759519108064,
-            "observed_dist": 263.34759519108064,
-            "observed_x": -116.38574218394069,
-            "observed_y": 82.92372608851085,
-            "error_mm": 199.74759519108065,
-            "confidence": 0.2501718648672104
+            "expected_value": 73.0,
+            "observed_variable": 64.77752828142845,
+            "observed_dist": 64.77752828142845,
+            "observed_x": 5.533762295438664,
+            "observed_y": 3.622565006145661,
+            "error_mm": -8.222471718571555,
+            "confidence": 40.718200504779816
           },
           {
             "index": 2,
-            "expected_value": 105.0,
-            "observed_variable": 45.32967958060152,
-            "observed_dist": 45.32967958060152,
-            "observed_x": 61.666675903250805,
-            "observed_y": 23.127786289975326,
-            "error_mm": -59.67032041939848,
-            "confidence": 0.3489536481161912
+            "expected_value": 107.0,
+            "observed_variable": 107.33726547378348,
+            "observed_dist": 107.33726547378348,
+            "observed_x": -3.420124663492526,
+            "observed_y": 3.08627569170358,
+            "error_mm": 0.33726547378347504,
+            "confidence": 84.09375667572021
           },
           {
             "index": 3,
-            "expected_value": 107.0,
-            "observed_variable": -7.053878938679304,
-            "observed_dist": -7.053878938679304,
-            "observed_x": 22.630504508403,
-            "observed_y": -11.7568231939145,
-            "error_mm": -114.0538789386793,
-            "confidence": 0.5710012440523416
+            "expected_value": 130.0,
+            "observed_variable": 113.50835429790219,
+            "observed_dist": 113.50835429790219,
+            "observed_x": 9.206123803059372,
+            "observed_y": 2.3605592020749318,
+            "error_mm": -16.491645702097813,
+            "confidence": 76.52929306030273
           },
           {
             "index": 4,
-            "expected_value": 107.0,
-            "observed_variable": 175.22145899669653,
-            "observed_dist": 175.22145899669653,
-            "observed_x": 4.219627852843411,
-            "observed_y": 48.44230766076196,
-            "error_mm": 68.22145899669653,
-            "confidence": 0.579194050794729
-          },
-          {
-            "index": 5,
-            "expected_value": 140.0,
-            "observed_variable": 333.0690863228134,
-            "observed_dist": 333.0690863228134,
-            "observed_x": 79.51451989236305,
-            "observed_y": 49.13536634408713,
-            "error_mm": 193.0690863228134,
-            "confidence": 0.8318196123609851
+            "expected_value": 155.0,
+            "observed_variable": 136.31033835062956,
+            "observed_dist": 136.31033835062956,
+            "observed_x": -6.569357944366221,
+            "observed_y": 2.2661924622489713,
+            "error_mm": -18.689661649370436,
+            "confidence": 80.93257784843445
           }
         ]
       },
@@ -1115,10 +1121,171 @@
             "confidence": 0.4001056867089603
           }
         ]
+      },
+      {
+        "schema_version": 1,
+        "run_id": 1775257539,
+        "timestamp": 1775257539.5507371,
+        "variable": "dist",
+        "config": {
+          "variable": "dist",
+          "vision": "cyan",
+          "requested_points": 0,
+          "captured_points": 1,
+          "observe_samples": 5,
+          "observe_timeout_s": 2.8,
+          "manual_motion": true,
+          "motion_method": "operator_hotkeys",
+          "commit_world_model": true,
+          "allow_partial_commit": true,
+          "plot_path": "Runs - cyan/calibrate_telemetry_dist_live.png"
+        },
+        "fit": {
+          "equation": "expected = observed",
+          "slope": 1.0,
+          "intercept": 0.0,
+          "r2": null
+        },
+        "summary": {
+          "mean_error_mm": 34.748292502412085,
+          "median_error_mm": 34.748292502412085,
+          "mae_mm": 34.748292502412085,
+          "max_abs_error_mm": 34.748292502412085,
+          "residual_mean_error_mm": 34.748292502412085,
+          "residual_mae_mm": 34.748292502412085,
+          "residual_max_abs_error_mm": 34.748292502412085,
+          "mean_confidence": 15.366169810295105
+        },
+        "curve_points": [
+          {
+            "index": 1,
+            "expected_value": 68.0,
+            "observed_variable": 102.74829250241208,
+            "observed_dist": 102.74829250241208,
+            "observed_x": 4.739274416491649,
+            "observed_y": 3.5066952383265138,
+            "error_mm": 34.748292502412085,
+            "confidence": 15.366169810295105
+          }
+        ]
+      },
+      {
+        "schema_version": 1,
+        "run_id": 1775257610,
+        "timestamp": 1775257610.7158008,
+        "variable": "dist",
+        "config": {
+          "variable": "dist",
+          "vision": "cyan",
+          "requested_points": 0,
+          "captured_points": 3,
+          "observe_samples": 5,
+          "observe_timeout_s": 2.8,
+          "manual_motion": true,
+          "motion_method": "operator_hotkeys",
+          "commit_world_model": true,
+          "allow_partial_commit": true,
+          "plot_path": "Runs - cyan/calibrate_telemetry_dist_live.png"
+        },
+        "fit": {
+          "equation": "expected = 1.150012 * observed + -1.263132",
+          "slope": 1.1500118944198134,
+          "intercept": -1.2631320029925632,
+          "r2": 0.999765641105356
+        },
+        "summary": {
+          "mean_error_mm": -14.467926356679934,
+          "median_error_mm": -16.491645702097813,
+          "mae_mm": 14.467926356679934,
+          "max_abs_error_mm": 18.689661649370436,
+          "residual_mean_error_mm": 4.736951571734001e-15,
+          "residual_mae_mm": 0.48478296292446527,
+          "residual_max_abs_error_mm": 0.7271744443866908,
+          "mean_confidence": 66.06002380450566
+        },
+        "curve_points": [
+          {
+            "index": 1,
+            "expected_value": 130.0,
+            "observed_variable": 113.50835429790219,
+            "observed_dist": 113.50835429790219,
+            "observed_x": 9.206123803059372,
+            "observed_y": 2.3605592020749318,
+            "error_mm": -16.491645702097813,
+            "confidence": 76.52929306030273
+          },
+          {
+            "index": 2,
+            "expected_value": 73.0,
+            "observed_variable": 64.77752828142845,
+            "observed_dist": 64.77752828142845,
+            "observed_x": 5.533762295438664,
+            "observed_y": 3.622565006145661,
+            "error_mm": -8.222471718571555,
+            "confidence": 40.718200504779816
+          },
+          {
+            "index": 3,
+            "expected_value": 155.0,
+            "observed_variable": 136.31033835062956,
+            "observed_dist": 136.31033835062956,
+            "observed_x": -6.569357944366221,
+            "observed_y": 2.2661924622489713,
+            "error_mm": -18.689661649370436,
+            "confidence": 80.93257784843445
+          }
+        ]
+      },
+      {
+        "schema_version": 1,
+        "run_id": 1775258308,
+        "timestamp": 1775258308.2993684,
+        "variable": "dist",
+        "config": {
+          "variable": "dist",
+          "vision": "cyan",
+          "requested_points": 0,
+          "captured_points": 1,
+          "observe_samples": 5,
+          "observe_timeout_s": 2.8,
+          "manual_motion": true,
+          "motion_method": "operator_hotkeys",
+          "commit_world_model": true,
+          "allow_partial_commit": true,
+          "plot_path": "Runs - cyan/calibrate_telemetry_dist_live.png"
+        },
+        "fit": {
+          "equation": "expected = observed",
+          "slope": 1.0,
+          "intercept": 0.0,
+          "r2": null
+        },
+        "summary": {
+          "mean_error_mm": 0.33726547378347504,
+          "median_error_mm": 0.33726547378347504,
+          "mae_mm": 0.33726547378347504,
+          "max_abs_error_mm": 0.33726547378347504,
+          "residual_mean_error_mm": 0.33726547378347504,
+          "residual_mae_mm": 0.33726547378347504,
+          "residual_max_abs_error_mm": 0.33726547378347504,
+          "mean_confidence": 84.09375667572021
+        },
+        "curve_points": [
+          {
+            "index": 1,
+            "expected_value": 107.0,
+            "observed_variable": 107.33726547378348,
+            "observed_dist": 107.33726547378348,
+            "observed_x": -3.420124663492526,
+            "observed_y": 3.08627569170358,
+            "error_mm": 0.33726547378347504,
+            "confidence": 84.09375667572021
+          }
+        ]
       }
     ],
     "commit_metadata": {
-      "committed_at": 1774390819.1296854,
+      "committed_at": 1775258779.0502067,
       "source_staging_schema_version": 1
     }
   }

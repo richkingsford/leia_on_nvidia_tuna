@@ -11,7 +11,7 @@ from helper_stream_server import StreamServer
 
 
 class TestHelperStreamServerBrickShapePanel(unittest.TestCase):
-    def test_brick_shape_panel_renders_crown_cutout_from_world_model_coords(self):
+    def test_brick_shape_panel_renders_face_cutouts_from_world_model_coords(self):
         with tempfile.TemporaryDirectory() as tmp:
             model_path = Path(tmp) / "world_model_brick.json"
             model_path.write_text(
@@ -57,7 +57,7 @@ class TestHelperStreamServerBrickShapePanel(unittest.TestCase):
             finally:
                 helper_stream_server.DEFAULT_BRICK_MODEL_FILE = original_model_file
 
-        self.assertIn("Target Crown Brick Shape", html)
+        self.assertIn("Target Brick Face Shape", html)
         self.assertIn("source: world_model_brick.json", html)
         self.assertGreaterEqual(html.count("<polygon"), 2)
         self.assertIn("fill='#11181d' stroke='#def7ff'", html)

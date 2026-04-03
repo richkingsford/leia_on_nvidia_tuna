@@ -54,6 +54,25 @@ from helper_manual_drive_assist import (
     execute_manual_drive_assist_plan,
     format_manual_drive_assist_line,
 )
+from helper_manual_turn_arc_assist import (
+    build_manual_turn_arc_plan,
+    execute_manual_turn_arc_plan,
+    format_manual_turn_arc_assist_line,
+)
+from helper_custom_runs import (
+    CUSTOM_RUN_RESET_BACKOFF_SCORE,
+    CUSTOM_RUN_RESET_CONFIRM_READ_GAP_S,
+    CUSTOM_RUN_RESET_INVISIBLE_CONFIRM_READS,
+    CUSTOM_RUN_RESET_MAX_BACKOFF_ACTS,
+    CUSTOM_RUN_RESET_MAX_TURN_ACTS,
+    CUSTOM_RUN_RESET_MIN_DIST_MM,
+    CUSTOM_RUN_RESET_POST_ACT_SETTLE_S,
+    CUSTOM_RUN_RESET_TURN_SCORE,
+    custom_run_step_code,
+    custom_run_step_name,
+    is_custom_run_reset_step,
+    parse_custom_run_steps_csv,
+)
 from helper_manual_drive_breakaway_test import (
     RUN_LOG_FILE_DEFAULT as DRIVE_BREAKAWAY_TEST_LOG_DEFAULT,
     run_interactive_drive_breakaway_test,
@@ -210,7 +229,7 @@ if not _DEFAULT_STREAM_SUCCESS_GATE_STEP:
 
 CTRL_HELP_LINE = (
     "[CTRL] Drive: W/S 50%, R/F 1%, T/G 100%. Turn: A/D 25%, Q/E 1%, Z/C 100%. "
-    "Lift: O/K 1%, P/L 100%. H observe while moving. U timed hotkey mode. "
+    "Lift up: O 1%, P 100%. Lift down: K 1%, L 100%. H observe while moving. U timed hotkey mode. "
     "F action, ':' command, b calibration, m auto, y custom runs, ? help, 1 trash log, Q quit"
 )
 EASE_IN_OUT_HOTKEYS = frozenset({"t", "g", "z", "c"})
@@ -246,66 +265,222 @@ STREAM_VISION_MODE_OPTIONS = [
     (VISION_MODE_ARUCO, "AruCo Markers"),
     (VISION_MODE_CYAN, "Crown Bricks"),
 ]
-# Keep a single crown-brick runtime preset. Older profile ids remain accepted
-# as aliases so existing local scripts/configs do not break.
-CYAN_PROFILE_DEFAULT = "crown_brick_default"
-CYAN_PROFILE_OPTIONS = [
-    ("crown_brick_default", "Config 2"),
-]
-CYAN_PROFILE_PRESETS = {
-    "crown_brick_default": {
-        "confidence": 0.15,
-        "smoothing_alpha": 0.20,
-        "hsv_enabled": True,
-        "hsv_erode_iterations": 0,
-        "hsv_lower": list(CYAN_HSV_TIGHT_LOWER),
-        "hsv_upper": list(CYAN_HSV_TIGHT_UPPER),
-    },
-}
+
+
+def _cyan_profile_preset(
+    *,
+    confidence=0.15,
+    smoothing_alpha=0.20,
+    hsv_lower=None,
+    hsv_upper=None,
+    hsv_enabled=True,
+    hsv_erode_iterations=0,
+    shape_gate_mode="negative_cutouts",
+    negative_cutout_cyan_fill_max=0.42,
+    negative_cutout_ring_cyan_min=0.32,
+    negative_cutout_ring_dilate_px=5,
+    negative_cutout_min_area_px=18.0,
+):
+    return {
+        "confidence": float(confidence),
+        "smoothing_alpha": float(smoothing_alpha),
+        "hsv_enabled": bool(hsv_enabled),
+        "hsv_erode_iterations": int(hsv_erode_iterations),
+        "hsv_lower": list(hsv_lower if hsv_lower is not None else CYAN_HSV_TIGHT_LOWER),
+        "hsv_upper": list(hsv_upper if hsv_upper is not None else CYAN_HSV_TIGHT_UPPER),
+        "shape_gate_mode": str(shape_gate_mode),
+        "negative_cutout_cyan_fill_max": float(negative_cutout_cyan_fill_max),
+        "negative_cutout_ring_cyan_min": float(negative_cutout_ring_cyan_min),
+        "negative_cutout_ring_dilate_px": int(negative_cutout_ring_dilate_px),
+        "negative_cutout_min_area_px": float(negative_cutout_min_area_px),
+    }
+
+
+CYAN_PROFILE_BASELINE = "config2"
+CYAN_PROFILE_STRICT_FALLBACK = "config4"
+CYAN_PROFILE_DEFAULT = "config9"
+_CYAN_PROFILE_SPECS = (
+    (
+        "config1",
+        "Config 1",
+        dict(
+            hsv_lower=CYAN_HSV_TIGHT_LOWER,
+            hsv_upper=CYAN_HSV_TIGHT_UPPER,
+            shape_gate_mode="full_face",
+        ),
+    ),
+    (
+        "config2",
+        "Config 2",
+        dict(
+            hsv_lower=CYAN_HSV_TIGHT_LOWER,
+            hsv_upper=CYAN_HSV_TIGHT_UPPER,
+            negative_cutout_cyan_fill_max=0.42,
+            negative_cutout_ring_cyan_min=0.32,
+            negative_cutout_ring_dilate_px=5,
+        ),
+    ),
+    (
+        "config3",
+        "Config 3",
+        dict(
+            hsv_lower=CYAN_HSV_BALANCED_LOWER,
+            hsv_upper=CYAN_HSV_BALANCED_UPPER,
+            negative_cutout_cyan_fill_max=0.42,
+            negative_cutout_ring_cyan_min=0.32,
+            negative_cutout_ring_dilate_px=5,
+        ),
+    ),
+    (
+        "config4",
+        "Config 4",
+        dict(
+            hsv_lower=CYAN_HSV_BALANCED_LOWER,
+            hsv_upper=CYAN_HSV_BALANCED_UPPER,
+            negative_cutout_cyan_fill_max=0.55,
+            negative_cutout_ring_cyan_min=0.24,
+            negative_cutout_ring_dilate_px=6,
+        ),
+    ),
+    (
+        "config5",
+        "Config 5",
+        dict(
+            hsv_lower=CYAN_HSV_WIDE_LOWER,
+            hsv_upper=CYAN_HSV_WIDE_UPPER,
+            negative_cutout_cyan_fill_max=0.55,
+            negative_cutout_ring_cyan_min=0.24,
+            negative_cutout_ring_dilate_px=6,
+        ),
+    ),
+    (
+        "config6",
+        "Config 6",
+        dict(
+            hsv_lower=CYAN_HSV_WIDE_LOWER,
+            hsv_upper=CYAN_HSV_WIDE_UPPER,
+            negative_cutout_cyan_fill_max=0.68,
+            negative_cutout_ring_cyan_min=0.15,
+            negative_cutout_ring_dilate_px=7,
+        ),
+    ),
+    (
+        "config7",
+        "Config 7",
+        dict(
+            confidence=0.12,
+            smoothing_alpha=0.15,
+            hsv_lower=CYAN_HSV_TIGHT_LOWER,
+            hsv_upper=CYAN_HSV_TIGHT_UPPER,
+            negative_cutout_cyan_fill_max=0.68,
+            negative_cutout_ring_cyan_min=0.15,
+            negative_cutout_ring_dilate_px=7,
+        ),
+    ),
+    (
+        "config8",
+        "Config 8",
+        dict(
+            confidence=0.12,
+            smoothing_alpha=0.15,
+            hsv_lower=CYAN_HSV_BALANCED_LOWER,
+            hsv_upper=CYAN_HSV_BALANCED_UPPER,
+            negative_cutout_cyan_fill_max=0.80,
+            negative_cutout_ring_cyan_min=0.08,
+            negative_cutout_ring_dilate_px=8,
+        ),
+    ),
+    (
+        "config9",
+        "Config 9",
+        dict(
+            confidence=0.10,
+            smoothing_alpha=0.15,
+            hsv_lower=CYAN_HSV_WIDE_LOWER,
+            hsv_upper=CYAN_HSV_WIDE_UPPER,
+            negative_cutout_cyan_fill_max=0.90,
+            negative_cutout_ring_cyan_min=0.02,
+            negative_cutout_ring_dilate_px=9,
+        ),
+    ),
+    (
+        "config10",
+        "Config 10",
+        dict(
+            confidence=0.08,
+            smoothing_alpha=0.10,
+            hsv_lower=CYAN_HSV_WIDE_LOWER,
+            hsv_upper=CYAN_HSV_WIDE_UPPER,
+            negative_cutout_cyan_fill_max=1.00,
+            negative_cutout_ring_cyan_min=0.00,
+            negative_cutout_ring_dilate_px=10,
+        ),
+    ),
+)
+
+
+def _build_cyan_profile_registry():
+    options = []
+    presets = {}
+    for key, label, overrides in _CYAN_PROFILE_SPECS:
+        options.append((key, label))
+        presets[key] = _cyan_profile_preset(**dict(overrides))
+    return options, presets
+
+
+CYAN_PROFILE_OPTIONS, CYAN_PROFILE_PRESETS = _build_cyan_profile_registry()
+CYAN_PROFILE_LABELS = dict(CYAN_PROFILE_OPTIONS)
 _CYAN_PROFILE_ALIASES = {
-    "config2": "crown_brick_default",
-    "config1": "crown_brick_default",
-    "config3": "crown_brick_default",
-    "config4": "crown_brick_default",
-    "config5": "crown_brick_default",
-    "config6": "crown_brick_default",
-    "config7": "crown_brick_default",
-    "config8": "crown_brick_default",
-    "config9": "crown_brick_default",
-    "config10": "crown_brick_default",
-    "1": "crown_brick_default",
-    "2": "crown_brick_default",
-    "3": "crown_brick_default",
-    "4": "crown_brick_default",
-    "5": "crown_brick_default",
-    "6": "crown_brick_default",
-    "7": "crown_brick_default",
-    "8": "crown_brick_default",
-    "9": "crown_brick_default",
-    "10": "crown_brick_default",
+    "1": "config1",
+    "2": "config2",
+    "3": "config3",
+    "4": "config4",
+    "5": "config5",
+    "6": "config6",
+    "7": "config7",
+    "8": "config8",
+    "9": "config9",
+    "10": "config10",
     "default": CYAN_PROFILE_DEFAULT,
-    "crown": "crown_brick_default",
-    "crown_brick": "crown_brick_default",
-    "crown_bricks": "crown_brick_default",
-    "baseline": "crown_brick_default",
+    "crown": CYAN_PROFILE_BASELINE,
+    "crown_brick": CYAN_PROFILE_BASELINE,
+    "crown_bricks": CYAN_PROFILE_BASELINE,
+    "crown_brick_default": CYAN_PROFILE_BASELINE,
+    "baseline": CYAN_PROFILE_BASELINE,
     # Backward-compatibility for old profile ids in existing local config.
-    "config2_no_erosion": "crown_brick_default",
-    "config1_defaults": "crown_brick_default",
-    "config3_light_erosion": "crown_brick_default",
-    "config4_heavy_erosion": "crown_brick_default",
-    "config5_tight_cyan_range": "crown_brick_default",
-    "config6_wide_cyan_range": "crown_brick_default",
-    "config7_smooth": "crown_brick_default",
-    "config8_responsive": "crown_brick_default",
-    "config9_tight_light_smooth": "crown_brick_default",
-    "config10_hsv_disabled": "crown_brick_default",
-    "balanced": "crown_brick_default",
-    "sensitive": "crown_brick_default",
-    "aggressive": "crown_brick_default",
-    "rescue": "crown_brick_default",
-    "stable": "crown_brick_default",
-    "legacy": "crown_brick_default",
+    "config2_no_erosion": CYAN_PROFILE_BASELINE,
+    "config1_defaults": "config1",
+    "config3_light_erosion": "config4",
+    "config4_heavy_erosion": "config6",
+    "config5_tight_cyan_range": "config1",
+    "config6_wide_cyan_range": "config5",
+    "config7_smooth": "config7",
+    "config8_responsive": "config8",
+    "config9_tight_light_smooth": "config9",
+    "config10_hsv_disabled": "config10",
+    "balanced": CYAN_PROFILE_BASELINE,
+    "strict": CYAN_PROFILE_STRICT_FALLBACK,
+    "fallback": CYAN_PROFILE_STRICT_FALLBACK,
+    "best": CYAN_PROFILE_DEFAULT,
+    "wide": "config5",
+    "sensitive": "config8",
+    "aggressive": "config9",
+    "rescue": "config10",
+    "stable": "config1",
+    "legacy": CYAN_PROFILE_BASELINE,
 }
+
+
+def _resolve_cyan_profile_key(value, fallback=CYAN_PROFILE_DEFAULT):
+    key = str(value or "").strip().lower()
+    key = _CYAN_PROFILE_ALIASES.get(key, key)
+    if key in CYAN_PROFILE_PRESETS:
+        return key
+    fallback_key = str(fallback or "").strip().lower()
+    fallback_key = _CYAN_PROFILE_ALIASES.get(fallback_key, fallback_key)
+    if fallback_key in CYAN_PROFILE_PRESETS:
+        return fallback_key
+    return CYAN_PROFILE_DEFAULT
 CYAN_VISIBILITY_AUTO = "auto"
 CYAN_VISIBILITY_GRAY = "gray"
 CYAN_VISIBILITY_CYAN = "cyan"
@@ -352,8 +527,10 @@ _DEFAULT_CYAN_PROFILE = str(
         _MANUAL_CONFIG.get("markerless_profile", CYAN_PROFILE_DEFAULT),
     )
 ).strip().lower()
-if _DEFAULT_CYAN_PROFILE not in CYAN_PROFILE_PRESETS:
-    _DEFAULT_CYAN_PROFILE = CYAN_PROFILE_DEFAULT
+_DEFAULT_CYAN_PROFILE = _resolve_cyan_profile_key(
+    _DEFAULT_CYAN_PROFILE,
+    fallback=CYAN_PROFILE_DEFAULT,
+)
 _DEFAULT_CYAN_VISIBILITY = str(
     _MANUAL_CONFIG.get(
         "cyan_visibility",
@@ -376,7 +553,8 @@ CYAN_EXPERIMENT_SMOOTHING_ALPHA_MAX = max(
 )
 
 # Backward-compatible aliases while callers migrate to cyan naming.
-MARKERLESS_PROFILE_BALANCED = CYAN_PROFILE_DEFAULT
+MARKERLESS_PROFILE_DEFAULT = CYAN_PROFILE_DEFAULT
+MARKERLESS_PROFILE_BALANCED = CYAN_PROFILE_BASELINE
 MARKERLESS_PROFILE_OPTIONS = CYAN_PROFILE_OPTIONS
 MARKERLESS_PROFILE_PRESETS = CYAN_PROFILE_PRESETS
 _MARKERLESS_PROFILE_ALIASES = _CYAN_PROFILE_ALIASES
@@ -460,15 +638,7 @@ def _cleanup_stale_run_logs(*, run_folders=None, cutoff_age_s=None):
 
 
 def normalize_cyan_profile(value, fallback=CYAN_PROFILE_DEFAULT):
-    key = str(value or "").strip().lower()
-    key = _CYAN_PROFILE_ALIASES.get(key, key)
-    if key in CYAN_PROFILE_PRESETS:
-        return key
-    fallback_key = str(fallback or "").strip().lower()
-    fallback_key = _CYAN_PROFILE_ALIASES.get(fallback_key, fallback_key)
-    if fallback_key in CYAN_PROFILE_PRESETS:
-        return fallback_key
-    return CYAN_PROFILE_DEFAULT
+    return _resolve_cyan_profile_key(value, fallback=fallback)
 
 
 def cyan_profile_settings(profile):
@@ -497,15 +667,24 @@ def cyan_profile_runtime_summary(runtime):
     hsv_upper = runtime.get("hsv_upper")
     if isinstance(hsv_lower, (list, tuple)) and isinstance(hsv_upper, (list, tuple)):
         parts.append(f"hsv_range={list(hsv_lower)}..{list(hsv_upper)}")
+    gate_mode = runtime.get("shape_gate_mode")
+    if isinstance(gate_mode, str) and gate_mode.strip():
+        parts.append(f"gate={gate_mode.strip()}")
+    cutout_fill = runtime.get("negative_cutout_cyan_fill_max")
+    if isinstance(cutout_fill, (int, float)):
+        parts.append(f"cutout_fill<={float(cutout_fill):.2f}")
+    ring_cyan = runtime.get("negative_cutout_ring_cyan_min")
+    if isinstance(ring_cyan, (int, float)):
+        parts.append(f"ring_cyan>={float(ring_cyan):.2f}")
+    ring_dilate = runtime.get("negative_cutout_ring_dilate_px")
+    if isinstance(ring_dilate, (int, float)):
+        parts.append(f"ring_px={int(ring_dilate)}")
     return ", ".join(parts) if parts else "runtime=unchanged"
 
 
 def cyan_profile_label(profile):
     profile_key = normalize_cyan_profile(profile, fallback=_DEFAULT_CYAN_PROFILE)
-    for value, label in CYAN_PROFILE_OPTIONS:
-        if value == profile_key:
-            return label
-    return profile_key
+    return CYAN_PROFILE_LABELS.get(profile_key, profile_key)
 
 
 def normalize_cyan_visibility(value, fallback=CYAN_VISIBILITY_AUTO):
@@ -529,7 +708,7 @@ def cyan_visibility_label(mode):
 
 
 # Backward-compatible API names.
-def normalize_markerless_profile(value, fallback=MARKERLESS_PROFILE_BALANCED):
+def normalize_markerless_profile(value, fallback=MARKERLESS_PROFILE_DEFAULT):
     return normalize_cyan_profile(value, fallback=fallback)
 
 
@@ -1726,6 +1905,10 @@ def maybe_prompt_hotkey_var_update(app_state, cmd, score, *, enter_edit=False, h
                 if duration_row is not None and duration_row > 0:
                     duration_used_ms = int(duration_row)
 
+    hotkey_prefix = ""
+    if hotkey_target:
+        hotkey_prefix = f"{str(hotkey_target).upper()} -> "
+
     if not enter_edit:
         preview_text = _command_preview_text(
             cmd,
@@ -1735,7 +1918,7 @@ def maybe_prompt_hotkey_var_update(app_state, cmd, score, *, enter_edit=False, h
             duration_ms=duration_used_ms,
         ) or str(cmd).strip().lower()
         log_line(
-            f"[HOTKEY] {preview_text} "
+            f"[HOTKEY] {hotkey_prefix}{preview_text} "
             f"- press y to edit vars"
         )
         return int(score_used)
@@ -1748,7 +1931,7 @@ def maybe_prompt_hotkey_var_update(app_state, cmd, score, *, enter_edit=False, h
         duration_ms=duration_used_ms,
     ) or str(cmd).strip().lower()
     log_line(
-        f"[HOTKEY] Editing {preview_text}"
+        f"[HOTKEY] Editing {hotkey_prefix}{preview_text}"
     )
 
     while app_state.running:
@@ -1820,6 +2003,85 @@ def _send_manual_drive_hotkey_with_assist(
         send_robot_command_pwm_fn=send_robot_command_pwm,
         sleep_fn=time.sleep,
     )
+
+
+def _send_manual_turn_hotkey_with_arc(
+    app_state,
+    *,
+    cmd,
+    score_used,
+    hotkey,
+    duration_override_ms,
+    pwm_override,
+):
+    plan = build_manual_turn_arc_plan(
+        hotkey=hotkey,
+        cmd=cmd,
+        score=score_used,
+        hold_duration_ms=duration_override_ms,
+        pwm_override=pwm_override,
+    )
+    if not isinstance(plan, dict):
+        return None
+
+    plan_line = format_manual_turn_arc_assist_line(plan)
+    if plan_line:
+        log_line(plan_line)
+    return execute_manual_turn_arc_plan(
+        robot=app_state.robot,
+        hotkey=hotkey,
+        cmd=cmd,
+        score=score_used,
+        hold_duration_ms=plan.get("duration_ms"),
+        pwm_override=pwm_override,
+    )
+
+
+def _hotkey_label(hotkey):
+    key = str(hotkey or "").strip().lower()
+    if not key:
+        return ""
+    return str(key).upper()
+
+
+def _format_hotkey_wire_log(hotkey, cmd, score, send_result, *, fallback_wire_text=""):
+    if not isinstance(send_result, dict):
+        return None
+
+    hotkey_text = _hotkey_label(hotkey)
+    cmd_text = str(cmd or send_result.get("cmd_sent") or "").strip().lower()
+    try:
+        score_value = int(score)
+    except (TypeError, ValueError):
+        score_value = None
+    try:
+        pwm_value = int(round(float(send_result.get("pwm"))))
+    except (TypeError, ValueError):
+        pwm_value = None
+    power_value = send_result.get("power")
+    try:
+        duration_value = int(round(float(send_result.get("duration_ms"))))
+    except (TypeError, ValueError):
+        duration_value = None
+
+    preview_text = _command_preview_text(
+        cmd_text,
+        speed_score=score_value,
+        pwm=pwm_value,
+        power=power_value,
+        duration_ms=duration_value,
+    ) or str(cmd_text)
+
+    wire_text = str(fallback_wire_text or "").strip()
+    if not wire_text:
+        raw_wire = send_result.get("wire_text")
+        if raw_wire:
+            wire_text = str(raw_wire).strip()
+    if not wire_text:
+        return None
+
+    prefix = f"{hotkey_text} -> " if hotkey_text else ""
+    return f"[HOTKEY WIRE] {prefix}{preview_text} -> {wire_text}"
 
 
 def format_step_codes_line():
@@ -3417,6 +3679,31 @@ def markerless_stream_debug_lines(app_state, vision):
     return cyan_stream_debug_lines(app_state, vision)
 
 
+def _plain_stream_debug_line_text(line):
+    if isinstance(line, tuple) and line:
+        return str(line[0] or "").strip()
+    return str(line or "").strip()
+
+
+def _log_cyan_profile_terminal_snapshot(app_state, vision, profile_key, profile_settings, *, change_note=None):
+    if vision is None:
+        return
+    if change_note:
+        log_line(str(change_note))
+    log_line(
+        "[VISION] Cyan config: "
+        f"{cyan_profile_label(profile_key)} "
+        f"({cyan_profile_runtime_summary(profile_settings)})"
+    )
+    debug_lines = cyan_stream_debug_lines(app_state, vision)
+    if not isinstance(debug_lines, list):
+        return
+    for line in debug_lines:
+        text = _plain_stream_debug_line_text(line)
+        if text:
+            log_line(text)
+
+
 def _build_cyan_mask_preview(vision, frame):
     """Build a black/white cyan mask preview from the current camera frame.
 
@@ -3437,14 +3724,21 @@ def _build_cyan_mask_preview(vision, frame):
         return None
 
     try:
-        hsv = cv2.cvtColor(src, cv2.COLOR_BGR2HSV)
-        lower = np.array(hsv_lower, dtype=np.uint8)
-        upper = np.array(hsv_upper, dtype=np.uint8)
-        mask = cv2.inRange(hsv, lower, upper)
-        erode_iter = max(0, int(getattr(vision, "_hsv_erode_iterations", 0) or 0))
-        if erode_iter > 0:
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-            mask = cv2.erode(mask, kernel, iterations=erode_iter)
+        mask_builder = getattr(vision, "_build_hsv_masks", None)
+        if callable(mask_builder):
+            feature_mask, _contour_mask = mask_builder(src)
+            mask = feature_mask
+        else:
+            hsv = cv2.cvtColor(src, cv2.COLOR_BGR2HSV)
+            lower = np.array(hsv_lower, dtype=np.uint8)
+            upper = np.array(hsv_upper, dtype=np.uint8)
+            mask = cv2.inRange(hsv, lower, upper)
+            erode_iter = max(0, int(getattr(vision, "_hsv_erode_iterations", 0) or 0))
+            if erode_iter > 0:
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+                mask = cv2.erode(mask, kernel, iterations=erode_iter)
+        if mask is None:
+            return None
         return cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
     except Exception:
         return None
@@ -3692,7 +3986,7 @@ def print_command_help(app_state=None):
     log_line("[CMD] Auto-run shortcut: blank Enter queues the next step after the last successful auto step.")
     log_line(f"[CMD] Auto-continue: after a successful auto-step, next step auto-queues in {float(AUTO_CONTINUE_WAIT_S):.1f}s unless cancelled.")
     log_line("[CMD] Observe while moving: press h, then type '1' to run a semi-manual x-axis trial.")
-    log_line("[CMD] Custom runs: press y, then enter '<steps_csv> <trials>' (example: 3,4,5,6,7 2).")
+    log_line("[CMD] Custom runs: press y, then enter '<steps_csv> <trials>' (use r/reset for custom reset; example: r,3,4,5,6,7 2).")
     log_line("[CMD] Timed hotkey mode: press u, then type '<hotkey> <duration_ms> [percent]' OR '<hotkey> <percent> <duration_ms>' (examples: e 666 10, e 150 666).")
     log_line("[CMD] Lift preflight: :liftcal (discover O/K micro movement + find ground level).")
     log_line("[CMD] Drive breakaway test: :drivebreak (find the first low-speed score that moves reliably).")
@@ -3700,7 +3994,7 @@ def print_command_help(app_state=None):
     log_line("[CMD] End attempt: press ':' to finish and return to the command prompt.")
     log_line("[CMD] Press 'h' for Observe while moving mode.")
     log_line("[CMD] Press 'u' for timed hotkey mode, then enter '<hotkey> <duration_ms> [percent]' OR '<hotkey> <percent> <duration_ms>' (examples: e 666 10, e 150 666).")
-    log_line("[CMD] Press 'y' for custom runs, then enter '<steps_csv> <trials>' (example: 3,4,5,6,7 2).")
+    log_line("[CMD] Press 'y' for custom runs, then enter '<steps_csv> <trials>' (use r/reset for custom reset; example: r,3,4,5,6,7 2).")
     log_line("[CMD] Press 'b' to enter calibration mode.")
     log_step_codes_list(prefix="[CMD]")
 
@@ -4154,7 +4448,78 @@ def _suspend_manual_runtime_for_calibration(app_state):
     return True, None
 
 
-def _resume_manual_runtime_after_calibration(app_state):
+def _borrow_manual_runtime_for_calibration(app_state):
+    with app_state.lock:
+        if bool(app_state.auto_running):
+            return False, "[CALIBRATE] Finish or cancel the current auto-step before entering calibration mode.", None
+        if app_state.auto_request is not None:
+            return False, "[CALIBRATE] Clear the queued auto-step before entering calibration mode.", None
+        app_state.auto_prompt = False
+        _clear_manual_motion_state_locked(app_state)
+
+    with app_state.vision_io_lock:
+        vision = app_state.vision
+        app_state.vision = None
+
+    robot = getattr(app_state, "robot", None)
+    app_state.robot = None
+
+    return True, None, {
+        "app_state": app_state,
+        "world": app_state.world,
+        "vision": vision,
+        "robot": robot,
+        "vision_io_lock": app_state.vision_io_lock,
+        "vision_mode": _stream_state_vision_mode(
+            app_state,
+            getattr(app_state, "active_vision_mode", _DEFAULT_VISION_MODE),
+        ),
+    }
+
+
+def _resume_manual_runtime_after_calibration(app_state, borrowed_runtime: dict | None = None):
+    if isinstance(borrowed_runtime, dict):
+        restored_robot = borrowed_runtime.get("robot")
+        restored_vision = borrowed_runtime.get("vision")
+        if restored_robot is not None or restored_vision is not None:
+            app_state.robot = restored_robot
+            app_state.vision = restored_vision
+            vision_mode = _stream_state_vision_mode(
+                app_state,
+                getattr(app_state, "active_vision_mode", _DEFAULT_VISION_MODE),
+            )
+            app_state.active_vision_mode = vision_mode
+            if app_state.vision is not None:
+                profile_key, profile_settings, profile_applied = _apply_cyan_profile(
+                    app_state,
+                    app_state.vision,
+                    _stream_state_cyan_profile(app_state, _DEFAULT_CYAN_PROFILE),
+                )
+                visibility_key, visibility_applied = _apply_cyan_visibility(
+                    app_state,
+                    app_state.vision,
+                    _stream_state_cyan_visibility(app_state, _DEFAULT_CYAN_VISIBILITY),
+                )
+                _set_stream_state_vision_mode(app_state, vision_mode)
+                _set_stream_state_cyan_profile(app_state, profile_key)
+                _set_stream_state_cyan_visibility(app_state, visibility_key)
+                if vision_mode == VISION_MODE_CYAN and profile_applied:
+                    log_line(
+                        "[VISION] Cyan config: "
+                        f"{cyan_profile_label(profile_key)} "
+                        f"({cyan_profile_runtime_summary(profile_settings)})"
+                    )
+                if vision_mode == VISION_MODE_CYAN and visibility_applied:
+                    log_line(
+                        "[VISION] Crown visibility: "
+                        f"{cyan_visibility_label(visibility_key)}"
+                    )
+            with app_state.lock:
+                app_state.brick_frame_buffer = []
+                _clear_manual_motion_state_locked(app_state)
+            refresh_world_model_from_demos(app_state, force=True, min_interval_s=0.0)
+            return
+
     vision_mode = _stream_state_vision_mode(
         app_state,
         getattr(app_state, "active_vision_mode", _DEFAULT_VISION_MODE),
@@ -4211,36 +4576,81 @@ def _resume_manual_runtime_after_calibration(app_state):
 
 
 def _run_calibration_mode(app_state):
-    ok, reason = _suspend_manual_runtime_for_calibration(app_state)
-    if not ok:
-        log_line(reason)
-        return 1
+    with app_state.lock:
+        if bool(app_state.auto_running):
+            log_line("[CALIBRATE] Finish or cancel the current auto-step before entering calibration mode.")
+            return 1
+        if app_state.auto_request is not None:
+            log_line("[CALIBRATE] Clear the queued auto-step before entering calibration mode.")
+            return 1
+        app_state.auto_prompt = False
+        _clear_manual_motion_state_locked(app_state)
 
+    stream_server = getattr(app_state, "stream_server", None)
+    shared_stream_state = app_state.stream_state if stream_server is not None else None
+    shared_stream_url = None
+    if stream_server is not None:
+        from helper_stream_server import format_stream_url
+
+        actual_port = getattr(stream_server, "port", STREAM_PORT)
+        shared_stream_url = str(
+            getattr(app_state, "pending_stream_started_url", "") or format_stream_url(STREAM_HOST, actual_port)
+        )
+
+    helper_calibrate_speed_curve._print_stream_banner(shared_stream_url=shared_stream_url)
     log_line("[CALIBRATE] Entering calibration mode. Choose an option or q to return to manual mode.")
     exit_code = 0
-    try:
-        stream_server = getattr(app_state, "stream_server", None)
-        shared_stream_state = app_state.stream_state if stream_server is not None else None
-        shared_stream_url = None
-        if stream_server is not None:
-            from helper_stream_server import format_stream_url
+    while True:
+        selected = helper_calibrate_speed_curve.pick_interactive_option()
+        if selected is None:
+            log_line("[CALIBRATE] Leaving calibration mode.")
+            break
 
-            actual_port = getattr(stream_server, "port", STREAM_PORT)
-            shared_stream_url = str(
-                getattr(app_state, "pending_stream_started_url", "") or format_stream_url(STREAM_HOST, actual_port)
-            )
-        exit_code = int(helper_calibrate_speed_curve.run_interactive_session(
-            show_banner=True,
-            passthrough_args=[],
-            shared_stream_state=shared_stream_state,
-            shared_stream_url=shared_stream_url,
-        ) or 0)
-    except Exception as exc:
-        exit_code = 1
-        log_line(f"[CALIBRATE] Calibration mode failed: {exc}")
-    finally:
-        _resume_manual_runtime_after_calibration(app_state)
-        log_line("[CALIBRATE] Returned to manual training mode.")
+        borrowed_runtime = None
+        shared_context = None
+        needs_isolated_runtime = str(getattr(selected, "key", "")).strip().lower() != "telemetry"
+        if needs_isolated_runtime:
+            ok, reason = _suspend_manual_runtime_for_calibration(app_state)
+            if not ok:
+                log_line(reason)
+                exit_code = 1
+                continue
+        else:
+            ok, reason, borrowed_runtime = _borrow_manual_runtime_for_calibration(app_state)
+            if not ok:
+                log_line(reason)
+                exit_code = 1
+                continue
+            shared_context = dict(borrowed_runtime or {})
+
+        step_code = 0
+        failed = None
+        try:
+            step_code = int(helper_calibrate_speed_curve.run_option(
+                selected,
+                passthrough_args=[],
+                shared_stream_state=shared_stream_state,
+                shared_stream_url=shared_stream_url,
+                shared_context=shared_context,
+            ) or 0)
+        except Exception as exc:
+            step_code = 1
+            failed = exc
+        finally:
+            _resume_manual_runtime_after_calibration(app_state, borrowed_runtime=borrowed_runtime)
+            if needs_isolated_runtime and borrowed_runtime is None:
+                # For non-telemetry calibrators we closed/reopened devices around the run.
+                pass
+
+        if failed is not None:
+            log_line(f"[CALIBRATE] {selected.label} failed: {failed}")
+        elif int(step_code) == 0:
+            log_line(f"[CALIBRATE] Completed: {selected.label}")
+        else:
+            log_line(f"[CALIBRATE] {selected.label} ended with code={int(step_code)}")
+        exit_code = int(step_code) if int(step_code) != 0 else int(exit_code)
+
+    log_line("[CALIBRATE] Returned to manual training mode.")
     return int(exit_code)
 
 
@@ -4736,20 +5146,17 @@ def keyboard_thread(app_state):
     def _parse_custom_runs_input(raw):
         text = str(raw or "").strip()
         if not text:
-            return None, None, "[CUSTOM RUNS] Expected: <steps_csv> <trials> (example: 3,4,5,6,7 2)."
+            return None, None, "[CUSTOM RUNS] Expected: <steps_csv> <trials> (use r/reset for custom reset; example: r,3,4,5,6,7 2)."
         pieces = text.split()
         if len(pieces) != 2:
             return None, None, "[CUSTOM RUNS] Expected exactly 2 params: <steps_csv> <trials>."
         steps_csv, trials_text = pieces
-        step_tokens = [token.strip() for token in steps_csv.split(",") if token.strip()]
-        if not step_tokens:
-            return None, None, "[CUSTOM RUNS] No step codes provided."
-        steps = []
-        for token in step_tokens:
-            obj = resolve_step_token(token)
-            if obj is None:
-                return None, None, f"[CUSTOM RUNS] Unknown step token '{token}'."
-            steps.append(obj)
+        steps, err = parse_custom_run_steps_csv(
+            steps_csv,
+            resolve_step_token_fn=resolve_step_token,
+        )
+        if err:
+            return None, None, err
         try:
             trials = int(round(float(trials_text)))
         except (TypeError, ValueError):
@@ -4759,7 +5166,7 @@ def keyboard_thread(app_state):
         return steps, int(trials), None
 
     def _prompt_custom_runs_input():
-        line = prompt_line("[CUSTOM RUNS] Enter <steps_csv> <trials> (steps=comma list, trials=count; example: 3,4,5,6,7 2) > ")
+        line = prompt_line("[CUSTOM RUNS] Enter <steps_csv> <trials> (steps=comma list, use r/reset for custom reset; example: r,3,4,5,6,7 2) > ")
         steps, trials, err = _parse_custom_runs_input(line)
         if err:
             return None, None, [err]
@@ -4809,64 +5216,202 @@ def keyboard_thread(app_state):
             time.sleep(0.05)
         return False
 
-    def _custom_reset_left_until_not_visible(max_acts=240):
-        log_line(
-            format_headline(
-                "[EXCEPTION] Custom-runs reset is hardcoded: turning left at 1% until visible=false. Replace with robust reset logic.",
-                COLOR_MAGENTA_BRIGHT,
-            )
-        )
-        reset_hotkey = "q"
-        row = HOTKEY_SPEED_SCORES.get(reset_hotkey) if isinstance(HOTKEY_SPEED_SCORES, dict) else None
-        cmd = str((row or {}).get("cmd") or "l").strip().lower()
+    def _custom_run_observation(*, read_vision=True):
+        if app_state is None:
+            return {"visible": False, "dist_mm": None}
+        world = getattr(app_state, "world", None)
+        vision = getattr(app_state, "vision", None)
+        if world is None or vision is None:
+            return {"visible": False, "dist_mm": None}
         try:
-            score = int((row or {}).get("score", 1))
+            if read_vision:
+                lock = getattr(app_state, "vision_io_lock", None)
+                if lock is not None:
+                    with lock:
+                        update_world_from_vision(world, vision, log=False)
+                else:
+                    update_world_from_vision(world, vision, log=False)
+            update_brick_analytics(app_state)
+            update_stream_frame(app_state)
+        except Exception:
+            return {"visible": False, "dist_mm": None}
+        brick = getattr(world, "brick", None)
+        if not isinstance(brick, dict):
+            return {"visible": False, "dist_mm": None}
+        visible = bool(brick.get("visible"))
+        try:
+            dist_mm = float(brick.get("dist"))
         except (TypeError, ValueError):
-            score = 1
-        score = max(int(telemetry_robot_module.SPEED_SCORE_MIN), int(score))
+            dist_mm = None
+        if dist_mm is not None and dist_mm <= 0.0:
+            dist_mm = None
+        return {
+            "visible": bool(visible),
+            "dist_mm": dist_mm,
+        }
 
-        acts = 0
-        while app_state.running and acts < int(max_acts):
-            if not _auto_align_visible_now(app_state):
-                log_line(f"[CUSTOM RUNS] Reset complete: visible=false after {int(acts)} left-turn acts.")
-                return True
-            quantized_speed, score_used = quantize_speed(cmd, score=score)
-            speed, _ = app_state.robot.normalize_speed(cmd, quantized_speed)
+    def _custom_run_wait_after_send(send_result):
+        try:
+            duration_ms = int(round(float((send_result or {}).get("duration_ms") or 0)))
+        except (TypeError, ValueError):
+            duration_ms = 0
+        wait_s = max(
+            float(CUSTOM_RUN_RESET_POST_ACT_SETTLE_S),
+            min(0.4, float(duration_ms) / 1000.0 + float(CUSTOM_RUN_RESET_POST_ACT_SETTLE_S)),
+        )
+        time.sleep(max(0.0, float(wait_s)))
+
+    def _custom_run_invisible_confirmed():
+        reads_required = max(1, int(CUSTOM_RUN_RESET_INVISIBLE_CONFIRM_READS))
+        last_obs = None
+        for read_idx in range(reads_required):
+            last_obs = _custom_run_observation(read_vision=True)
+            if bool((last_obs or {}).get("visible")):
+                return False, last_obs
+            if read_idx < (reads_required - 1):
+                time.sleep(max(0.0, float(CUSTOM_RUN_RESET_CONFIRM_READ_GAP_S)))
+        return True, last_obs
+
+    def _send_custom_run_pivot_left():
+        pivot_cmd = "l"
+        pivot_score = max(
+            int(telemetry_robot_module.SPEED_SCORE_MIN),
+            int(CUSTOM_RUN_RESET_TURN_SCORE),
+        )
+        try:
+            pivot_power, pivot_pwm, _pivot_score_used, pivot_duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd(
+                pivot_cmd,
+                pivot_score,
+            )
+        except Exception:
+            return None, pivot_cmd, 0.0, pivot_score
+        if hasattr(app_state.robot, "send_custom_actions_pwm"):
+            send_result = app_state.robot.send_custom_actions_pwm(
+                pivot_cmd,
+                [
+                    {"target": "l", "action": "s", "pwm": 0},
+                    {"target": "r", "action": "f", "pwm": int(pivot_pwm)},
+                ],
+                duration_ms=int(pivot_duration_ms),
+            )
+        else:
             send_result = send_robot_command(
                 app_state.robot,
                 app_state.world,
                 app_state.world.step_state,
-                cmd,
-                speed,
-                speed_score=score_used,
+                pivot_cmd,
+                float(pivot_power or 0.0),
+                speed_score=int(pivot_score),
+                duration_override_ms=int(pivot_duration_ms),
+                ease_in_out_enabled=False,
+            )
+        return send_result, pivot_cmd, float(pivot_power or 0.0), int(pivot_score)
+
+    def _run_custom_reset():
+        if app_state is None or getattr(app_state, "robot", None) is None or getattr(app_state, "vision", None) is None:
+            log_line("[CUSTOM RUNS] Reset skipped (robot/vision unavailable).")
+            return False
+
+        log_line(
+            f"[CUSTOM RUNS] Reset: back away until dist>={float(CUSTOM_RUN_RESET_MIN_DIST_MM):.0f}mm, "
+            "then pivot left until visibility is confidently lost."
+        )
+
+        backoff_hotkey = "s"
+        backoff_row = HOTKEY_SPEED_SCORES.get(backoff_hotkey) if isinstance(HOTKEY_SPEED_SCORES, dict) else None
+        backoff_cmd = str((backoff_row or {}).get("cmd") or "b").strip().lower()
+        try:
+            backoff_score = int((backoff_row or {}).get("score", CUSTOM_RUN_RESET_BACKOFF_SCORE))
+        except (TypeError, ValueError):
+            backoff_score = int(CUSTOM_RUN_RESET_BACKOFF_SCORE)
+        backoff_score = max(int(telemetry_robot_module.SPEED_SCORE_MIN), int(backoff_score))
+
+        obs = _custom_run_observation(read_vision=True)
+        backoff_acts = 0
+        while (
+            app_state.running
+            and bool((obs or {}).get("visible"))
+            and (obs or {}).get("dist_mm") is not None
+            and float((obs or {}).get("dist_mm")) < float(CUSTOM_RUN_RESET_MIN_DIST_MM)
+            and int(backoff_acts) < int(CUSTOM_RUN_RESET_MAX_BACKOFF_ACTS)
+        ):
+            quantized_speed, backoff_score_used = quantize_speed(backoff_cmd, score=backoff_score)
+            backoff_speed, _ = app_state.robot.normalize_speed(backoff_cmd, quantized_speed)
+            send_result = send_robot_command(
+                app_state.robot,
+                app_state.world,
+                app_state.world.step_state,
+                backoff_cmd,
+                backoff_speed,
+                speed_score=backoff_score_used,
                 duration_override_ms=None,
-                ease_in_out_enabled=hotkey_uses_ease_in_out(reset_hotkey),
+                ease_in_out_enabled=hotkey_uses_ease_in_out(backoff_hotkey),
             )
             _apply_manual_motion_telemetry_from_send(
                 app_state,
-                cmd=cmd,
-                speed=speed,
-                score=score_used,
+                cmd=backoff_cmd,
+                speed=backoff_speed,
+                score=backoff_score_used,
                 send_result=send_result,
             )
-            refresh_brick_telemetry(app_state, read_vision=True)
-            acts += 1
-            time.sleep(0.05)
+            backoff_acts += 1
+            _custom_run_wait_after_send(send_result)
+            obs = _custom_run_observation(read_vision=True)
 
-        if not _auto_align_visible_now(app_state):
-            log_line(f"[CUSTOM RUNS] Reset complete: visible=false after {int(acts)} left-turn acts.")
+        if (
+            bool((obs or {}).get("visible"))
+            and (obs or {}).get("dist_mm") is not None
+            and float((obs or {}).get("dist_mm")) < float(CUSTOM_RUN_RESET_MIN_DIST_MM)
+        ):
+            log_line(
+                f"[CUSTOM RUNS] Reset failed: dist stayed below {float(CUSTOM_RUN_RESET_MIN_DIST_MM):.0f}mm "
+                f"after {int(backoff_acts)} backoff acts."
+            )
+            return False
+
+        confirmed_invisible, obs_after_confirm = _custom_run_invisible_confirmed()
+        if confirmed_invisible:
+            log_line(
+                f"[CUSTOM RUNS] Reset complete: visibility lost before pivoting "
+                f"(backoff acts={int(backoff_acts)})."
+            )
             return True
-        log_line(f"[CUSTOM RUNS] Reset timeout after {int(acts)} left-turn acts (visible still true).")
+
+        pivot_acts = 0
+        while app_state.running and int(pivot_acts) < int(CUSTOM_RUN_RESET_MAX_TURN_ACTS):
+            send_result, pivot_cmd, pivot_power, pivot_score = _send_custom_run_pivot_left()
+            _apply_manual_motion_telemetry_from_send(
+                app_state,
+                cmd=pivot_cmd,
+                speed=pivot_power,
+                score=pivot_score,
+                send_result=send_result,
+            )
+            pivot_acts += 1
+            _custom_run_wait_after_send(send_result)
+            confirmed_invisible, obs_after_confirm = _custom_run_invisible_confirmed()
+            if confirmed_invisible:
+                log_line(
+                    f"[CUSTOM RUNS] Reset complete: visible=false after {int(backoff_acts)} backoff acts "
+                    f"and {int(pivot_acts)} left-pivot acts."
+                )
+                return True
+
+        last_visible = bool((obs_after_confirm or {}).get("visible"))
+        log_line(
+            f"[CUSTOM RUNS] Reset timeout after {int(backoff_acts)} backoff acts and "
+            f"{int(pivot_acts)} left-pivot acts (visible={str(last_visible).lower()})."
+        )
         return False
 
     def _run_custom_trials(steps, trials):
-        step_codes = ",".join(step_code_for_obj(step) for step in steps)
+        step_codes = ",".join(
+            custom_run_step_code(step, step_code_for_obj_fn=step_code_for_obj)
+            for step in steps
+        )
         log_line(f"[CUSTOM RUNS] Starting: steps={step_codes} trials={int(trials)}.")
         if not _wait_for_auto_idle(timeout_s=15.0):
-            log_line("[CUSTOM RUNS] Timed out waiting for auto mode to become idle before initial reset.")
-            return
-        if not _custom_reset_left_until_not_visible():
-            log_line("[CUSTOM RUNS] Stopping custom runs because initial reset did not converge.")
+            log_line("[CUSTOM RUNS] Timed out waiting for auto mode to become idle before starting.")
             return
         for trial_idx in range(1, int(trials) + 1):
             if not app_state.running:
@@ -4878,8 +5423,14 @@ def keyboard_thread(app_state):
                 if not _wait_for_auto_idle(timeout_s=15.0):
                     log_line("[CUSTOM RUNS] Timed out waiting for auto mode to become idle.")
                     return
-                step_code = step_code_for_obj(step_obj)
-                step_name = str(getattr(step_obj, "value", step_obj)).lower()
+                step_code = custom_run_step_code(step_obj, step_code_for_obj_fn=step_code_for_obj)
+                step_name = custom_run_step_name(step_obj)
+                if is_custom_run_reset_step(step_obj):
+                    log_line(f"[CUSTOM RUNS] Running step {step_code} ({step_name}).")
+                    if not _run_custom_reset():
+                        log_line("[CUSTOM RUNS] Stopping custom runs because reset did not converge.")
+                        return
+                    continue
                 log_line(f"[CUSTOM RUNS] Queueing step {step_code} ({step_name}).")
                 _queue_auto_step_custom(step_obj)
                 if not _wait_for_auto_step_cycle(timeout_s=240.0):
@@ -4888,9 +5439,6 @@ def keyboard_thread(app_state):
             if not app_state.running:
                 break
             _wait_for_auto_idle(timeout_s=15.0)
-            if not _custom_reset_left_until_not_visible():
-                log_line("[CUSTOM RUNS] Stopping custom runs because reset did not converge.")
-                return
             log_line(f"[CUSTOM RUNS] Trial {int(trial_idx)}/{int(trials)} complete.")
         log_line("[CUSTOM RUNS] Finished.")
 
@@ -5026,7 +5574,7 @@ def keyboard_thread(app_state):
             log_line("[CMD] Enter command (ex: 4s, 4f, help). Use ':' or blank to exit.")
             log_line("[CMD] Observe while moving: press 'h', then type '1' to run a semi-manual x-axis trial.")
             log_line("[CMD] Press 'u' for timed hotkey mode, then enter '<hotkey> <duration_ms> [percent]' OR '<hotkey> <percent> <duration_ms>' (examples: e 666 10, e 150 666).")
-            log_line("[CMD] Press 'y' for custom runs, then enter '<steps_csv> <trials>' (example: 3,4,5,6,7 2).")
+            log_line("[CMD] Press 'y' for custom runs, then enter '<steps_csv> <trials>' (use r/reset for custom reset; example: r,3,4,5,6,7 2).")
             log_line("[CMD] Press 'b' to enter calibration mode.")
             log_step_codes_list(prefix="[CMD]")
 
@@ -5442,6 +5990,11 @@ def _apply_cyan_profile(app_state, vision, profile):
         hsv_upper = settings.get("hsv_upper")
         hsv_enabled = settings.get("hsv_enabled")
         hsv_erode_iterations = settings.get("hsv_erode_iterations")
+        shape_gate_mode = settings.get("shape_gate_mode")
+        negative_cutout_cyan_fill_max = settings.get("negative_cutout_cyan_fill_max")
+        negative_cutout_ring_cyan_min = settings.get("negative_cutout_ring_cyan_min")
+        negative_cutout_ring_dilate_px = settings.get("negative_cutout_ring_dilate_px")
+        negative_cutout_min_area_px = settings.get("negative_cutout_min_area_px")
         if confidence is not None:
             vision.conf_threshold = float(confidence)
         if smooth_alpha is not None:
@@ -5456,6 +6009,16 @@ def _apply_cyan_profile(app_state, vision, profile):
             vision._hsv_enabled = bool(hsv_enabled)
         if hsv_erode_iterations is not None:
             vision._hsv_erode_iterations = max(0, int(hsv_erode_iterations))
+        if shape_gate_mode is not None:
+            vision._face_shape_gate_mode = str(shape_gate_mode)
+        if negative_cutout_cyan_fill_max is not None:
+            vision._negative_cutout_cyan_fill_max = float(negative_cutout_cyan_fill_max)
+        if negative_cutout_ring_cyan_min is not None:
+            vision._negative_cutout_ring_cyan_min = float(negative_cutout_ring_cyan_min)
+        if negative_cutout_ring_dilate_px is not None:
+            vision._negative_cutout_ring_dilate_px = max(1, int(negative_cutout_ring_dilate_px))
+        if negative_cutout_min_area_px is not None:
+            vision._negative_cutout_min_area_px = max(1.0, float(negative_cutout_min_area_px))
         applied_runtime = {
             "conf_threshold": getattr(vision, "conf_threshold", None),
             "smooth_alpha": getattr(vision, "_smooth_alpha", None),
@@ -5464,6 +6027,11 @@ def _apply_cyan_profile(app_state, vision, profile):
             "hsv_upper": getattr(vision, "_hsv_upper", None),
             "hsv_enabled": getattr(vision, "_hsv_enabled", None),
             "hsv_erode_iterations": getattr(vision, "_hsv_erode_iterations", None),
+            "shape_gate_mode": getattr(vision, "_face_shape_gate_mode", None),
+            "negative_cutout_cyan_fill_max": getattr(vision, "_negative_cutout_cyan_fill_max", None),
+            "negative_cutout_ring_cyan_min": getattr(vision, "_negative_cutout_ring_cyan_min", None),
+            "negative_cutout_ring_dilate_px": getattr(vision, "_negative_cutout_ring_dilate_px", None),
+            "negative_cutout_min_area_px": getattr(vision, "_negative_cutout_min_area_px", None),
         }
     for attr in ("_prev_angle", "_prev_dist", "_prev_offset", "_prev_offset_y", "_center_lock_prev_center"):
         if hasattr(vision, attr):
@@ -5573,10 +6141,12 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None, show_star
         f"(--vision {_vision_mode_cli_value(active_vision_mode)})"
     )
     if active_vision_mode == VISION_MODE_CYAN and profile_applied:
-        log_line(
-            "[VISION] Cyan config: "
-            f"{cyan_profile_label(active_cyan_profile)} "
-            f"({cyan_profile_runtime_summary(profile_settings)})"
+        _log_cyan_profile_terminal_snapshot(
+            app_state,
+            app_state.vision,
+            active_cyan_profile,
+            profile_settings,
+            change_note="[VISION] Cyan config initialized.",
         )
     if active_vision_mode == VISION_MODE_CYAN and profile_smoothing_experiment_applied:
         smooth_alpha = profile_settings.get("smooth_alpha") if isinstance(profile_settings, dict) else None
@@ -5610,6 +6180,7 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None, show_star
             active_cyan_profile,
         )
         if requested_cyan_profile != active_cyan_profile:
+            previous_cyan_profile = active_cyan_profile
             active_cyan_profile = requested_cyan_profile
             if active_vision_mode == VISION_MODE_CYAN and app_state.vision is not None:
                 profile_key, profile_settings, profile_applied = _apply_cyan_profile(
@@ -5625,10 +6196,16 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None, show_star
                     )
                     with app_state.lock:
                         app_state.brick_frame_buffer = []
-                    log_line(
-                        "[VISION] Cyan config: "
-                        f"{cyan_profile_label(active_cyan_profile)} "
-                        f"({cyan_profile_runtime_summary(profile_settings)})"
+                    _log_cyan_profile_terminal_snapshot(
+                        app_state,
+                        app_state.vision,
+                        active_cyan_profile,
+                        profile_settings,
+                        change_note=(
+                            "[VISION] Cyan config changed: "
+                            f"{cyan_profile_label(previous_cyan_profile)} "
+                            f"-> {cyan_profile_label(active_cyan_profile)}"
+                        ),
                     )
                     smooth_alpha = profile_settings.get("smooth_alpha") if isinstance(profile_settings, dict) else None
                     if smoothing_experiment_applied and isinstance(smooth_alpha, (int, float)):
@@ -5712,10 +6289,12 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None, show_star
                     f"(--vision {_vision_mode_cli_value(active_vision_mode)})."
                 )
                 if active_vision_mode == VISION_MODE_CYAN and profile_applied:
-                    log_line(
-                        "[VISION] Cyan config: "
-                        f"{cyan_profile_label(active_cyan_profile)} "
-                        f"({cyan_profile_runtime_summary(profile_settings)})"
+                    _log_cyan_profile_terminal_snapshot(
+                        app_state,
+                        app_state.vision,
+                        active_cyan_profile,
+                        profile_settings,
+                        change_note="[VISION] Cyan config restored after mode switch.",
                     )
                 if active_vision_mode == VISION_MODE_CYAN and profile_smoothing_experiment_applied:
                     smooth_alpha = profile_settings.get("smooth_alpha") if isinstance(profile_settings, dict) else None
@@ -5898,7 +6477,16 @@ def command_loop(app_state):
         ):
             ease_for_hotkey = hotkey_uses_ease_in_out(hotkey)
             send_result = None
-            if hotkey and cmd in ("f", "b"):
+            if hotkey and cmd in ("l", "r"):
+                send_result = _send_manual_turn_hotkey_with_arc(
+                    app_state,
+                    cmd=cmd,
+                    score_used=score_used,
+                    hotkey=hotkey,
+                    duration_override_ms=duration_override_ms,
+                    pwm_override=pwm_override,
+                )
+            if send_result is None and hotkey and cmd in ("f", "b"):
                 send_result = _send_manual_drive_hotkey_with_assist(
                     app_state,
                     cmd=cmd,
@@ -5979,15 +6567,7 @@ def command_loop(app_state):
                     cmd=cmd,
                     score=score_used,
                 )
-            if (
-                hotkey
-                and isinstance(send_result, dict)
-                and (
-                    pwm_override is not None
-                    or duration_override_ms is not None
-                    or bool(send_result.get("segments"))
-                )
-            ):
+            if hotkey and isinstance(send_result, dict):
                 try:
                     pwm_sent = int(round(float(send_result.get("pwm"))))
                 except (TypeError, ValueError):
@@ -5999,11 +6579,19 @@ def command_loop(app_state):
                 cmd_sent = str(send_result.get("cmd_sent") or cmd).strip().lower()
                 wire = getattr(app_state.robot, "last_command", None)
                 wire_text = str(wire).strip() if wire else ""
+                if not wire_text:
+                    raw_wire = send_result.get("wire_text")
+                    if raw_wire:
+                        wire_text = str(raw_wire).strip()
                 segments = send_result.get("segments")
                 if isinstance(segments, list) and segments:
                     segment_parts = []
                     for seg in segments:
                         if not isinstance(seg, dict):
+                            continue
+                        seg_wire = str(seg.get("wire_text") or "").strip()
+                        if seg_wire:
+                            segment_parts.append(seg_wire)
                             continue
                         seg_cmd = str(seg.get("cmd_sent") or cmd_sent).strip().lower()
                         try:
@@ -6029,9 +6617,15 @@ def command_loop(app_state):
                     if dur_sent is not None:
                         pieces.append(str(int(dur_sent)))
                     wire_text = " ".join([p for p in pieces if p])
-                log_line(
-                    f"[HOTKEY SEND] {wire_text}"
+                wire_log = _format_hotkey_wire_log(
+                    hotkey,
+                    cmd,
+                    score_used,
+                    send_result,
+                    fallback_wire_text=wire_text,
                 )
+                if wire_log:
+                    log_line(wire_log)
             # Micro-adjustments (1% speed-score) should pull a fresh vision read so
             # bird/mast views update immediately after each tiny act.
             read_vision_for_refresh = bool(

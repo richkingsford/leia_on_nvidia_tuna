@@ -35,6 +35,7 @@ from telemetry_process import (
     _latest_unique_smoothed_frames,
     lite_gate_unique_frames,
     send_robot_command,
+    send_robot_command_pwm,
     update_world_from_vision,
 )
 import telemetry_robot as telemetry_robot_module
@@ -882,8 +883,25 @@ def _run_turn_stage(
     stop_reason = "duration_complete"
     send_results = []
     send_result = None
+    pwm_override_active = None
+    power_override_active = None
 
     def _send_segment(duration_ms: int):
+        if pwm_override_active is not None and power_override_active is not None:
+            return send_robot_command_pwm(
+                robot,
+                world,
+                EXPERIMENT_STEP,
+                str(cmd),
+                float(power_override_active),
+                int(pwm_override_active),
+                int(duration_ms),
+                speed_score=(int(turn_speed_score) if turn_speed_score is not None else None),
+                auto_mode=False,
+                half_first_turn_pulse=False,
+                ease_in_out_enabled=False,
+                respect_requested_duration=True,
+            )
         send_kwargs = {
             "speed": 0.0,
             "duration_override_ms": int(duration_ms),
@@ -951,6 +969,34 @@ def _run_turn_stage(
                     if isinstance(verdict, dict) and bool(verdict.get("stop")):
                         stop_reason = str(verdict.get("reason") or "condition_met")
                         break
+
+                # On first visibility reacquire during right-turn stage, reduce
+                # commanded drive immediately by 1 PWM and 0.01 power.
+                if str(stage) == "right_turn_to_x_zero" and not bool(state.get("visibility_speed_reduced")):
+                    if bool(state.get("visibility_reacquired")):
+                        latest_send = send_results[-1] if send_results else None
+                        if isinstance(latest_send, dict):
+                            try:
+                                base_pwm = int(round(float(latest_send.get("pwm") or 0)))
+                            except (TypeError, ValueError):
+                                base_pwm = 0
+                            try:
+                                base_power = float(latest_send.get("power") or 0.0)
+                            except (TypeError, ValueError):
+                                base_power = 0.0
+                            if base_pwm > 0:
+                                pwm_override_active = int(max(1, base_pwm - 1))
+                                power_override_active = float(max(0.0, base_power - 0.01))
+                                state["visibility_speed_reduced"] = True
+                                state["visibility_reduced_from"] = {
+                                    "pwm": int(base_pwm),
+                                    "power": float(base_power),
+                                }
+                                state["visibility_reduced_to"] = {
+                                    "pwm": int(pwm_override_active),
+                                    "power": float(power_override_active),
+                                }
+                        state["visibility_reacquired"] = False
                 next_sample_time += float(sample_period_s)
             if now >= float(stage_deadline):
                 break
@@ -1022,14 +1068,20 @@ def _right_turn_to_zero_evaluator(*, zero_band_mm: float):
         x_axis_mm = _coerce_float((sample or {}).get("offset_x"), None)
         if not visible or x_axis_mm is None:
             if bool(state.get("ever_visible")):
-                return {"stop": True, "reason": "visibility_lost_after_reacquire"}
+                invisible_streak = int(state.get("invisible_streak_after_reacquire") or 0) + 1
+                state["invisible_streak_after_reacquire"] = int(invisible_streak)
+                if int(invisible_streak) >= 2:
+                    return {"stop": True, "reason": "visibility_lost_two_consecutive_frames"}
             return None
+
+        state["invisible_streak_after_reacquire"] = 0
 
         abs_x = abs(float(x_axis_mm))
         if state.get("first_visible_pose") is None:
             state["first_visible_pose"] = _sample_pose_snapshot(sample)
             state["first_visible_sample_index"] = int((sample or {}).get("sample_index") or 0)
             state["first_visible_x_mm"] = _round_triplet(x_axis_mm)
+            state["visibility_reacquired"] = True
         best_abs_x = _coerce_float(state.get("best_visible_abs_x_mm"), None)
         if best_abs_x is None or float(abs_x) < float(best_abs_x):
             state["best_visible_abs_x_mm"] = float(abs_x)
@@ -1136,7 +1188,7 @@ def _summarize_single_goal_trials(trials: list[dict]) -> tuple[dict, dict]:
 def _build_experiment_vision(*, mode=None, yolo_model_path=None):
     mode_used = normalize_vision_mode(mode, fallback=active_vision_mode())
     if mode_used == VISION_MODE_CYAN:
-        vision = BrickDetector(debug=True, model_path=yolo_model_path)
+        vision = BrickDetector(debug=False, model_path=yolo_model_path)
         set_runtime_tuning = getattr(vision, "set_runtime_tuning", None)
         if callable(set_runtime_tuning):
             set_runtime_tuning(**dict(_CROWN_PROFILE_RUNTIME))
@@ -1148,7 +1200,7 @@ def _build_experiment_vision(*, mode=None, yolo_model_path=None):
             vision._hsv_lower = list(_CROWN_PROFILE_RUNTIME["hsv_lower"])
             vision._hsv_upper = list(_CROWN_PROFILE_RUNTIME["hsv_upper"])
         return vision, mode_used
-    return ArucoBrickVision(debug=True, debug_rejected_candidates=True), VISION_MODE_ARUCO
+    return ArucoBrickVision(debug=False, debug_rejected_candidates=False), VISION_MODE_ARUCO
 
 
 def _close_vision(vision) -> None:

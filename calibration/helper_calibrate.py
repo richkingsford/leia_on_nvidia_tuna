@@ -39,6 +39,7 @@ _SHARED_STREAM_RUNTIME_LOCK = threading.Lock()
 _SHARED_STREAM_RUNTIME = {
     "stream_state": None,
     "stream_url": None,
+    "context": None,
 }
 
 
@@ -352,11 +353,13 @@ def set_shared_stream_runtime(
     *,
     stream_state: dict | None = None,
     stream_url: str | None = None,
+    context: dict | None = None,
 ) -> None:
     url_text = str(stream_url).strip() if stream_url is not None else ""
     with _SHARED_STREAM_RUNTIME_LOCK:
         _SHARED_STREAM_RUNTIME["stream_state"] = stream_state if isinstance(stream_state, dict) else None
         _SHARED_STREAM_RUNTIME["stream_url"] = url_text or None
+        _SHARED_STREAM_RUNTIME["context"] = dict(context) if isinstance(context, dict) else None
 
 
 def get_shared_stream_runtime() -> tuple[dict | None, str | None]:
@@ -369,18 +372,26 @@ def get_shared_stream_runtime() -> tuple[dict | None, str | None]:
     )
 
 
+def get_shared_calibration_context() -> dict | None:
+    with _SHARED_STREAM_RUNTIME_LOCK:
+        context = _SHARED_STREAM_RUNTIME.get("context")
+    return dict(context) if isinstance(context, dict) else None
+
+
 @contextmanager
 def use_shared_stream_runtime(
     *,
     stream_state: dict | None = None,
     stream_url: str | None = None,
+    context: dict | None = None,
 ):
     previous_state, previous_url = get_shared_stream_runtime()
-    set_shared_stream_runtime(stream_state=stream_state, stream_url=stream_url)
+    previous_context = get_shared_calibration_context()
+    set_shared_stream_runtime(stream_state=stream_state, stream_url=stream_url, context=context)
     try:
         yield
     finally:
-        set_shared_stream_runtime(stream_state=previous_state, stream_url=previous_url)
+        set_shared_stream_runtime(stream_state=previous_state, stream_url=previous_url, context=previous_context)
 
 
 def prepare_shared_stream_state(

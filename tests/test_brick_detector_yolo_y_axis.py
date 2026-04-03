@@ -31,6 +31,14 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         det.last_partial_labels = []
         det.last_primary_partial_kind = None
         det.last_primary_partial_label = None
+        det.log = type(
+            "_LogStub",
+            (),
+            {
+                "info": staticmethod(lambda *_args, **_kwargs: None),
+                "error": staticmethod(lambda *_args, **_kwargs: None),
+            },
+        )()
         det.current_frame = None
         return det
 
@@ -57,10 +65,35 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         self.assertAlmostEqual(right, 10.0, places=6)
         self.assertAlmostEqual(left, -10.0, places=6)
 
+    def test_estimate_distance_from_box_prefers_width_signal(self):
+        det = self._detector_stub()
+        det.focal_px = 580.0
+
+        width_only = BrickDetector._estimate_distance_from_width(det, 290.0)
+        height_only = BrickDetector._estimate_distance(det, 120.0)
+        blended = BrickDetector._estimate_distance_from_box(det, 290.0, 120.0)
+
+        self.assertAlmostEqual(width_only, 106.0, places=6)
+        self.assertGreater(height_only, width_only)
+        self.assertGreater(blended, width_only)
+        self.assertLess(blended, height_only)
+        self.assertLess(abs(blended - width_only), abs(blended - height_only))
+
+    def test_calibrate_focal_blends_width_and_height(self):
+        det = self._detector_stub()
+        det._detect = lambda _frame: [(100, 120, 390, 320, 0.9)]
+
+        focal = BrickDetector.calibrate_focal(det, 100.0, frame=np.zeros((480, 640, 3), dtype=np.uint8))
+
+        width_focal = (100.0 * 290.0) / 53.0
+        height_focal = (100.0 * 200.0) / 35.4
+        expected = (0.8 * width_focal) + (0.2 * height_focal)
+        self.assertAlmostEqual(focal, expected, places=6)
+
     def test_process_bricks_fallback_returns_nonzero_cam_height(self):
         det = self._detector_stub()
         det._estimate_angle = lambda *_args, **_kwargs: 0.0
-        det._estimate_distance = lambda _bbox_h: 200.0
+        det._estimate_distance_from_box = lambda _bbox_w, _bbox_h, _partial_kind=None: 200.0
 
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
         bricks = [(300, 280, 340, 320, 0.95)]
@@ -75,7 +108,7 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         det = self._detector_stub()
         det.focal_px = 580.0
         det._estimate_angle = lambda *_args, **_kwargs: 0.0
-        det._estimate_distance = lambda _bbox_h: 100.0
+        det._estimate_distance_from_box = lambda _bbox_w, _bbox_h, _partial_kind=None: 100.0
 
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
         bricks = [(358, 180, 398, 220, 0.95)]
@@ -88,7 +121,7 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
     def test_process_bricks_hsv_path_uses_primary_center_y(self):
         det = self._detector_stub()
         det._hsv_enabled = True
-        det._estimate_distance = lambda _bbox_h: 200.0
+        det._estimate_distance_from_box = lambda _bbox_w, _bbox_h, _partial_kind=None: 200.0
         det._refine_angle_for_primary = lambda *_args, **_kwargs: 0.0
         det._select_center_brick = lambda hsv_bricks, _w, _h: hsv_bricks[0]
         det._stack_flags_from_individuals = lambda *_args, **_kwargs: (False, False)
@@ -115,7 +148,7 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         det = self._detector_stub()
         det._hsv_enabled = True
         det.focal_px = 580.0
-        det._estimate_distance = lambda _bbox_h: 100.0
+        det._estimate_distance_from_box = lambda _bbox_w, _bbox_h, _partial_kind=None: 100.0
         det._refine_angle_for_primary = lambda *_args, **_kwargs: 0.0
         det._select_center_brick = lambda hsv_bricks, _w, _h: hsv_bricks[0]
         det._stack_flags_from_individuals = lambda *_args, **_kwargs: (False, False)
@@ -137,10 +170,77 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         self.assertTrue(result[0])
         self.assertAlmostEqual(result[3], 10.0, places=6)
 
+    def test_process_bricks_hsv_closeup_fallback_uses_full_frame_when_yolo_has_no_boxes(self):
+        det = self._detector_stub()
+        det._hsv_enabled = True
+        det._estimate_distance_from_box = lambda _bbox_w, _bbox_h, _partial_kind=None: 100.0
+        det._refine_angle_for_primary = lambda *_args, **_kwargs: 0.0
+        det._select_center_brick = lambda hsv_bricks, _w, _h: hsv_bricks[0]
+        det._stack_flags_from_individuals = lambda *_args, **_kwargs: (False, False)
+
+        primary = {
+            "center_x": 320,
+            "center_y": 240,
+            "bbox": (20, 10, 600, 450),
+            "contour": np.array([[[20, 10]], [[620, 10]], [[620, 460]], [[20, 460]]], dtype=np.int32),
+            "rect": ((320.0, 235.0), (600.0, 450.0), 0.0),
+        }
+        segment_calls = []
+
+        def _segment(frame, x1, y1, x2, y2):
+            segment_calls.append((x1, y1, x2, y2))
+            return [primary]
+
+        det._segment_bricks_hsv = _segment
+
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+        result = BrickDetector._process_bricks(det, frame, [])
+
+        self.assertTrue(result[0])
+        self.assertEqual(segment_calls, [(0, 0, 640, 480)])
+        self.assertEqual(det.last_status, "target locked (HSV)")
+        self.assertAlmostEqual(result[4], 100.0, places=6)
+
+    def test_process_bricks_hsv_closeup_fallback_uses_full_frame_when_large_yolo_box_fails(self):
+        det = self._detector_stub()
+        det._hsv_enabled = True
+        det._estimate_distance_from_box = lambda _bbox_w, _bbox_h, _partial_kind=None: 100.0
+        det._refine_angle_for_primary = lambda *_args, **_kwargs: 0.0
+        det._select_center_brick = lambda hsv_bricks, _w, _h: hsv_bricks[0]
+        det._stack_flags_from_individuals = lambda *_args, **_kwargs: (False, False)
+
+        primary = {
+            "center_x": 320,
+            "center_y": 240,
+            "bbox": (20, 10, 600, 450),
+            "contour": np.array([[[20, 10]], [[620, 10]], [[620, 460]], [[20, 460]]], dtype=np.int32),
+            "rect": ((320.0, 235.0), (600.0, 450.0), 0.0),
+        }
+        segment_calls = []
+
+        def _segment(frame, x1, y1, x2, y2):
+            segment_calls.append((x1, y1, x2, y2))
+            if (x1, y1, x2, y2) == (0, 0, 640, 480):
+                return [primary]
+            return []
+
+        det._segment_bricks_hsv = _segment
+
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        bricks = [(8, 6, 632, 472, 0.87)]
+
+        result = BrickDetector._process_bricks(det, frame, bricks)
+
+        self.assertTrue(result[0])
+        self.assertEqual(segment_calls, [(8, 6, 632, 472), (0, 0, 640, 480)])
+        self.assertEqual(det.last_status, "target locked (HSV)")
+        self.assertAlmostEqual(result[4], 87.0, places=6)
+
     def test_process_bricks_hsv_path_tracks_partial_labels(self):
         det = self._detector_stub()
         det._hsv_enabled = True
-        det._estimate_distance = lambda _bbox_h: 200.0
+        det._estimate_distance_from_box = lambda _bbox_w, _bbox_h, _partial_kind=None: 200.0
         det._refine_angle_for_primary = lambda *_args, **_kwargs: 0.0
         det._select_center_brick = lambda hsv_bricks, _w, _h: hsv_bricks[0]
         det._stack_flags_from_individuals = lambda *_args, **_kwargs: (False, False)
@@ -251,8 +351,10 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
     def test_hsv_partial_uses_full_equivalent_height_for_distance(self):
         det = self._detector_stub()
         det._hsv_enabled = True
-        called_heights = []
-        det._estimate_distance = lambda h: called_heights.append(float(h)) or 200.0
+        called_dims = []
+        det._estimate_distance_from_box = (
+            lambda w, h, _partial_kind=None: called_dims.append((float(w), float(h), _partial_kind)) or 200.0
+        )
         det._refine_angle_for_primary = lambda *_args, **_kwargs: 0.0
         det._select_center_brick = lambda hsv_bricks, _w, _h: hsv_bricks[0]
         det._stack_flags_from_individuals = lambda *_args, **_kwargs: (False, False)
@@ -275,7 +377,7 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         result = BrickDetector._process_bricks(det, frame, bricks)
 
         self.assertTrue(result[0])
-        self.assertEqual(called_heights, [80.0])
+        self.assertEqual(called_dims, [(40.0, 40.0, "top_half")])
 
     def test_fallback_partial_uses_full_equivalent_height_for_distance(self):
         det = self._detector_stub()
@@ -286,8 +388,10 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         )
         det._classify_contour_shape = lambda _cnt: ("bottom_half", 0.1)
         det._estimate_angle = lambda *_args, **_kwargs: 0.0
-        called_heights = []
-        det._estimate_distance = lambda h: called_heights.append(float(h)) or 200.0
+        called_dims = []
+        det._estimate_distance_from_box = (
+            lambda w, h, _partial_kind=None: called_dims.append((float(w), float(h), _partial_kind)) or 200.0
+        )
 
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
         bricks = [(300, 280, 340, 320, 0.95)]
@@ -295,7 +399,7 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         result = BrickDetector._process_bricks(det, frame, bricks)
 
         self.assertTrue(result[0])
-        self.assertEqual(called_heights, [80.0])
+        self.assertEqual(called_dims, [(40.0, 40.0, "bottom_half")])
 
 
 if __name__ == "__main__":

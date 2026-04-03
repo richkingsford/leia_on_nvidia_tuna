@@ -2767,6 +2767,7 @@ def send_robot_command_pwm(
                 seg_cmd_sent = cmd_sent
                 seg_pwm_actual = int(seg_pwm)
                 seg_duration_used_ms = int(seg_duration_model_ms)
+                seg_wire_text = None
                 if isinstance(seg_send_result, dict):
                     seg_cmd_sent = seg_send_result.get("cmd_sent") or seg_cmd_sent
                     try:
@@ -2777,6 +2778,13 @@ def send_robot_command_pwm(
                         seg_duration_used_ms = int(round(float(seg_send_result.get("duration_ms"))))
                     except (TypeError, ValueError):
                         pass
+                    raw_wire = seg_send_result.get("wire_text")
+                    if raw_wire:
+                        seg_wire_text = str(raw_wire)
+                if not seg_wire_text:
+                    seg_wire_text = getattr(robot, "last_command", None)
+                if seg_wire_text:
+                    seg_wire_text = str(seg_wire_text)
                 seg_power_from_pwm = telemetry_robot_module.pwm_to_power(seg_pwm_actual)
                 if seg_power_from_pwm is not None:
                     seg_power = max(0.0, min(1.0, float(seg_power_from_pwm)))
@@ -2787,11 +2795,14 @@ def send_robot_command_pwm(
                 peak_pwm = max(int(peak_pwm), int(seg_pwm_actual))
                 peak_power = max(float(peak_power), float(seg_power))
                 final_cmd_sent = seg_cmd_sent or final_cmd_sent
-                wire_parts.append(f"{seg_cmd_sent} {int(seg_pwm_actual)} {int(seg_duration_used_ms)}")
+                wire_parts.append(
+                    seg_wire_text or f"{seg_cmd_sent} {int(seg_pwm_actual)} {int(seg_duration_used_ms)}"
+                )
                 sent_segments.append(
                     {
                         "cmd_model": seg_cmd_model,
                         "cmd_sent": seg_cmd_sent,
+                        "wire_text": seg_wire_text,
                         "power": float(seg_power),
                         "pwm": int(seg_pwm_actual),
                         "duration_model_ms": int(seg_duration_model_ms),
@@ -2852,6 +2863,7 @@ def send_robot_command_pwm(
                 _repeat_act_guard_after_send(world, robot, cmd)
                 return {
                     "cmd_sent": cmd_sent,
+                    "wire_text": " | ".join([str(p) for p in wire_parts if p]),
                     "power": power_val,
                     "pwm": pwm_val,
                     "duration_model_ms": int(duration_model_ms),
@@ -2905,6 +2917,8 @@ def send_robot_command_pwm(
 
     if world is not None:
         wire_text = getattr(robot, "last_command", None)
+        if not wire_text and isinstance(send_result, dict):
+            wire_text = send_result.get("wire_text")
         if not wire_text:
             wire_text = f"{cmd_sent} {int(pwm_val)} {int(duration_used_ms)}"
         world._last_action_wire = str(wire_text)
@@ -2936,6 +2950,7 @@ def send_robot_command_pwm(
         duration_model_ms = duration_used_ms
     return {
         "cmd_sent": cmd_sent,
+        "wire_text": (send_result.get("wire_text") if isinstance(send_result, dict) else None),
         "power": power_val,
         "pwm": pwm_val,
         "duration_model_ms": int(duration_model_ms),

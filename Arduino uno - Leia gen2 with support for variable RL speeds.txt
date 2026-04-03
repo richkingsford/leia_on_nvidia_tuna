@@ -1,0 +1,279 @@
+// Leia tank bot - Python-friendly non-blocking serial listener
+// Baud: 115200
+//
+// Pin map:
+//   Right tread: 9,10
+//   Left tread:  6,5
+//   Mast:        11,3
+//
+// Protocol:
+//   Send ONE newline-terminated ASCII line from Python.
+//   Examples:
+//     l.f.100.2000,r.f.100.2000,m.u.100.2000
+//     l.b.70.1200,r.b.100.1200
+//     l.f.20,r.f.20
+//     m.s
+//     s
+
+#include <Arduino.h>
+#include <ctype.h>
+#include <string.h>
+#include <stdlib.h>
+
+struct MotorState {
+  uint8_t pinA;
+  uint8_t pinB;
+  bool running;
+  bool timed;
+  unsigned long stopAt;
+};
+
+MotorState leftTread  = {6, 5, false, false, 0};
+MotorState rightTread = {9, 10, false, false, 0};
+MotorState mast       = {11, 3, false, false, 0};
+
+constexpr size_t INPUT_BUF_SIZE = 120;
+
+char inputBuf[INPUT_BUF_SIZE];
+size_t inputLen = 0;
+
+int percentToPwm(int percent) {
+  percent = constrain(percent, 0, 100);
+  return map(percent, 0, 100, 0, 255);
+}
+
+void stopMotor(MotorState& m) {
+  analogWrite(m.pinA, 0);
+  analogWrite(m.pinB, 0);
+  m.running = false;
+  m.timed = false;
+  m.stopAt = 0;
+}
+
+void stopAll() {
+  stopMotor(leftTread);
+  stopMotor(rightTread);
+  stopMotor(mast);
+}
+
+void startMotor(MotorState& m, char dir, int percent, unsigned long durationMs, bool timed) {
+  int pwm = percentToPwm(percent);
+
+  if (pwm <= 0) {
+    stopMotor(m);
+    return;
+  }
+
+  if (dir == 'f' || dir == 'u') {
+    analogWrite(m.pinA, pwm);
+    analogWrite(m.pinB, 0);
+  } else if (dir == 'b' || dir == 'd') {
+    analogWrite(m.pinA, 0);
+    analogWrite(m.pinB, pwm);
+  } else {
+    stopMotor(m);
+    return;
+  }
+
+  m.running = true;
+  m.timed = timed;
+  m.stopAt = timed ? millis() + durationMs : 0;
+}
+
+void updateTimeout(MotorState& m) {
+  if (m.running && m.timed) {
+    if ((long)(millis() - m.stopAt) >= 0) {
+      stopMotor(m);
+    }
+  }
+}
+
+char* trimInPlace(char* s) {
+  while (*s && isspace((unsigned char)*s)) s++;
+
+  if (*s == '\0') return s;
+
+  char* end = s + strlen(s) - 1;
+  while (end > s && isspace((unsigned char)*end)) {
+    *end = '\0';
+    end--;
+  }
+  return s;
+}
+
+bool isUnsignedNumber(const char* s) {
+  if (!s || *s == '\0') return false;
+  while (*s) {
+    if (!isdigit((unsigned char)*s)) return false;
+    s++;
+  }
+  return true;
+}
+
+bool parsePercent(const char* s, int& out) {
+  if (!isUnsignedNumber(s)) return false;
+  out = atoi(s);
+  return out >= 0 && out <= 100;
+}
+
+bool parseDuration(const char* s, unsigned long& out) {
+  if (!isUnsignedNumber(s)) return false;
+  out = (unsigned long)atol(s);
+  return true;
+}
+
+MotorState* getTarget(char t) {
+  switch (t) {
+    case 'l': return &leftTread;
+    case 'r': return &rightTread;
+    case 'm': return &mast;
+    default:  return nullptr;
+  }
+}
+
+bool isValidDirectionForTarget(char target, char dir) {
+  if (target == 'l' || target == 'r') {
+    return dir == 'f' || dir == 'b';
+  }
+  if (target == 'm') {
+    return dir == 'u' || dir == 'd';
+  }
+  return false;
+}
+
+void processToken(char* token) {
+  char* parts[4];
+  int count = 0;
+
+  char* savePtr = nullptr;
+  char* part = strtok_r(token, ".", &savePtr);
+  while (part && count < 4) {
+    parts[count++] = trimInPlace(part);
+    part = strtok_r(nullptr, ".", &savePtr);
+  }
+
+  if (count == 1 && strcmp(parts[0], "s") == 0) {
+    stopAll();
+    Serial.println(F("[ok] stop all"));
+    return;
+  }
+
+  if (count == 2 && strlen(parts[0]) == 1 && strlen(parts[1]) == 1 && parts[1][0] == 's') {
+    char target = tolower((unsigned char)parts[0][0]);
+    MotorState* m = getTarget(target);
+    if (!m) {
+      Serial.println(F("[err] bad target"));
+      return;
+    }
+    stopMotor(*m);
+    Serial.println(F("[ok] stop target"));
+    return;
+  }
+
+  if (count == 3 && strlen(parts[0]) == 1 && strlen(parts[1]) == 1) {
+    char target = tolower((unsigned char)parts[0][0]);
+    char dir = tolower((unsigned char)parts[1][0]);
+    int power = 0;
+
+    if (!parsePercent(parts[2], power)) {
+      Serial.println(F("[err] bad power"));
+      return;
+    }
+
+    MotorState* m = getTarget(target);
+    if (!m || !isValidDirectionForTarget(target, dir)) {
+      Serial.println(F("[err] bad target/dir"));
+      return;
+    }
+
+    startMotor(*m, dir, power, 0, false);
+    Serial.println(F("[ok] continuous"));
+    return;
+  }
+
+  if (count == 4 && strlen(parts[0]) == 1 && strlen(parts[1]) == 1) {
+    char target = tolower((unsigned char)parts[0][0]);
+    char dir = tolower((unsigned char)parts[1][0]);
+    int power = 0;
+    unsigned long durationMs = 0;
+
+    if (!parsePercent(parts[2], power)) {
+      Serial.println(F("[err] bad power"));
+      return;
+    }
+    if (!parseDuration(parts[3], durationMs)) {
+      Serial.println(F("[err] bad duration"));
+      return;
+    }
+
+    MotorState* m = getTarget(target);
+    if (!m || !isValidDirectionForTarget(target, dir)) {
+      Serial.println(F("[err] bad target/dir"));
+      return;
+    }
+
+    startMotor(*m, dir, power, durationMs, true);
+    Serial.println(F("[ok] timed"));
+    return;
+  }
+
+  Serial.println(F("[err] bad command"));
+}
+
+void processLine(char* line) {
+  char* savePtr = nullptr;
+  char* token = strtok_r(line, ",", &savePtr);
+
+  while (token) {
+    char* trimmed = trimInPlace(token);
+    if (*trimmed) {
+      processToken(trimmed);
+    }
+    token = strtok_r(nullptr, ",", &savePtr);
+  }
+}
+
+void readSerialLines() {
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+
+    if (c == '\r') continue;
+
+    if (c == '\n') {
+      inputBuf[inputLen] = '\0';
+      if (inputLen > 0) {
+        processLine(inputBuf);
+      }
+      inputLen = 0;
+      continue;
+    }
+
+    if (inputLen < INPUT_BUF_SIZE - 1) {
+      inputBuf[inputLen++] = c;
+    } else {
+      inputLen = 0;
+      Serial.println(F("[err] input too long"));
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(leftTread.pinA, OUTPUT);
+  pinMode(leftTread.pinB, OUTPUT);
+  pinMode(rightTread.pinA, OUTPUT);
+  pinMode(rightTread.pinB, OUTPUT);
+  pinMode(mast.pinA, OUTPUT);
+  pinMode(mast.pinB, OUTPUT);
+
+  stopAll();
+  Serial.println(F("Leia ready"));
+}
+
+void loop() {
+  readSerialLines();
+  updateTimeout(leftTread);
+  updateTimeout(rightTread);
+  updateTimeout(mast);
+}

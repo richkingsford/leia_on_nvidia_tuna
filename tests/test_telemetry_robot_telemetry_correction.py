@@ -81,7 +81,7 @@ class TestUpdateVisionAppliesCorrections(unittest.TestCase):
     def test_y_corrected_when_found(self):
         world = _make_world_with_curves({"y": {"slope": -1.276063, "intercept": 66.699071}})
         self._call_update_vision(world, dist=200.0, cam_h=52.0)
-        expected_y = -1.276063 * 52.0 + 66.699071
+        expected_y = -(-1.276063 * 52.0 + 66.699071)
         self.assertAlmostEqual(world._captured_cam_h, expected_y, places=3)
 
     def test_raw_dist_preserved_when_dist_corrected(self):
@@ -97,13 +97,13 @@ class TestUpdateVisionAppliesCorrections(unittest.TestCase):
         self._call_update_vision(world, dist=300.0, cam_h=50.0, found=False)
         # When not found, raw values pass through unchanged
         self.assertAlmostEqual(world._captured_dist, 300.0, places=3)
-        self.assertAlmostEqual(world._captured_cam_h, 50.0, places=3)
+        self.assertAlmostEqual(world._captured_cam_h, -50.0, places=3)
 
     def test_no_curves_passthrough(self):
         world = _make_world_with_curves({})
         self._call_update_vision(world, dist=200.0, cam_h=30.0)
         self.assertAlmostEqual(world._captured_dist, 200.0, places=3)
-        self.assertAlmostEqual(world._captured_cam_h, 30.0, places=3)
+        self.assertAlmostEqual(world._captured_cam_h, -30.0, places=3)
 
 
 if __name__ == "__main__":

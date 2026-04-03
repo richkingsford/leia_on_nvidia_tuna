@@ -1,23 +1,23 @@
 {
-  "updated_at": 1775103695.8357987,
+  "updated_at": 1775258937.3952427,
   "robot": {
-    "x_mm": 0.19999962587422773,
-    "y_mm": -76.60018697850751,
+    "x_mm": -5.3554062260272355,
+    "y_mm": -11.60139542165436,
     "z_mm": 0.0,
     "theta_deg": -90.0,
     "lift_mm": 0.0
   },
   "raw_robot": {
-    "x_mm": 0.0,
+    "x_mm": -14.383262032085561,
     "y_mm": 0.0,
     "z_mm": 0.0,
     "theta_deg": 0.0,
     "lift_mm": 0.0
   },
   "leia": {
-    "x_mm": 0.19999962587422773,
-    "y_mm": -76.60018697850751,
-    "z_mm": 0.0,
+    "x_mm": -5.3554062260272355,
+    "y_mm": -11.60139542165436,
+    "z_mm": 0.5805425073489929,
     "theta_deg": -90.0,
     "label": "Leia"
   },
@@ -29,14 +29,14 @@
       "y_mm": -180.0,
       "z_mm": 0.0,
       "theta_deg": 0.0,
-      "count": null,
-      "height_mm": null,
+      "count": 5,
+      "height_mm": 220.0,
       "confidence": null,
       "visible": true,
       "fixed": true,
       "render_footprint_mm": 54.0,
       "source": "default_layout_seed",
-      "last_seen_ts": 1775103695.8357677
+      "last_seen_ts": 1775258937.3951702
     },
     "wall": {
       "name": "wall",
@@ -47,24 +47,25 @@
       "theta_deg": 180.0,
       "length_mm": 320.0,
       "render_footprint_mm": 54.0,
-      "height_mm": null,
+      "height_mm": 44.0,
       "confidence": null,
       "visible": true,
       "valid": true,
       "fixed": true,
-      "source": "FIND_BRICK",
-      "last_seen_ts": 1775103695.835638,
-      "observed_world_x_mm": 103.40000644453538,
-      "observed_world_y_mm": 0.0,
+      "source": "ALIGN_BRICK",
+      "last_seen_ts": 1775258935.2002826,
+      "count": 1,
+      "observed_world_x_mm": 117.17342847551045,
+      "observed_world_y_mm": 1.748857297705067,
       "observed_world_theta_deg": 180.0
     }
   },
   "active_target": {
-    "step_name": "FIND_BRICK",
-    "step_number": 3,
+    "step_name": "ALIGN_BRICK",
+    "step_number": 7,
     "object_name": "brick_supply",
     "label": "Brick Supply",
-    "history_step_seq": 1
+    "history_step_seq": 2
   },
   "held_brick": {
     "held": false,
@@ -75,21 +76,11 @@
   "wall_reverse_plan": {
     "ok": true,
     "reason": "planned",
-    "wall_behind_mm": 76.6001869785075,
+    "wall_behind_mm": 11.601395421654349,
     "target_wall_distance_mm": 45.0,
-    "reverse_gap_mm": 31.600186978507494,
-    "reverse_acts": 2,
+    "reverse_gap_mm": 0.0,
+    "reverse_acts": 0,
     "actions": [
-      {
-        "cmd": "b",
-        "distance_mm": 30.0,
-        "reason": "close_wall_gap"
-      },
-      {
-        "cmd": "b",
-        "distance_mm": 30.0,
-        "reason": "close_wall_gap"
-      },
       {
         "cmd": "l",
         "reason": "begin_turn_after_reverse"
@@ -98,10 +89,10 @@
   },
   "last_visible_brick": {
     "visible": true,
-    "dist_mm": 103.40000644453538,
-    "x_axis_mm": -0.2,
-    "y_axis_mm": 0.18945708063170125,
-    "confidence": 80.0,
-    "angle_deg": 0.0
+    "dist_mm": 168.48373927409074,
+    "x_axis_mm": 5.358113676488529,
+    "y_axis_mm": 2.4122144248557893,
+    "confidence": 69.19445991516113,
+    "angle_deg": 0.17806999665432677
   }
 }

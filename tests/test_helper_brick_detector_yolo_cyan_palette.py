@@ -12,12 +12,11 @@ class TestHelperBrickDetectorYoloCyanPalette(unittest.TestCase):
         self.assertEqual(
             detector.CYAN_SHADE_HEXES,
             (
-                "018F97",
-                "005A5F",
-                "007179",
-                "049397",
-                "00898F",
-                "017E87",
+                "03929C",
+                "068A9C",
+                "028991",
+                "0F949B",
+                "018C96",
             ),
         )
 

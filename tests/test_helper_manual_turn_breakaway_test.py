@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -31,7 +32,7 @@ class TestHelperManualTurnBreakawayTest(unittest.TestCase):
 
         self.assertTrue(bool(result.get("ok")))
         self.assertEqual(captured["hotkeys"], ("q", "e"))
-        self.assertEqual(captured["ping_pong_max_trials"], 7)
+        self.assertEqual(captured["trial_budget"], 7)
         self.assertEqual(captured["duration_ms"], 130)
         self.assertAlmostEqual(captured["movement_threshold_mm"], 3.0)
         self.assertTrue(any("raw turn pwm floor search" in str(line).lower() for line in messages))
@@ -43,8 +44,8 @@ class TestHelperManualTurnBreakawayTest(unittest.TestCase):
             duration_ms=130,
         )
         self.assertEqual(candidate["curve_score"], 1)
-        self.assertEqual(candidate["curve_pwm"], 102)
-        self.assertAlmostEqual(candidate["curve_power"], 0.3013698630136986)
+        self.assertEqual(candidate["curve_pwm"], 133)
+        self.assertAlmostEqual(candidate["curve_power"], 0.4429223744292237)
         self.assertEqual(candidate["curve_duration_ms"], 130)
         self.assertEqual(candidate["duration_ms"], 130)
 
@@ -137,6 +138,80 @@ class TestHelperManualTurnBreakawayTest(unittest.TestCase):
             helper_manual_turn_breakaway_test.TURN_ABORT_CONSECUTIVE_DEAD_CANDIDATES,
         )
         self.assertIsNone(no_abort)
+
+    def test_run_turn_breakaway_test_finds_ceiling_quickly_then_refines_downward(self):
+        evaluated = []
+
+        def _fake_collect_pose_samples(*_args, **_kwargs):
+            return [{"dist_mm": 180.0, "x_axis_mm": 0.0}]
+
+        def _fake_evaluate_turn_candidate(**kwargs):
+            candidate = dict(kwargs.get("candidate") or {})
+            pwm = int(candidate.get("pwm") or 0)
+            trials = int(kwargs.get("consistency_trials") or 0)
+            evaluated.append((str(candidate.get("phase") or ""), pwm, trials))
+            moved = int(pwm) >= 148
+            return {
+                "candidate": candidate,
+                "rows": [],
+                "checkpoints": [],
+                "ok": True,
+                "valid_trial_count": int(trials),
+                "movement_count": int(trials if moved else 0),
+                "median_abs_delta_mm": 4.0 if moved else 0.0,
+                "mean_abs_delta_mm": 4.0 if moved else 0.0,
+                "median_raw_delta_mm": 4.0 if moved else 0.0,
+                "moved": bool(moved),
+                "result_label": "movement" if moved else "no movement",
+                "drift_summary": {
+                    "checkpoint_count": 0,
+                    "timed_out_count": 0,
+                    "max_abs_dist_error_mm": 0.0,
+                    "max_abs_x_axis_error_mm": 0.0,
+                },
+            }
+
+        with patch.object(helper_manual_turn_breakaway_test, "_collect_pose_samples", _fake_collect_pose_samples):
+            with patch.object(helper_manual_turn_breakaway_test, "_evaluate_turn_candidate", _fake_evaluate_turn_candidate):
+                with patch.object(
+                    helper_manual_turn_breakaway_test,
+                    "_turn_curve_candidate_for_hotkey",
+                    return_value={
+                        "hotkey": "q",
+                        "cmd": "l",
+                        "display_label": "Q/LEFT",
+                        "metric_key": "x_axis_mm",
+                        "metric_label": "x_axis",
+                        "curve_score": 1,
+                        "curve_pwm": 100,
+                        "curve_power": 0.30,
+                        "curve_duration_ms": 130,
+                        "pwm": 100,
+                        "power": 0.30,
+                        "duration_ms": 130,
+                    },
+                ):
+                    result = helper_manual_turn_breakaway_test.run_turn_breakaway_test(
+                        robot=type("R", (), {"MAX_PWM": 255})(),
+                        vision=object(),
+                        world=object(),
+                        hotkeys=("q",),
+                        trial_budget=20,
+                        duration_ms=130,
+                        movement_threshold_mm=3.0,
+                        pause_between_pulses_ms=0,
+                        log_path=Path("/tmp/turn_breakaway_test.json"),
+                        log_fn=lambda *_args, **_kwargs: None,
+                    )
+
+        self.assertTrue(bool(result.get("ok")))
+        self.assertGreaterEqual(len(evaluated), 4)
+        self.assertEqual(evaluated[0], ("seed", 100, 1))
+        self.assertEqual(evaluated[1], ("coarse_faster", 124, 1))
+        self.assertEqual(evaluated[2], ("coarse_faster", 172, 1))
+        self.assertEqual(evaluated[3], ("refine_downward", 148, 2))
+        self.assertTrue(any(phase == "refine_downward" and trials == 2 for phase, _pwm, trials in evaluated))
+        self.assertLessEqual(sum(trials for _phase, _pwm, trials in evaluated), 20)
 
 
 if __name__ == "__main__":

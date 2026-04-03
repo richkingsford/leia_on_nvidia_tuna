@@ -1221,7 +1221,7 @@ class StreamServer:
     def _brick_shape_panel_html(self):
         fallback_html = (
             "<div class='shape-panel'>"
-            "<div class='shape-title'>Target Crown Brick Shape</div>"
+            "<div class='shape-title'>Target Brick Face Shape</div>"
             "<div class='shape-wrap'><div style='color:#bbb;font-size:11px;'>shape coords unavailable</div></div>"
             "</div>"
         )
@@ -1328,7 +1328,7 @@ class StreamServer:
 
         svg_html = (
             "<svg class='shape-svg' viewBox='0 0 260 140' width='250' height='134' xmlns='http://www.w3.org/2000/svg' "
-            "role='img' aria-label='Crown brick shape reference from world model coordinates'>"
+            "role='img' aria-label='Brick face shape reference from world model coordinates'>"
             "<rect x='1' y='1' width='258' height='138' rx='8' fill='#11181d' stroke='#2f4a54' stroke-width='1.2'/>"
             f"<polygon points='{polygon_points}' fill='#1f9db1' stroke='#c7f6ff' stroke-width='2.0'/>"
             f"{face_cutout_svg}"
@@ -1339,7 +1339,7 @@ class StreamServer:
 
         return (
             "<div class='shape-panel'>"
-            "<div class='shape-title'>Target Crown Brick Shape</div>"
+            "<div class='shape-title'>Target Brick Face Shape</div>"
             f"<div class='shape-wrap'>{svg_html}</div>"
             "</div>"
         )

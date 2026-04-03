@@ -7,7 +7,7 @@ import numpy as np
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-import calibrate_dist_x_y_telemetry
+import helper_calibrate_telemetry
 
 
 class _DummyWorld:
@@ -29,7 +29,7 @@ class TestCalibrateTelemetryStreaming(unittest.TestCase):
         vision = _DummyVision()
         world = _DummyWorld()
 
-        calibrate_dist_x_y_telemetry._refresh_stream_state(
+        helper_calibrate_telemetry._refresh_stream_state(
             stream_state=stream_state,
             vision=vision,
             world=world,
@@ -56,7 +56,7 @@ class TestCalibrateTelemetryStreaming(unittest.TestCase):
         vision = _DummyVision()
         world = _DummyWorld()
 
-        calibrate_dist_x_y_telemetry._refresh_stream_state(
+        helper_calibrate_telemetry._refresh_stream_state(
             stream_state=stream_state,
             vision=vision,
             world=world,

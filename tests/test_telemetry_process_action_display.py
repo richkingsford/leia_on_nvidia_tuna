@@ -23,6 +23,17 @@ class _DummyRobot:
         self.stop_calls += 1
 
 
+class _WireAwareDummyRobot(_DummyRobot):
+    def send_command_pwm(self, cmd, pwm, duration_ms=0):
+        self.sent.append((cmd, pwm, duration_ms))
+        return {
+            "cmd_sent": str(cmd),
+            "pwm": int(pwm),
+            "duration_ms": int(duration_ms),
+            "wire_text": f"raw:{str(cmd)}:{int(pwm)}:{int(duration_ms)}",
+        }
+
+
 class _DummyWorld:
     def __init__(self):
         self.brick = {
@@ -202,6 +213,24 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
         self.assertEqual(robot.sent[0][0], "f")
         self.assertEqual(meta.get("cmd_sent"), "f")
 
+    def test_send_robot_command_uses_returned_wire_text_for_single_send(self):
+        world = _DummyWorld()
+        robot = _WireAwareDummyRobot()
+
+        meta = telemetry_process.send_robot_command(
+            robot,
+            world,
+            step="MANUAL",
+            cmd="f",
+            speed=0.0,
+            speed_score=telemetry_robot.SPEED_SCORE_MIN,
+            auto_mode=False,
+        )
+
+        self.assertIsInstance(meta, dict)
+        self.assertEqual(getattr(world, "_last_action_wire", None), meta.get("wire_text"))
+        self.assertTrue(str(meta.get("wire_text") or "").startswith("raw:f:"))
+
     def test_send_robot_command_auto_mode_caps_score_to_25(self):
         world = _DummyWorld()
         robot = _DummyRobot()
@@ -272,6 +301,26 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
         self.assertIn("EASE(", str(getattr(world, "_last_action_sent_display", "")))
         detail = telemetry_process.auto_action_detail_text("f", 50, action_meta=meta)
         self.assertIn("EASE(", detail)
+
+    def test_ease_segments_preserve_returned_wire_text(self):
+        world = _DummyWorld()
+        robot = _WireAwareDummyRobot(supports_timed_command_queue=True)
+
+        meta = telemetry_process.send_robot_command(
+            robot,
+            world,
+            step="ALIGN_BRICK",
+            cmd="f",
+            speed=0.0,
+            speed_score=50,
+            auto_mode=True,
+        )
+
+        self.assertIsInstance(meta, dict)
+        self.assertIsInstance(meta.get("segments"), list)
+        self.assertTrue(meta.get("wire_text"))
+        self.assertTrue(all(str(seg.get("wire_text") or "").startswith("raw:f:") for seg in meta.get("segments") or []))
+        self.assertIn("raw:f:", str(getattr(world, "_last_action_wire", "")))
 
     def test_manual_drive_commands_use_ease_segments_without_queue_support(self):
         world = _DummyWorld()

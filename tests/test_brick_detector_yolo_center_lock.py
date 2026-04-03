@@ -36,6 +36,14 @@ class TestBrickDetectorYoloCenterLock(unittest.TestCase):
         det.last_partial_labels = []
         det.last_primary_partial_kind = None
         det.last_primary_partial_label = None
+        det.log = type(
+            "_LogStub",
+            (),
+            {
+                "info": staticmethod(lambda *_args, **_kwargs: None),
+                "error": staticmethod(lambda *_args, **_kwargs: None),
+            },
+        )()
         return det
 
     def test_select_center_brick_prefers_closest_xy_center(self):
@@ -73,7 +81,7 @@ class TestBrickDetectorYoloCenterLock(unittest.TestCase):
         det = self._detector_stub()
         det._hsv_enabled = False
         det._estimate_angle = lambda *_args, **_kwargs: 0.0
-        det._estimate_distance = lambda _bbox_h: 200.0
+        det._estimate_distance_from_box = lambda _bbox_w, _bbox_h, _partial_kind=None: 200.0
 
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
         # First box has higher confidence but is farther from center than second.

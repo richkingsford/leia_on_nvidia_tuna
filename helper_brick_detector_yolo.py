@@ -50,8 +50,8 @@ DEFAULT_FRAME_H = 480
 
 # OV2710 camera parameters (100-degree FOV, 1/2.7" sensor)
 # Focal length in pixels, calibrated at 640px frame width.
-# ArUco detector uses focal=frame_width; YOLO bbox height maps to
-# BRICK_HEIGHT_MM with ~10% bbox padding, giving ~0.9*frame_width.
+# Distance estimation now uses brick width as the primary apparent-size signal,
+# with height retained as a small stabilizing fallback.
 # Calibrated against ArUco gate targets (dist≈98-102mm at scoop position).
 FOCAL_PX_REF = 580.0
 FOCAL_REF_WIDTH = 640.0
@@ -73,12 +73,11 @@ YOLO_INPUT_SIZE = 640
 # HSV segmentation for individual cyan brick detection within YOLO boxes
 # ---------------------------------------------------------------------------
 CYAN_SHADE_HEXES = (
-    "018F97",
-    "005A5F",
-    "007179",
-    "049397",
-    "00898F",
-    "017E87",
+    "03929C",
+    "068A9C",
+    "028991",
+    "0F949B",
+    "018C96",
 )
 
 
@@ -152,6 +151,12 @@ BRICK_SHAPE_FILL_RATIO_MIN = 0.28
 BRICK_FACE_MATCH_MAX_FULL = 0.40
 BRICK_FACE_MATCH_MAX_PARTIAL = 0.55
 FALLBACK_SHAPE_MIN_AREA_RATIO = 0.06
+BRICK_FACE_GATE_MODE_DEFAULT = "full_face"
+BRICK_FACE_GATE_MODE_NEGATIVE_CUTOUTS = "negative_cutouts"
+NEGATIVE_CUTOUT_CYAN_FILL_MAX = 0.20
+NEGATIVE_CUTOUT_RING_CYAN_MIN = 0.52
+NEGATIVE_CUTOUT_RING_DILATE_PX = 4
+NEGATIVE_CUTOUT_MIN_AREA_PX = 18.0
 
 # Cyan-target experiment: stabilize selection around centerpoint.
 CENTER_LOCK_RADIUS_RATIO = 0.18
@@ -289,6 +294,11 @@ class BrickDetector:
         self._face_cutouts_model = []
         self._face_lines_model = []
         self._face_shape_templates = {}
+        self._face_shape_gate_mode = BRICK_FACE_GATE_MODE_DEFAULT
+        self._negative_cutout_cyan_fill_max = float(NEGATIVE_CUTOUT_CYAN_FILL_MAX)
+        self._negative_cutout_ring_cyan_min = float(NEGATIVE_CUTOUT_RING_CYAN_MIN)
+        self._negative_cutout_ring_dilate_px = int(NEGATIVE_CUTOUT_RING_DILATE_PX)
+        self._negative_cutout_min_area_px = float(NEGATIVE_CUTOUT_MIN_AREA_PX)
         self._load_face_shape_model()
         self._init_shape_match_templates()
 
@@ -308,6 +318,11 @@ class BrickDetector:
                            nms_threshold=None, focal_px=None,
                            hsv_lower=None, hsv_upper=None,
                            hsv_enabled=None, hsv_erode_iterations=None,
+                           shape_gate_mode=None,
+                           negative_cutout_cyan_fill_max=None,
+                           negative_cutout_ring_cyan_min=None,
+                           negative_cutout_ring_dilate_px=None,
+                           negative_cutout_min_area_px=None,
                            center_lock_enabled=None,
                            center_lock_radius_px=None,
                            center_switch_margin_px=None,
@@ -353,6 +368,41 @@ class BrickDetector:
                 self._hsv_erode_iterations = max(0, int(hsv_erode_iterations))
             except (TypeError, ValueError):
                 pass
+        if shape_gate_mode is not None:
+            mode_text = str(shape_gate_mode or "").strip().lower()
+            if mode_text in {
+                BRICK_FACE_GATE_MODE_DEFAULT,
+                BRICK_FACE_GATE_MODE_NEGATIVE_CUTOUTS,
+            }:
+                self._face_shape_gate_mode = mode_text
+        if negative_cutout_cyan_fill_max is not None:
+            try:
+                value = float(negative_cutout_cyan_fill_max)
+                self._negative_cutout_cyan_fill_max = max(0.0, min(1.0, value))
+            except (TypeError, ValueError):
+                pass
+        if negative_cutout_ring_cyan_min is not None:
+            try:
+                value = float(negative_cutout_ring_cyan_min)
+                self._negative_cutout_ring_cyan_min = max(0.0, min(1.0, value))
+            except (TypeError, ValueError):
+                pass
+        if negative_cutout_ring_dilate_px is not None:
+            try:
+                self._negative_cutout_ring_dilate_px = max(
+                    1,
+                    int(negative_cutout_ring_dilate_px),
+                )
+            except (TypeError, ValueError):
+                pass
+        if negative_cutout_min_area_px is not None:
+            try:
+                self._negative_cutout_min_area_px = max(
+                    1.0,
+                    float(negative_cutout_min_area_px),
+                )
+            except (TypeError, ValueError):
+                pass
         if center_lock_enabled is not None:
             self._center_lock_enabled = bool(center_lock_enabled)
         if center_lock_radius_px is not None:
@@ -388,6 +438,11 @@ class BrickDetector:
             "hsv_upper": self._hsv_upper.tolist(),
             "hsv_enabled": self._hsv_enabled,
             "hsv_erode_iterations": self._hsv_erode_iterations,
+            "shape_gate_mode": str(self._face_shape_gate_mode),
+            "negative_cutout_cyan_fill_max": float(self._negative_cutout_cyan_fill_max),
+            "negative_cutout_ring_cyan_min": float(self._negative_cutout_ring_cyan_min),
+            "negative_cutout_ring_dilate_px": int(self._negative_cutout_ring_dilate_px),
+            "negative_cutout_min_area_px": float(self._negative_cutout_min_area_px),
             "center_lock_enabled": bool(self._center_lock_enabled),
             "center_lock_radius_px": (
                 None
@@ -537,14 +592,20 @@ class BrickDetector:
         return angle
 
     def _estimate_distance(self, bbox_height_px):
-        """Estimate distance from apparent brick size in the image.
+        """Legacy height-only distance estimate.
 
-        Uses inverse size relation: larger bbox height means closer brick,
-        yielding a smaller distance value.
+        Kept as a compatibility fallback for tests and any old call sites that
+        still pass only a height signal.
         """
         if bbox_height_px <= 0:
             return 999.0
         return (BRICK_HEIGHT_MM * self.focal_px) / float(bbox_height_px)
+
+    def _estimate_distance_from_width(self, bbox_width_px):
+        """Estimate distance from apparent brick width in the image."""
+        if bbox_width_px <= 0:
+            return 999.0
+        return (BRICK_WIDTH_MM * self.focal_px) / float(bbox_width_px)
 
     def _estimate_offset_x_mm(self, center_x_px, dist_mm):
         """
@@ -574,6 +635,36 @@ class BrickDetector:
         if kind in {"top_half", "bottom_half"}:
             h_px *= 2.0
         return h_px
+
+    def _effective_distance_width_px(self, bbox_width_px, partial_kind=None):
+        """
+        Convert observed bbox width into a full-brick equivalent width.
+
+        For the current full-face and top/bottom partial profiles, width remains
+        the most stable apparent-size cue, so no partial scaling is required.
+        """
+        _ = partial_kind
+        return max(1.0, float(bbox_width_px))
+
+    def _estimate_distance_from_box(self, bbox_width_px, bbox_height_px, partial_kind=None):
+        """Estimate distance using width as the primary apparent-size signal.
+
+        Width is more stable for the current brick face than height, which can
+        fluctuate with the interlocking top/bottom teeth and close-up framing.
+        Height is retained as a secondary stabilizer so partial detections and
+        noisy boxes do not swing as hard.
+        """
+        eff_w = self._effective_distance_width_px(bbox_width_px, partial_kind)
+        eff_h = self._effective_distance_height_px(bbox_height_px, partial_kind)
+        width_dist = self._estimate_distance_from_width(eff_w) if eff_w > 0 else None
+        height_dist = self._estimate_distance(eff_h) if eff_h > 0 else None
+        if width_dist is None and height_dist is None:
+            return 999.0
+        if width_dist is None:
+            return float(height_dist)
+        if height_dist is None:
+            return float(width_dist)
+        return float((0.8 * float(width_dist)) + (0.2 * float(height_dist)))
 
     def _smooth(self, new_val, prev_val):
         """Exponential moving average for temporal smoothing."""
@@ -731,27 +822,15 @@ class BrickDetector:
         if crop.size == 0:
             return []
 
-        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, self._hsv_lower, self._hsv_upper)
+        feature_mask, mask = self._build_hsv_masks(crop)
+        if feature_mask is None or mask is None:
+            return []
 
         # Check cyan coverage — if too little, not a cyan brick
         bbox_area = crop.shape[0] * crop.shape[1]
-        cyan_pixels = cv2.countNonZero(mask)
+        cyan_pixels = cv2.countNonZero(feature_mask)
         if cyan_pixels < bbox_area * HSV_CYAN_COVERAGE_MIN:
             return []
-
-        # Morphological cleanup: open to remove noise, erode to separate
-        # touching bricks, dilate to restore edges
-        kern_open = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kern_open)
-
-        kern_erode = cv2.getStructuringElement(
-            cv2.MORPH_RECT, (HSV_ERODE_KERNEL, HSV_ERODE_KERNEL)
-        )
-        mask = cv2.erode(mask, kern_erode, iterations=self._hsv_erode_iterations)
-
-        kern_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        mask = cv2.dilate(mask, kern_dilate, iterations=1)
 
         contours, _ = cv2.findContours(
             mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -772,8 +851,8 @@ class BrickDetector:
             cx = int(M["m10"] / M["m00"])
             cy = int(M["m01"] / M["m00"])
 
-            rect = cv2.minAreaRect(cnt)
             bx, by, bw, bh = cv2.boundingRect(cnt)
+            rect = cv2.minAreaRect(cnt)
 
             # Shape gate: ignore cyan blobs that are not brick-like.
             if bw <= 0 or bh <= 0:
@@ -794,22 +873,44 @@ class BrickDetector:
             if rel_err > BRICK_SHAPE_REL_ERROR_MAX:
                 continue
 
-            # Canonical shape gate: accept only full/top/bottom profile matches.
-            shape_profile, shape_match_score = self._classify_contour_shape(cnt)
-            if shape_profile is None:
-                continue
+            if self._uses_negative_cutout_gate():
+                gate_rect = (
+                    (float(bx) + (float(bw) * 0.5), float(by) + (float(bh) * 0.5)),
+                    (float(bw), float(bh)),
+                    0.0,
+                )
+                cutout_match, cutout_summary = self._match_negative_cutout_pair(
+                    feature_mask,
+                    gate_rect,
+                )
+                if not cutout_match:
+                    continue
+                shape_profile = "full"
+                shape_match_score = (
+                    cutout_summary.get("score")
+                    if isinstance(cutout_summary, dict)
+                    else None
+                )
+                partial = False
+                partial_kind = None
+                partial_label = None
+            else:
+                # Canonical shape gate: accept only full/top/bottom profile matches.
+                shape_profile, shape_match_score = self._classify_contour_shape(cnt)
+                if shape_profile is None:
+                    continue
 
-            partial = False
-            partial_kind = None
-            partial_label = None
-            if shape_profile == "top_half":
-                partial = True
-                partial_kind = "top_half"
-                partial_label = PARTIAL_LABEL_TOP
-            elif shape_profile == "bottom_half":
-                partial = True
-                partial_kind = "bottom_half"
-                partial_label = PARTIAL_LABEL_BOTTOM
+                partial = False
+                partial_kind = None
+                partial_label = None
+                if shape_profile == "top_half":
+                    partial = True
+                    partial_kind = "top_half"
+                    partial_label = PARTIAL_LABEL_TOP
+                elif shape_profile == "bottom_half":
+                    partial = True
+                    partial_kind = "bottom_half"
+                    partial_label = PARTIAL_LABEL_BOTTOM
 
             partial_info = self._partial_info_for_crop_bbox(
                 bx,
@@ -1044,6 +1145,33 @@ class BrickDetector:
             return None
         return bricks[int(selected_idx)]
 
+    def _should_try_full_frame_hsv_fallback(self, bricks, frame_w, frame_h):
+        if not isinstance(bricks, list) or not bricks:
+            return True
+        try:
+            frame_area = float(max(1, int(frame_w)) * max(1, int(frame_h)))
+        except Exception:
+            return False
+        edge_margin_px = 24
+        for x1, y1, x2, y2, _conf in bricks:
+            try:
+                bw = max(1, int(x2) - int(x1))
+                bh = max(1, int(y2) - int(y1))
+            except Exception:
+                continue
+            box_area_ratio = float(bw * bh) / frame_area
+            touches_edge = (
+                int(x1) <= edge_margin_px
+                or int(y1) <= edge_margin_px
+                or int(x2) >= int(frame_w) - edge_margin_px
+                or int(y2) >= int(frame_h) - edge_margin_px
+            )
+            if touches_edge or float(bw) >= float(frame_w) * 0.55 or float(bh) >= float(frame_h) * 0.55:
+                return True
+            if box_area_ratio >= 0.25:
+                return True
+        return False
+
     def _stack_flags_from_individuals(self, primary, all_bricks):
         """
         Determine above/below flags using individual brick positions.
@@ -1089,14 +1217,28 @@ class BrickDetector:
 
         # Sort by confidence (highest first)
         bricks.sort(key=lambda b: b[4], reverse=True)
+        fallback_conf = float(bricks[0][4]) if bricks else 1.0
 
         # Try HSV segmentation on each YOLO box to find individual cyan bricks
         all_hsv_bricks = []
         hsv_used = False
+        closeup_hsv_fallback_used = False
         if self._hsv_enabled:
-            for x1, y1, x2, y2, conf in bricks:
-                individuals = self._segment_bricks_hsv(frame, x1, y1, x2, y2)
-                all_hsv_bricks.extend(individuals)
+            if bricks:
+                for x1, y1, x2, y2, conf in bricks:
+                    individuals = self._segment_bricks_hsv(frame, x1, y1, x2, y2)
+                    all_hsv_bricks.extend(individuals)
+            if not all_hsv_bricks and self._should_try_full_frame_hsv_fallback(bricks, w_frame, h_frame):
+                # Very close bricks can fill most of the frame and fail YOLO/NMS.
+                # They can also be clipped by the frame so the YOLO box misses
+                # the full face geometry. Let the cyan shape gate inspect the
+                # full frame directly before declaring failure.
+                individuals = self._segment_bricks_hsv(frame, 0, 0, w_frame, h_frame)
+                if individuals:
+                    all_hsv_bricks.extend(individuals)
+                    closeup_hsv_fallback_used = True
+                    if not bricks:
+                        bricks = [(0, 0, w_frame, h_frame, 1.0)]
             if all_hsv_bricks:
                 hsv_used = True
 
@@ -1113,6 +1255,8 @@ class BrickDetector:
                         y1 <= primary["center_y"] <= y2):
                     yolo_conf = conf
                     break
+            if closeup_hsv_fallback_used:
+                yolo_conf = max(float(yolo_conf), float(fallback_conf))
             self.last_primary_confidence = float(yolo_conf)
             conf_pct = float(yolo_conf) * 100.0
 
@@ -1121,10 +1265,9 @@ class BrickDetector:
             angle = self._smooth_angle(raw_angle, self._prev_angle)
             self._prev_angle = angle
 
-            # Distance from individual brick bbox height
-            _, _, _, ind_bh = primary["bbox"]
-            eff_h = self._effective_distance_height_px(ind_bh, primary.get("partial_kind"))
-            raw_dist = self._estimate_distance(eff_h)
+            # Distance from apparent brick size, using width as the primary cue.
+            _, _, ind_bw, ind_bh = primary["bbox"]
+            raw_dist = self._estimate_distance_from_box(ind_bw, ind_bh, primary.get("partial_kind"))
             dist = self._smooth(raw_dist, self._prev_dist)
             self._prev_dist = dist
 
@@ -1164,14 +1307,26 @@ class BrickDetector:
             return (True, angle, dist, offset_x, conf_pct, cam_height,
                     brick_above, brick_below)
 
-        # Fallback path: require canonical full/top/bottom shape match.
-        shape_gate_enabled = bool(getattr(self, "_face_shape_templates", None))
+        # Fallback path: require the active face gate to match.
+        shape_gate_enabled = bool(getattr(self, "_face_shape_templates", None)) or self._uses_negative_cutout_gate()
         matched_boxes = []
         matched_partials = []
         if shape_gate_enabled:
             for bx1, by1, bx2, by2, bconf in bricks:
-                contour = self._extract_shape_contour_in_box(frame, bx1, by1, bx2, by2)
-                shape_profile, _shape_score = self._classify_contour_shape(contour)
+                if self._uses_negative_cutout_gate():
+                    cutout_match, _cutout_summary = self._match_negative_cutout_pair_in_box(
+                        frame,
+                        bx1,
+                        by1,
+                        bx2,
+                        by2,
+                    )
+                    if not cutout_match:
+                        continue
+                    shape_profile = "full"
+                else:
+                    contour = self._extract_shape_contour_in_box(frame, bx1, by1, bx2, by2)
+                    shape_profile, _shape_score = self._classify_contour_shape(contour)
                 if shape_profile is None:
                     continue
                 matched_boxes.append((bx1, by1, bx2, by2, bconf))
@@ -1186,7 +1341,7 @@ class BrickDetector:
             self._prev_offset = None
             self._prev_offset_y = None
             self._center_lock_prev_center = None
-            self.last_status = "shape mismatch"
+            self.last_status = self._shape_gate_mismatch_status()
             self.last_primary_confidence = 0.0
             self._clear_partial_state()
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
@@ -1214,9 +1369,9 @@ class BrickDetector:
             else {}
         )
 
+        bbox_w = x2 - x1
         bbox_h = y2 - y1
-        eff_h = self._effective_distance_height_px(bbox_h, primary_partial_info.get("kind"))
-        raw_dist = self._estimate_distance(eff_h)
+        raw_dist = self._estimate_distance_from_box(bbox_w, bbox_h, primary_partial_info.get("kind"))
         dist = self._smooth(raw_dist, self._prev_dist)
         self._prev_dist = dist
 
@@ -1416,6 +1571,11 @@ class BrickDetector:
         self._face_polygon_model = None
         self._face_cutouts_model = []
         self._face_lines_model = []
+        self._face_shape_gate_mode = BRICK_FACE_GATE_MODE_DEFAULT
+        self._negative_cutout_cyan_fill_max = float(NEGATIVE_CUTOUT_CYAN_FILL_MAX)
+        self._negative_cutout_ring_cyan_min = float(NEGATIVE_CUTOUT_RING_CYAN_MIN)
+        self._negative_cutout_ring_dilate_px = int(NEGATIVE_CUTOUT_RING_DILATE_PX)
+        self._negative_cutout_min_area_px = float(NEGATIVE_CUTOUT_MIN_AREA_PX)
         try:
             import json
 
@@ -1474,6 +1634,39 @@ class BrickDetector:
                     )
                 except (TypeError, ValueError):
                     continue
+
+        shape_gate = brick.get("shapeGate")
+        if isinstance(shape_gate, dict):
+            mode_text = str(shape_gate.get("mode") or "").strip().lower()
+            if mode_text in {
+                BRICK_FACE_GATE_MODE_DEFAULT,
+                BRICK_FACE_GATE_MODE_NEGATIVE_CUTOUTS,
+            }:
+                self._face_shape_gate_mode = mode_text
+            try:
+                self._negative_cutout_cyan_fill_max = float(
+                    shape_gate.get("cutout_cyan_fill_max")
+                )
+            except (TypeError, ValueError):
+                pass
+            try:
+                self._negative_cutout_ring_cyan_min = float(
+                    shape_gate.get("cutout_ring_cyan_min")
+                )
+            except (TypeError, ValueError):
+                pass
+            try:
+                self._negative_cutout_ring_dilate_px = max(
+                    1, int(shape_gate.get("cutout_ring_dilate_px"))
+                )
+            except (TypeError, ValueError):
+                pass
+            try:
+                self._negative_cutout_min_area_px = max(
+                    1.0, float(shape_gate.get("cutout_min_area_px"))
+                )
+            except (TypeError, ValueError):
+                pass
 
     def _contour_from_points(self, points):
         if not isinstance(points, np.ndarray):
@@ -1611,6 +1804,214 @@ class BrickDetector:
         if float(best_score) > threshold:
             return None, float(best_score)
         return best_profile, float(best_score)
+
+    def _uses_negative_cutout_gate(self):
+        if (
+            str(getattr(self, "_face_shape_gate_mode", "")).strip().lower()
+            != BRICK_FACE_GATE_MODE_NEGATIVE_CUTOUTS
+        ):
+            return False
+        face_cutouts_model = getattr(self, "_face_cutouts_model", None)
+        return isinstance(face_cutouts_model, list) and len(face_cutouts_model) >= 2
+
+    def _shape_gate_mismatch_status(self):
+        if self._uses_negative_cutout_gate():
+            return "inner triangles mismatch"
+        return "shape mismatch"
+
+    def _build_hsv_masks(self, crop):
+        if crop is None or getattr(crop, "size", 0) == 0:
+            return None, None
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        raw_mask = cv2.inRange(hsv, self._hsv_lower, self._hsv_upper)
+
+        kern_open = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        feature_mask = cv2.morphologyEx(raw_mask, cv2.MORPH_OPEN, kern_open)
+
+        contour_mask = feature_mask.copy()
+        kern_erode = cv2.getStructuringElement(
+            cv2.MORPH_RECT, (HSV_ERODE_KERNEL, HSV_ERODE_KERNEL)
+        )
+        contour_mask = cv2.erode(
+            contour_mask,
+            kern_erode,
+            iterations=self._hsv_erode_iterations,
+        )
+        kern_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        contour_mask = cv2.dilate(contour_mask, kern_dilate, iterations=1)
+        return feature_mask, contour_mask
+
+    def _mask_fill_ratio(self, mask, polygon_points):
+        if mask is None:
+            return None, None, 0.0
+        mask_arr = np.asarray(mask, dtype=np.uint8)
+        if mask_arr.ndim != 2:
+            return None, None, 0.0
+        polygon = np.asarray(polygon_points, dtype=np.float32).reshape(-1, 2)
+        if polygon.shape[0] < 3:
+            return None, None, 0.0
+
+        region_mask = np.zeros(mask_arr.shape[:2], dtype=np.uint8)
+        region_draw = np.round(polygon).astype(np.int32).reshape(-1, 1, 2)
+        try:
+            cv2.fillPoly(region_mask, [region_draw], 255)
+        except Exception:
+            return None, None, 0.0
+
+        area = float(cv2.countNonZero(region_mask))
+        if area <= 0.0:
+            return None, None, 0.0
+        active = cv2.bitwise_and(mask_arr, mask_arr, mask=region_mask)
+        return float(cv2.countNonZero(active)) / area, region_mask, area
+
+    def _match_negative_cutout_pair(self, feature_mask, rect, contour=None):
+        if not self._uses_negative_cutout_gate():
+            return False, None
+        if feature_mask is None:
+            return False, None
+
+        try:
+            rect_points = self._ordered_rect_points(rect)
+        except Exception:
+            return False, None
+        if not isinstance(rect_points, np.ndarray) or rect_points.shape != (4, 2):
+            return False, None
+
+        mask_arr = np.asarray(feature_mask, dtype=np.uint8)
+        if mask_arr.ndim != 2:
+            return False, None
+
+        body_mask = np.zeros(mask_arr.shape[:2], dtype=np.uint8)
+        rect_draw = np.round(rect_points).astype(np.int32).reshape(-1, 1, 2)
+        try:
+            cv2.fillPoly(body_mask, [rect_draw], 255)
+        except Exception:
+            return False, None
+
+        ring_radius = max(
+            1,
+            int(
+                getattr(
+                    self,
+                    "_negative_cutout_ring_dilate_px",
+                    NEGATIVE_CUTOUT_RING_DILATE_PX,
+                )
+            ),
+        )
+        ring_kernel_size = max(3, (ring_radius * 2) + 1)
+        ring_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (ring_kernel_size, ring_kernel_size),
+        )
+        cyan_fill_max = float(
+            getattr(
+                self,
+                "_negative_cutout_cyan_fill_max",
+                NEGATIVE_CUTOUT_CYAN_FILL_MAX,
+            )
+        )
+        ring_cyan_min = float(
+            getattr(
+                self,
+                "_negative_cutout_ring_cyan_min",
+                NEGATIVE_CUTOUT_RING_CYAN_MIN,
+            )
+        )
+        min_area = float(
+            getattr(self, "_negative_cutout_min_area_px", NEGATIVE_CUTOUT_MIN_AREA_PX)
+        )
+
+        cutout_scores = []
+        passed = 0
+        for cutout_points in self._face_cutouts_model:
+            cutout_proj = self._project_model_points_to_rect(cutout_points, rect_points)
+            if not isinstance(cutout_proj, np.ndarray) or cutout_proj.shape[0] < 3:
+                return False, None
+
+            cyan_fill_ratio, cutout_mask, cutout_area = self._mask_fill_ratio(
+                mask_arr, cutout_proj
+            )
+            if cyan_fill_ratio is None or cutout_mask is None or cutout_area < min_area:
+                return False, None
+
+            ring_mask = cv2.dilate(cutout_mask, ring_kernel, iterations=1)
+            ring_mask = cv2.subtract(ring_mask, cutout_mask)
+            ring_mask = cv2.bitwise_and(ring_mask, body_mask)
+            ring_area = float(cv2.countNonZero(ring_mask))
+            if ring_area < min_area:
+                return False, None
+            ring_active = cv2.bitwise_and(mask_arr, mask_arr, mask=ring_mask)
+            ring_cyan_ratio = float(cv2.countNonZero(ring_active)) / ring_area
+
+            passed_cutout = (
+                float(cyan_fill_ratio) <= cyan_fill_max
+                and float(ring_cyan_ratio) >= ring_cyan_min
+            )
+            if passed_cutout:
+                passed += 1
+            cutout_scores.append(
+                {
+                    "cyan_fill_ratio": float(cyan_fill_ratio),
+                    "ring_cyan_ratio": float(ring_cyan_ratio),
+                    "passed": bool(passed_cutout),
+                }
+            )
+
+        if passed < 2:
+            return False, {
+                "score": 1.0,
+                "cutouts": cutout_scores,
+                "passed": passed,
+            }
+
+        score = 0.0
+        for item in cutout_scores:
+            score = max(
+                score,
+                float(item["cyan_fill_ratio"]),
+                max(0.0, 1.0 - float(item["ring_cyan_ratio"])),
+            )
+        return True, {
+            "score": float(score),
+            "cutouts": cutout_scores,
+            "passed": passed,
+        }
+
+    def _match_negative_cutout_pair_in_box(self, frame, x1, y1, x2, y2):
+        crop = frame[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
+        if crop.size == 0:
+            return False, None
+
+        feature_mask, contour_mask = self._build_hsv_masks(crop)
+        if feature_mask is None or contour_mask is None:
+            return False, None
+
+        contours, _ = cv2.findContours(
+            contour_mask,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        if not contours:
+            return False, None
+
+        best = None
+        best_area = 0.0
+        for cnt in contours:
+            area = float(cv2.contourArea(cnt))
+            if area <= best_area:
+                continue
+            best = cnt
+            best_area = area
+        if best is None:
+            return False, None
+
+        bx, by, bw, bh = cv2.boundingRect(best)
+        gate_rect = (
+            (float(bx) + (float(bw) * 0.5), float(by) + (float(bh) * 0.5)),
+            (float(bw), float(bh)),
+            0.0,
+        )
+        return self._match_negative_cutout_pair(feature_mask, gate_rect)
 
     def _extract_shape_contour_in_box(self, frame, x1, y1, x2, y2):
         crop = frame[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
@@ -1810,6 +2211,10 @@ class BrickDetector:
                             cv2.line(frame, a, b, (220, 245, 255), 1, cv2.LINE_AA)
                 return
 
+        if contour_arr is not None and contour_arr.shape[0] >= 3:
+            cv2.polylines(frame, [contour_arr], True, outline_color, outline_thickness, cv2.LINE_AA)
+            return
+
         visible_segments = []
         for idx in range(4):
             p0 = points[idx]
@@ -1896,18 +2301,38 @@ class BrickDetector:
 
         bricks.sort(key=lambda b: b[4], reverse=True)
         x1, y1, x2, y2, conf = bricks[0]
+        bbox_w = x2 - x1
         bbox_h = y2 - y1
-        if bbox_h <= 0:
+        if bbox_w <= 0 and bbox_h <= 0:
             return None
 
-        new_focal = (known_distance_mm * bbox_h) / BRICK_HEIGHT_MM
+        focal_candidates = []
+        if bbox_w > 0:
+            focal_candidates.append((known_distance_mm * bbox_w) / BRICK_WIDTH_MM)
+        if bbox_h > 0:
+            focal_candidates.append((known_distance_mm * bbox_h) / BRICK_HEIGHT_MM)
+        if len(focal_candidates) == 1:
+            new_focal = float(focal_candidates[0])
+        else:
+            new_focal = float((0.8 * float(focal_candidates[0])) + (0.2 * float(focal_candidates[-1])))
         if new_focal < 1.0:
-            self.log.error("calibrate_focal: computed focal_px=%.1f is too small "
-                           "(dist=%.1f, bbox_h=%d)", new_focal, known_distance_mm, bbox_h)
+            self.log.error(
+                "calibrate_focal: computed focal_px=%.1f is too small "
+                "(dist=%.1f, bbox_w=%d, bbox_h=%d)",
+                new_focal,
+                known_distance_mm,
+                bbox_w,
+                bbox_h,
+            )
             return None
         self.focal_px = new_focal
-        self.log.info("calibrate_focal: bbox_h=%d, dist=%.1fmm -> focal_px=%.1f",
-                      bbox_h, known_distance_mm, self.focal_px)
+        self.log.info(
+            "calibrate_focal: bbox_w=%d bbox_h=%d dist=%.1fmm -> focal_px=%.1f",
+            bbox_w,
+            bbox_h,
+            known_distance_mm,
+            self.focal_px,
+        )
         return self.focal_px
 
     def release(self):

@@ -24,6 +24,7 @@ PWM_STEP_UP = 2
 PWM_STEP_DOWN = 2
 STALL_PROGRESS_MM = 0.75
 VISIBILITY_LOSS_PAUSE_FRAMES = 2
+CAUTIOUS_OBSERVE_ACT_WITHIN_MM = 40.0
 EXPERIMENT_STEP = StepState.ALIGN_BRICK
 
 
@@ -375,6 +376,7 @@ def run_observe_while_moving_trial(
         "direction_reversals": 0,
         "stall_recoveries": 0,
         "visibility_recoveries": 0,
+        "cautious_mode_acts": 0,
     }
 
     def _capture_sample(*, act_index: int, act_cmd: str, act_started_s: float):
@@ -467,6 +469,15 @@ def run_observe_while_moving_trial(
             if reference_x is None and bool(state.get("last_observed_visible")):
                 reference_x = _coerce_float((start_pose or {}).get("offset_x"), None)
             reference_abs_x = abs(float(reference_x)) if reference_x is not None else None
+            reference_target_error_abs = (
+                abs(float(reference_x) - float(target_x_axis_mm))
+                if reference_x is not None
+                else None
+            )
+            cautious_cycle = bool(
+                reference_target_error_abs is not None
+                and float(reference_target_error_abs) <= float(CAUTIOUS_OBSERVE_ACT_WITHIN_MM)
+            )
 
             floor_pwm = int((floor_profiles.get(active_cmd) or {}).get("pwm") or 0)
             pwm_used = int(max(floor_pwm, int(current_pwm.get(active_cmd) or floor_pwm)))
@@ -484,6 +495,12 @@ def run_observe_while_moving_trial(
                 f"[OBSERVE] Act {int(act_index)}: {str(active_cmd).upper()} pwm={int(current_pwm[active_cmd])}, "
                 f"pwr={float(power_used):.3f}, max={int(act_duration_ms)}ms."
             )
+            if cautious_cycle:
+                state["cautious_mode_acts"] = int(state.get("cautious_mode_acts") or 0) + 1
+                logger(
+                    "[OBSERVE] Within 40mm of target: switching to cautious observe->act cycle "
+                    "(no in-motion observe samples for this act)."
+                )
             send_result = send_robot_command_pwm(
                 robot,
                 world,
@@ -522,15 +539,22 @@ def run_observe_while_moving_trial(
             reverse_cmd = None
             invisible_streak = 0
 
-            while True:
-                if _cancel_requested():
-                    act_state["result"] = "cancelled"
-                    status = "cancelled"
+            if cautious_cycle:
+                while True:
+                    if _cancel_requested():
+                        act_state["result"] = "cancelled"
+                        status = "cancelled"
+                        if callable(stop_robot):
+                            stop_robot()
+                        break
+                    now = time.monotonic()
+                    if now >= float(act_deadline_s):
+                        break
+                    time.sleep(min(0.01, max(0.0, float(act_deadline_s) - float(now))))
+
+                if act_state["result"] != "cancelled":
                     if callable(stop_robot):
                         stop_robot()
-                    break
-                now = time.monotonic()
-                if now >= float(next_sample_time):
                     capture, sample = _capture_act_sample(
                         act_state=act_state,
                         act_index=int(act_index),
@@ -551,21 +575,57 @@ def run_observe_while_moving_trial(
                         act_state["result"] = "target_band_reached"
                         if callable(stop_robot):
                             stop_robot()
-                        break
-                    reverse_cmd = capture.get("reverse_cmd")
-                    if reverse_cmd:
-                        act_state["result"] = "overshoot_reversed"
+                    else:
+                        reverse_cmd = capture.get("reverse_cmd")
+                        if reverse_cmd:
+                            act_state["result"] = "overshoot_reversed"
+                            if callable(stop_robot):
+                                stop_robot()
+            else:
+                while True:
+                    if _cancel_requested():
+                        act_state["result"] = "cancelled"
+                        status = "cancelled"
                         if callable(stop_robot):
                             stop_robot()
                         break
-                    next_sample_time += float(sample_period_s)
+                    now = time.monotonic()
+                    if now >= float(next_sample_time):
+                        capture, sample = _capture_act_sample(
+                            act_state=act_state,
+                            act_index=int(act_index),
+                            act_cmd=str(active_cmd),
+                            act_started_s=float(act_started_s),
+                        )
+                        sample_has_pose = bool(sample.get("visible")) and _coerce_float(sample.get("offset_x"), None) is not None
+                        if sample_has_pose:
+                            invisible_streak = 0
+                        else:
+                            invisible_streak = int(invisible_streak) + 1
+                            act_state["max_invisible_streak"] = max(
+                                int(act_state.get("max_invisible_streak") or 0),
+                                int(invisible_streak),
+                            )
 
-                if now >= float(act_deadline_s):
-                    break
-                sleep_until = min(float(next_sample_time), float(act_deadline_s))
-                delay_s = max(0.0, float(sleep_until) - float(time.monotonic()))
-                if delay_s > 0.0:
-                    time.sleep(delay_s)
+                        if capture.get("band_hit"):
+                            act_state["result"] = "target_band_reached"
+                            if callable(stop_robot):
+                                stop_robot()
+                            break
+                        reverse_cmd = capture.get("reverse_cmd")
+                        if reverse_cmd:
+                            act_state["result"] = "overshoot_reversed"
+                            if callable(stop_robot):
+                                stop_robot()
+                            break
+                        next_sample_time += float(sample_period_s)
+
+                    if now >= float(act_deadline_s):
+                        break
+                    sleep_until = min(float(next_sample_time), float(act_deadline_s))
+                    delay_s = max(0.0, float(sleep_until) - float(time.monotonic()))
+                    if delay_s > 0.0:
+                        time.sleep(delay_s)
 
             act_state["end_x_axis_mm"] = _round_triplet(
                 _coerce_float(((state.get("last_visible_pose") or {}) if isinstance(state.get("last_visible_pose"), dict) else {}).get("offset_x"), None)
@@ -685,6 +745,7 @@ def run_observe_while_moving_trial(
         "direction_reversals": int(state.get("direction_reversals") or 0),
         "stall_recoveries": int(state.get("stall_recoveries") or 0),
         "visibility_recoveries": int(state.get("visibility_recoveries") or 0),
+        "cautious_mode_acts": int(state.get("cautious_mode_acts") or 0),
         "seconds": _round_triplet(max(0.0, time.monotonic() - float(stage_started))),
     }
     if log_path is not None:
