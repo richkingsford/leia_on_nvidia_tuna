@@ -1,23 +1,23 @@
 {
-  "updated_at": 1775258937.3952427,
+  "updated_at": 1776032035.9064944,
   "robot": {
-    "x_mm": -5.3554062260272355,
-    "y_mm": -11.60139542165436,
+    "x_mm": -14.72491501439237,
+    "y_mm": -70.73084150512155,
     "z_mm": 0.0,
     "theta_deg": -90.0,
     "lift_mm": 0.0
   },
   "raw_robot": {
-    "x_mm": -14.383262032085561,
+    "x_mm": 0.0,
     "y_mm": 0.0,
     "z_mm": 0.0,
     "theta_deg": 0.0,
     "lift_mm": 0.0
   },
   "leia": {
-    "x_mm": -5.3554062260272355,
-    "y_mm": -11.60139542165436,
-    "z_mm": 0.5805425073489929,
+    "x_mm": -14.72491501439237,
+    "y_mm": -70.73084150512155,
+    "z_mm": 0.08235322665056266,
     "theta_deg": -90.0,
     "label": "Leia"
   },
@@ -36,7 +36,7 @@
       "fixed": true,
       "render_footprint_mm": 54.0,
       "source": "default_layout_seed",
-      "last_seen_ts": 1775258937.3951702
+      "last_seen_ts": 1776032035.9064333
     },
     "wall": {
       "name": "wall",
@@ -53,10 +53,10 @@
       "valid": true,
       "fixed": true,
       "source": "ALIGN_BRICK",
-      "last_seen_ts": 1775258935.2002826,
+      "last_seen_ts": 1776032035.9060965,
       "count": 1,
-      "observed_world_x_mm": 117.17342847551045,
-      "observed_world_y_mm": 1.748857297705067,
+      "observed_world_x_mm": 110.25639290508336,
+      "observed_world_y_mm": 0.0,
       "observed_world_theta_deg": 180.0
     }
   },
@@ -76,11 +76,16 @@
   "wall_reverse_plan": {
     "ok": true,
     "reason": "planned",
-    "wall_behind_mm": 11.601395421654349,
+    "wall_behind_mm": 70.73084150512153,
     "target_wall_distance_mm": 45.0,
-    "reverse_gap_mm": 0.0,
-    "reverse_acts": 0,
+    "reverse_gap_mm": 25.730841505121532,
+    "reverse_acts": 1,
     "actions": [
+      {
+        "cmd": "b",
+        "distance_mm": 30.0,
+        "reason": "close_wall_gap"
+      },
       {
         "cmd": "l",
         "reason": "begin_turn_after_reverse"
@@ -89,10 +94,10 @@
   },
   "last_visible_brick": {
     "visible": true,
-    "dist_mm": 168.48373927409074,
-    "x_axis_mm": 5.358113676488529,
-    "y_axis_mm": 2.4122144248557893,
-    "confidence": 69.19445991516113,
-    "angle_deg": 0.17806999665432677
+    "dist_mm": 110.25684613827816,
+    "x_axis_mm": 14.858014022476238,
+    "y_axis_mm": 4.779270273269606,
+    "confidence": 81.51125907897949,
+    "angle_deg": 0.4996646970209693
   }
 }

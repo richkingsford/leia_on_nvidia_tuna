@@ -1434,6 +1434,22 @@ def breakaway_score_summary_for_cmd(cmd, *, score=SPEED_SCORE_MIN):
     return dict(selected) if isinstance(selected, dict) else None
 
 
+def _min_floor_for_cmd(cmd):
+    """
+    Returns the minimum PWM and duration floor for a given command.
+    Returns (min_pwm, min_duration_ms) tuple.
+    """
+    cmd_key = str(cmd or "").strip().lower()
+    
+    # Get minimum PWM from baseline
+    min_pwm = baseline_pwm_floor_for_cmd(cmd_key)
+    
+    # Get minimum duration from speed model
+    min_duration_ms = _duration_ms_for_score(cmd_key, SPEED_SCORE_MIN)
+    
+    return min_pwm, min_duration_ms
+
+
 def one_percent_discovery_note(cmd, score):
     try:
         raw_score = float(score)

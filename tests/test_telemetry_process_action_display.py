@@ -34,6 +34,20 @@ class _WireAwareDummyRobot(_DummyRobot):
         }
 
 
+class _CustomActionDummyRobot(_DummyRobot):
+    def send_custom_actions_pwm(self, cmd, actions, duration_ms=0):
+        actions_out = [dict(action) for action in actions]
+        self.sent.append((cmd, actions_out, duration_ms))
+        return {
+            "cmd_sent": str(cmd),
+            "pwm": max(int(action.get("pwm") or 0) for action in actions_out),
+            "power": 1.0,
+            "duration_ms": int(duration_ms),
+            "wire_text": f"custom:{str(cmd)}:{int(duration_ms)}",
+            "actions": actions_out,
+        }
+
+
 class _DummyWorld:
     def __init__(self):
         self.brick = {
@@ -230,6 +244,97 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
         self.assertIsInstance(meta, dict)
         self.assertEqual(getattr(world, "_last_action_wire", None), meta.get("wire_text"))
         self.assertTrue(str(meta.get("wire_text") or "").startswith("raw:f:"))
+
+    def test_send_robot_command_supports_custom_turn_drive_actions(self):
+        world = _DummyWorld()
+        robot = _CustomActionDummyRobot()
+
+        meta = telemetry_process.send_robot_command(
+            robot,
+            world,
+            step="POSITION_BRICK",
+            cmd="r",
+            speed=0.0,
+            speed_score=1,
+            auto_mode=True,
+            duration_override_ms=180,
+            custom_action_specs=[
+                {"target": "l", "action": "b", "pwm": 133},
+                {"target": "r", "action": "f", "pwm": 0},
+            ],
+            action_note="TURN+FWD",
+        )
+
+        self.assertEqual(len(robot.sent), 1)
+        self.assertEqual(robot.sent[0][0], "r")
+        self.assertEqual(robot.sent[0][2], 180)
+        self.assertEqual(meta.get("cmd_sent"), "r")
+        self.assertEqual(meta.get("wire_text"), "custom:r:180")
+        self.assertEqual(meta.get("action_note"), "TURN+FWD")
+        self.assertIn("TURN+FWD", getattr(world, "_last_action_sent_display", ""))
+
+    def test_timed_action_with_confirm_callback_does_not_force_immediate_stop(self):
+        world = _AlignDistLogWorld()
+        robot = _DummyRobot()
+
+        def _fake_update_world(_world, _vision, log=True):
+            _ = log
+            _world._frame_id = int(getattr(_world, "_frame_id", 0) or 0) + 1
+            _world.brick["visible"] = True
+            _world.brick["x_axis"] = 0.77
+            _world.brick["offset_x"] = 0.77
+            _world.brick["dist"] = 250.15
+            _world.brick["y_axis"] = 2.99
+            _world.brick["offset_y"] = 2.99
+
+        def _fake_observe_success_gatecheck(*_args, **_kwargs):
+            return {"success_met": False, "hold_for_confirm": False}
+
+        def _fake_select_alignment_next_act(*_args, **_kwargs):
+            return {
+                "planner": "gap",
+                "cmd": "r",
+                "speed": 0.438,
+                "score": 1,
+                "reason": "x_axis_alignment",
+                "correction_type": "x_axis",
+            }
+
+        def _fake_send_robot_command(_robot, _world, _step, cmd, *_args, **_kwargs):
+            return {
+                "cmd_sent": str(cmd),
+                "score_effective": 1,
+                "pwm": 132,
+                "power": 0.438,
+                "duration_ms": 255,
+                "action_note": "TURN+FWD",
+            }
+
+        with patch.object(telemetry_process, "wait_for_start_gates", return_value="start"), \
+             patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world), \
+             patch.object(telemetry_process, "observe_success_gatecheck", side_effect=_fake_observe_success_gatecheck), \
+             patch.object(telemetry_process.next_module, "select_alignment_next_act", side_effect=_fake_select_alignment_next_act), \
+             patch.object(telemetry_process, "send_robot_command", side_effect=_fake_send_robot_command), \
+             patch.object(telemetry_process, "run_full_gatecheck_after_act", side_effect=RuntimeError("sentinel_after_send")), \
+             patch.object(telemetry_process, "post_act_analysis", return_value=None), \
+             patch.object(telemetry_process.telemetry_brick, "success_gate_bounds", return_value={}), \
+             patch.object(telemetry_process.time, "sleep", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "sentinel_after_send"):
+                telemetry_process.run_alignment_segment(
+                    segment={"events": []},
+                    step="ALIGN_BRICK",
+                    robot=robot,
+                    vision=object(),
+                    world=world,
+                    steps=[],
+                    raw_steps=[],
+                    observer=None,
+                    analysis_pause_s=0.0,
+                    confirm_callback=lambda *_args, **_kwargs: True,
+                    align_silent=True,
+                )
+
+        self.assertEqual(robot.stop_calls, 0)
 
     def test_send_robot_command_auto_mode_caps_score_to_25(self):
         world = _DummyWorld()
@@ -505,6 +610,116 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
             observe_line,
         )
         self.assertNotIn("mm", observe_line)
+
+    def test_align_observe_act_log_shows_forward_turn_drive_assist_and_passes_custom_actions(self):
+        world = _AlignDistLogWorld()
+        world.process_rules["ALIGN_BRICK"]["align_policy"] = {
+            "x_axis_turn_drive_assist": {
+                "enabled": True,
+                "require_dist_outside_gate": True,
+                "min_dist_outside_mm": 0.0,
+                "forward_profile": "forward_pivot",
+            }
+        }
+        world.process_rules["ALIGN_BRICK"]["success_gates"]["xAxis_offset_abs"] = {"target": 5.33, "tol": 1.40}
+        world.process_rules["ALIGN_BRICK"]["success_gates"]["yAxis_offset_abs"] = {"target": 3.03, "tol": 2.30}
+        world.process_rules["ALIGN_BRICK"]["success_gates"]["dist"] = {"target": 157.93, "tol": 2.30}
+        world.brick["x_axis"] = 37.46
+        world.brick["offset_x"] = 37.46
+        world.brick["dist"] = 230.71
+        world.brick["y_axis"] = 2.94
+        world.brick["offset_y"] = 2.94
+        robot = _DummyRobot()
+        print_lines = []
+        gate_calls = {"n": 0}
+        sent_calls = []
+
+        def _fake_update_world(_world, _vision, log=True):
+            _ = log
+            _world._frame_id = int(getattr(_world, "_frame_id", 0) or 0) + 1
+            _world.brick["visible"] = True
+            _world.brick["x_axis"] = 37.46
+            _world.brick["offset_x"] = 37.46
+            _world.brick["dist"] = 230.71
+            _world.brick["y_axis"] = 2.94
+            _world.brick["offset_y"] = 2.94
+
+        def _fake_observe_success_gatecheck(*_args, **_kwargs):
+            gate_calls["n"] += 1
+            if gate_calls["n"] >= 4:
+                return {"success_met": True, "hold_for_confirm": False}
+            return {"success_met": False, "hold_for_confirm": False}
+
+        def _fake_select_alignment_next_act(*_args, **_kwargs):
+            return {
+                "planner": "gap",
+                "cmd": "l",
+                "speed": 0.35,
+                "score": 7,
+                "reason": "x_axis_alignment",
+                "correction_type": "x_axis",
+                "curve_name": "x_axis monotonic curve",
+                "curve_value_mm": 32.13,
+            }
+
+        def _fake_send_robot_command(_robot, _world, _step, cmd, *_args, **kwargs):
+            sent_calls.append({"cmd": cmd, "kwargs": dict(kwargs)})
+            return {
+                "cmd_sent": str(cmd),
+                "score_effective": 7,
+                "pwm": 140,
+                "power": 0.35,
+                "duration_ms": 275,
+                "action_note": kwargs.get("action_note"),
+            }
+
+        with patch.object(telemetry_process, "wait_for_start_gates", return_value="start"), \
+             patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world), \
+             patch.object(telemetry_process, "observe_success_gatecheck", side_effect=_fake_observe_success_gatecheck), \
+             patch.object(telemetry_process.next_module, "select_alignment_next_act", side_effect=_fake_select_alignment_next_act), \
+             patch.object(telemetry_process, "send_robot_command", side_effect=_fake_send_robot_command), \
+             patch.object(telemetry_process, "run_full_gatecheck_after_act", return_value=False), \
+             patch.object(telemetry_process, "post_act_analysis", return_value=None), \
+             patch.object(telemetry_process.telemetry_brick, "success_gate_bounds", return_value={}), \
+             patch.object(telemetry_process.time, "sleep", return_value=None), \
+             patch(
+                 "builtins.print",
+                 side_effect=lambda *args, **kwargs: print_lines.append(" ".join(str(arg) for arg in args)),
+             ):
+            ok, reason = telemetry_process.run_alignment_segment(
+                segment={"events": []},
+                step="ALIGN_BRICK",
+                robot=robot,
+                vision=object(),
+                world=world,
+                steps=[],
+                raw_steps=[],
+                observer=None,
+                analysis_pause_s=0.0,
+                confirm_callback=None,
+                align_silent=False,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(reason, "success gate")
+        self.assertEqual(len(sent_calls), 1)
+        sent_kwargs = sent_calls[0]["kwargs"]
+        self.assertEqual(sent_kwargs.get("action_note"), "TURN+FWD")
+        self.assertEqual(
+            sent_kwargs.get("custom_action_specs"),
+            [
+                {"target": "l", "action": "b", "pwm": 0},
+                {"target": "r", "action": "f", "pwm": 140},
+            ],
+        )
+        observe_line = next(
+            line for line in print_lines if "[T1.1 ALIGN]" in line and "I'm xAxis_offset=37.46" in line
+        )
+        self.assertIn(
+            f"{telemetry_process.COLOR_ORANGE_BRIGHT}> L 7%{telemetry_process.COLOR_RESET}",
+            observe_line,
+        )
+        self.assertIn("TURN+FWD", observe_line)
 
     def test_align_y_hold_log_uses_hold_target_for_y_axis_action(self):
         world = _AlignHoldLogWorld()

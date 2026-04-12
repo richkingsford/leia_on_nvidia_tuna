@@ -131,6 +131,25 @@
       }
     }
   },
+  "turn_drive_motion_assist": {
+    "enabled": true,
+    "profiles": {
+      "forward_pivot": {
+        "drive_mode": "forward",
+        "inner_ratio": 0.0,
+        "outer_ratio": 1.0,
+        "duration_mode": "max_turn_drive",
+        "action_note": "TURN+FWD"
+      },
+      "backward_pivot": {
+        "drive_mode": "backward",
+        "inner_ratio": 0.0,
+        "outer_ratio": 1.0,
+        "duration_mode": "max_turn_drive",
+        "action_note": "TURN+BWD"
+      }
+    }
+  },
   "min_pwm": 36,
   "max_pwm": 255,
   "min_turn_power": 0.064,

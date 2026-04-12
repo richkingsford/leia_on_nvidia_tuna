@@ -116,6 +116,10 @@ PLOT_REPEAT_FAIL_COLOR_BY_CMD = {
     "r": "#ff69b4",
 }
 REPEAT_RESULT_ERROR_MARGIN_MM = 1.5
+CENTER_PROGRESS_GUARD_MIN_DELTA_MM = 1.0
+CENTER_PROGRESS_GUARD_AUTO_INVERT_MAX = 1
+DIRECTION_PROBE_MIN_DELTA_MM = 0.5
+DIRECTION_PROBE_DURATION_MS = 255
 MIN_LITE_UNIQUE_FRAMES = 3
 REOBSERVE_HOLD_S = 0.12
 REOBSERVE_ROUNDS = 2
@@ -231,6 +235,33 @@ class TrialResult:
     curve_source: str | None = None
     absolute_difference_mm: float | None = None
     prediction_closeness_percentage: float | None = None
+    phase: str = "primary"
+    source_trial: int | None = None
+
+
+@dataclass
+class ResetEffort:
+    trial: int
+    reset_act: int
+    cmd: str
+    score_requested: int
+    cmd_sent: str | None
+    pwm: int | None
+    power: float | None
+    duration_ms: int
+    pre_x_mm: float
+    post_x_mm: float
+    raw_delta_mm: float
+    signed_cmd_delta_mm: float
+    cmd_delta_mm: float
+    wrong_way: bool
+    pre_brick_dist_mm: float
+    post_brick_dist_mm: float
+    pre_confidence: float
+    post_confidence: float
+    pre_pose_source: str | None
+    post_pose_source: str | None
+    post_observation_mode: str | None
     phase: str = "primary"
     source_trial: int | None = None
 
@@ -944,6 +975,203 @@ def _distance_progress_status(pre_x_mm: float, post_x_mm: float, *, target_x_mm:
     return float(delta_mm), "unchanged"
 
 
+def _center_progress_for_row(row: TrialResult, *, target_x_mm: float) -> tuple[float, str]:
+    return _distance_progress_status(
+        float(row.pre_x_mm),
+        float(row.post_x_mm),
+        target_x_mm=float(target_x_mm),
+    )
+
+
+def _maybe_auto_invert_x_axis_mapping(
+    *,
+    row: TrialResult,
+    phase: str,
+    target_x_mm: float,
+    auto_invert_count: int,
+) -> bool:
+    phase_key = str(phase or "primary").strip().lower()
+    if phase_key != "primary":
+        return False
+    delta_mm, status = _center_progress_for_row(row, target_x_mm=float(target_x_mm))
+    if str(status) != "further" or float(delta_mm) < float(CENTER_PROGRESS_GUARD_MIN_DELTA_MM):
+        return False
+    if int(auto_invert_count) >= int(CENTER_PROGRESS_GUARD_AUTO_INVERT_MAX):
+        return False
+    global X_AXIS_INVERT
+    X_AXIS_INVERT = not bool(X_AXIS_INVERT)
+    log_line(
+        f"[CALIBRATE_X] ⚠️  Center-progress guard: trial moved further from x=0 by {float(delta_mm):.2f}mm; "
+        f"flipping x-axis command mapping for remaining primary trials (invert_x_axis={bool(X_AXIS_INVERT)})."
+    )
+    log_line(
+        f"[CALIBRATE_X] x-axis motion sign now: {_turn_label_for_cmd(_x_cmd_for_positive_motion())} increases x_axis, "
+        f"{_turn_label_for_cmd(_x_cmd_for_negative_motion())} decreases x_axis."
+    )
+    return True
+
+
+def _evaluate_direction_probe_deltas(
+    *,
+    deltas_by_cmd: dict,
+    min_delta_mm: float = DIRECTION_PROBE_MIN_DELTA_MM,
+) -> dict:
+    expected_positive_cmd = _x_cmd_for_positive_motion()
+    valid = []
+    for key in ("l", "r"):
+        try:
+            delta = float((deltas_by_cmd or {}).get(key))
+        except (TypeError, ValueError):
+            continue
+        if abs(delta) >= float(min_delta_mm):
+            valid.append((str(key), float(delta)))
+
+    measured_positive_cmd = None
+    positives = [item for item in valid if float(item[1]) > 0.0]
+    if positives:
+        positives.sort(key=lambda item: float(item[1]), reverse=True)
+        measured_positive_cmd = str(positives[0][0])
+
+    invert_applied = False
+    if measured_positive_cmd and str(measured_positive_cmd) != str(expected_positive_cmd):
+        global X_AXIS_INVERT
+        X_AXIS_INVERT = not bool(X_AXIS_INVERT)
+        invert_applied = True
+
+    return {
+        "expected_positive_cmd": str(expected_positive_cmd),
+        "measured_positive_cmd": measured_positive_cmd,
+        "invert_applied": bool(invert_applied),
+        "deltas_by_cmd": {
+            str(k): (None if v is None else float(v))
+            for k, v in dict(deltas_by_cmd or {}).items()
+        },
+    }
+
+
+def _run_startup_direction_probe(
+    *,
+    initial_pose: dict,
+    vision,
+    world,
+    robot,
+    recent_acts,
+    setup_score: int,
+    center_target_x_mm: float,
+    observe_timeout_s: float,
+    post_act_settle_s: float,
+    stream_refresh_fn=None,
+) -> tuple[dict | None, dict]:
+    if not isinstance(initial_pose, dict):
+        return initial_pose, {"mode": "probe_skipped_no_pose"}
+    # Unit tests often pass simple stubs; skip hardware probe when no send API exists.
+    if not (hasattr(robot, "send_command") or hasattr(robot, "send_command_pwm")):
+        return initial_pose, {"mode": "probe_skipped_no_robot_send"}
+
+    probe_score = max(1, min(20, int(setup_score)))
+    curr_pose = dict(initial_pose)
+    deltas_by_cmd = {}
+    probe_cmds = ("l", "r")
+    for idx, cmd in enumerate(probe_cmds, start=1):
+        pre_x = float(curr_pose.get("offset_x") or 0.0)
+        log_line(
+            f"[CALIBRATE_X] Direction probe {int(idx)}/{len(probe_cmds)}: cmd={str(cmd).upper()} "
+            f"score={int(probe_score)}% duration={int(DIRECTION_PROBE_DURATION_MS)}ms from x={pre_x:+.2f}mm."
+        )
+        if callable(stream_refresh_fn):
+            stream_refresh_fn([
+                "Direction probe",
+                f"Cmd: {str(cmd).upper()} {int(DIRECTION_PROBE_DURATION_MS)}ms",
+                f"x: {float(pre_x):+.2f}mm",
+            ])
+        act_start_ts = time.time()
+        action_meta = _send_fixed_score_command(
+            robot=robot,
+            world=world,
+            step="CALIBRATE_X_DIRECTION_PROBE",
+            cmd=str(cmd),
+            score=int(probe_score),
+            duration_override_ms=int(DIRECTION_PROBE_DURATION_MS),
+        )
+        if not isinstance(action_meta, dict):
+            return curr_pose, {"mode": "probe_send_failed", "deltas_by_cmd": deltas_by_cmd}
+        duration_used_ms = _coerce_int(action_meta.get("duration_ms"), int(DIRECTION_PROBE_DURATION_MS))
+        recent_acts.append(
+            {
+                "cmd": str(cmd),
+                "duration_ms": int(duration_used_ms or 0),
+                "score_requested": int(probe_score),
+                "timestamp": time.time(),
+            }
+        )
+        post_pose, post_meta = _observe_pose_with_reobserve(
+            vision=vision,
+            world=world,
+            samples=1,
+            timeout_s=max(float(observe_timeout_s), float(RECOVERY_OBSERVE_TIMEOUT_S)),
+            min_sample_time=act_start_ts + (float(duration_used_ms or 0) / 1000.0) + float(post_act_settle_s),
+            on_vision_update=stream_refresh_fn,
+        )
+        if post_pose is None:
+            post_pose, post_meta = _recover_pose_for_trial(
+                vision=vision,
+                world=world,
+                robot=robot,
+                recent_acts=recent_acts,
+                trial_idx=0,
+                trials_requested=2,
+                stage_label=f"after direction probe {int(idx)}",
+                trial_label="DIRECTION PROBE",
+                on_vision_update=stream_refresh_fn,
+            )
+            if post_pose is None:
+                return curr_pose, {"mode": "probe_post_unavailable", "deltas_by_cmd": deltas_by_cmd}
+        post_x = float(post_pose.get("offset_x") or 0.0)
+        deltas_by_cmd[str(cmd)] = float(post_x - pre_x)
+        curr_pose = dict(post_pose)
+        # Re-center between probe acts using the same reset behavior used between trials.
+        if idx < len(probe_cmds):
+            reset_pose, reset_meta = _run_reset_for_next_trial(
+                trial_idx=0,
+                trial_label="DIRECTION PROBE",
+                phase="probe",
+                current_pose=curr_pose,
+                vision=vision,
+                world=world,
+                robot=robot,
+                recent_acts=recent_acts,
+                score=int(probe_score),
+                duration_ms=int(DIRECTION_PROBE_DURATION_MS),
+                center_target_x_mm=float(center_target_x_mm),
+                observe_samples=1,
+                observe_timeout_s=max(float(observe_timeout_s), float(RECOVERY_OBSERVE_TIMEOUT_S)),
+                post_act_settle_s=float(post_act_settle_s),
+                reset_efforts=None,
+                stream_refresh_fn=stream_refresh_fn,
+            )
+            if isinstance(reset_pose, dict):
+                curr_pose = dict(reset_pose)
+
+    outcome = _evaluate_direction_probe_deltas(
+        deltas_by_cmd=deltas_by_cmd,
+        min_delta_mm=float(DIRECTION_PROBE_MIN_DELTA_MM),
+    )
+    mode = "probe_completed"
+    if bool(outcome.get("invert_applied")):
+        mode = "probe_completed_inverted"
+        log_line(
+            f"[CALIBRATE_X] Direction probe locked mapping: expected_positive={outcome.get('expected_positive_cmd')} "
+            f"measured_positive={outcome.get('measured_positive_cmd')} -> invert_x_axis={bool(X_AXIS_INVERT)}."
+        )
+    else:
+        log_line(
+            f"[CALIBRATE_X] Direction probe kept mapping: expected_positive={outcome.get('expected_positive_cmd')} "
+            f"measured_positive={outcome.get('measured_positive_cmd')}"
+        )
+    outcome["mode"] = str(mode)
+    return curr_pose, outcome
+
+
 def _build_duration_schedule(
     *,
     trials: int | None,
@@ -995,6 +1223,36 @@ def _planned_action_meta(cmd: str, score: int, duration_override_ms: int) -> dic
     }
 
 
+def _single_wheel_turn_action_specs(cmd: str, pwm: int) -> list[dict]:
+    """Build single-wheel turn actions: one tread moves, the other is stopped."""
+    cmd_key = _normalize_cmd(cmd, allow_auto=False)
+    pwm_val = max(0, int(round(float(pwm))))
+    if cmd_key == "l":
+        return [
+            {"target": "l", "action": "s", "pwm": 0},
+            {"target": "r", "action": "f", "pwm": int(pwm_val)},
+        ]
+    return [
+        {"target": "l", "action": "b", "pwm": int(pwm_val)},
+        {"target": "r", "action": "s", "pwm": 0},
+    ]
+
+
+def _single_wheel_back_turn_action_specs(cmd: str, pwm: int) -> list[dict]:
+    """Build back-while-turn reset actions: turn away while backing up."""
+    cmd_key = _normalize_cmd(cmd, allow_auto=False)
+    pwm_val = max(0, int(round(float(pwm))))
+    if cmd_key == "l":
+        return [
+            {"target": "l", "action": "s", "pwm": 0},
+            {"target": "r", "action": "b", "pwm": int(pwm_val)},
+        ]
+    return [
+        {"target": "l", "action": "b", "pwm": int(pwm_val)},
+        {"target": "r", "action": "s", "pwm": 0},
+    ]
+
+
 def _send_fixed_score_command(
     *,
     robot,
@@ -1005,6 +1263,8 @@ def _send_fixed_score_command(
     duration_override_ms: int,
 ) -> dict | None:
     duration_override_ms = min(max(1, int(duration_override_ms)), int(DURATION_CEILING_MS))
+    _, pwm_model, _, _ = speed_power_pwm_for_cmd(cmd, score)
+    custom_action_specs = _single_wheel_turn_action_specs(cmd, pwm_model)
     return send_robot_command(
         robot,
         world,
@@ -1014,7 +1274,141 @@ def _send_fixed_score_command(
         speed_score=int(score),
         duration_override_ms=int(duration_override_ms),
         half_first_turn_pulse=False,
+        custom_action_specs=custom_action_specs,
     )
+
+
+def _send_reset_score_command(
+    *,
+    robot,
+    world,
+    step: str,
+    cmd: str,
+    score: int,
+    duration_override_ms: int,
+) -> dict | None:
+    duration_override_ms = min(max(1, int(duration_override_ms)), int(DURATION_CEILING_MS))
+    _, pwm_model, _, _ = speed_power_pwm_for_cmd(cmd, score)
+    custom_action_specs = _single_wheel_back_turn_action_specs(cmd, pwm_model)
+    return send_robot_command(
+        robot,
+        world,
+        step,
+        cmd,
+        speed=0.0,
+        speed_score=int(score),
+        duration_override_ms=int(duration_override_ms),
+        half_first_turn_pulse=False,
+        custom_action_specs=custom_action_specs,
+    )
+
+
+def _reset_cmd_for_x(curr_x_mm: float, *, center_x_mm: float = 0.0) -> str | None:
+    x_now = float(curr_x_mm)
+    center = float(center_x_mm)
+    if abs(x_now - center) <= 1e-6:
+        return None
+    if x_now > center:
+        return "r"
+    return "l"
+
+
+def _run_reset_for_next_trial(
+    *,
+    trial_idx: int,
+    trial_label: str,
+    phase: str,
+    current_pose: dict,
+    vision,
+    world,
+    robot,
+    recent_acts,
+    score: int,
+    duration_ms: int,
+    center_target_x_mm: float,
+    observe_samples: int,
+    observe_timeout_s: float,
+    post_act_settle_s: float,
+    reset_efforts: list[ResetEffort] | None = None,
+    stream_refresh_fn=None,
+) -> tuple[dict | None, dict]:
+    if not isinstance(current_pose, dict):
+        return None, {"mode": "reset_skipped_no_pose", "reset_acts": 0}
+    pre_x_mm = float(current_pose.get("offset_x") or 0.0)
+    reset_cmd = _reset_cmd_for_x(pre_x_mm, center_x_mm=float(center_target_x_mm))
+    if reset_cmd is None:
+        return current_pose, {"mode": "reset_skipped_centered", "reset_acts": 0}
+    reset_duration_ms = max(255, int(duration_ms))
+    log_line(
+        f"[CALIBRATE_X] {trial_label}: reset for next trial -> back while turning {str(reset_cmd).upper()} "
+        f"from x_axis={float(pre_x_mm):+.2f}mm for {int(reset_duration_ms)}ms."
+    )
+    if callable(stream_refresh_fn):
+        stream_refresh_fn([
+            f"{str(phase).capitalize()} reset",
+            f"Current x: {float(pre_x_mm):+.2f}mm",
+            f"Reset: {str(reset_cmd).upper()} {int(reset_duration_ms)}ms",
+        ])
+    act_start_ts = time.time()
+    action_meta = _send_reset_score_command(
+        robot=robot,
+        world=world,
+        step="CALIBRATE_X_RESET",
+        cmd=str(reset_cmd),
+        score=int(score),
+        duration_override_ms=int(reset_duration_ms),
+    )
+    if not isinstance(action_meta, dict):
+        return None, {"mode": "reset_send_failed", "reset_acts": 1}
+    duration_used_ms = _coerce_int(action_meta.get("duration_ms"), reset_duration_ms)
+    recent_acts.append(
+        {
+            "cmd": str(reset_cmd),
+            "duration_ms": int(duration_used_ms or 0),
+            "score_requested": int(score),
+            "timestamp": time.time(),
+        }
+    )
+    post_pose, observe_meta = _observe_pose_with_reobserve(
+        vision=vision,
+        world=world,
+        samples=observe_samples,
+        timeout_s=observe_timeout_s,
+        min_sample_time=act_start_ts + (float(duration_used_ms or 0) / 1000.0) + float(post_act_settle_s),
+        on_vision_update=stream_refresh_fn,
+    )
+    if post_pose is None:
+        return None, {"mode": "reset_post_unavailable", "reset_acts": 1}
+    movement = _movement_metrics(str(reset_cmd), pre_x_mm, float(post_pose.get("offset_x") or 0.0))
+    if isinstance(reset_efforts, list):
+        reset_efforts.append(
+            ResetEffort(
+                trial=int(trial_idx),
+                reset_act=1,
+                cmd=str(reset_cmd),
+                score_requested=int(score),
+                cmd_sent=str(action_meta.get("cmd_sent") or reset_cmd),
+                pwm=_coerce_int(action_meta.get("pwm")),
+                power=_coerce_float(action_meta.get("power")),
+                duration_ms=int(duration_used_ms or 0),
+                pre_x_mm=float(pre_x_mm),
+                post_x_mm=float(post_pose.get("offset_x") or 0.0),
+                raw_delta_mm=float(movement["raw_delta_mm"]),
+                signed_cmd_delta_mm=float(movement["signed_cmd_delta_mm"]),
+                cmd_delta_mm=float(movement["cmd_delta_mm"]),
+                wrong_way=bool(movement["wrong_way"]),
+                pre_brick_dist_mm=float(current_pose.get("dist") or 0.0),
+                post_brick_dist_mm=float(post_pose.get("dist") or 0.0),
+                pre_confidence=float(current_pose.get("confidence") or 0.0),
+                post_confidence=float(post_pose.get("confidence") or 0.0),
+                pre_pose_source=str(current_pose.get("pose_source") or "unknown"),
+                post_pose_source=str(post_pose.get("pose_source") or "unknown"),
+                post_observation_mode=str((observe_meta or {}).get("mode") or "unknown"),
+                phase=str(phase or "primary"),
+                source_trial=int(trial_idx),
+            )
+        )
+    return post_pose, {"mode": "reset_completed", "reset_acts": 1}
 
 
 def _recovery_plan_step_line(step: dict, *, idx: int, total: int) -> str:
@@ -1719,8 +2113,13 @@ def main() -> int:
         "observe_samples": int(observe_samples),
         "observe_timeout_s": float(observe_timeout_s),
         "post_act_settle_s": float(post_act_settle_s),
+        "startup_direction_probe_enabled": True,
+        "startup_direction_probe_min_delta_mm": float(DIRECTION_PROBE_MIN_DELTA_MM),
+        "center_progress_guard_min_delta_mm": float(CENTER_PROGRESS_GUARD_MIN_DELTA_MM),
+        "center_progress_guard_auto_invert_max": int(CENTER_PROGRESS_GUARD_AUTO_INVERT_MAX),
         "prompted_duration_bounds": bool(prompted_duration_bounds),
         "half_first_turn_pulse": False,
+        "turn_actuation_mode": "single_wheel_pivot",
         "trial_cmd_mode": str(TRIAL_CMD_AUTO),
         "primary_trial_cmd_schedule": str(trial_cmd_schedule),
         "trial_cmd_rule": "if x_axis < center_x_mm: right_turn else left_turn",
@@ -1743,6 +2142,7 @@ def main() -> int:
     recent_acts = deque(maxlen=32)
     trial_rows: list[TrialResult] = []
     reset_rows: list = []
+    auto_invert_count = 0
     status = "completed"
     abort_reason = None
     stream_server = None
@@ -1871,6 +2271,7 @@ def main() -> int:
 
         initial_trial_pre_pose = None
         initial_trial_pre_obs_meta = None
+        startup_direction_probe_meta = {"mode": "not_run"}
         if status != "aborted" and trials_planned > 0:
             _live_refresh(
                 [
@@ -1962,6 +2363,7 @@ def main() -> int:
                     "post_act_settle_s": float(post_act_settle_s),
                     "prompted_duration_bounds": bool(prompted_duration_bounds),
                     "half_first_turn_pulse": False,
+                    "turn_actuation_mode": "single_wheel_pivot",
                     "trial_cmd_mode": str(TRIAL_CMD_AUTO),
                     "primary_trial_cmd_schedule": str(trial_cmd_schedule),
                     "trial_cmd_rule": "if x_axis < center_x_mm: right_turn else left_turn",
@@ -1976,6 +2378,19 @@ def main() -> int:
                     config["reference_brick_distance_mm"] = float(REFERENCE_BRICK_DISTANCE_MM)
                 if isinstance(trial_speed_profile, dict):
                     config["trial_speed_score_profile"] = json.loads(json.dumps(trial_speed_profile))
+                initial_trial_pre_pose, startup_direction_probe_meta = _run_startup_direction_probe(
+                    initial_pose=dict(initial_trial_pre_pose),
+                    vision=vision,
+                    world=world,
+                    robot=robot,
+                    recent_acts=recent_acts,
+                    setup_score=int(speed_score),
+                    center_target_x_mm=float(center_x_mm),
+                    observe_timeout_s=float(observe_timeout_s),
+                    post_act_settle_s=float(post_act_settle_s),
+                    stream_refresh_fn=_live_refresh,
+                )
+                config["startup_direction_probe"] = dict(startup_direction_probe_meta or {})
                 log_line("[CALIBRATE_X] Starting x-axis duration probe.")
                 log_line(
                     f"[CALIBRATE_X] trials={trials_planned} score={int(speed_score)}% durations_ms={durations_ms} "
@@ -1998,7 +2413,10 @@ def main() -> int:
                     log_line("[CALIBRATE_X] repeat_pass=disabled by default; use --repeat-trials N to enable.")
                 log_line("[CALIBRATE_X] duration fidelity: exact requested turn duration is used; first-turn halving is disabled.")
                 log_line(f"[CALIBRATE_X] center target: x_axis={float(center_x_mm):+.2f}mm.")
-                log_line("[CALIBRATE_X] turn source: left turns follow hotkey Q; right turns follow hotkey E.")
+                log_line(
+                    "[CALIBRATE_X] turn actuation mode: single-wheel pivot (left turn=right tread forward with left tread stopped; "
+                    "right turn=left tread backward with right tread stopped)."
+                )
                 log_line(
                     "[CALIBRATE_X] primary trial command selection: auto by x sign; "
                     f"if x_axis < {float(center_x_mm):+.2f}mm use {_turn_label_for_cmd(_x_cmd_for_negative_motion())}, "
@@ -2143,7 +2561,49 @@ def main() -> int:
                         f"[CALIBRATE_X] ⚠️  Trial {trial_idx}: wrong_way detected. "
                         f"Plotting it anyway. {wrong_way_reason}"
                     )
+                if _maybe_auto_invert_x_axis_mapping(
+                    row=row,
+                    phase="primary",
+                    target_x_mm=float(center_x_mm),
+                    auto_invert_count=int(auto_invert_count),
+                ):
+                    auto_invert_count = int(auto_invert_count) + 1
                 trial_rows.append(row)
+                next_initial_pose = None
+                next_initial_obs_meta = None
+                should_reset_for_next_trial = bool(
+                    int(trial_idx) < int(trials_planned) or bool(repeat_pass_enabled)
+                )
+                if should_reset_for_next_trial:
+                    next_initial_pose, next_initial_obs_meta = _run_reset_for_next_trial(
+                        trial_idx=int(trial_idx),
+                        trial_label=str(trial_label),
+                        phase="primary",
+                        current_pose={
+                            "offset_x": float(row.post_x_mm),
+                            "dist": float(row.post_brick_dist_mm),
+                            "confidence": float(row.post_confidence),
+                            "pose_source": str(row.post_pose_source or "unknown"),
+                        },
+                        vision=vision,
+                        world=world,
+                        robot=robot,
+                        recent_acts=recent_acts,
+                        score=int(row.score_requested),
+                        duration_ms=int(row.duration_ms),
+                        center_target_x_mm=float(center_x_mm),
+                        observe_samples=observe_samples,
+                        observe_timeout_s=observe_timeout_s,
+                        post_act_settle_s=post_act_settle_s,
+                        reset_efforts=reset_rows,
+                        stream_refresh_fn=_live_refresh,
+                    )
+                    if next_initial_pose is None:
+                        status = "aborted"
+                        abort_reason = f"reset_failed_after_trial_{trial_idx}"
+                        break
+                    initial_trial_pre_pose = dict(next_initial_pose)
+                    initial_trial_pre_obs_meta = dict(next_initial_obs_meta or {})
                 _live_refresh(
                     [
                         f"Trial {int(trial_idx)}/{int(trials_planned)}",
@@ -2227,6 +2687,35 @@ def main() -> int:
                         f"Plotting it anyway. {wrong_way_reason}"
                     )
                 trial_rows.append(repeat_row)
+                should_reset_for_next_repeat = bool(int(repeat_idx) < int(len(repeat_plan)))
+                if should_reset_for_next_repeat:
+                    reset_pose, reset_meta = _run_reset_for_next_trial(
+                        trial_idx=int(repeat_idx),
+                        trial_label=str(repeat_label),
+                        phase="repeat",
+                        current_pose={
+                            "offset_x": float(repeat_row.post_x_mm),
+                            "dist": float(repeat_row.post_brick_dist_mm),
+                            "confidence": float(repeat_row.post_confidence),
+                            "pose_source": str(repeat_row.post_pose_source or "unknown"),
+                        },
+                        vision=vision,
+                        world=world,
+                        robot=robot,
+                        recent_acts=recent_acts,
+                        score=int(repeat_row.score_requested),
+                        duration_ms=int(repeat_row.duration_ms),
+                        center_target_x_mm=float(center_x_mm),
+                        observe_samples=observe_samples,
+                        observe_timeout_s=observe_timeout_s,
+                        post_act_settle_s=post_act_settle_s,
+                        reset_efforts=reset_rows,
+                        stream_refresh_fn=_live_refresh,
+                    )
+                    if reset_pose is None:
+                        status = "aborted"
+                        abort_reason = f"reset_failed_after_repeat_{repeat_idx}"
+                        break
                 _live_refresh(
                     [
                         f"Repeat {int(repeat_idx)}/{len(repeat_plan)}",

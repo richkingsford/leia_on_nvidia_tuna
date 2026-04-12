@@ -141,6 +141,131 @@ class TestTelemetryProcessUnchangedSpeedBump(unittest.TestCase):
         self.assertEqual(act.get("cmd"), "d")
         self.assertEqual(act.get("score"), 1)
 
+    def test_repeated_unchanged_action_escalates_speed_after_three_same_acts(self):
+        class _World:
+            def __init__(self):
+                self.process_rules = {
+                    "TEST_STEP": {
+                        "align_policy": {
+                            "target_lock_enabled": False,
+                        },
+                        "success_gates": {
+                            "visible": {"min": True},
+                            "xAxis_offset_abs": {"target": 0.0, "tol": 2.0},
+                            "yAxis_offset_abs": {"target": 0.0, "tol": 2.0},
+                            "dist": {"target": 50.0, "tol": 5.0},
+                        },
+                        "start_gates": {
+                            "visible": {"min": True},
+                        },
+                    }
+                }
+                self.learned_rules = {}
+                self.wall_envelope = None
+                self.brick = {
+                    "visible": True,
+                    "dist": 52.0,
+                    "angle": 0.0,
+                    "offset_x": 1.0,
+                    "offset_y": 0.0,
+                    "x_axis": 1.0,
+                    "y_axis": 0.0,
+                    "confidence": 90.0,
+                }
+                self._frame_id = 0
+                self._success_confirm_frames = 0
+                self._success_confirm_progress = None
+                self._success_confirm_logged = False
+
+            def update_from_motion(self, _evt):
+                return None
+
+        world = _World()
+        robot = type("_DummyRobot", (), {"stop": lambda self: None})()
+        send_calls = []
+        observe_calls = {"n": 0}
+
+        def _fake_update_world(_world, _vision, log=True):
+            _world._frame_id = int(getattr(_world, "_frame_id", 0) or 0) + 1
+
+        def _fake_observe_success(*_args, **_kwargs):
+            observe_calls["n"] += 1
+            if observe_calls["n"] >= 20:
+                return {"success_met": True, "hold_for_confirm": False}
+            return {"success_met": False, "hold_for_confirm": False}
+
+        def _fake_pre_action_obs(*_args, **_kwargs):
+            return {"success_met": False, "hold_for_confirm": False}
+
+        def _fake_planner(*_args, **_kwargs):
+            return {
+                "planner": "gap",
+                "cmd": "f",
+                "score": 15,
+                "speed": 0.1,
+                "reason": "dist_alignment",
+                "correction_type": "distance",
+            }
+
+        def _fake_send_robot_command(*_args, **_kwargs):
+            send_calls.append(dict(_kwargs))
+            return {}
+
+        orig_wait = telemetry_process.wait_for_start_gates
+        orig_update = telemetry_process.update_world_from_vision
+        orig_observe = telemetry_process.observe_success_gatecheck
+        orig_pre_action = telemetry_process.pre_action_success_observation
+        orig_select = telemetry_process.next_module.select_alignment_next_act
+        orig_send = telemetry_process.send_robot_command
+        orig_capture = telemetry_process._capture_auto_diag_focus
+        orig_delta = telemetry_process._auto_diag_delta_phrase
+        orig_success_bounds = telemetry_process.telemetry_brick.success_gate_bounds
+        orig_sleep = telemetry_process.time.sleep
+        try:
+            telemetry_process.wait_for_start_gates = lambda *_a, **_k: "start"
+            telemetry_process.update_world_from_vision = _fake_update_world
+            telemetry_process.observe_success_gatecheck = _fake_observe_success
+            telemetry_process.pre_action_success_observation = _fake_pre_action_obs
+            telemetry_process.next_module.select_alignment_next_act = _fake_planner
+            telemetry_process.send_robot_command = _fake_send_robot_command
+            telemetry_process._capture_auto_diag_focus = lambda *_a, **_k: {"metric": "x_err", "value": 2.0}
+            telemetry_process._auto_diag_delta_phrase = lambda *_a, **_k: (None, None, "unchanged")
+            telemetry_process.telemetry_brick.success_gate_bounds = lambda *_a, **_k: {}
+            telemetry_process.time.sleep = lambda *_a, **_k: None
+
+            ok, reason = telemetry_process.run_alignment_segment(
+                segment={"events": []},
+                step="TEST_STEP",
+                robot=robot,
+                vision=object(),
+                world=world,
+                steps=[],
+                raw_steps=[],
+                observer=None,
+                analysis_pause_s=0.0,
+                confirm_callback=None,
+                align_silent=True,
+            )
+        finally:
+            telemetry_process.wait_for_start_gates = orig_wait
+            telemetry_process.update_world_from_vision = orig_update
+            telemetry_process.observe_success_gatecheck = orig_observe
+            telemetry_process.pre_action_success_observation = orig_pre_action
+            telemetry_process.next_module.select_alignment_next_act = orig_select
+            telemetry_process.send_robot_command = orig_send
+            telemetry_process._capture_auto_diag_focus = orig_capture
+            telemetry_process._auto_diag_delta_phrase = orig_delta
+            telemetry_process.telemetry_brick.success_gate_bounds = orig_success_bounds
+            telemetry_process.time.sleep = orig_sleep
+
+        self.assertTrue(ok)
+        self.assertEqual(reason, "success gate")
+        self.assertGreaterEqual(len(send_calls), 4)
+        self.assertEqual(send_calls[0].get("speed_score"), 15)
+        self.assertEqual(send_calls[1].get("speed_score"), 15)
+        self.assertEqual(send_calls[2].get("speed_score"), 15)
+        self.assertEqual(send_calls[3].get("speed_score"), int(round(min(100, 15 * 1.15))))
+
 
 if __name__ == "__main__":
     unittest.main()

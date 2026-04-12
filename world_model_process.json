@@ -224,6 +224,12 @@
                 "turn_score_mode": "x_axis_one_shot_curve",
                 "slow_fast_mm_scale": 1.0,
                 "auto_speed_hard_cap_exempt": true,
+                "x_axis_turn_drive_assist": {
+                    "enabled": true,
+                    "require_dist_outside_gate": true,
+                    "min_dist_outside_mm": 0.0,
+                    "forward_profile": "forward_pivot"
+                },
                 "target_lock_enabled": true,
                 "target_lock_center_prefer_enabled": true,
                 "target_lock_stack_signature_guard_enabled": false,
@@ -291,6 +297,12 @@
                 "turn_score_mode": "x_axis_one_shot_curve",
                 "slow_fast_mm_scale": 1.0,
                 "auto_speed_hard_cap_exempt": true,
+                "x_axis_turn_drive_assist": {
+                    "enabled": true,
+                    "require_dist_outside_gate": true,
+                    "min_dist_outside_mm": 0.0,
+                    "forward_profile": "forward_pivot"
+                },
                 "target_lock_enabled": true,
                 "target_lock_center_prefer_enabled": true,
                 "target_lock_stack_signature_guard_enabled": false,
@@ -330,15 +342,15 @@
                     "min": true
                 },
                 "xAxis_offset_abs": {
-                    "target": 7.13,
+                    "target": 5.33,
                     "tol": 1.4
                 },
                 "yAxis_offset_abs": {
-                    "target": 3.74,
+                    "target": 3.03,
                     "tol": 2.3
                 },
                 "dist": {
-                    "target": 103.61,
+                    "target": 157.93,
                     "tol": 2.3
                 }
             }
@@ -630,6 +642,12 @@
                 "target_lock_acquire_timeout_s": 0.35,
                 "target_lock_center_x_worse_margin_mm": 1.5,
                 "target_lock_center_y_worse_margin_mm": 2.0,
+                "x_axis_turn_drive_assist": {
+                    "enabled": true,
+                    "require_dist_outside_gate": true,
+                    "min_dist_outside_mm": 0.0,
+                    "forward_profile": "forward_pivot"
+                },
                 "micro_adjust_focus_guard_enabled": true,
                 "micro_adjust_focus_guard_confirm_frames": 3,
                 "micro_adjust_focus_guard_reverse_max_acts": 1,

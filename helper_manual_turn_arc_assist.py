@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import telemetry_robot as telemetry_robot_module
+from helper_turn_drive_motion import build_turn_drive_motion_plan
 
 
 ASSIST_CONFIG_KEY = "manual_turn_arc_assist"
@@ -103,82 +104,23 @@ def build_manual_turn_arc_plan(
     if not isinstance(profile, dict):
         return None
 
-    try:
-        score_val = int(score)
-    except (TypeError, ValueError):
+    plan = build_turn_drive_motion_plan(
+        cmd=cmd_key,
+        score=score,
+        hold_duration_ms=hold_duration_ms,
+        pwm_override=pwm_override,
+        profile_override={
+            "drive_mode": "forward",
+            "inner_ratio": profile.get("inner_ratio", 0.0),
+            "outer_ratio": profile.get("outer_ratio", 1.0),
+            "action_note": "TURN+FWD",
+        },
+        metadata={"hotkey": hotkey_key},
+    )
+    if not isinstance(plan, dict):
         return None
-
-    try:
-        base_pwm = telemetry_robot_module.clamp_pwm(int(round(float(pwm_override))))
-    except (TypeError, ValueError):
-        base_pwm = None
-    if base_pwm is None or int(base_pwm) <= 0:
-        try:
-            _power, base_pwm, _score_used, duration_model_ms = telemetry_robot_module.speed_power_pwm_for_cmd(
-                cmd_key,
-                int(score_val),
-            )
-        except Exception:
-            return None
-    else:
-        duration_model_ms = None
-    try:
-        base_pwm = telemetry_robot_module.clamp_pwm(int(round(float(base_pwm))))
-    except (TypeError, ValueError):
-        return None
-    if base_pwm is None or int(base_pwm) <= 0:
-        return None
-
-    try:
-        hold_duration = max(1, int(round(float(hold_duration_ms))))
-    except (TypeError, ValueError):
-        hold_duration = None
-    if hold_duration is None:
-        try:
-            hold_duration = max(1, int(round(float(duration_model_ms))))
-        except (TypeError, ValueError):
-            return None
-
-    try:
-        inner_ratio = max(0.0, min(1.0, float(profile.get("inner_ratio", 0.0))))
-    except (TypeError, ValueError):
-        inner_ratio = 0.0
-    try:
-        outer_ratio = max(0.0, min(1.0, float(profile.get("outer_ratio", 1.0))))
-    except (TypeError, ValueError):
-        outer_ratio = 1.0
-
-    outer_pwm = telemetry_robot_module.clamp_pwm(int(round(float(base_pwm) * float(outer_ratio))))
-    inner_pwm = telemetry_robot_module.clamp_pwm(int(round(float(base_pwm) * float(inner_ratio))))
-    if outer_pwm is None or int(outer_pwm) <= 0:
-        return None
-    if inner_pwm is None:
-        inner_pwm = 0
-
-    if cmd_key == "l":
-        actions = [
-            {"target": "l", "action": "b", "pwm": int(inner_pwm)},
-            {"target": "r", "action": "f", "pwm": int(outer_pwm)},
-        ]
-    else:
-        actions = [
-            {"target": "l", "action": "b", "pwm": int(outer_pwm)},
-            {"target": "r", "action": "f", "pwm": int(inner_pwm)},
-        ]
-
-    return {
-        "enabled": True,
-        "hotkey": hotkey_key,
-        "cmd": cmd_key,
-        "score": int(score_val),
-        "duration_ms": int(hold_duration),
-        "base_pwm": int(base_pwm),
-        "inner_pwm": int(inner_pwm),
-        "outer_pwm": int(outer_pwm),
-        "inner_ratio": float(inner_ratio),
-        "outer_ratio": float(outer_ratio),
-        "actions": actions,
-    }
+    plan["hotkey"] = hotkey_key
+    return plan
 
 
 def format_manual_turn_arc_assist_line(plan: dict | None) -> str | None:

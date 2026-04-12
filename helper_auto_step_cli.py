@@ -7,8 +7,21 @@ import argparse
 import json
 import time
 
-from a_MAIN import AppState, close_log, refresh_brick_telemetry, resolve_step_token, run_auto_step
-from helper_manual_drive_breakaway_test import _build_vision
+from a_MAIN import (
+    VISION_MODE_CYAN,
+    _DEFAULT_CYAN_PROFILE,
+    _DEFAULT_CYAN_VISIBILITY,
+    _apply_cyan_profile,
+    _apply_cyan_visibility,
+    _stream_state_cyan_profile,
+    _stream_state_cyan_visibility,
+    AppState,
+    build_vision,
+    close_log,
+    refresh_brick_telemetry,
+    resolve_step_token,
+    run_auto_step,
+)
 from helper_robot_control import Robot
 from helper_vision_config import normalize_vision_mode
 
@@ -17,22 +30,41 @@ def resolve_step_argument(token: str):
     return resolve_step_token(str(token or "").strip())
 
 
-def _prime_vision(app_state, *, reads: int = 3, sleep_s: float = 0.05) -> dict:
+def _prime_vision(
+    app_state,
+    *,
+    reads: int = 16,
+    sleep_s: float = 0.08,
+    require_visible_streak: int = 2,
+) -> dict:
     reads_used = max(1, int(reads))
+    required_streak = max(1, int(require_visible_streak))
     pose = {"visible": None, "dist_mm": None, "x_axis_mm": None}
+    visible_streak = 0
+    visible_samples = 0
     for _ in range(int(reads_used)):
         refresh_brick_telemetry(app_state, read_vision=True)
         brick = getattr(app_state.world, "brick", {}) or {}
+        visible_now = bool(brick.get("visible"))
+        if visible_now:
+            visible_samples += 1
+            visible_streak += 1
+        else:
+            visible_streak = 0
         pose = {
-            "visible": brick.get("visible"),
+            "visible": bool(brick.get("visible")),
             "dist_mm": brick.get("dist"),
             "x_axis_mm": brick.get("x_axis", brick.get("x")),
         }
+        if visible_streak >= required_streak:
+            break
         time.sleep(max(0.0, float(sleep_s)))
+    pose["visible_samples"] = int(visible_samples)
+    pose["reads_used"] = int(reads_used)
     return pose
 
 
-def run_single_auto_step(*, step_token: str, vision_mode: str):
+def run_single_auto_step(*, step_token: str, vision_mode: str | None):
     step_obj = resolve_step_argument(step_token)
     if step_obj is None:
         return {
@@ -40,10 +72,28 @@ def run_single_auto_step(*, step_token: str, vision_mode: str):
             "error": f"unknown_step:{step_token}",
         }
 
-    mode_norm = normalize_vision_mode(vision_mode)
-    app_state = AppState(vision_mode=mode_norm)
+    mode_raw = None if vision_mode is None else str(vision_mode).strip().lower()
+    if mode_raw in (None, "", "auto"):
+        app_state = AppState()
+        mode_norm = str(getattr(app_state, "active_vision_mode", "cyan"))
+    else:
+        mode_norm = normalize_vision_mode(mode_raw)
+        app_state = AppState(vision_mode=mode_norm)
     app_state.robot = Robot()
-    app_state.vision = _build_vision(mode_norm)
+    app_state.vision = build_vision(mode_norm, yolo_model_path=getattr(app_state, "yolo_model_path", None))
+    if normalize_vision_mode(mode_norm) == VISION_MODE_CYAN and app_state.vision is not None:
+        active_cyan_profile = _stream_state_cyan_profile(app_state, _DEFAULT_CYAN_PROFILE)
+        active_cyan_visibility = _stream_state_cyan_visibility(app_state, _DEFAULT_CYAN_VISIBILITY)
+        _apply_cyan_profile(
+            app_state,
+            app_state.vision,
+            active_cyan_profile,
+        )
+        _apply_cyan_visibility(
+            app_state,
+            app_state.vision,
+            active_cyan_visibility,
+        )
     try:
         pose_before = _prime_vision(app_state)
         print(
@@ -87,15 +137,15 @@ def main() -> int:
     parser.add_argument(
         "--vision",
         type=str,
-        choices=("cyan", "yolo", "leia", "aruco"),
-        default="cyan",
-        help="Vision mode for the auto-step run.",
+        choices=("auto", "cyan", "yolo", "leia", "aruco"),
+        default="auto",
+        help="Vision mode for the auto-step run. Default: auto (match app/world-model active mode).",
     )
     args = parser.parse_args()
 
     result = run_single_auto_step(
         step_token=str(args.step),
-        vision_mode=str(args.vision),
+        vision_mode=(None if str(args.vision).strip().lower() == "auto" else str(args.vision)),
     )
     print(json.dumps(result, indent=2))
     return 0 if bool(result.get("ok")) else 1

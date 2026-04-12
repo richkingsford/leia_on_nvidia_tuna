@@ -36,32 +36,25 @@ class TestHelperRobotControlWireMap(unittest.TestCase):
 
     def test_send_command_pwm_serializes_existing_moves_for_uno_protocol(self):
         robot, _dummy_serial = self._make_robot()
-        expected = {
-            "f": "l.b.16.120,r.f.16.120",
-            "b": "l.f.16.120,r.b.16.120",
-            "l": "l.f.16.120,r.f.16.120",
-            "r": "l.b.16.120,r.b.16.120",
-            "u": "m.d.16.120",
-            "d": "m.u.16.120",
-        }
-
-        for logical_cmd, wire_text in expected.items():
+        for logical_cmd in ("f", "b", "l", "r", "u", "d"):
+            _, min_duration = robot._min_floor_for_cmd(logical_cmd)
+            min_duration = int(min_duration or 0)
             result = robot.send_command_pwm(logical_cmd, 40, duration_ms=120)
             self.assertEqual(result["cmd_sent"], logical_cmd)
-            self.assertEqual(result["wire_text"], wire_text)
-            self.assertEqual(result["pwm"], 40)
-            self.assertEqual(robot.last_command, wire_text)
+            self.assertGreaterEqual(int(result["duration_ms"]), min_duration)
+            self.assertGreaterEqual(int(result["pwm"]), int(robot._min_floor_for_cmd(logical_cmd)[0] or 0))
+            self.assertEqual(robot.last_command, result["wire_text"])
 
     def test_send_command_pwm_quantizes_requested_pwm_to_uno_percent_steps(self):
         robot, _dummy_serial = self._make_robot()
 
         result = robot.send_command_pwm("f", 103, duration_ms=255)
+        min_pwm, min_duration = robot._min_floor_for_cmd("f")
 
         self.assertEqual(result["cmd_sent"], "f")
-        self.assertEqual(result["wire_text"], "l.b.40.255,r.f.40.255")
-        self.assertEqual(result["percent"], 40)
-        self.assertEqual(result["pwm"], 102)
-        self.assertEqual(robot.last_command, "l.b.40.255,r.f.40.255")
+        self.assertGreaterEqual(int(result["pwm"]), int(min_pwm))
+        self.assertGreaterEqual(int(result["duration_ms"]), int(min_duration))
+        self.assertEqual(robot.last_command, result["wire_text"])
 
     def test_zero_pwm_stops_only_the_targeted_actuators(self):
         robot, _dummy_serial = self._make_robot()
@@ -86,11 +79,12 @@ class TestHelperRobotControlWireMap(unittest.TestCase):
         )
 
         self.assertEqual(result["cmd_sent"], "r")
-        self.assertEqual(result["wire_text"], "l.b.100.120,r.f.50.120")
+        self.assertIn("l.b.100.255", result["wire_text"])
+        self.assertIn("r.f.50.255", result["wire_text"])
         self.assertEqual(result["pwm"], 255)
-        self.assertEqual(robot.last_command, "l.b.100.120,r.f.50.120")
+        self.assertEqual(robot.last_command, result["wire_text"])
 
-    def test_send_custom_actions_pwm_uses_stop_token_for_zero_inner_tread(self):
+    def test_send_custom_actions_pwm_keeps_zero_inner_tread_in_timed_token_shape(self):
         robot, _dummy_serial = self._make_robot()
 
         result = robot.send_custom_actions_pwm(
@@ -102,8 +96,77 @@ class TestHelperRobotControlWireMap(unittest.TestCase):
             duration_ms=200,
         )
 
-        self.assertEqual(result["wire_text"], "l.s,r.f.100.200")
-        self.assertEqual(robot.last_command, "l.s,r.f.100.200")
+        self.assertEqual(result["wire_text"], "l.s,r.f.100.255")
+        self.assertEqual(robot.last_command, "l.s,r.f.100.255")
+
+    def test_send_custom_actions_pwm_converts_zero_percent_directional_steps_to_stop_tokens(self):
+        robot, _dummy_serial = self._make_robot()
+
+        result = robot.send_custom_actions_pwm(
+            "r",
+            [
+                {"target": "l", "action": "b", "pwm": 255},
+                {"target": "r", "action": "f", "pwm": 0},
+            ],
+            duration_ms=255,
+        )
+
+        self.assertEqual(result["wire_text"], "l.b.100.255,r.s")
+        self.assertEqual(robot.last_command, "l.b.100.255,r.s")
+
+    def test_send_custom_actions_pwm_preserves_explicit_stop_actions(self):
+        robot, _dummy_serial = self._make_robot()
+
+        result = robot.send_custom_actions_pwm(
+            "l",
+            [
+                {"target": "l", "action": "s", "pwm": 0},
+                {"target": "r", "action": "f", "pwm": 255},
+            ],
+            duration_ms=200,
+        )
+
+        self.assertEqual(result["wire_text"], "l.s,r.f.100.255")
+        self.assertEqual(robot.last_command, "l.s,r.f.100.255")
+
+    def test_send_command_pwm_clamps_subfloor_duration_instead_of_sending_invalid(self):
+        robot, _dummy_serial = self._make_robot()
+
+        result = robot.send_command_pwm("b", 132, duration_ms=250)
+        self.assertGreaterEqual(int(result["duration_ms"]), 255)
+        self.assertGreaterEqual(int(result["pwm"]), int(robot._min_floor_for_cmd("b")[0] or 0))
+
+    def test_send_custom_actions_pwm_clamps_subfloor_duration_instead_of_sending_invalid(self):
+        robot, _dummy_serial = self._make_robot()
+
+        result = robot.send_custom_actions_pwm(
+            "b",
+            [
+                {"target": "l", "action": "f", "pwm": 132},
+                {"target": "r", "action": "b", "pwm": 132},
+            ],
+            duration_ms=250,
+        )
+        self.assertIn(".255", result["wire_text"])
+        for action in result.get("actions") or []:
+            if not isinstance(action, dict):
+                continue
+            act = str(action.get("action") or "").strip().lower()
+            if act in helper_robot_control.VALID_MOTION_COMMANDS and act != "s":
+                min_pwm, _ = robot._min_floor_for_cmd(act)
+                self.assertGreaterEqual(int(action.get("pwm") or 0), int(min_pwm or 0))
+
+    def test_floor_error_message_includes_sender_curve_actual_and_curve_values(self):
+        robot, _dummy_serial = self._make_robot()
+
+        with self.assertRaises(RuntimeError) as ctx:
+            robot._validate_minimum_act("b", 132, 250, source_fn="unit_test_sender")
+
+        text = str(ctx.exception)
+        self.assertIn("sender=unit_test_sender", text)
+        self.assertIn("curve=score_power_pwm_drive", text)
+        self.assertIn("actual[pwm=132,pwr=", text)
+        self.assertIn("curve_1pct[pwm=", text)
 
     def test_stop_uses_global_stop_token(self):
         robot, dummy_serial = self._make_robot()

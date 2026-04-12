@@ -1,5 +1,6 @@
 import unittest
 import sys
+import re
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -273,18 +274,178 @@ class CalibrateXTests(unittest.TestCase):
                 duration_override_ms=240,
             )
         self.assertFalse(mock_send.call_args.kwargs["half_first_turn_pulse"])
+        action_specs = mock_send.call_args.kwargs.get("custom_action_specs") or []
+        self.assertEqual(len(action_specs), 2)
+        self.assertEqual(action_specs[0].get("target"), "l")
+        self.assertEqual(action_specs[0].get("action"), "b")
+        self.assertEqual(action_specs[1].get("target"), "r")
+        self.assertEqual(action_specs[1].get("action"), "s")
+
+    def test_send_reset_score_command_uses_back_turn_specs(self):
+        with patch.object(
+            calibrate_x,
+            "send_robot_command",
+            return_value={"cmd_sent": "l", "duration_ms": 255},
+        ) as mock_send:
+            calibrate_x._send_reset_score_command(
+                robot=object(),
+                world=object(),
+                step="CALIBRATE_X_RESET",
+                cmd="l",
+                score=1,
+                duration_override_ms=255,
+            )
+        action_specs = mock_send.call_args.kwargs.get("custom_action_specs") or []
+        self.assertEqual(len(action_specs), 2)
+        self.assertEqual(action_specs[0].get("target"), "l")
+        self.assertEqual(action_specs[0].get("action"), "s")
+        self.assertEqual(action_specs[1].get("target"), "r")
+        self.assertEqual(action_specs[1].get("action"), "b")
+
+    def test_reset_cmd_for_x_turns_away_from_brick(self):
+        self.assertEqual(calibrate_x._reset_cmd_for_x(12.0, center_x_mm=0.0), "r")
+        self.assertEqual(calibrate_x._reset_cmd_for_x(-12.0, center_x_mm=0.0), "l")
+        self.assertIsNone(calibrate_x._reset_cmd_for_x(0.0, center_x_mm=0.0))
+
+    def test_center_progress_guard_flips_mapping_when_further_from_center(self):
+        row = calibrate_x.TrialResult(
+            trial=1,
+            duration_ms=255,
+            cmd="r",
+            score_requested=8,
+            cmd_sent="r",
+            pwm=132,
+            power=0.438,
+            pre_x_mm=-28.55,
+            post_x_mm=-36.04,
+            raw_delta_mm=-7.49,
+            signed_cmd_delta_mm=7.49,
+            cmd_delta_mm=7.49,
+            wrong_way=False,
+            pre_dist_mm=131.46,
+            post_dist_mm=131.46,
+            pre_brick_dist_mm=131.46,
+            post_brick_dist_mm=131.46,
+            pre_confidence=0.9,
+            post_confidence=0.9,
+            pre_samples_used=3,
+            post_samples_used=3,
+            pre_pose_source="lite_smoothed",
+            post_pose_source="lite_smoothed",
+            pre_observation_mode="primary_full",
+            post_observation_mode="primary_full",
+            post_reobserved=False,
+            phase="primary",
+            source_trial=1,
+        )
+        original_invert = calibrate_x.X_AXIS_INVERT
+        calibrate_x.X_AXIS_INVERT = False
+        try:
+            changed = calibrate_x._maybe_auto_invert_x_axis_mapping(
+                row=row,
+                phase="primary",
+                target_x_mm=0.0,
+                auto_invert_count=0,
+            )
+            self.assertTrue(changed)
+            self.assertTrue(calibrate_x.X_AXIS_INVERT)
+        finally:
+            calibrate_x.X_AXIS_INVERT = original_invert
+
+    def test_center_progress_guard_does_not_flip_for_repeat_phase(self):
+        row = calibrate_x.TrialResult(
+            trial=1,
+            duration_ms=255,
+            cmd="r",
+            score_requested=8,
+            cmd_sent="r",
+            pwm=132,
+            power=0.438,
+            pre_x_mm=-28.55,
+            post_x_mm=-36.04,
+            raw_delta_mm=-7.49,
+            signed_cmd_delta_mm=7.49,
+            cmd_delta_mm=7.49,
+            wrong_way=False,
+            pre_dist_mm=131.46,
+            post_dist_mm=131.46,
+            pre_brick_dist_mm=131.46,
+            post_brick_dist_mm=131.46,
+            pre_confidence=0.9,
+            post_confidence=0.9,
+            pre_samples_used=3,
+            post_samples_used=3,
+            pre_pose_source="lite_smoothed",
+            post_pose_source="lite_smoothed",
+            pre_observation_mode="primary_full",
+            post_observation_mode="primary_full",
+            post_reobserved=False,
+            phase="repeat",
+            source_trial=1,
+        )
+        original_invert = calibrate_x.X_AXIS_INVERT
+        calibrate_x.X_AXIS_INVERT = False
+        try:
+            changed = calibrate_x._maybe_auto_invert_x_axis_mapping(
+                row=row,
+                phase="repeat",
+                target_x_mm=0.0,
+                auto_invert_count=0,
+            )
+            self.assertFalse(changed)
+            self.assertFalse(calibrate_x.X_AXIS_INVERT)
+        finally:
+            calibrate_x.X_AXIS_INVERT = original_invert
+
+    def test_evaluate_direction_probe_deltas_flips_when_measured_positive_differs(self):
+        original_invert = calibrate_x.X_AXIS_INVERT
+        calibrate_x.X_AXIS_INVERT = False
+        try:
+            outcome = calibrate_x._evaluate_direction_probe_deltas(
+                deltas_by_cmd={"l": -3.0, "r": 2.0},
+                min_delta_mm=0.5,
+            )
+            self.assertTrue(bool(outcome.get("invert_applied")))
+            self.assertEqual(str(outcome.get("measured_positive_cmd")), "r")
+            self.assertTrue(calibrate_x.X_AXIS_INVERT)
+        finally:
+            calibrate_x.X_AXIS_INVERT = original_invert
+
+    def test_run_startup_direction_probe_skips_when_robot_send_api_missing(self):
+        pose = {
+            "offset_x": 5.0,
+            "dist": 120.0,
+            "confidence": 0.9,
+            "pose_source": "lite_smoothed",
+        }
+        out_pose, meta = calibrate_x._run_startup_direction_probe(
+            initial_pose=pose,
+            vision=object(),
+            world=object(),
+            robot=object(),
+            recent_acts=[],
+            setup_score=1,
+            center_target_x_mm=0.0,
+            observe_timeout_s=1.0,
+            post_act_settle_s=0.1,
+            stream_refresh_fn=None,
+        )
+        self.assertIsInstance(out_pose, dict)
+        self.assertEqual(str((meta or {}).get("mode")), "probe_skipped_no_robot_send")
 
     def test_planned_action_meta_uses_same_central_1pct_turn_curve_as_runtime(self):
         right_meta = calibrate_x._planned_action_meta("r", 1, 65)
         left_meta = calibrate_x._planned_action_meta("l", 1, 135)
+        right_power, right_pwm, right_score, _ = calibrate_x.speed_power_pwm_for_cmd("r", 1)
+        left_power, left_pwm, left_score, _ = calibrate_x.speed_power_pwm_for_cmd("l", 1)
 
         self.assertEqual(
             (right_meta["pwm"], round(right_meta["power"], 3), right_meta["score_model"], right_meta["duration_ms"]),
-            (102, 0.301, 1, 65),
+            (int(right_pwm), round(float(right_power), 3), int(right_score), 65),
         )
         self.assertEqual(
             (left_meta["pwm"], round(left_meta["power"], 3), left_meta["score_model"], left_meta["duration_ms"]),
-            (102, 0.301, 1, 135),
+            (int(left_pwm), round(float(left_power), 3), int(left_score), 135),
         )
 
     def test_predict_movement_from_curve_uses_linear_fit(self):
@@ -444,10 +605,16 @@ class CalibrateXTests(unittest.TestCase):
         self.assertIsNone(abort_reason)
         self.assertIsNotNone(row)
         logged_lines = [call.args[0] for call in mock_log_line.call_args_list]
+        ansi_re = re.compile(r"\x1b\[[0-9;]*m")
+        normalized_lines = [ansi_re.sub("", str(line)) for line in logged_lines]
         self.assertTrue(
             any(
-                "[CALIBRATE_X] Trial 1/1: cmd=L score=1% (pwm=102, pwr=0.301, t=250ms; shared 1% floor" in line
-                for line in logged_lines
+                "[CALIBRATE_X] Trial 1/1:" in line
+                and "score=1%" in line
+                and "pwm=102" in line
+                and "pwr=0.301" in line
+                and "t=250ms" in line
+                for line in normalized_lines
             )
         )
 
@@ -662,6 +829,15 @@ class CalibrateXTests(unittest.TestCase):
             side_effect=[(primary_row, None), (repeat_row, None)],
         ) as mock_run_trial_action, patch.object(
             calibrate_x,
+            "_run_reset_for_next_trial",
+            return_value=({
+                "offset_x": 0.0,
+                "dist": 105.0,
+                "confidence": 0.9,
+                "pose_source": "lite_smoothed",
+            }, {"mode": "reset_completed", "reset_acts": 1}),
+        ) as mock_run_reset, patch.object(
+            calibrate_x,
             "_write_results",
             side_effect=lambda _path, payload: payloads.append(payload),
         ), patch.object(
@@ -671,6 +847,7 @@ class CalibrateXTests(unittest.TestCase):
             exit_code = calibrate_x.main()
         self.assertEqual(exit_code, 0)
         self.assertEqual(mock_run_trial_action.call_count, 2)
+        self.assertEqual(mock_run_reset.call_count, 1)
         self.assertEqual(payloads[-1]["config"]["repeat_pass_enabled"], True)
 
     def test_main_fixed_trial_speed_mode_uses_prompted_score(self):

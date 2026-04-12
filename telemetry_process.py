@@ -21,7 +21,8 @@ from helper_vision_config import (
 import helper_gate_utils as gate_utils
 import helper_crosshair_stack_count
 import helper_xyz_coords
-from helper_robot_control import Robot
+import helper_turn_drive_motion
+from helper_robot_control import Robot, VALID_MOTION_COMMANDS
 from telemetry_robot import MotionEvent, StepState, WorldModel, draw_telemetry_overlay
 import telemetry_brick
 import helper_next as next_module
@@ -1241,6 +1242,7 @@ def action_sent_display_text(
     duration_ms=None,
     ease_note=None,
     anti_alias_note=None,
+    action_note=None,
 ):
     # Operator-facing displays should report semantic motion intent (`cmd`).
     # Raw transport remaps (`cmd_sent`) belong in explicit wire/debug logs.
@@ -1271,6 +1273,7 @@ def action_sent_display_text(
         if ms_val is not None:
             parts.append(f"{ms_val}ms")
     note_value = _join_action_notes(
+        action_note,
         ease_note,
         anti_alias_note,
         telemetry_robot_module.one_percent_discovery_note(cmd_display, speed_score),
@@ -1308,6 +1311,7 @@ def auto_action_detail_text(cmd, speed_score=None, *, action_meta=None, context_
         if duration_ms is None:
             duration_ms = action_meta.get("duration_model_ms")
         note_value = _join_action_notes(
+            action_meta.get("action_note"),
             action_meta.get("ease_in_out_note"),
             action_meta.get("anti_alias_note"),
             context_note,
@@ -1321,6 +1325,7 @@ def auto_action_detail_text(cmd, speed_score=None, *, action_meta=None, context_
             duration_ms=duration_ms,
             ease_note=note_value,
             anti_alias_note=note_value,
+            action_note=note_value,
         )
     text = action_display_text(cmd, speed_score)
     note_text = str(context_note or "").strip()
@@ -1342,6 +1347,7 @@ def record_action_display(
     ease_note=None,
     score_model=None,
     anti_alias_note=None,
+    action_note=None,
 ):
     if world is None or not cmd:
         return
@@ -1355,9 +1361,10 @@ def record_action_display(
     world._last_action_cmd_sent = cmd_sent
     world._last_action_pwm = pwm
     world._last_action_duration_ms = duration_ms
-    note_value = ease_note if ease_note else anti_alias_note
+    note_value = _join_action_notes(action_note, ease_note, anti_alias_note)
     world._last_action_ease_in_out_note = note_value
     world._last_action_anti_alias_note = note_value
+    world._last_action_note = note_value
     world._last_action_display = action_display_text(cmd, speed_score)
     world._last_action_sent_display = action_sent_display_text(
         cmd,
@@ -1368,6 +1375,7 @@ def record_action_display(
         duration_ms=duration_ms,
         ease_note=note_value,
         anti_alias_note=anti_alias_note,
+        action_note=action_note,
     )
 
 
@@ -2022,6 +2030,32 @@ def _action_meta_wait_seconds(action_meta, *, world=None, fallback_s=CONTROL_DT,
     return max(0.0, float(wait_s))
 
 
+def _action_meta_has_timed_motion(action_meta):
+    if not isinstance(action_meta, dict):
+        return False
+    segments = action_meta.get("segments")
+    if isinstance(segments, list):
+        for seg in segments:
+            if not isinstance(seg, dict):
+                continue
+            seg_ms = _as_int(seg.get("duration_ms"), None)
+            if seg_ms is None:
+                seg_ms = _as_int(seg.get("duration_model_ms"), None)
+            if seg_ms is not None and int(seg_ms) > 0:
+                return True
+    duration_ms = _as_int(action_meta.get("duration_ms"), None)
+    if duration_ms is None:
+        duration_ms = _as_int(action_meta.get("duration_model_ms"), None)
+    return duration_ms is not None and int(duration_ms) > 0
+
+
+def _should_stop_robot_after_action(action_meta):
+    # Do not cancel timed fire-and-forget acts just because a confirmation
+    # callback is active. Preserve the legacy immediate stop only for untimed
+    # sends.
+    return not _action_meta_has_timed_motion(action_meta)
+
+
 def height_intel_values(world):
     values = {
         "brick_height_mm": float(_height_intel_brick_height_mm()),
@@ -2595,8 +2629,13 @@ def send_robot_command_pwm(
     half_first_turn_pulse=True,
     ease_in_out_enabled=None,
     respect_requested_duration=False,
+    custom_action_specs=None,
+    action_note=None,
 ):
     if robot is None or cmd is None:
+        return None
+    cmd = str(cmd).strip().lower()
+    if cmd not in VALID_MOTION_COMMANDS:
         return None
     _repeat_act_guard_before_send(world, robot, step, cmd)
     try:
@@ -2683,6 +2722,11 @@ def send_robot_command_pwm(
             if floor_ms is not None and floor_ms > 0:
                 duration_used_ms = max(int(duration_used_ms), int(floor_ms))
 
+    custom_actions = (
+        [dict(spec) for spec in custom_action_specs if isinstance(spec, dict)]
+        if isinstance(custom_action_specs, (list, tuple))
+        else []
+    )
     ease_profile = None
     ease_note = None
     # Easing can run in two modes:
@@ -2700,7 +2744,7 @@ def send_robot_command_pwm(
     else:
         ease_allowed = bool(ease_in_out_enabled)
     allow_sequenced_ease = bool(ease_allowed and (supports_timed_command_queue or not bool(auto_mode)))
-    if allow_sequenced_ease:
+    if allow_sequenced_ease and not custom_actions:
         ease_builder = getattr(telemetry_robot_module, "drive_ease_in_out_segments", None)
         if not callable(ease_builder):
             ease_builder = getattr(telemetry_robot_module, "drive_anti_alias_segments", None)
@@ -2900,7 +2944,13 @@ def send_robot_command_pwm(
                 }
 
     send_result = None
-    if hasattr(robot, "send_command_pwm"):
+    if custom_actions and hasattr(robot, "send_custom_actions_pwm"):
+        send_result = robot.send_custom_actions_pwm(
+            cmd,
+            custom_actions,
+            duration_ms=duration_used_ms,
+        )
+    elif hasattr(robot, "send_command_pwm"):
         send_result = robot.send_command_pwm(cmd, pwm_val, duration_ms=duration_used_ms)
     else:
         send_result = robot.send_command(cmd, power_val, duration_ms=duration_used_ms)
@@ -2941,6 +2991,7 @@ def send_robot_command_pwm(
         ease_note=ease_note,
         score_model=speed_score,
         anti_alias_note=ease_note,
+        action_note=action_note,
     )
     _repeat_act_guard_after_send(world, robot, cmd)
 
@@ -2963,6 +3014,8 @@ def send_robot_command_pwm(
         "motion_intensity_effective": motion_intensity_effective,
         "ease_in_out_note": ease_note,
         "anti_alias_note": ease_note,
+        "action_note": action_note,
+        "actions": (send_result.get("actions") if isinstance(send_result, dict) else None),
     }
 
 
@@ -2979,18 +3032,47 @@ def send_robot_command(
     duration_override_ms=None,
     half_first_turn_pulse=True,
     ease_in_out_enabled=None,
+    custom_action_specs=None,
+    action_note=None,
 ):
     if robot is None or cmd is None:
+        return None
+    cmd = str(cmd).strip().lower()
+    if cmd not in VALID_MOTION_COMMANDS:
         return None
 
     turn_intensity_requested = None
     turn_intensity_effective = None
     motion_intensity_requested = None
     motion_intensity_effective = None
+    duration_override_val = None
     try:
-        duration_override_val = int(round(float(duration_override_ms)))
+        if duration_override_ms is not None:
+            duration_raw = float(duration_override_ms)
+            if duration_raw > 0.0:
+                # Compatibility guard:
+                # Some planners/tools may provide duration override in seconds
+                # (for example 0.35), while the runtime send path expects ms.
+                # Treat small fractional values as seconds; otherwise keep ms.
+                if duration_raw <= 10.0 and abs(duration_raw - round(duration_raw)) > 1e-6:
+                    duration_override_val = int(round(duration_raw * 1000.0))
+                else:
+                    duration_override_val = int(round(duration_raw))
     except (TypeError, ValueError):
         duration_override_val = None
+
+    # Clamp duration override to the command's 1% floor duration.
+    if duration_override_val is not None:
+        try:
+            _, _, _, min_duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd(
+                cmd,
+                getattr(telemetry_robot_module, "SPEED_SCORE_MIN", 1),
+            )
+            min_duration_ms = int(round(float(min_duration_ms)))
+        except Exception:
+            min_duration_ms = None
+        if min_duration_ms is not None and min_duration_ms > 0:
+            duration_override_val = max(int(duration_override_val), int(min_duration_ms))
 
     if cmd in ("l", "r") and turn_intensity is not None:
         try:
@@ -3029,6 +3111,8 @@ def send_robot_command(
                 half_first_turn_pulse=half_first_turn_pulse,
                 ease_in_out_enabled=ease_in_out_enabled,
                 respect_requested_duration=bool(duration_override_val is not None and duration_override_val > 0),
+                custom_action_specs=custom_action_specs,
+                action_note=action_note,
             )
 
     if cmd in ("u", "d") and motion_intensity is not None:
@@ -3065,6 +3149,8 @@ def send_robot_command(
                 half_first_turn_pulse=half_first_turn_pulse,
                 ease_in_out_enabled=ease_in_out_enabled,
                 respect_requested_duration=bool(duration_override_val is not None and duration_override_val > 0),
+                custom_action_specs=custom_action_specs,
+                action_note=action_note,
             )
 
     score_used = speed_score
@@ -3098,6 +3184,8 @@ def send_robot_command(
         half_first_turn_pulse=half_first_turn_pulse,
         ease_in_out_enabled=ease_in_out_enabled,
         respect_requested_duration=bool(duration_override_val is not None and duration_override_val > 0),
+        custom_action_specs=custom_action_specs,
+        action_note=action_note,
     )
 
 
@@ -10013,7 +10101,55 @@ def run_alignment_segment(
             return "closer"
         return "backward"
 
-    def _unknown_metric_for_planned_action(*, cmd, cmd_reason, local_gate_before_action):
+
+    def _action_signature(cmd, score, duration_ms, custom_action_specs):
+        cmd_key = str(cmd or "").strip().lower()
+        try:
+            score_val = int(round(float(score))) if score is not None else None
+        except (TypeError, ValueError):
+            score_val = None
+        try:
+            duration_val = int(round(float(duration_ms))) if duration_ms is not None else None
+        except (TypeError, ValueError):
+            duration_val = None
+        sig = (cmd_key, score_val, duration_val)
+        if isinstance(custom_action_specs, (list, tuple)):
+            specs = []
+            for spec in custom_action_specs:
+                if not isinstance(spec, dict):
+                    continue
+                target = str(spec.get("target") or "").strip().lower()
+                action = str(spec.get("action") or "").strip().lower()
+                try:
+                    pwm_val = int(round(float(spec.get("pwm") or 0)))
+                except (TypeError, ValueError):
+                    pwm_val = 0
+                specs.append((target, action, pwm_val))
+            sig = sig + (tuple(specs),)
+        return sig
+
+
+    def _scale_custom_action_specs(action_specs, factor):
+        if not isinstance(action_specs, (list, tuple)) or float(factor) <= 1.0:
+            return action_specs
+        scaled = []
+        max_pwm = int(getattr(telemetry_robot_module, "MAX_PWM", 255) or 255)
+        for spec in action_specs:
+            if not isinstance(spec, dict):
+                scaled.append(spec)
+                continue
+            try:
+                pwm_val = int(round(float(spec.get("pwm") or 0)))
+            except (TypeError, ValueError):
+                pwm_val = 0
+            if pwm_val > 0:
+                pwm_val = int(round(min(max_pwm, max(1, float(pwm_val) * float(factor)))))
+            new_spec = dict(spec)
+            new_spec["pwm"] = pwm_val
+            scaled.append(new_spec)
+        return scaled
+
+    def _unknown_metric_for_planned_action(*, cmd, cmd_reason, local_gate_before_action, world=None):
         cmd_key = str(cmd or "").strip().lower()
         reason_key = str(cmd_reason or "").strip().lower()
         local_gate = local_gate_before_action if isinstance(local_gate_before_action, dict) else {}
@@ -10073,6 +10209,7 @@ def run_alignment_segment(
 
         return None
 
+
     def _emit_align_shorthand_action_line(
         *,
         local_gate_before_action,
@@ -10087,495 +10224,498 @@ def run_alignment_segment(
         act_plan=None,
         settle=False,
         force_gap_switch=False,
-    ):
-        cmd_key = str(cmd).strip().lower()
-        if cmd_key in ("f", "b"):
-            correction_type = "distance"
-        elif cmd_key in ("l", "r"):
-            correction_type = "x_axis"
-        elif cmd_key in ("u", "d"):
-            correction_type = "y_axis"
-        else:
-            correction_type = str(prev_log_correction_type or "").strip().lower()
-            if correction_type not in {"distance", "x_axis", "y_axis"}:
+        ):
+            cmd_key = str(cmd).strip().lower()
+            if cmd_key in ("f", "b"):
+                correction_type = "distance"
+            elif cmd_key in ("l", "r"):
                 correction_type = "x_axis"
+            elif cmd_key in ("u", "d"):
+                correction_type = "y_axis"
+            else:
+                correction_type = str(prev_log_correction_type or "").strip().lower()
+                if correction_type not in {"distance", "x_axis", "y_axis"}:
+                    correction_type = "x_axis"
 
-        x_err_now = local_gate_before_action.get("x_err")
-        x_target = local_gate_before_action.get("x_target")
-        x_tol = local_gate_before_action.get("x_tol")
-        y_err_now = local_gate_before_action.get("y_err")
-        y_target = local_gate_before_action.get("y_target")
-        y_tol = local_gate_before_action.get("y_tol")
-        dist_now = local_gate_before_action.get("dist")
-        dist_target = local_gate_before_action.get("dist_target")
-        dist_tol = local_gate_before_action.get("dist_tol")
+            x_err_now = local_gate_before_action.get("x_err")
+            x_target = local_gate_before_action.get("x_target")
+            x_tol = local_gate_before_action.get("x_tol")
+            y_err_now = local_gate_before_action.get("y_err")
+            y_target = local_gate_before_action.get("y_target")
+            y_tol = local_gate_before_action.get("y_tol")
+            dist_now = local_gate_before_action.get("dist")
+            dist_target = local_gate_before_action.get("dist_target")
+            dist_tol = local_gate_before_action.get("dist_tol")
 
-        metric_color = COLOR_YELLOW
-        metric_text = ""
-        metric_name = "x_err"
-        switch_message = None
-        switch_message_colored = None
-        result_observation_message = None
-        result_observation_message_colored = None
-        comparison_message = None
-        comparison_message_colored = None
-        switch_reassure_message = None
-        switch_reassure_message_colored = None
-        switch_snapshot_lines = None
-        switch_snapshot_lines_colored = None
-        obs_target = None
-        obs_tol = None
-        obs_target_label = "target"
-        obs_target_note = ""
-        prev_type = str(prev_log_correction_type or "").strip().lower()
-        switched_gap_type = bool(force_gap_switch) or (
-            prev_type in {"distance", "x_axis", "y_axis"} and prev_type != correction_type
-        )
-
-        def _switch_gap_message_pair(metric_name_local):
-            plain = f"Switching gap type to {metric_name_local}"
-            colored = f"{COLOR_ORANGE_BRIGHT}Switching{COLOR_RESET} gap type to {metric_name_local}"
-            return plain, colored
-
-        def _switch_result_observation_pair(metric_name_local, curr_err_local, prev_err_local, *, overshot_local=False):
-            plain, colored, _ = _format_align_result_observation(
-                metric_name_local,
-                curr_err_local,
-                prev_err_local,
-                overshot=bool(overshot_local),
-            )
-            return plain, colored
-
-        def _comparison_line_pair(metric_name_local, curr_err_local, prev_err_local, *, overshot_local=False):
-            return _format_align_result_observation(
-                metric_name_local,
-                curr_err_local,
-                prev_err_local,
-                overshot=bool(overshot_local),
+            metric_color = COLOR_YELLOW
+            metric_text = ""
+            metric_name = "x_err"
+            switch_message = None
+            switch_message_colored = None
+            result_observation_message = None
+            result_observation_message_colored = None
+            comparison_message = None
+            comparison_message_colored = None
+            switch_reassure_message = None
+            switch_reassure_message_colored = None
+            switch_snapshot_lines = None
+            switch_snapshot_lines_colored = None
+            obs_target = None
+            obs_tol = None
+            obs_target_label = "target"
+            obs_target_note = ""
+            prev_type = str(prev_log_correction_type or "").strip().lower()
+            switched_gap_type = bool(force_gap_switch) or (
+                prev_type in {"distance", "x_axis", "y_axis"} and prev_type != correction_type
             )
 
-        if correction_type == "distance":
-            metric_name = "dist_err"
-            obs_target = dist_target
-            obs_tol = dist_tol
-            try:
-                curr_err = float(dist_now) - float(dist_target)
-                curr_metric = abs(float(curr_err))
-                curr_abs_val = float(dist_target) + float(curr_err)
-            except (TypeError, ValueError):
-                curr_err = None
-                curr_metric = None
-                curr_abs_val = None
-            prev_metric = None
-            prev_err = None
-            prev_err_any = None
-            try:
-                if prev_log_dist is not None:
-                    prev_err_any = float(prev_log_dist) - float(dist_target)
-                if prev_log_correction_type == "distance" and prev_log_dist is not None:
-                    prev_err = float(prev_log_dist) - float(dist_target)
-                    prev_metric = abs(float(prev_err))
-            except (TypeError, ValueError):
+            def _switch_gap_message_pair(metric_name_local):
+                plain = f"Switching gap type to {metric_name_local}"
+                colored = f"{COLOR_ORANGE_BRIGHT}Switching{COLOR_RESET} gap type to {metric_name_local}"
+                return plain, colored
+
+            def _switch_result_observation_pair(metric_name_local, curr_err_local, prev_err_local, *, overshot_local=False):
+                plain, colored, _ = _format_align_result_observation(
+                    metric_name_local,
+                    curr_err_local,
+                    prev_err_local,
+                    overshot=bool(overshot_local),
+                )
+                return plain, colored
+
+            def _comparison_line_pair(metric_name_local, curr_err_local, prev_err_local, *, overshot_local=False):
+                return _format_align_result_observation(
+                    metric_name_local,
+                    curr_err_local,
+                    prev_err_local,
+                    overshot=bool(overshot_local),
+                )
+
+            if correction_type == "distance":
+                metric_name = "dist_err"
+                obs_target = dist_target
+                obs_tol = dist_tol
+                try:
+                    curr_err = float(dist_now) - float(dist_target)
+                    curr_metric = abs(float(curr_err))
+                    curr_abs_val = float(dist_target) + float(curr_err)
+                except (TypeError, ValueError):
+                    curr_err = None
+                    curr_metric = None
+                    curr_abs_val = None
                 prev_metric = None
                 prev_err = None
                 prev_err_any = None
+                try:
+                    if prev_log_dist is not None:
+                        prev_err_any = float(prev_log_dist) - float(dist_target)
+                    if prev_log_correction_type == "distance" and prev_log_dist is not None:
+                        prev_err = float(prev_log_dist) - float(dist_target)
+                        prev_metric = abs(float(prev_err))
+                except (TypeError, ValueError):
+                    prev_metric = None
+                    prev_err = None
+                    prev_err_any = None
 
-            if curr_metric is None:
-                metric_text = "unknown"
-                metric_color = COLOR_WHITE
-            else:
-                if prev_metric is None or prev_err is None:
-                    if prev_err_any is not None and curr_err is not None:
+                if curr_metric is None:
+                    metric_text = "unknown"
+                    metric_color = COLOR_WHITE
+                else:
+                    if prev_metric is None or prev_err is None:
+                        if prev_err_any is not None and curr_err is not None:
+                            comparison_message, comparison_message_colored, cmp_color = _comparison_line_pair(
+                                metric_name,
+                                curr_err,
+                                prev_err_any,
+                            )
+                            if cmp_color is not None:
+                                metric_color = cmp_color
+                            else:
+                                metric_color = COLOR_YELLOW
+                        else:
+                            metric_color = COLOR_YELLOW
+                    else:
                         comparison_message, comparison_message_colored, cmp_color = _comparison_line_pair(
                             metric_name,
                             curr_err,
-                            prev_err_any,
+                            prev_err,
+                        )
+                        if cmp_color is not None:
+                            metric_color = cmp_color
+                    err_text = f"{metric_color}{float(curr_err):+.2f}{COLOR_RESET}"
+                    abs_text = f"{float(curr_abs_val):.2f}"
+                    metric_text = (
+                        f"target ({float(dist_target):.2f} ±{float(dist_tol):.2f}) "
+                        f"{err_text} off={abs_text}"
+                    )
+                    if switched_gap_type:
+                        if prev_err_any is not None and curr_err is not None:
+                            (
+                                result_observation_message,
+                                result_observation_message_colored,
+                            ) = _switch_result_observation_pair(metric_name, curr_err, prev_err_any)
+                        switch_message, switch_message_colored = _switch_gap_message_pair(metric_name)
+            else:
+                if correction_type == "y_axis":
+                    metric_name = "y_err"
+                    axis_err_now = y_err_now
+                    axis_target = y_target
+                    axis_tol = y_tol
+                    prev_log_axis_err = prev_log_y_err
+                    axis_label = "y"
+                    planner_y_err = None
+                    if isinstance(act_plan, dict):
+                        planner_y_err = _as_float(act_plan.get("y_err_mm"), None)
+                    if planner_y_err is not None:
+                        axis_err_now = float(planner_y_err)
+                        raw_y_now = _as_float((getattr(world, "brick", {}) or {}).get("y_axis"), None)
+                        if raw_y_now is None:
+                            raw_y_now = _as_float((getattr(world, "brick", {}) or {}).get("offset_y"), None)
+                        if raw_y_now is not None:
+                            axis_target = float(raw_y_now) - float(planner_y_err)
+                        if (
+                            prev_log_axis_err is not None
+                            and y_target is not None
+                            and axis_target is not None
+                        ):
+                            try:
+                                prev_log_axis_err = (
+                                    float(prev_log_axis_err)
+                                    + float(y_target)
+                                    - float(axis_target)
+                                )
+                            except (TypeError, ValueError):
+                                prev_log_axis_err = None
+                        if (
+                            y_target is not None
+                            and axis_target is not None
+                            and abs(float(axis_target) - float(y_target)) > 1e-6
+                        ):
+                            obs_target_label = "hold target"
+                            obs_target_note = (
+                                f" (success target={float(y_target):+.2f} ±{float(axis_tol):.2f})"
+                            )
+                else:
+                    metric_name = "x_err"
+                    axis_err_now = x_err_now
+                    axis_target = x_target
+                    axis_tol = x_tol
+                    prev_log_axis_err = prev_log_x_err
+                    axis_label = "x"
+                obs_target = axis_target
+                obs_tol = axis_tol
+                try:
+                    curr_err = float(axis_err_now)
+                    curr_metric = abs(float(curr_err))
+                    curr_abs_val = float(axis_target) + float(curr_err)
+                except (TypeError, ValueError):
+                    curr_err = None
+                    curr_metric = None
+                    curr_abs_val = None
+                prev_metric = None
+                prev_err = None
+                prev_err_any = None
+                try:
+                    if prev_log_axis_err is not None:
+                        prev_err_any = float(prev_log_axis_err)
+                    if prev_log_correction_type == correction_type and prev_log_axis_err is not None:
+                        prev_err = float(prev_log_axis_err)
+                        prev_metric = abs(float(prev_err))
+                except (TypeError, ValueError):
+                    prev_metric = None
+                    prev_err = None
+                    prev_err_any = None
+
+                if curr_metric is None:
+                    metric_text = "unknown"
+                    metric_color = COLOR_WHITE
+                else:
+                    overshot = False
+                    if prev_err is not None:
+                        overshot = (
+                            (float(prev_err) * float(curr_err)) < 0.0
+                            and abs(float(prev_err)) > 0.30
+                            and abs(float(curr_err)) > 0.30
+                        )
+                    if prev_metric is None or prev_err is None:
+                        if prev_err_any is not None and curr_err is not None:
+                            comparison_message, comparison_message_colored, cmp_color = _comparison_line_pair(
+                                metric_name,
+                                curr_err,
+                                prev_err_any,
+                            )
+                            if cmp_color is not None:
+                                metric_color = cmp_color
+                            else:
+                                metric_color = COLOR_YELLOW
+                        else:
+                            metric_color = COLOR_YELLOW
+                    elif overshot:
+                        comparison_message, comparison_message_colored, cmp_color = _comparison_line_pair(
+                            metric_name,
+                            curr_err,
+                            prev_err,
+                            overshot_local=True,
                         )
                         if cmp_color is not None:
                             metric_color = cmp_color
                         else:
-                            metric_color = COLOR_YELLOW
+                            metric_color = COLOR_RED
                     else:
-                        metric_color = COLOR_YELLOW
-                else:
-                    comparison_message, comparison_message_colored, cmp_color = _comparison_line_pair(
-                        metric_name,
-                        curr_err,
-                        prev_err,
-                    )
-                    if cmp_color is not None:
-                        metric_color = cmp_color
-                err_text = f"{metric_color}{float(curr_err):+.2f}{COLOR_RESET}"
-                abs_text = f"{float(curr_abs_val):.2f}"
-                metric_text = (
-                    f"target ({float(dist_target):.2f} ±{float(dist_tol):.2f}) "
-                    f"{err_text} off={abs_text}"
-                )
-                if switched_gap_type:
-                    if prev_err_any is not None and curr_err is not None:
-                        (
-                            result_observation_message,
-                            result_observation_message_colored,
-                        ) = _switch_result_observation_pair(metric_name, curr_err, prev_err_any)
-                    switch_message, switch_message_colored = _switch_gap_message_pair(metric_name)
-        else:
-            if correction_type == "y_axis":
-                metric_name = "y_err"
-                axis_err_now = y_err_now
-                axis_target = y_target
-                axis_tol = y_tol
-                prev_log_axis_err = prev_log_y_err
-                axis_label = "y"
-                planner_y_err = None
-                if isinstance(act_plan, dict):
-                    planner_y_err = _as_float(act_plan.get("y_err_mm"), None)
-                if planner_y_err is not None:
-                    axis_err_now = float(planner_y_err)
-                    raw_y_now = _as_float((getattr(world, "brick", {}) or {}).get("y_axis"), None)
-                    if raw_y_now is None:
-                        raw_y_now = _as_float((getattr(world, "brick", {}) or {}).get("offset_y"), None)
-                    if raw_y_now is not None:
-                        axis_target = float(raw_y_now) - float(planner_y_err)
-                    if (
-                        prev_log_axis_err is not None
-                        and y_target is not None
-                        and axis_target is not None
-                    ):
-                        try:
-                            prev_log_axis_err = (
-                                float(prev_log_axis_err)
-                                + float(y_target)
-                                - float(axis_target)
-                            )
-                        except (TypeError, ValueError):
-                            prev_log_axis_err = None
-                    if (
-                        y_target is not None
-                        and axis_target is not None
-                        and abs(float(axis_target) - float(y_target)) > 1e-6
-                    ):
-                        obs_target_label = "hold target"
-                        obs_target_note = (
-                            f" (success target={float(y_target):+.2f} ±{float(axis_tol):.2f})"
-                        )
-            else:
-                metric_name = "x_err"
-                axis_err_now = x_err_now
-                axis_target = x_target
-                axis_tol = x_tol
-                prev_log_axis_err = prev_log_x_err
-                axis_label = "x"
-            obs_target = axis_target
-            obs_tol = axis_tol
-            try:
-                curr_err = float(axis_err_now)
-                curr_metric = abs(float(curr_err))
-                curr_abs_val = float(axis_target) + float(curr_err)
-            except (TypeError, ValueError):
-                curr_err = None
-                curr_metric = None
-                curr_abs_val = None
-            prev_metric = None
-            prev_err = None
-            prev_err_any = None
-            try:
-                if prev_log_axis_err is not None:
-                    prev_err_any = float(prev_log_axis_err)
-                if prev_log_correction_type == correction_type and prev_log_axis_err is not None:
-                    prev_err = float(prev_log_axis_err)
-                    prev_metric = abs(float(prev_err))
-            except (TypeError, ValueError):
-                prev_metric = None
-                prev_err = None
-                prev_err_any = None
-
-            if curr_metric is None:
-                metric_text = "unknown"
-                metric_color = COLOR_WHITE
-            else:
-                overshot = False
-                if prev_err is not None:
-                    overshot = (
-                        (float(prev_err) * float(curr_err)) < 0.0
-                        and abs(float(prev_err)) > 0.30
-                        and abs(float(curr_err)) > 0.30
-                    )
-                if prev_metric is None or prev_err is None:
-                    if prev_err_any is not None and curr_err is not None:
                         comparison_message, comparison_message_colored, cmp_color = _comparison_line_pair(
                             metric_name,
                             curr_err,
-                            prev_err_any,
+                            prev_err,
                         )
                         if cmp_color is not None:
                             metric_color = cmp_color
-                        else:
-                            metric_color = COLOR_YELLOW
-                    else:
-                        metric_color = COLOR_YELLOW
-                elif overshot:
-                    comparison_message, comparison_message_colored, cmp_color = _comparison_line_pair(
-                        metric_name,
-                        curr_err,
-                        prev_err,
-                        overshot_local=True,
+                    err_text = f"{metric_color}{float(curr_err):+.2f}{COLOR_RESET}"
+                    abs_text = f"{float(curr_abs_val):+.2f}"
+                    metric_text = (
+                        f"target ({float(axis_target):+.2f} ±{float(axis_tol):.2f}) "
+                        f"{err_text} off={abs_text}"
                     )
-                    if cmp_color is not None:
-                        metric_color = cmp_color
-                    else:
-                        metric_color = COLOR_RED
-                else:
-                    comparison_message, comparison_message_colored, cmp_color = _comparison_line_pair(
-                        metric_name,
-                        curr_err,
-                        prev_err,
-                    )
-                    if cmp_color is not None:
-                        metric_color = cmp_color
-                err_text = f"{metric_color}{float(curr_err):+.2f}{COLOR_RESET}"
-                abs_text = f"{float(curr_abs_val):+.2f}"
-                metric_text = (
-                    f"target ({float(axis_target):+.2f} ±{float(axis_tol):.2f}) "
-                    f"{err_text} off={abs_text}"
-                )
-                if switched_gap_type:
-                    overshot_any = False
-                    if prev_err_any is not None and curr_err is not None:
-                        try:
-                            overshot_any = (
-                                (float(prev_err_any) * float(curr_err)) < 0.0
-                                and abs(float(prev_err_any)) > 0.30
-                                and abs(float(curr_err)) > 0.30
+                    if switched_gap_type:
+                        overshot_any = False
+                        if prev_err_any is not None and curr_err is not None:
+                            try:
+                                overshot_any = (
+                                    (float(prev_err_any) * float(curr_err)) < 0.0
+                                    and abs(float(prev_err_any)) > 0.30
+                                    and abs(float(curr_err)) > 0.30
+                                )
+                            except (TypeError, ValueError):
+                                overshot_any = False
+                            (
+                                result_observation_message,
+                                result_observation_message_colored,
+                            ) = _switch_result_observation_pair(
+                                metric_name,
+                                curr_err,
+                                prev_err_any,
+                                overshot_local=bool(overshot_any),
                             )
-                        except (TypeError, ValueError):
-                            overshot_any = False
-                        (
-                            result_observation_message,
-                            result_observation_message_colored,
-                        ) = _switch_result_observation_pair(
-                            metric_name,
-                            curr_err,
-                            prev_err_any,
-                            overshot_local=bool(overshot_any),
+                        switch_message, switch_message_colored = _switch_gap_message_pair(metric_name)
+
+            step_key_for_switch_log = normalize_step_label(step) or str(step or "").strip().upper()
+            if switched_gap_type and step_key_for_switch_log in GAP_SWITCH_REASSURE_STEPS:
+                reassurance = _gap_switch_lite_gate_reassurance(world, step_key_for_switch_log, metric_name)
+                if isinstance(reassurance, dict):
+                    switch_reassure_message = reassurance.get("metric_plain")
+                    switch_reassure_message_colored = reassurance.get("metric_colored")
+                    switch_snapshot_lines = reassurance.get("snapshot_plain_lines")
+                    switch_snapshot_lines_colored = reassurance.get("snapshot_colored_lines")
+                    if switch_message and switch_reassure_message:
+                        switch_message = f"{switch_message}; {switch_reassure_message}"
+                        switch_render_tail = switch_reassure_message_colored or switch_reassure_message
+                        switch_message_colored = (
+                            f"{switch_message_colored}; {switch_render_tail}"
+                            if switch_message_colored
+                            else switch_message
                         )
-                    switch_message, switch_message_colored = _switch_gap_message_pair(metric_name)
 
-        step_key_for_switch_log = normalize_step_label(step) or str(step or "").strip().upper()
-        if switched_gap_type and step_key_for_switch_log in GAP_SWITCH_REASSURE_STEPS:
-            reassurance = _gap_switch_lite_gate_reassurance(world, step_key_for_switch_log, metric_name)
-            if isinstance(reassurance, dict):
-                switch_reassure_message = reassurance.get("metric_plain")
-                switch_reassure_message_colored = reassurance.get("metric_colored")
-                switch_snapshot_lines = reassurance.get("snapshot_plain_lines")
-                switch_snapshot_lines_colored = reassurance.get("snapshot_colored_lines")
-                if switch_message and switch_reassure_message:
-                    switch_message = f"{switch_message}; {switch_reassure_message}"
-                    switch_render_tail = switch_reassure_message_colored or switch_reassure_message
-                    switch_message_colored = (
-                        f"{switch_message_colored}; {switch_render_tail}"
-                        if switch_message_colored
-                        else switch_message
+            try:
+                score_display = int(round(float(score_effective))) if score_effective is not None else 0
+            except (TypeError, ValueError):
+                score_display = 0
+            motor_power = action_meta.get("power") if isinstance(action_meta, dict) else None
+            motor_pwm = action_meta.get("pwm") if isinstance(action_meta, dict) else None
+            motor_duration_ms = None
+            if isinstance(action_meta, dict):
+                motor_duration_ms = action_meta.get("duration_model_ms")
+                if motor_duration_ms is None:
+                    motor_duration_ms = action_meta.get("duration_ms")
+            motor_details = ""
+            parts = []
+            if motor_pwm is not None:
+                parts.append(f"pwm={int(motor_pwm)}")
+            if motor_power is not None:
+                parts.append(f"pwr={float(motor_power):.3f}")
+            if motor_duration_ms is not None:
+                parts.append(f"t={int(motor_duration_ms)}ms")
+            if isinstance(action_meta, dict):
+                action_note = action_meta.get("action_note")
+                if action_note:
+                    parts.append(str(action_note))
+                ease_in_out_note = action_meta.get("ease_in_out_note")
+                if not ease_in_out_note:
+                    ease_in_out_note = action_meta.get("anti_alias_note")
+                if ease_in_out_note:
+                    parts.append(str(ease_in_out_note))
+            discovery_note = telemetry_robot_module.one_percent_discovery_note(cmd, score_display)
+            if discovery_note:
+                parts.append(str(discovery_note))
+
+            trial_num = int(getattr(world, "loop_id", 0) or 0)
+            active_step_label = normalize_step_label(step) or str(step or "ALIGN").strip().upper()
+            step_number = _step_number_for_label(active_step_label)
+            if step_number is not None:
+                step_prefix = f"{COLOR_WHITE}[step#{int(step_number)}]{COLOR_RESET} "
+            else:
+                step_prefix = ""
+            if active_step_label == "ALIGN_BRICK":
+                phase_base = "ALIGN"
+            else:
+                phase_base = f"{active_step_label}_ALIGN"
+            phase_label = f"{phase_base}_SETTLE" if bool(settle) else phase_base
+            line_prefix = f"{step_prefix}{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}]"
+
+            def _observation_text():
+                if curr_err is None:
+                    if metric_name == "x_err":
+                        return "I'm xAxis_offset=unknown."
+                    return f"I see {metric_name}=unknown."
+                err_render = f"{COLOR_YELLOW}{float(curr_err):+.2f}{COLOR_RESET}"
+                target_num = _as_float(obs_target, None)
+                tol_num = _as_float(obs_tol, None)
+                if target_num is None:
+                    if metric_name == "x_err":
+                        current_num = _as_float(curr_abs_val, None)
+                        current_text = "unknown" if current_num is None else f"{float(current_num):.2f}"
+                        return f"I'm xAxis_offset={current_text} Δ{err_render}."
+                    return f"I see {metric_name}={err_render}."
+                target_text = (
+                    f"{float(target_num):.2f}"
+                    if metric_name == "dist_err"
+                    else f"{float(target_num):+.2f}"
+                )
+                tol_text = f" ±{abs(float(tol_num)):.2f}" if tol_num is not None else ""
+                tol_text_operator = f"+/-{abs(float(tol_num)):.2f}" if tol_num is not None else ""
+                if metric_name == "dist_err":
+                    current_num = _as_float(curr_abs_val, None)
+                    current_text = "unknown" if current_num is None else f"{float(current_num):.2f}"
+                    if float(curr_err) > 0.0:
+                        relation = "too far"
+                    elif float(curr_err) < 0.0:
+                        relation = "too close"
+                    else:
+                        relation = "at"
+                    if relation == "at":
+                        return (
+                            f"I see dist={current_text} Δ{err_render} at our "
+                            f"{obs_target_label}={target_text}{tol_text}{obs_target_note}."
+                        )
+                    if relation == "too close":
+                        relation_text = "too close to our distance target"
+                    else:
+                        relation_text = "away from our distance target"
+                    return (
+                        f"I see dist={current_text} Δ{err_render} {relation_text} "
+                        f"{obs_target_label}={target_text}{tol_text}{obs_target_note}."
                     )
-
-        try:
-            score_display = int(round(float(score_effective))) if score_effective is not None else 0
-        except (TypeError, ValueError):
-            score_display = 0
-        motor_power = action_meta.get("power") if isinstance(action_meta, dict) else None
-        motor_pwm = action_meta.get("pwm") if isinstance(action_meta, dict) else None
-        motor_duration_ms = None
-        if isinstance(action_meta, dict):
-            motor_duration_ms = action_meta.get("duration_model_ms")
-            if motor_duration_ms is None:
-                motor_duration_ms = action_meta.get("duration_ms")
-        motor_details = ""
-        parts = []
-        if motor_pwm is not None:
-            parts.append(f"pwm={int(motor_pwm)}")
-        if motor_power is not None:
-            parts.append(f"pwr={float(motor_power):.3f}")
-        if motor_duration_ms is not None:
-            parts.append(f"t={int(motor_duration_ms)}ms")
-        if isinstance(action_meta, dict):
-            ease_in_out_note = action_meta.get("ease_in_out_note")
-            if not ease_in_out_note:
-                ease_in_out_note = action_meta.get("anti_alias_note")
-            if ease_in_out_note:
-                parts.append(str(ease_in_out_note))
-        discovery_note = telemetry_robot_module.one_percent_discovery_note(cmd, score_display)
-        if discovery_note:
-            parts.append(str(discovery_note))
-
-        trial_num = int(getattr(world, "loop_id", 0) or 0)
-        active_step_label = normalize_step_label(step) or str(step or "ALIGN").strip().upper()
-        step_number = _step_number_for_label(active_step_label)
-        if step_number is not None:
-            step_prefix = f"{COLOR_WHITE}[step#{int(step_number)}]{COLOR_RESET} "
-        else:
-            step_prefix = ""
-        if active_step_label == "ALIGN_BRICK":
-            phase_base = "ALIGN"
-        else:
-            phase_base = f"{active_step_label}_ALIGN"
-        phase_label = f"{phase_base}_SETTLE" if bool(settle) else phase_base
-        line_prefix = f"{step_prefix}{COLOR_WHITE}[T{trial_num}.{int(action_index)} {phase_label}]"
-
-        def _observation_text():
-            if curr_err is None:
-                if metric_name == "x_err":
-                    return "I'm xAxis_offset=unknown."
-                return f"I see {metric_name}=unknown."
-            err_render = f"{COLOR_YELLOW}{float(curr_err):+.2f}{COLOR_RESET}"
-            target_num = _as_float(obs_target, None)
-            tol_num = _as_float(obs_tol, None)
-            if target_num is None:
+                if metric_name == "y_err":
+                    if float(curr_err) > 0.0:
+                        relation = "above"
+                    elif float(curr_err) < 0.0:
+                        relation = "below"
+                    else:
+                        relation = "at"
+                    if relation == "at":
+                        return f"I see {metric_name}={err_render} at our {obs_target_label}={target_text}{tol_text}{obs_target_note}."
+                    return f"I see {metric_name}={err_render} {relation} our {obs_target_label}={target_text}{tol_text}{obs_target_note}."
                 if metric_name == "x_err":
                     current_num = _as_float(curr_abs_val, None)
                     current_text = "unknown" if current_num is None else f"{float(current_num):.2f}"
-                    return f"I'm xAxis_offset={current_text} Δ{err_render}."
-                return f"I see {metric_name}={err_render}."
-            target_text = (
-                f"{float(target_num):.2f}"
-                if metric_name == "dist_err"
-                else f"{float(target_num):+.2f}"
-            )
-            tol_text = f" ±{abs(float(tol_num)):.2f}" if tol_num is not None else ""
-            tol_text_operator = f"+/-{abs(float(tol_num)):.2f}" if tol_num is not None else ""
-            if metric_name == "dist_err":
-                current_num = _as_float(curr_abs_val, None)
-                current_text = "unknown" if current_num is None else f"{float(current_num):.2f}"
-                if float(curr_err) > 0.0:
-                    relation = "too far"
-                elif float(curr_err) < 0.0:
-                    relation = "too close"
-                else:
-                    relation = "at"
-                if relation == "at":
+                    if float(curr_err) > 0.0:
+                        relation = "to the right of"
+                    elif float(curr_err) < 0.0:
+                        relation = "to the left of"
+                    else:
+                        relation = "at"
+                    if relation == "at":
+                        return (
+                            f"I'm xAxis_offset={current_text} Δ{err_render} at our "
+                            f"{obs_target_label} of {target_text}{tol_text_operator}{obs_target_note}."
+                        )
                     return (
-                        f"I see dist={current_text} Δ{err_render} at our "
-                        f"{obs_target_label}={target_text}{tol_text}{obs_target_note}."
+                        f"I'm xAxis_offset={current_text} Δ{err_render} {relation} our "
+                        f"{obs_target_label} of {target_text}{tol_text_operator}{obs_target_note}."
                     )
-                if relation == "too close":
-                    relation_text = "too close to our distance target"
-                else:
-                    relation_text = "away from our distance target"
-                return (
-                    f"I see dist={current_text} Δ{err_render} {relation_text} "
-                    f"{obs_target_label}={target_text}{tol_text}{obs_target_note}."
-                )
-            if metric_name == "y_err":
                 if float(curr_err) > 0.0:
-                    relation = "above"
+                    relation = "left"
                 elif float(curr_err) < 0.0:
-                    relation = "below"
+                    relation = "right"
                 else:
                     relation = "at"
                 if relation == "at":
                     return f"I see {metric_name}={err_render} at our {obs_target_label}={target_text}{tol_text}{obs_target_note}."
-                return f"I see {metric_name}={err_render} {relation} our {obs_target_label}={target_text}{tol_text}{obs_target_note}."
-            if metric_name == "x_err":
-                current_num = _as_float(curr_abs_val, None)
-                current_text = "unknown" if current_num is None else f"{float(current_num):.2f}"
-                if float(curr_err) > 0.0:
-                    relation = "to the right of"
-                elif float(curr_err) < 0.0:
-                    relation = "to the left of"
-                else:
-                    relation = "at"
-                if relation == "at":
-                    return (
-                        f"I'm xAxis_offset={current_text} Δ{err_render} at our "
-                        f"{obs_target_label} of {target_text}{tol_text_operator}{obs_target_note}."
+                return f"I see {metric_name}={err_render} to the {relation} of our {obs_target_label}={target_text}{tol_text}{obs_target_note}."
+
+            curve_note = None
+            if isinstance(act_plan, dict):
+                curve_name = str(act_plan.get("curve_name") or "").strip()
+                curve_value = _as_float(act_plan.get("curve_value_mm"), None)
+                if curve_name and curve_value is not None:
+                    curve_note = (
+                        f"used our {curve_name} at "
+                        f"{COLOR_ORANGE_DARK}{float(curve_value):.2f}{COLOR_RESET}{COLOR_GRAY}"
                     )
-                return (
-                    f"I'm xAxis_offset={current_text} Δ{err_render} {relation} our "
-                    f"{obs_target_label} of {target_text}{tol_text_operator}{obs_target_note}."
-                )
-            if float(curr_err) > 0.0:
-                relation = "left"
-            elif float(curr_err) < 0.0:
-                relation = "right"
-            else:
-                relation = "at"
-            if relation == "at":
-                return f"I see {metric_name}={err_render} at our {obs_target_label}={target_text}{tol_text}{obs_target_note}."
-            return f"I see {metric_name}={err_render} to the {relation} of our {obs_target_label}={target_text}{tol_text}{obs_target_note}."
 
-        curve_note = None
-        if isinstance(act_plan, dict):
-            curve_name = str(act_plan.get("curve_name") or "").strip()
-            curve_value = _as_float(act_plan.get("curve_value_mm"), None)
-            if curve_name and curve_value is not None:
-                curve_note = (
-                    f"used our {curve_name} at "
-                    f"{COLOR_ORANGE_DARK}{float(curve_value):.2f}{COLOR_RESET}{COLOR_GRAY}"
-                )
+            detail_text = ", ".join(parts)
+            if curve_note:
+                detail_text = f"{detail_text}; {curve_note}" if detail_text else str(curve_note)
+            if detail_text:
+                motor_details = f" {COLOR_GRAY}({detail_text}){COLOR_RESET}"
 
-        detail_text = ", ".join(parts)
-        if curve_note:
-            detail_text = f"{detail_text}; {curve_note}" if detail_text else str(curve_note)
-        if detail_text:
-            motor_details = f" {COLOR_GRAY}({detail_text}){COLOR_RESET}"
-
-        def _print_result_lite_gate_line():
-            detail = _result_lite_gate_detail(world, step)
-            if not isinstance(detail, dict):
-                return
-            line_text = detail.get("colored") or detail.get("plain")
-            if not line_text:
-                return
-            print(
-                f"{line_prefix} "
-                f"{line_text}{COLOR_RESET}"
-            )
-
-        if switch_message:
-            if result_observation_message:
-                result_render = result_observation_message_colored or result_observation_message
+            def _print_result_lite_gate_line():
+                detail = _result_lite_gate_detail(world, step)
+                if not isinstance(detail, dict):
+                    return
+                line_text = detail.get("colored") or detail.get("plain")
+                if not line_text:
+                    return
                 print(
                     f"{line_prefix} "
-                    f"{result_render}{COLOR_RESET}"
+                    f"{line_text}{COLOR_RESET}"
                 )
-                _print_result_lite_gate_line()
-            switch_render = switch_message_colored or switch_message
-            print(
-                f"{line_prefix} "
-                f"{switch_render}{COLOR_RESET}"
-            )
-            snapshot_plain_lines = switch_snapshot_lines if isinstance(switch_snapshot_lines, list) else []
-            snapshot_colored_lines = (
-                switch_snapshot_lines_colored if isinstance(switch_snapshot_lines_colored, list) else []
-            )
-            if snapshot_plain_lines:
-                for idx, plain_line in enumerate(snapshot_plain_lines):
-                    if not plain_line:
-                        continue
-                    render_line = (
-                        snapshot_colored_lines[idx]
-                        if idx < len(snapshot_colored_lines) and snapshot_colored_lines[idx]
-                        else plain_line
-                    )
+
+            if switch_message:
+                if result_observation_message:
+                    result_render = result_observation_message_colored or result_observation_message
                     print(
                         f"{line_prefix} "
-                        f"{render_line}{COLOR_RESET}"
+                        f"{result_render}{COLOR_RESET}"
                     )
+                    _print_result_lite_gate_line()
+                switch_render = switch_message_colored or switch_message
+                print(
+                    f"{line_prefix} "
+                    f"{switch_render}{COLOR_RESET}"
+                )
+                snapshot_plain_lines = switch_snapshot_lines if isinstance(switch_snapshot_lines, list) else []
+                snapshot_colored_lines = (
+                    switch_snapshot_lines_colored if isinstance(switch_snapshot_lines_colored, list) else []
+                )
+                if snapshot_plain_lines:
+                    for idx, plain_line in enumerate(snapshot_plain_lines):
+                        if not plain_line:
+                            continue
+                        render_line = (
+                            snapshot_colored_lines[idx]
+                            if idx < len(snapshot_colored_lines) and snapshot_colored_lines[idx]
+                            else plain_line
+                        )
+                        print(
+                            f"{line_prefix} "
+                            f"{render_line}{COLOR_RESET}"
+                        )
 
-                # Gap-switch result observation already emitted above in canonical form.
-                comparison_message = None
-                comparison_message_colored = None
-        cmd_log = str(cmd).strip().upper()
-        print(
-            f"{line_prefix}{COLOR_RESET} "
-            f"{_observation_text()}  "
-            f"{COLOR_ORANGE_BRIGHT}> {cmd_log} {int(score_display)}%{COLOR_RESET}{motor_details}"
-        )
-        if comparison_message:
-            comparison_render = comparison_message_colored or comparison_message
+                    # Gap-switch result observation already emitted above in canonical form.
+                    comparison_message = None
+                    comparison_message_colored = None
+            cmd_log = str(cmd).strip().upper()
             print(
-                f"{line_prefix} "
-                f"{comparison_render}{COLOR_RESET}"
+                f"{line_prefix}{COLOR_RESET} "
+                f"{_observation_text()}  "
+                f"{COLOR_ORANGE_BRIGHT}> {cmd_log} {int(score_display)}%{COLOR_RESET}{motor_details}"
             )
-            _print_result_lite_gate_line()
+            if comparison_message:
+                comparison_render = comparison_message_colored or comparison_message
+                print(
+                    f"{line_prefix} "
+                    f"{comparison_render}{COLOR_RESET}"
+                )
+                _print_result_lite_gate_line()
 
     def _dominant_turn_from_steps(motion_steps):
         if not motion_steps:
@@ -11421,6 +11561,24 @@ def run_alignment_segment(
             score_out = q_score
             reason_out = "turn-only demo policy"
         return cmd_out, speed_out, score_out, reason_out
+
+    def _build_turn_drive_assist_for_action(local_gate_before_action, *, cmd_local, speed_score_local):
+        assist_request = helper_turn_drive_motion.align_turn_drive_assist_request(
+            step_rules,
+            cmd=cmd_local,
+            local_gate_status=local_gate_before_action,
+        )
+        if not isinstance(assist_request, dict):
+            return None
+        plan = helper_turn_drive_motion.build_turn_drive_motion_plan(
+            cmd=cmd_local,
+            score=speed_score_local,
+            hold_duration_ms=duration_override_ms,
+            profile_name=assist_request.get("profile_name"),
+            drive_mode=assist_request.get("drive_mode"),
+            metadata={"step": normalize_step_label(step)},
+        )
+        return plan if isinstance(plan, dict) else None
 
     start_cmd = scan_cmd
     start_speed = action_speeds["scan"]
@@ -13901,7 +14059,7 @@ def run_alignment_segment(
                 score_local,
                 action_meta=action_meta_local,
             )
-            if confirm_callback and robot:
+            if confirm_callback and robot and _should_stop_robot_after_action(action_meta_local):
                 robot.stop()
             post_act_analysis(
                 world,
@@ -14051,7 +14209,7 @@ def run_alignment_segment(
                 )
                 world.update_from_motion(evt_local)
 
-            if confirm_callback and robot:
+            if confirm_callback and robot and _should_stop_robot_after_action(action_meta_local):
                 robot.stop()
             post_act_analysis(
                 world,
@@ -15166,7 +15324,7 @@ def run_alignment_segment(
                 )
                 world.update_from_motion(evt)
 
-            if confirm_callback and robot:
+            if confirm_callback and robot and _should_stop_robot_after_action(action_meta):
                 robot.stop()
             post_act_analysis(
                 world,
@@ -15419,6 +15577,9 @@ def run_alignment_segment(
         if bool((start_ground_reset_result or {}).get("enabled")) and not bool((start_ground_reset_result or {}).get("success")):
             pause_after_fail(robot)
             return False, str((start_ground_reset_result or {}).get("reason") or "start ground reset failed")
+
+    consecutive_unchanged_act_count = 0
+    consecutive_unchanged_act_signature = None
 
     while True:
         loop_id += 1
@@ -15989,6 +16150,7 @@ def run_alignment_segment(
                     cmd=cmd,
                     cmd_reason=cmd_reason,
                     local_gate_before_action=local_gate_before_action,
+                    world=world,
                 )
                 if unknown_metric:
                     if robot:
@@ -16062,6 +16224,58 @@ def run_alignment_segment(
                     robot.stop()
                 time.sleep(CONTROL_DT)
                 continue
+            turn_drive_plan = None
+            send_duration_override_ms = duration_override_ms
+            custom_action_specs = None
+            action_note = None
+            if not bool(is_search_action) and cmd in ("l", "r"):
+                turn_drive_plan = _build_turn_drive_assist_for_action(
+                    local_gate_before_action,
+                    cmd_local=cmd,
+                    speed_score_local=speed_score,
+                )
+            if isinstance(turn_drive_plan, dict):
+                custom_action_specs = list(turn_drive_plan.get("actions") or [])
+                action_note = str(turn_drive_plan.get("action_note") or "").strip() or None
+                try:
+                    plan_duration_ms = int(round(float(turn_drive_plan.get("duration_ms") or 0)))
+                except (TypeError, ValueError):
+                    plan_duration_ms = 0
+                if plan_duration_ms > 0:
+                    send_duration_override_ms = int(plan_duration_ms)
+            action_signature = _action_signature(
+                cmd,
+                speed_score,
+                send_duration_override_ms,
+                custom_action_specs,
+            )
+            if (
+                action_signature == consecutive_unchanged_act_signature
+                and int(consecutive_unchanged_act_count or 0) >= 3
+            ):
+                escalation_pct = 15
+                escalation_factor = 1.15
+                if isinstance(custom_action_specs, (list, tuple)):
+                    custom_action_specs = _scale_custom_action_specs(custom_action_specs, escalation_factor)
+                else:
+                    if speed_score is not None:
+                        try:
+                            speed_score = int(round(min(100, float(speed_score) * escalation_factor)))
+                        except (TypeError, ValueError):
+                            speed_score = speed_score
+                    elif speed is not None:
+                        try:
+                            speed = min(1.0, float(speed) * escalation_factor)
+                        except (TypeError, ValueError):
+                            speed = speed
+                if send_duration_override_ms is not None and int(send_duration_override_ms) > 0:
+                    send_duration_override_ms = int(round(float(send_duration_override_ms) * escalation_factor))
+                if not align_silent:
+                    escalation_note = (
+                        f"[ESCALATE] same action repeated {int(consecutive_unchanged_act_count)} "
+                        f"unchanged times; bumping pwm/pwr/t by {escalation_pct}%"
+                    )
+                    print(format_headline(escalation_note, COLOR_MAGENTA_BRIGHT))
             action_meta = send_robot_command(
                 robot,
                 world,
@@ -16070,8 +16284,10 @@ def run_alignment_segment(
                 speed,
                 speed_score=speed_score,
                 auto_mode=True,
-                duration_override_ms=duration_override_ms,
+                duration_override_ms=send_duration_override_ms,
                 ease_in_out_enabled=False,
+                custom_action_specs=custom_action_specs,
+                action_note=action_note,
             )
             cmd_sent = cmd
             score_effective = speed_score
@@ -16262,7 +16478,7 @@ def run_alignment_segment(
                     hist_score,
                     action_meta=action_meta,
                 )
-            if confirm_callback and robot:
+            if confirm_callback and robot and _should_stop_robot_after_action(action_meta):
                 robot.stop()
             last_action_frame = None
             if not bool(is_search_action):
@@ -16335,6 +16551,26 @@ def run_alignment_segment(
                     action_index=align_action_idx,
                     pre_entries=pre_entries,
                 )
+            if not bool(is_search_action):
+                post_focus = _capture_auto_diag_focus(world, step)
+                no_change = False
+                if isinstance(pre_focus, dict) and isinstance(post_focus, dict):
+                    if pre_focus.get("metric") == post_focus.get("metric"):
+                        _, _, delta_class = _auto_diag_delta_phrase(
+                            pre_focus.get("metric"),
+                            pre_focus.get("value"),
+                            post_focus.get("value"),
+                        )
+                        no_change = delta_class == "unchanged"
+                if no_change:
+                    if action_signature == consecutive_unchanged_act_signature:
+                        consecutive_unchanged_act_count = int(consecutive_unchanged_act_count or 0) + 1
+                    else:
+                        consecutive_unchanged_act_count = 1
+                        consecutive_unchanged_act_signature = action_signature
+                else:
+                    consecutive_unchanged_act_count = 0
+                    consecutive_unchanged_act_signature = None
             if success_hit:
                 return _complete_alignment_success("success gate", tracker=success_tracker)
             _record_forward_stall_progress(
@@ -16580,6 +16816,7 @@ def run_alignment_segment(
                 cmd=cmd,
                 cmd_reason=cmd_reason,
                 local_gate_before_action=local_gate_before_action,
+                world=world,
             )
             if unknown_metric:
                 if robot:
@@ -16613,6 +16850,25 @@ def run_alignment_segment(
             if confirm_callback:
                 if not confirm_callback(world, vision):
                     return False, "confirm cancelled"
+            turn_drive_plan = None
+            send_duration_override_ms = duration_override_ms
+            custom_action_specs = None
+            action_note = None
+            if cmd in ("l", "r"):
+                turn_drive_plan = _build_turn_drive_assist_for_action(
+                    local_gate_before_action,
+                    cmd_local=cmd,
+                    speed_score_local=speed_score,
+                )
+            if isinstance(turn_drive_plan, dict):
+                custom_action_specs = list(turn_drive_plan.get("actions") or [])
+                action_note = str(turn_drive_plan.get("action_note") or "").strip() or None
+                try:
+                    plan_duration_ms = int(round(float(turn_drive_plan.get("duration_ms") or 0)))
+                except (TypeError, ValueError):
+                    plan_duration_ms = 0
+                if plan_duration_ms > 0:
+                    send_duration_override_ms = int(plan_duration_ms)
             action_meta = send_robot_command(
                 robot,
                 world,
@@ -16621,8 +16877,10 @@ def run_alignment_segment(
                 speed,
                 speed_score=speed_score,
                 auto_mode=True,
-                duration_override_ms=duration_override_ms,
+                duration_override_ms=send_duration_override_ms,
                 ease_in_out_enabled=False,
+                custom_action_specs=custom_action_specs,
+                action_note=action_note,
             )
             cmd_sent = cmd
             score_effective = speed_score
@@ -16697,7 +16955,7 @@ def run_alignment_segment(
                     hist_score,
                     action_meta=action_meta,
                 )
-            if confirm_callback and robot:
+            if confirm_callback and robot and _should_stop_robot_after_action(action_meta):
                 robot.stop()
             post_act_analysis(
                 world,
