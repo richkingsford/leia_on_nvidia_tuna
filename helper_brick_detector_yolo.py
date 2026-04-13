@@ -172,6 +172,7 @@ PARTIAL_LABEL_VERTICAL = "TOP/BOTTOM"
 PARTIAL_LABEL_LEFT = "LEFT PARTIAL"
 PARTIAL_LABEL_RIGHT = "RIGHT PARTIAL"
 PARTIAL_LABEL_GENERIC = "PARTIAL"
+NEGATIVE_TRIANGLE_COLOR_BGR = (0, 255, 0)
 
 
 class BrickDetector:
@@ -873,6 +874,8 @@ class BrickDetector:
             if rel_err > BRICK_SHAPE_REL_ERROR_MAX:
                 continue
 
+            cutout_polygons = []
+
             if self._uses_negative_cutout_gate():
                 gate_rect = (
                     (float(bx) + (float(bw) * 0.5), float(by) + (float(bh) * 0.5)),
@@ -890,6 +893,11 @@ class BrickDetector:
                     cutout_summary.get("score")
                     if isinstance(cutout_summary, dict)
                     else None
+                )
+                cutout_polygons = (
+                    list(cutout_summary.get("polygons") or [])
+                    if isinstance(cutout_summary, dict)
+                    else []
                 )
                 partial = False
                 partial_kind = None
@@ -948,6 +956,7 @@ class BrickDetector:
                     if isinstance(shape_match_score, (int, float))
                     else None
                 ),
+                "negative_cutout_polygons": cutout_polygons,
             })
 
         return bricks
@@ -1473,7 +1482,16 @@ class BrickDetector:
             self._clear_partial_state()
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
-        return self._process_bricks(frame, bricks)
+        try:
+            return self._process_bricks(frame, bricks)
+        except Exception as exc:
+            # Keep livestream camera output alive even if post-processing fails.
+            self.log.exception("Brick post-processing failed in read(): %s", exc)
+            self.current_frame = frame.copy()
+            self.last_status = "processing error"
+            self.last_primary_confidence = 0.0
+            self._clear_partial_state()
+            return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
     def read_frame(self, frame):
         """
@@ -1501,7 +1519,16 @@ class BrickDetector:
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
         # Use a copy so debug drawing doesn't mutate the caller's frame
-        return self._process_bricks(frame.copy(), bricks)
+        try:
+            return self._process_bricks(frame.copy(), bricks)
+        except Exception as exc:
+            # Keep caller preview available during debug/simulation failures.
+            self.log.exception("Brick post-processing failed in read_frame(): %s", exc)
+            self.current_frame = frame.copy()
+            self.last_status = "processing error"
+            self.last_primary_confidence = 0.0
+            self._clear_partial_state()
+            return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
     def _draw_debug(self, frame, bricks, angle, dist, offset_x, conf, partial_infos=None):
         """Draw detection visualization on frame."""
@@ -1518,8 +1545,20 @@ class BrickDetector:
                 else {}
             )
             is_partial = bool((partial_info or {}).get("partial"))
-            color = PARTIAL_COLOR_BGR if is_partial else ((0, 255, 0) if i == 0 else (0, 200, 200))
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            if self._uses_negative_cutout_gate():
+                rect_points = np.asarray(
+                    [
+                        [float(x1), float(y1)],
+                        [float(x2), float(y1)],
+                        [float(x2), float(y2)],
+                        [float(x1), float(y2)],
+                    ],
+                    dtype=np.float32,
+                )
+                self._draw_negative_cutout_polygons(frame, rect_points)
+            else:
+                color = PARTIAL_COLOR_BGR if is_partial else ((0, 255, 0) if i == 0 else (0, 200, 200))
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             label = str((partial_info or {}).get("label") or "").strip()
             if label:
                 text_y = max(18, int(y1) - 8)
@@ -1922,11 +1961,13 @@ class BrickDetector:
         )
 
         cutout_scores = []
+        cutout_polygons = []
         passed = 0
         for cutout_points in self._face_cutouts_model:
             cutout_proj = self._project_model_points_to_rect(cutout_points, rect_points)
             if not isinstance(cutout_proj, np.ndarray) or cutout_proj.shape[0] < 3:
                 return False, None
+            cutout_polygons.append(cutout_proj.astype(np.float32))
 
             cyan_fill_ratio, cutout_mask, cutout_area = self._mask_fill_ratio(
                 mask_arr, cutout_proj
@@ -1962,6 +2003,7 @@ class BrickDetector:
                 "score": 1.0,
                 "cutouts": cutout_scores,
                 "passed": passed,
+                "polygons": cutout_polygons,
             }
 
         score = 0.0
@@ -1975,6 +2017,7 @@ class BrickDetector:
             "score": float(score),
             "cutouts": cutout_scores,
             "passed": passed,
+            "polygons": cutout_polygons,
         }
 
     def _match_negative_cutout_pair_in_box(self, frame, x1, y1, x2, y2):
@@ -2152,6 +2195,33 @@ class BrickDetector:
         outline_color = PARTIAL_COLOR_BGR if is_partial else (0, 255, 0)
         outline_thickness = 3 if is_partial else 2
 
+        if self._uses_negative_cutout_gate():
+            rect_points = None
+            if rect is not None:
+                try:
+                    rect_points = self._ordered_rect_points(rect)
+                except Exception:
+                    rect_points = None
+            cutout_polygons = primary.get("negative_cutout_polygons")
+            if not isinstance(cutout_polygons, list) or not cutout_polygons:
+                if isinstance(rect_points, np.ndarray) and rect_points.shape == (4, 2):
+                    cutout_polygons = self._project_negative_cutout_polygons(rect_points)
+            if isinstance(cutout_polygons, list) and cutout_polygons:
+                for poly in cutout_polygons:
+                    poly_arr = np.asarray(poly, dtype=np.float32)
+                    if poly_arr.ndim != 2 or poly_arr.shape[0] < 3:
+                        continue
+                    poly_draw = np.round(poly_arr).astype(np.int32).reshape(-1, 1, 2)
+                    cv2.polylines(
+                        frame,
+                        [poly_draw],
+                        True,
+                        NEGATIVE_TRIANGLE_COLOR_BGR,
+                        2,
+                        cv2.LINE_AA,
+                    )
+            return
+
         # Prioritize model-constrained shape when rect is available.
         # Only fall back to raw contour if rect is unavailable.
         if rect is None:
@@ -2273,6 +2343,35 @@ class BrickDetector:
             cv2.line(frame, (pcx, pcy), (ex, ey), (0, 0, 255), 2)
 
         self.current_frame = frame
+
+    def _project_negative_cutout_polygons(self, rect_points):
+        if not isinstance(rect_points, np.ndarray) or rect_points.shape != (4, 2):
+            return []
+        face_cutouts_model = getattr(self, "_face_cutouts_model", None)
+        if not isinstance(face_cutouts_model, list):
+            return []
+        polygons = []
+        for cutout_points in face_cutouts_model:
+            cutout_proj = self._project_model_points_to_rect(cutout_points, rect_points)
+            if isinstance(cutout_proj, np.ndarray) and cutout_proj.shape[0] >= 3:
+                polygons.append(cutout_proj.astype(np.float32))
+        return polygons
+
+    def _draw_negative_cutout_polygons(self, frame, rect_points):
+        cutout_polygons = self._project_negative_cutout_polygons(rect_points)
+        for poly in cutout_polygons:
+            poly_arr = np.asarray(poly, dtype=np.float32)
+            if poly_arr.ndim != 2 or poly_arr.shape[0] < 3:
+                continue
+            poly_draw = np.round(poly_arr).astype(np.int32).reshape(-1, 1, 2)
+            cv2.polylines(
+                frame,
+                [poly_draw],
+                True,
+                NEGATIVE_TRIANGLE_COLOR_BGR,
+                2,
+                cv2.LINE_AA,
+            )
 
     def calibrate_focal(self, known_distance_mm, frame=None):
         """

@@ -184,6 +184,11 @@ GAP_SWITCH_REASSURE_STEPS = {
 AUTO_SPEED_SCORE_HARD_MAX = 25
 MAX_CONSECUTIVE_IDENTICAL_ACTS = 50
 NO_ACTION_GATECHECK_STUCK_LIMIT = 2
+NO_BREAKWAY_CONTINGENCY_SPEED_TRIES = 5
+NO_BREAKWAY_CONTINGENCY_DURATION_TRIES = 5
+NO_BREAKWAY_CONTINGENCY_ESCALATION_FACTOR = 1.15
+NO_BREAKWAY_MEANINGFUL_PROGRESS_MM = 0.5
+NO_BREAKWAY_EARLY_STALLED_SAME_CMD_LIMIT = 10
 AUTO_DEMO_SPEED_STEPS = {
     "FIND_WALL",
     "EXIT_WALL",
@@ -15580,6 +15585,11 @@ def run_alignment_segment(
 
     consecutive_unchanged_act_count = 0
     consecutive_unchanged_act_signature = None
+    no_breakway_signature = None
+    no_breakway_speed_bumps = 0
+    no_breakway_duration_bumps = 0
+    stalled_same_cmd_count = 0
+    stalled_same_cmd_value = None
 
     while True:
         loop_id += 1
@@ -16249,33 +16259,123 @@ def run_alignment_segment(
                 send_duration_override_ms,
                 custom_action_specs,
             )
+            stalled_same_cmd_trigger = bool(
+                (not bool(is_search_action))
+                and str(correction_type_for_stats or "").strip().lower() == "x_axis"
+                and str(stalled_same_cmd_value or "") == str(cmd or "")
+                and int(stalled_same_cmd_count or 0) >= int(NO_BREAKWAY_EARLY_STALLED_SAME_CMD_LIMIT)
+            )
             if (
                 action_signature == consecutive_unchanged_act_signature
                 and int(consecutive_unchanged_act_count or 0) >= 3
-            ):
-                escalation_pct = 15
-                escalation_factor = 1.15
-                if isinstance(custom_action_specs, (list, tuple)):
-                    custom_action_specs = _scale_custom_action_specs(custom_action_specs, escalation_factor)
-                else:
-                    if speed_score is not None:
-                        try:
-                            speed_score = int(round(min(100, float(speed_score) * escalation_factor)))
-                        except (TypeError, ValueError):
-                            speed_score = speed_score
-                    elif speed is not None:
-                        try:
-                            speed = min(1.0, float(speed) * escalation_factor)
-                        except (TypeError, ValueError):
-                            speed = speed
-                if send_duration_override_ms is not None and int(send_duration_override_ms) > 0:
-                    send_duration_override_ms = int(round(float(send_duration_override_ms) * escalation_factor))
-                if not align_silent:
-                    escalation_note = (
-                        f"[ESCALATE] same action repeated {int(consecutive_unchanged_act_count)} "
-                        f"unchanged times; bumping pwm/pwr/t by {escalation_pct}%"
+            ) or stalled_same_cmd_trigger:
+                if action_signature != no_breakway_signature:
+                    no_breakway_signature = action_signature
+                    no_breakway_speed_bumps = 0
+                    no_breakway_duration_bumps = 0
+
+                escalation_factor = float(NO_BREAKWAY_CONTINGENCY_ESCALATION_FACTOR)
+                escalation_pct = int(round((float(escalation_factor) - 1.0) * 100.0))
+
+                if bool(stalled_same_cmd_trigger) and not align_silent:
+                    print(
+                        format_headline(
+                            (
+                                "[NO-BREAKWAY-CONTINGENCY-PLAN][ERROR] "
+                                f"stalled same-command streak detected (cmd={str(cmd).upper()}, "
+                                f"count={int(stalled_same_cmd_count)}); forcing contingency escalation."
+                            ),
+                            COLOR_RED,
+                        )
                     )
-                    print(format_headline(escalation_note, COLOR_MAGENTA_BRIGHT))
+
+                if int(no_breakway_speed_bumps) < int(NO_BREAKWAY_CONTINGENCY_SPEED_TRIES):
+                    no_breakway_speed_bumps = int(no_breakway_speed_bumps) + 1
+                    speed_attempt_factor = float(escalation_factor) ** int(no_breakway_speed_bumps)
+                    if isinstance(custom_action_specs, (list, tuple)):
+                        custom_action_specs = _scale_custom_action_specs(custom_action_specs, speed_attempt_factor)
+                    else:
+                        if speed_score is not None:
+                            try:
+                                speed_score = int(
+                                    telemetry_robot_module.normalize_speed_score(
+                                        min(100, float(speed_score) * speed_attempt_factor)
+                                    )
+                                )
+                            except (TypeError, ValueError):
+                                speed_score = speed_score
+                        elif speed is not None:
+                            try:
+                                speed = min(1.0, float(speed) * speed_attempt_factor)
+                            except (TypeError, ValueError):
+                                speed = speed
+                    if not align_silent:
+                        escalation_note = (
+                            "[NO-BREAKWAY-CONTINGENCY-PLAN][ERROR] "
+                            f"insignificant movement detected for repeated action; "
+                            f"speed bump {int(no_breakway_speed_bumps)}/{int(NO_BREAKWAY_CONTINGENCY_SPEED_TRIES)} "
+                            f"(+{int(escalation_pct)}%, duration unchanged)."
+                        )
+                        print(format_headline(escalation_note, COLOR_RED))
+                elif int(no_breakway_duration_bumps) < int(NO_BREAKWAY_CONTINGENCY_DURATION_TRIES):
+                    if int(no_breakway_duration_bumps) == 0 and robot is not None:
+                        robot.stop()
+                        time.sleep(CONTROL_DT)
+                    no_breakway_duration_bumps = int(no_breakway_duration_bumps) + 1
+                    speed_attempt_factor = float(escalation_factor) ** int(NO_BREAKWAY_CONTINGENCY_SPEED_TRIES)
+                    duration_attempt_factor = float(escalation_factor) ** int(no_breakway_duration_bumps)
+                    if isinstance(custom_action_specs, (list, tuple)):
+                        custom_action_specs = _scale_custom_action_specs(custom_action_specs, speed_attempt_factor)
+                    else:
+                        if speed_score is not None:
+                            try:
+                                speed_score = int(
+                                    telemetry_robot_module.normalize_speed_score(
+                                        min(100, float(speed_score) * speed_attempt_factor)
+                                    )
+                                )
+                            except (TypeError, ValueError):
+                                speed_score = speed_score
+                        elif speed is not None:
+                            try:
+                                speed = min(1.0, float(speed) * speed_attempt_factor)
+                            except (TypeError, ValueError):
+                                speed = speed
+                    if send_duration_override_ms is None or int(send_duration_override_ms) <= 0:
+                        baseline_score = speed_score
+                        if baseline_score is None:
+                            baseline_score = DEFAULT_SPEED_SCORE
+                        try:
+                            _, _, _, model_ms = telemetry_robot_module.speed_power_pwm_for_cmd(
+                                cmd,
+                                int(telemetry_robot_module.normalize_speed_score(baseline_score)),
+                            )
+                        except Exception:
+                            model_ms = int(CONTROL_DT * 1000)
+                        send_duration_override_ms = max(1, int(model_ms))
+                    send_duration_override_ms = int(
+                        round(float(send_duration_override_ms) * float(duration_attempt_factor))
+                    )
+                    if not align_silent:
+                        escalation_note = (
+                            "[NO-BREAKWAY-CONTINGENCY-PLAN][ERROR] "
+                            f"speed escalation exhausted; duration bump "
+                            f"{int(no_breakway_duration_bumps)}/{int(NO_BREAKWAY_CONTINGENCY_DURATION_TRIES)} "
+                            f"(+{int(escalation_pct)}%, speed unchanged)."
+                        )
+                        print(format_headline(escalation_note, COLOR_RED))
+                else:
+                    if robot is not None:
+                        robot.stop()
+                    if not align_silent:
+                        print(
+                            format_headline(
+                                "[NO-BREAKWAY-CONTINGENCY-PLAN][ERROR] exhausted speed/duration contingency attempts; holding still.",
+                                COLOR_RED,
+                            )
+                        )
+                    pause_after_fail(robot)
+                    return False, "no_breakway_contingency_exhausted"
             action_meta = send_robot_command(
                 robot,
                 world,
@@ -16556,21 +16656,41 @@ def run_alignment_segment(
                 no_change = False
                 if isinstance(pre_focus, dict) and isinstance(post_focus, dict):
                     if pre_focus.get("metric") == post_focus.get("metric"):
+                        metric_delta_abs = None
+                        try:
+                            metric_delta_abs = abs(
+                                float(post_focus.get("value")) - float(pre_focus.get("value"))
+                            )
+                        except (TypeError, ValueError):
+                            metric_delta_abs = None
                         _, _, delta_class = _auto_diag_delta_phrase(
                             pre_focus.get("metric"),
                             pre_focus.get("value"),
                             post_focus.get("value"),
                         )
-                        no_change = delta_class == "unchanged"
+                        if metric_delta_abs is not None:
+                            no_change = float(metric_delta_abs) < float(NO_BREAKWAY_MEANINGFUL_PROGRESS_MM)
+                        else:
+                            no_change = delta_class == "unchanged"
                 if no_change:
                     if action_signature == consecutive_unchanged_act_signature:
                         consecutive_unchanged_act_count = int(consecutive_unchanged_act_count or 0) + 1
                     else:
                         consecutive_unchanged_act_count = 1
                         consecutive_unchanged_act_signature = action_signature
+                    if str(stalled_same_cmd_value or "") == str(cmd or ""):
+                        stalled_same_cmd_count = int(stalled_same_cmd_count or 0) + 1
+                    else:
+                        stalled_same_cmd_value = str(cmd or "")
+                        stalled_same_cmd_count = 1
                 else:
                     consecutive_unchanged_act_count = 0
                     consecutive_unchanged_act_signature = None
+                    no_breakway_signature = None
+                    no_breakway_speed_bumps = 0
+                    no_breakway_duration_bumps = 0
+                    stalled_same_cmd_count = 0
+                    stalled_same_cmd_value = None
             if success_hit:
                 return _complete_alignment_success("success gate", tracker=success_tracker)
             _record_forward_stall_progress(

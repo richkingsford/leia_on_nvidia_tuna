@@ -20,6 +20,7 @@ from calibration import helper_calibrate_dist
 from calibration.helper_calibrate import get_shared_stream_runtime, use_shared_stream_runtime
 from calibration import helper_calibrate_motion
 from calibration import helper_calibrate_speed
+from calibration import helper_calibrate_x_dist
 from calibration import helper_calibrate_x
 from calibration import helper_calibrate_x_axis
 from calibration import helper_calibrate_y
@@ -59,6 +60,7 @@ OPTIONS: tuple[CalibrateOption, ...] = (
     CalibrateOption("x", "X-axis duration curve calibration", helper_calibrate_x.main),
     CalibrateOption("y", "Y-axis duration curve calibration", helper_calibrate_y.main),
     CalibrateOption("dist", "Distance duration curve calibration", helper_calibrate_dist.main),
+    CalibrateOption("x-dist", "Combined one-shot X+Distance duration probe", helper_calibrate_x_dist.main),
     CalibrateOption("telemetry", "Telemetry value calibration (dist/x/y)", helper_calibrate_telemetry.main),
     CalibrateOption("dist-guided", "Distance curve calibration (guided checkpoints)", lambda: run_guided_distance_calibration()),
     CalibrateOption("breakaway", "Drive breakaway test (find first reliable low-speed score)", helper_manual_drive_breakaway_test.main),
