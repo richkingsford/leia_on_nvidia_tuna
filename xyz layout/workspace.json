@@ -1,24 +1,24 @@
 {
-  "updated_at": 1776113407.4873664,
+  "updated_at": 1776118704.062065,
   "robot": {
-    "x_mm": -5.27547694390823,
-    "y_mm": -38.661024143259084,
+    "x_mm": -18.01948347877524,
+    "y_mm": -22.188887276536576,
     "z_mm": 0.0,
-    "theta_deg": -90.0,
+    "theta_deg": -94.45570896551725,
     "lift_mm": 0.0
   },
   "raw_robot": {
-    "x_mm": 0.0,
-    "y_mm": 0.0,
+    "x_mm": -3.6789599240445696,
+    "y_mm": 1.1743383801883087,
     "z_mm": 0.0,
-    "theta_deg": 0.0,
+    "theta_deg": -4.455708965517241,
     "lift_mm": 0.0
   },
   "leia": {
-    "x_mm": -5.27547694390823,
-    "y_mm": -38.661024143259084,
-    "z_mm": 0.0,
-    "theta_deg": -90.0,
+    "x_mm": -18.01948347877524,
+    "y_mm": -22.188887276536576,
+    "z_mm": 0.6541043049837254,
+    "theta_deg": -94.45570896551725,
     "label": "Leia"
   },
   "objects": {
@@ -36,7 +36,7 @@
       "fixed": true,
       "render_footprint_mm": 54.0,
       "source": "default_layout_seed",
-      "last_seen_ts": 1776113407.4873054
+      "last_seen_ts": 1776118704.061996
     },
     "wall": {
       "name": "wall",
@@ -50,13 +50,13 @@
       "height_mm": 44.0,
       "confidence": null,
       "visible": true,
-      "valid": true,
+      "valid": false,
       "fixed": true,
       "source": "ALIGN_BRICK",
-      "last_seen_ts": 1776113385.3079479,
+      "last_seen_ts": 1776118704.0616734,
       "count": 1,
-      "observed_world_x_mm": 8.052568044148084e-15,
-      "observed_world_y_mm": 131.50841613687464,
+      "observed_world_x_mm": -19.300762140936286,
+      "observed_world_y_mm": -384.4409958263294,
       "observed_world_theta_deg": 180.0
     }
   },
@@ -76,7 +76,7 @@
   "wall_reverse_plan": {
     "ok": true,
     "reason": "planned",
-    "wall_behind_mm": 38.66102414325907,
+    "wall_behind_mm": 37.5056484770065,
     "target_wall_distance_mm": 45.0,
     "reverse_gap_mm": 0.0,
     "reverse_acts": 0,
@@ -89,10 +89,10 @@
   },
   "last_visible_brick": {
     "visible": true,
-    "dist_mm": 141.43739517262787,
-    "x_axis_mm": 5.279150444643945,
-    "y_axis_mm": 2.6189905319587394,
-    "confidence": 66.16755723953247,
-    "angle_deg": 0.7994209115010853
+    "dist_mm": 158.8365483251872,
+    "x_axis_mm": 30.78767980705368,
+    "y_axis_mm": 1.2173326865918244,
+    "confidence": 80.25611639022827,
+    "angle_deg": 0.0
   }
 }

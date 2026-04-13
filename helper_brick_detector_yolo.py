@@ -151,12 +151,17 @@ BRICK_SHAPE_FILL_RATIO_MIN = 0.28
 BRICK_FACE_MATCH_MAX_FULL = 0.40
 BRICK_FACE_MATCH_MAX_PARTIAL = 0.55
 FALLBACK_SHAPE_MIN_AREA_RATIO = 0.06
-BRICK_FACE_GATE_MODE_DEFAULT = "full_face"
+BRICK_FACE_GATE_MODE_DEFAULT = "negative_cutouts"
 BRICK_FACE_GATE_MODE_NEGATIVE_CUTOUTS = "negative_cutouts"
 NEGATIVE_CUTOUT_CYAN_FILL_MAX = 0.20
 NEGATIVE_CUTOUT_RING_CYAN_MIN = 0.52
 NEGATIVE_CUTOUT_RING_DILATE_PX = 4
 NEGATIVE_CUTOUT_MIN_AREA_PX = 18.0
+NEGATIVE_CUTOUT_TRIANGLE_SIDE_RATIO_MAX = 2.0
+NEGATIVE_CUTOUT_TRIANGLE_ANGLE_SPREAD_MAX_DEG = 75.0
+NEGATIVE_CUTOUT_TRIANGLE_OVERLAP_MIN = 0.50
+NEGATIVE_CUTOUT_TRIANGLE_AREA_RATIO_MIN = 0.45
+NEGATIVE_CUTOUT_TRIANGLE_AREA_RATIO_MAX = 1.40
 
 # Cyan-target experiment: stabilize selection around centerpoint.
 CENTER_LOCK_RADIUS_RATIO = 0.18
@@ -300,6 +305,21 @@ class BrickDetector:
         self._negative_cutout_ring_cyan_min = float(NEGATIVE_CUTOUT_RING_CYAN_MIN)
         self._negative_cutout_ring_dilate_px = int(NEGATIVE_CUTOUT_RING_DILATE_PX)
         self._negative_cutout_min_area_px = float(NEGATIVE_CUTOUT_MIN_AREA_PX)
+        self._negative_cutout_triangle_side_ratio_max = float(
+            NEGATIVE_CUTOUT_TRIANGLE_SIDE_RATIO_MAX
+        )
+        self._negative_cutout_triangle_angle_spread_max_deg = float(
+            NEGATIVE_CUTOUT_TRIANGLE_ANGLE_SPREAD_MAX_DEG
+        )
+        self._negative_cutout_triangle_overlap_min = float(
+            NEGATIVE_CUTOUT_TRIANGLE_OVERLAP_MIN
+        )
+        self._negative_cutout_triangle_area_ratio_min = float(
+            NEGATIVE_CUTOUT_TRIANGLE_AREA_RATIO_MIN
+        )
+        self._negative_cutout_triangle_area_ratio_max = float(
+            NEGATIVE_CUTOUT_TRIANGLE_AREA_RATIO_MAX
+        )
         self._load_face_shape_model()
         self._init_shape_match_templates()
 
@@ -324,6 +344,11 @@ class BrickDetector:
                            negative_cutout_ring_cyan_min=None,
                            negative_cutout_ring_dilate_px=None,
                            negative_cutout_min_area_px=None,
+                           negative_cutout_triangle_side_ratio_max=None,
+                           negative_cutout_triangle_angle_spread_max_deg=None,
+                           negative_cutout_triangle_overlap_min=None,
+                           negative_cutout_triangle_area_ratio_min=None,
+                           negative_cutout_triangle_area_ratio_max=None,
                            center_lock_enabled=None,
                            center_lock_radius_px=None,
                            center_switch_margin_px=None,
@@ -401,6 +426,46 @@ class BrickDetector:
                 self._negative_cutout_min_area_px = max(
                     1.0,
                     float(negative_cutout_min_area_px),
+                )
+            except (TypeError, ValueError):
+                pass
+        if negative_cutout_triangle_side_ratio_max is not None:
+            try:
+                self._negative_cutout_triangle_side_ratio_max = max(
+                    1.0,
+                    float(negative_cutout_triangle_side_ratio_max),
+                )
+            except (TypeError, ValueError):
+                pass
+        if negative_cutout_triangle_angle_spread_max_deg is not None:
+            try:
+                self._negative_cutout_triangle_angle_spread_max_deg = max(
+                    1.0,
+                    float(negative_cutout_triangle_angle_spread_max_deg),
+                )
+            except (TypeError, ValueError):
+                pass
+        if negative_cutout_triangle_overlap_min is not None:
+            try:
+                self._negative_cutout_triangle_overlap_min = max(
+                    0.0,
+                    min(1.0, float(negative_cutout_triangle_overlap_min)),
+                )
+            except (TypeError, ValueError):
+                pass
+        if negative_cutout_triangle_area_ratio_min is not None:
+            try:
+                self._negative_cutout_triangle_area_ratio_min = max(
+                    0.05,
+                    float(negative_cutout_triangle_area_ratio_min),
+                )
+            except (TypeError, ValueError):
+                pass
+        if negative_cutout_triangle_area_ratio_max is not None:
+            try:
+                self._negative_cutout_triangle_area_ratio_max = max(
+                    max(0.05, self._negative_cutout_triangle_area_ratio_min),
+                    float(negative_cutout_triangle_area_ratio_max),
                 )
             except (TypeError, ValueError):
                 pass
@@ -877,16 +942,98 @@ class BrickDetector:
             cutout_polygons = []
 
             if self._uses_negative_cutout_gate():
-                gate_rect = (
-                    (float(bx) + (float(bw) * 0.5), float(by) + (float(bh) * 0.5)),
-                    (float(bw), float(bh)),
-                    0.0,
-                )
+                gate_rect = rect
                 cutout_match, cutout_summary = self._match_negative_cutout_pair(
                     feature_mask,
                     gate_rect,
                 )
                 if not cutout_match:
+                    # If two stacked bricks merge into a single tall contour,
+                    # probe top/bottom halves independently for the two-cutout pattern.
+                    if bh >= max(12, int(round(float(bw) * 1.15))):
+                        half_h = max(8, int(round(float(bh) * 0.5)))
+                        split_boxes = [
+                            (int(bx), int(by), int(bw), int(half_h)),
+                            (int(bx), int(by + bh - half_h), int(bw), int(half_h)),
+                        ]
+                        for sbx, sby, sbw, sbh in split_boxes:
+                            sub_rect = (
+                                (float(sbx) + (float(sbw) * 0.5), float(sby) + (float(sbh) * 0.5)),
+                                (float(sbw), float(sbh)),
+                                0.0,
+                            )
+                            sub_match, sub_summary = self._match_negative_cutout_pair(
+                                feature_mask,
+                                sub_rect,
+                            )
+                            if not sub_match:
+                                continue
+
+                            sub_cutouts = (
+                                list(sub_summary.get("polygons") or [])
+                                if isinstance(sub_summary, dict)
+                                else []
+                            )
+                            sub_cutouts_frame = []
+                            for poly in sub_cutouts:
+                                poly_arr = np.asarray(poly, dtype=np.float32)
+                                if poly_arr.ndim != 2 or poly_arr.shape[0] < 3:
+                                    continue
+                                poly_arr = poly_arr.copy()
+                                poly_arr[:, 0] += float(x1)
+                                poly_arr[:, 1] += float(y1)
+                                sub_cutouts_frame.append(poly_arr)
+
+                            split_contour = np.asarray(
+                                [
+                                    [float(sbx), float(sby)],
+                                    [float(sbx + sbw), float(sby)],
+                                    [float(sbx + sbw), float(sby + sbh)],
+                                    [float(sbx), float(sby + sbh)],
+                                ],
+                                dtype=np.float32,
+                            ).reshape(-1, 1, 2)
+                            split_contour[:, :, 0] += float(x1)
+                            split_contour[:, :, 1] += float(y1)
+
+                            split_rect = (
+                                (
+                                    float(sbx) + (float(sbw) * 0.5) + float(x1),
+                                    float(sby) + (float(sbh) * 0.5) + float(y1),
+                                ),
+                                (float(sbw), float(sbh)),
+                                0.0,
+                            )
+                            split_partial_info = self._partial_info_for_crop_bbox(
+                                sbx,
+                                sby,
+                                sbw,
+                                sbh,
+                                crop.shape[1],
+                                crop.shape[0],
+                            )
+                            split_shape_score = (
+                                float(sub_summary.get("score"))
+                                if isinstance(sub_summary, dict)
+                                and isinstance(sub_summary.get("score"), (int, float))
+                                else None
+                            )
+
+                            bricks.append({
+                                "contour": split_contour,
+                                "center_x": int(round(float(split_rect[0][0]))),
+                                "center_y": int(round(float(split_rect[0][1]))),
+                                "rect": split_rect,
+                                "bbox": (int(sbx + x1), int(sby + y1), int(sbw), int(sbh)),
+                                "area": float(max(1, sbw * sbh)),
+                                "partial": False,
+                                "partial_kind": None,
+                                "partial_label": None,
+                                "partial_edges": split_partial_info.get("edges") or {},
+                                "shape_profile": "full",
+                                "shape_match_score": split_shape_score,
+                                "negative_cutout_polygons": sub_cutouts_frame,
+                            })
                     continue
                 shape_profile = "full"
                 shape_match_score = (
@@ -939,6 +1086,16 @@ class BrickDetector:
                 rect[2],
             )
 
+            cutout_polygons_frame = []
+            for poly in cutout_polygons:
+                poly_arr = np.asarray(poly, dtype=np.float32)
+                if poly_arr.ndim != 2 or poly_arr.shape[0] < 3:
+                    continue
+                poly_arr = poly_arr.copy()
+                poly_arr[:, 0] += float(x1)
+                poly_arr[:, 1] += float(y1)
+                cutout_polygons_frame.append(poly_arr)
+
             bricks.append({
                 "contour": cnt_frame,
                 "center_x": cx + x1,
@@ -956,7 +1113,7 @@ class BrickDetector:
                     if isinstance(shape_match_score, (int, float))
                     else None
                 ),
-                "negative_cutout_polygons": cutout_polygons,
+                "negative_cutout_polygons": cutout_polygons_frame,
             })
 
         return bricks
@@ -1546,16 +1703,17 @@ class BrickDetector:
             )
             is_partial = bool((partial_info or {}).get("partial"))
             if self._uses_negative_cutout_gate():
-                rect_points = np.asarray(
-                    [
-                        [float(x1), float(y1)],
-                        [float(x2), float(y1)],
-                        [float(x2), float(y2)],
-                        [float(x1), float(y2)],
-                    ],
-                    dtype=np.float32,
-                )
-                self._draw_negative_cutout_polygons(frame, rect_points)
+                if i == 0:
+                    rect_points = np.asarray(
+                        [
+                            [float(x1), float(y1)],
+                            [float(x2), float(y1)],
+                            [float(x2), float(y2)],
+                            [float(x1), float(y2)],
+                        ],
+                        dtype=np.float32,
+                    )
+                    self._draw_negative_cutout_polygons(frame, rect_points)
             else:
                 color = PARTIAL_COLOR_BGR if is_partial else ((0, 255, 0) if i == 0 else (0, 200, 200))
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
@@ -1615,6 +1773,21 @@ class BrickDetector:
         self._negative_cutout_ring_cyan_min = float(NEGATIVE_CUTOUT_RING_CYAN_MIN)
         self._negative_cutout_ring_dilate_px = int(NEGATIVE_CUTOUT_RING_DILATE_PX)
         self._negative_cutout_min_area_px = float(NEGATIVE_CUTOUT_MIN_AREA_PX)
+        self._negative_cutout_triangle_side_ratio_max = float(
+            NEGATIVE_CUTOUT_TRIANGLE_SIDE_RATIO_MAX
+        )
+        self._negative_cutout_triangle_angle_spread_max_deg = float(
+            NEGATIVE_CUTOUT_TRIANGLE_ANGLE_SPREAD_MAX_DEG
+        )
+        self._negative_cutout_triangle_overlap_min = float(
+            NEGATIVE_CUTOUT_TRIANGLE_OVERLAP_MIN
+        )
+        self._negative_cutout_triangle_area_ratio_min = float(
+            NEGATIVE_CUTOUT_TRIANGLE_AREA_RATIO_MIN
+        )
+        self._negative_cutout_triangle_area_ratio_max = float(
+            NEGATIVE_CUTOUT_TRIANGLE_AREA_RATIO_MAX
+        )
         try:
             import json
 
@@ -1703,6 +1876,41 @@ class BrickDetector:
             try:
                 self._negative_cutout_min_area_px = max(
                     1.0, float(shape_gate.get("cutout_min_area_px"))
+                )
+            except (TypeError, ValueError):
+                pass
+            try:
+                self._negative_cutout_triangle_side_ratio_max = max(
+                    1.0,
+                    float(shape_gate.get("cutout_triangle_side_ratio_max")),
+                )
+            except (TypeError, ValueError):
+                pass
+            try:
+                self._negative_cutout_triangle_angle_spread_max_deg = max(
+                    1.0,
+                    float(shape_gate.get("cutout_triangle_angle_spread_max_deg")),
+                )
+            except (TypeError, ValueError):
+                pass
+            try:
+                self._negative_cutout_triangle_overlap_min = max(
+                    0.0,
+                    min(1.0, float(shape_gate.get("cutout_triangle_overlap_min"))),
+                )
+            except (TypeError, ValueError):
+                pass
+            try:
+                self._negative_cutout_triangle_area_ratio_min = max(
+                    0.05,
+                    float(shape_gate.get("cutout_triangle_area_ratio_min")),
+                )
+            except (TypeError, ValueError):
+                pass
+            try:
+                self._negative_cutout_triangle_area_ratio_max = max(
+                    max(0.05, self._negative_cutout_triangle_area_ratio_min),
+                    float(shape_gate.get("cutout_triangle_area_ratio_max")),
                 )
             except (TypeError, ValueError):
                 pass
@@ -1845,11 +2053,6 @@ class BrickDetector:
         return best_profile, float(best_score)
 
     def _uses_negative_cutout_gate(self):
-        if (
-            str(getattr(self, "_face_shape_gate_mode", "")).strip().lower()
-            != BRICK_FACE_GATE_MODE_NEGATIVE_CUTOUTS
-        ):
-            return False
         face_cutouts_model = getattr(self, "_face_cutouts_model", None)
         return isinstance(face_cutouts_model, list) and len(face_cutouts_model) >= 2
 
@@ -1902,6 +2105,148 @@ class BrickDetector:
             return None, None, 0.0
         active = cv2.bitwise_and(mask_arr, mask_arr, mask=region_mask)
         return float(cv2.countNonZero(active)) / area, region_mask, area
+
+    def _triangle_metrics(self, triangle_points):
+        pts = np.asarray(triangle_points, dtype=np.float32).reshape(-1, 2)
+        if pts.shape != (3, 2):
+            return None
+
+        sides = []
+        for i in range(3):
+            j = (i + 1) % 3
+            sides.append(float(np.linalg.norm(pts[j] - pts[i])))
+        min_side = min(sides)
+        max_side = max(sides)
+        if min_side <= 1e-6:
+            return None
+        side_ratio = max_side / min_side
+
+        angles = []
+        for i in range(3):
+            prev_pt = pts[(i - 1) % 3]
+            curr_pt = pts[i]
+            next_pt = pts[(i + 1) % 3]
+            v1 = prev_pt - curr_pt
+            v2 = next_pt - curr_pt
+            denom = float(np.linalg.norm(v1) * np.linalg.norm(v2))
+            if denom <= 1e-6:
+                return None
+            cos_val = float(np.dot(v1, v2) / denom)
+            cos_val = max(-1.0, min(1.0, cos_val))
+            angles.append(math.degrees(math.acos(cos_val)))
+        angle_spread = max(angles) - min(angles)
+
+        return {
+            "side_ratio": float(side_ratio),
+            "angle_spread_deg": float(angle_spread),
+            "angles_deg": [float(a) for a in angles],
+        }
+
+    def _extract_regular_dark_triangle(self, cyan_mask, cutout_mask, cutout_proj, min_area):
+        if cyan_mask is None or cutout_mask is None:
+            return None
+
+        dark_in_cutout = cv2.bitwise_and(cv2.bitwise_not(cyan_mask), cutout_mask)
+        dark_cnts, _ = cv2.findContours(
+            dark_in_cutout, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        if not dark_cnts:
+            return None
+
+        overlap_min = float(
+            getattr(
+                self,
+                "_negative_cutout_triangle_overlap_min",
+                NEGATIVE_CUTOUT_TRIANGLE_OVERLAP_MIN,
+            )
+        )
+        side_ratio_max = float(
+            getattr(
+                self,
+                "_negative_cutout_triangle_side_ratio_max",
+                NEGATIVE_CUTOUT_TRIANGLE_SIDE_RATIO_MAX,
+            )
+        )
+        angle_spread_max_deg = float(
+            getattr(
+                self,
+                "_negative_cutout_triangle_angle_spread_max_deg",
+                NEGATIVE_CUTOUT_TRIANGLE_ANGLE_SPREAD_MAX_DEG,
+            )
+        )
+
+        proj_mask = np.zeros(cyan_mask.shape[:2], dtype=np.uint8)
+        proj_draw = np.round(np.asarray(cutout_proj, dtype=np.float32)).astype(np.int32).reshape(-1, 1, 2)
+        cv2.fillPoly(proj_mask, [proj_draw], 255)
+        proj_area = float(cv2.countNonZero(proj_mask))
+        if proj_area <= 0.0:
+            return None
+
+        area_ratio_min = float(
+            getattr(
+                self,
+                "_negative_cutout_triangle_area_ratio_min",
+                NEGATIVE_CUTOUT_TRIANGLE_AREA_RATIO_MIN,
+            )
+        )
+        area_ratio_max = float(
+            getattr(
+                self,
+                "_negative_cutout_triangle_area_ratio_max",
+                NEGATIVE_CUTOUT_TRIANGLE_AREA_RATIO_MAX,
+            )
+        )
+
+        best_poly = None
+        best_score = None
+        for cnt in dark_cnts:
+            area = float(cv2.contourArea(cnt))
+            if area < max(4.0, min_area * 0.2):
+                continue
+
+            peri = float(cv2.arcLength(cnt, True))
+            if peri <= 0.0:
+                continue
+            approx = cv2.approxPolyDP(cnt, max(1.0, peri * 0.06), True)
+            if approx is None or approx.shape[0] != 3:
+                continue
+
+            tri = approx.reshape(-1, 2).astype(np.float32)
+            metrics = self._triangle_metrics(tri)
+            if not isinstance(metrics, dict):
+                continue
+            if float(metrics["side_ratio"]) > side_ratio_max:
+                continue
+            if float(metrics["angle_spread_deg"]) > angle_spread_max_deg:
+                continue
+
+            tri_mask = np.zeros(cyan_mask.shape[:2], dtype=np.uint8)
+            tri_draw = np.round(tri).astype(np.int32).reshape(-1, 1, 2)
+            cv2.fillPoly(tri_mask, [tri_draw], 255)
+            tri_area = float(cv2.countNonZero(tri_mask))
+            if tri_area <= 0.0:
+                continue
+            area_ratio = tri_area / proj_area
+            if area_ratio < area_ratio_min or area_ratio > area_ratio_max:
+                continue
+            overlap_mask = cv2.bitwise_and(tri_mask, proj_mask)
+            overlap_area = float(cv2.countNonZero(overlap_mask))
+            overlap_proj_ratio = overlap_area / proj_area
+            if overlap_proj_ratio < overlap_min:
+                continue
+            overlap_tri_ratio = overlap_area / tri_area
+            if overlap_tri_ratio < 0.65:
+                continue
+
+            # Prefer the most regular triangle among candidates.
+            score = float(metrics["side_ratio"] - 1.0) + (
+                float(metrics["angle_spread_deg"]) / 180.0
+            ) + abs(area_ratio - 1.0)
+            if best_score is None or score < best_score:
+                best_score = score
+                best_poly = tri
+
+        return best_poly
 
     def _match_negative_cutout_pair(self, feature_mask, rect, contour=None):
         if not self._uses_negative_cutout_gate():
@@ -1967,7 +2312,6 @@ class BrickDetector:
             cutout_proj = self._project_model_points_to_rect(cutout_points, rect_points)
             if not isinstance(cutout_proj, np.ndarray) or cutout_proj.shape[0] < 3:
                 return False, None
-            cutout_polygons.append(cutout_proj.astype(np.float32))
 
             cyan_fill_ratio, cutout_mask, cutout_area = self._mask_fill_ratio(
                 mask_arr, cutout_proj
@@ -1988,8 +2332,20 @@ class BrickDetector:
                 float(cyan_fill_ratio) <= cyan_fill_max
                 and float(ring_cyan_ratio) >= ring_cyan_min
             )
+            actual_poly = None
+            if passed_cutout:
+                actual_poly = self._extract_regular_dark_triangle(
+                    mask_arr,
+                    cutout_mask,
+                    cutout_proj,
+                    min_area,
+                )
+                passed_cutout = actual_poly is not None
             if passed_cutout:
                 passed += 1
+                cutout_polygons.append(actual_poly.astype(np.float32))
+            else:
+                cutout_polygons.append(cutout_proj.astype(np.float32))
             cutout_scores.append(
                 {
                     "cyan_fill_ratio": float(cyan_fill_ratio),
@@ -2037,24 +2393,29 @@ class BrickDetector:
         if not contours:
             return False, None
 
-        best = None
-        best_area = 0.0
+        best_summary = None
+        best_score = None
+        best_passed = -1
         for cnt in contours:
             area = float(cv2.contourArea(cnt))
-            if area <= best_area:
+            if area <= 0.0:
                 continue
-            best = cnt
-            best_area = area
-        if best is None:
-            return False, None
-
-        bx, by, bw, bh = cv2.boundingRect(best)
-        gate_rect = (
-            (float(bx) + (float(bw) * 0.5), float(by) + (float(bh) * 0.5)),
-            (float(bw), float(bh)),
-            0.0,
-        )
-        return self._match_negative_cutout_pair(feature_mask, gate_rect)
+            gate_rect = cv2.minAreaRect(cnt)
+            matched, summary = self._match_negative_cutout_pair(feature_mask, gate_rect)
+            if matched:
+                return True, summary
+            if not isinstance(summary, dict):
+                continue
+            passed = int(summary.get("passed") or 0)
+            score = float(summary.get("score") or 1.0)
+            if (
+                passed > best_passed
+                or (passed == best_passed and (best_score is None or score < best_score))
+            ):
+                best_passed = passed
+                best_score = score
+                best_summary = summary
+        return False, best_summary
 
     def _extract_shape_contour_in_box(self, frame, x1, y1, x2, y2):
         crop = frame[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
@@ -2175,6 +2536,37 @@ class BrickDetector:
             return None
         return projected.reshape(-1, 2)
 
+    def _project_model_points_to_rect_direct(self, model_points, rect_points):
+        if not isinstance(model_points, np.ndarray) or model_points.size == 0:
+            return None
+        if not isinstance(rect_points, np.ndarray) or rect_points.shape != (4, 2):
+            return None
+
+        half_width = float(BRICK_WIDTH_MM) * 0.5
+        model_height = float(BRICK_HEIGHT_MM)
+        src = np.asarray(
+            [
+                [-half_width, model_height],
+                [half_width, model_height],
+                [half_width, 0.0],
+                [-half_width, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        dst = np.asarray(rect_points, dtype=np.float32)
+        try:
+            transform = cv2.getPerspectiveTransform(src, dst)
+        except Exception:
+            return None
+        pts_in = np.asarray(model_points, dtype=np.float32).reshape(-1, 1, 2)
+        try:
+            projected = cv2.perspectiveTransform(pts_in, transform)
+        except Exception:
+            return None
+        if projected is None:
+            return None
+        return projected.reshape(-1, 2)
+
     def _draw_primary_face_outline(self, frame, primary):
         if not isinstance(primary, dict):
             return
@@ -2263,22 +2655,6 @@ class BrickDetector:
                 poly_draw = np.round(poly_proj).astype(np.int32).reshape(-1, 1, 2)
                 cv2.polylines(frame, [poly_draw], True, outline_color, 2, cv2.LINE_AA)
 
-                if shape_profile == "full":
-                    face_cutouts_model = getattr(self, "_face_cutouts_model", None)
-                    if isinstance(face_cutouts_model, list):
-                        for cutout_points in face_cutouts_model:
-                            cutout_proj = self._project_model_points_to_rect(cutout_points, points)
-                            if isinstance(cutout_proj, np.ndarray) and len(cutout_proj) >= 3:
-                                cutout_draw = np.round(cutout_proj).astype(np.int32).reshape(-1, 1, 2)
-                                cv2.polylines(frame, [cutout_draw], True, (220, 245, 255), 1, cv2.LINE_AA)
-                if shape_profile == "full" and isinstance(self._face_lines_model, list) and self._face_lines_model:
-                    for p1, p2 in self._face_lines_model:
-                        line_points = np.asarray([p1, p2], dtype=np.float32)
-                        line_proj = self._project_model_points_to_rect(line_points, points)
-                        if isinstance(line_proj, np.ndarray) and len(line_proj) == 2:
-                            a = tuple(np.intp(np.round(line_proj[0])))
-                            b = tuple(np.intp(np.round(line_proj[1])))
-                            cv2.line(frame, a, b, (220, 245, 255), 1, cv2.LINE_AA)
                 return
 
         if contour_arr is not None and contour_arr.shape[0] >= 3:
@@ -2352,7 +2728,7 @@ class BrickDetector:
             return []
         polygons = []
         for cutout_points in face_cutouts_model:
-            cutout_proj = self._project_model_points_to_rect(cutout_points, rect_points)
+            cutout_proj = self._project_model_points_to_rect_direct(cutout_points, rect_points)
             if isinstance(cutout_proj, np.ndarray) and cutout_proj.shape[0] >= 3:
                 polygons.append(cutout_proj.astype(np.float32))
         return polygons

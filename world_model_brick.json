@@ -155,7 +155,12 @@
             "cutout_cyan_fill_max": 0.42,
             "cutout_ring_cyan_min": 0.32,
             "cutout_ring_dilate_px": 5,
-            "cutout_min_area_px": 18.0
+            "cutout_min_area_px": 18.0,
+            "cutout_triangle_side_ratio_max": 2.0,
+            "cutout_triangle_angle_spread_max_deg": 75.0,
+            "cutout_triangle_overlap_min": 0.5,
+            "cutout_triangle_area_ratio_min": 0.45,
+            "cutout_triangle_area_ratio_max": 1.4
         }
     },
     "brick_database": {
