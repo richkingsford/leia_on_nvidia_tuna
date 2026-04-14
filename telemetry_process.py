@@ -22,6 +22,7 @@ import helper_gate_utils as gate_utils
 import helper_crosshair_stack_count
 import helper_xyz_coords
 import helper_turn_drive_motion
+import helper_telemetry_forward_while_turning
 from helper_robot_control import Robot, VALID_MOTION_COMMANDS
 from telemetry_robot import MotionEvent, StepState, WorldModel, draw_telemetry_overlay
 import telemetry_brick
@@ -11585,6 +11586,17 @@ def run_alignment_segment(
         )
         return plan if isinstance(plan, dict) else None
 
+    def _build_forward_turn_assist_for_action(local_gate_before_action, *, cmd_local, speed_score_local):
+        plan = helper_telemetry_forward_while_turning.build_forward_while_turning_plan(
+            step_rules=step_rules,
+            cmd=cmd_local,
+            speed_score=speed_score_local,
+            local_gate_status=local_gate_before_action,
+            hold_duration_ms=duration_override_ms,
+            metadata={"step": normalize_step_label(step)},
+        )
+        return plan if isinstance(plan, dict) else None
+
     start_cmd = scan_cmd
     start_speed = action_speeds["scan"]
     is_align_brick_step = step_key == "ALIGN_BRICK"
@@ -16097,6 +16109,28 @@ def run_alignment_segment(
                 world,
                 step,
             )
+            if bool(use_micro_align_gap_planner):
+                align_policy_cfg_local = step_rules.get("align_policy") if isinstance(step_rules, dict) else {}
+                if not isinstance(align_policy_cfg_local, dict):
+                    align_policy_cfg_local = {}
+                fwt_cfg = (
+                    align_policy_cfg_local.get("forward_while_turning_assist")
+                    if isinstance(align_policy_cfg_local.get("forward_while_turning_assist"), dict)
+                    else {}
+                )
+                if bool(fwt_cfg.get("enabled", False)) and bool(fwt_cfg.get("prefer_forward_for_x_axis", False)):
+                    cmd_key_local = str(cmd or "").strip().lower()
+                    if cmd_key_local in ("l", "r"):
+                        dist_now_local = local_gate_before_action.get("dist")
+                        dist_target_local = local_gate_before_action.get("dist_target")
+                        allow_forward_local = False
+                        try:
+                            allow_forward_local = float(dist_now_local) >= float(dist_target_local)
+                        except (TypeError, ValueError):
+                            allow_forward_local = False
+                        if allow_forward_local:
+                            cmd = "f"
+                            cmd_reason = "forward_turn_bias_runtime_override"
             unknown_required_gaps = _required_align_unknown_gaps(local_gate_before_action)
             if unknown_required_gaps and _should_fail_required_gap_unknown(
                 local_gate_before_action,
@@ -16235,6 +16269,7 @@ def run_alignment_segment(
                 time.sleep(CONTROL_DT)
                 continue
             turn_drive_plan = None
+            forward_turn_plan = None
             send_duration_override_ms = duration_override_ms
             custom_action_specs = None
             action_note = None
@@ -16244,11 +16279,30 @@ def run_alignment_segment(
                     cmd_local=cmd,
                     speed_score_local=speed_score,
                 )
+            if (
+                not bool(is_search_action)
+                and bool(use_micro_align_gap_planner)
+                and cmd == "f"
+            ):
+                forward_turn_plan = _build_forward_turn_assist_for_action(
+                    local_gate_before_action,
+                    cmd_local=cmd,
+                    speed_score_local=speed_score,
+                )
             if isinstance(turn_drive_plan, dict):
                 custom_action_specs = list(turn_drive_plan.get("actions") or [])
                 action_note = str(turn_drive_plan.get("action_note") or "").strip() or None
                 try:
                     plan_duration_ms = int(round(float(turn_drive_plan.get("duration_ms") or 0)))
+                except (TypeError, ValueError):
+                    plan_duration_ms = 0
+                if plan_duration_ms > 0:
+                    send_duration_override_ms = int(plan_duration_ms)
+            elif isinstance(forward_turn_plan, dict):
+                custom_action_specs = list(forward_turn_plan.get("actions") or [])
+                action_note = str(forward_turn_plan.get("action_note") or "").strip() or None
+                try:
+                    plan_duration_ms = int(round(float(forward_turn_plan.get("duration_ms") or 0)))
                 except (TypeError, ValueError):
                     plan_duration_ms = 0
                 if plan_duration_ms > 0:
@@ -16912,6 +16966,28 @@ def run_alignment_segment(
                 world,
                 step,
             )
+            if bool(use_micro_align_gap_planner):
+                align_policy_cfg_local = step_rules.get("align_policy") if isinstance(step_rules, dict) else {}
+                if not isinstance(align_policy_cfg_local, dict):
+                    align_policy_cfg_local = {}
+                fwt_cfg = (
+                    align_policy_cfg_local.get("forward_while_turning_assist")
+                    if isinstance(align_policy_cfg_local.get("forward_while_turning_assist"), dict)
+                    else {}
+                )
+                if bool(fwt_cfg.get("enabled", False)) and bool(fwt_cfg.get("prefer_forward_for_x_axis", False)):
+                    cmd_key_local = str(cmd or "").strip().lower()
+                    if cmd_key_local in ("l", "r"):
+                        dist_now_local = local_gate_before_action.get("dist")
+                        dist_target_local = local_gate_before_action.get("dist_target")
+                        allow_forward_local = False
+                        try:
+                            allow_forward_local = float(dist_now_local) >= float(dist_target_local)
+                        except (TypeError, ValueError):
+                            allow_forward_local = False
+                        if allow_forward_local:
+                            cmd = "f"
+                            cmd_reason = "forward_turn_bias_runtime_override"
             unknown_required_gaps = _required_align_unknown_gaps(local_gate_before_action)
             if unknown_required_gaps and _should_fail_required_gap_unknown(local_gate_before_action):
                 if robot:
@@ -16971,6 +17047,7 @@ def run_alignment_segment(
                 if not confirm_callback(world, vision):
                     return False, "confirm cancelled"
             turn_drive_plan = None
+            forward_turn_plan = None
             send_duration_override_ms = duration_override_ms
             custom_action_specs = None
             action_note = None
@@ -16980,11 +17057,26 @@ def run_alignment_segment(
                     cmd_local=cmd,
                     speed_score_local=speed_score,
                 )
+            if bool(use_micro_align_gap_planner) and cmd == "f":
+                forward_turn_plan = _build_forward_turn_assist_for_action(
+                    local_gate_before_action,
+                    cmd_local=cmd,
+                    speed_score_local=speed_score,
+                )
             if isinstance(turn_drive_plan, dict):
                 custom_action_specs = list(turn_drive_plan.get("actions") or [])
                 action_note = str(turn_drive_plan.get("action_note") or "").strip() or None
                 try:
                     plan_duration_ms = int(round(float(turn_drive_plan.get("duration_ms") or 0)))
+                except (TypeError, ValueError):
+                    plan_duration_ms = 0
+                if plan_duration_ms > 0:
+                    send_duration_override_ms = int(plan_duration_ms)
+            elif isinstance(forward_turn_plan, dict):
+                custom_action_specs = list(forward_turn_plan.get("actions") or [])
+                action_note = str(forward_turn_plan.get("action_note") or "").strip() or None
+                try:
+                    plan_duration_ms = int(round(float(forward_turn_plan.get("duration_ms") or 0)))
                 except (TypeError, ValueError):
                     plan_duration_ms = 0
                 if plan_duration_ms > 0:

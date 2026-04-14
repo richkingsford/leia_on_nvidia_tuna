@@ -342,15 +342,15 @@
                     "min": true
                 },
                 "xAxis_offset_abs": {
-                    "target": 5.33,
+                    "target": 6.03,
                     "tol": 1.4
                 },
                 "yAxis_offset_abs": {
-                    "target": 3.03,
+                    "target": 4.13,
                     "tol": 2.3
                 },
                 "dist": {
-                    "target": 157.93,
+                    "target": 149.26,
                     "tol": 2.3
                 }
             }
@@ -642,8 +642,21 @@
                 "target_lock_acquire_timeout_s": 0.35,
                 "target_lock_center_x_worse_margin_mm": 1.5,
                 "target_lock_center_y_worse_margin_mm": 2.0,
-                "x_axis_turn_drive_assist": {
+                "forward_while_turning_assist": {
                     "enabled": true,
+                    "prefer_forward_for_x_axis": true,
+                    "prefer_forward_min_x_err_mm": 0.3,
+                    "require_visible": true,
+                    "x_deadband_mm": 0.5,
+                    "use_x_tol_as_deadband": true,
+                    "min_reduction_ratio": 0.03,
+                    "max_reduction_ratio": 0.12,
+                    "max_x_err_mm_for_full_reduction": 20.0,
+                    "min_inner_ratio": 0.82,
+                    "action_note": "FWD+TURN-BIAS"
+                },
+                "x_axis_turn_drive_assist": {
+                    "enabled": false,
                     "require_dist_outside_gate": true,
                     "min_dist_outside_mm": 0.0,
                     "forward_profile": "forward_pivot"

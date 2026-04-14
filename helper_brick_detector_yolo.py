@@ -169,6 +169,8 @@ CENTER_SWITCH_MARGIN_PX = 18.0
 CENTER_PARTIAL_PENALTY = 2.0
 CENTER_AXIS_WEIGHT_X = 1.0
 CENTER_AXIS_WEIGHT_Y = 1.0
+STACK_LOWER_HALF_PRIORITY_ENABLED = True
+STACK_LOWER_HALF_MIN_CANDIDATES = 2
 PARTIAL_EDGE_MARGIN_PX = 1
 PARTIAL_COLOR_BGR = (0, 165, 255)
 PARTIAL_LABEL_TOP = "TOP HALF"
@@ -1254,8 +1256,22 @@ class BrickDetector:
             self._center_lock_prev_center = None
             return None
 
+        allowed_indices = list(range(len(candidates)))
+        lower_half_priority = bool(
+            getattr(self, "_stack_lower_half_priority_enabled", STACK_LOWER_HALF_PRIORITY_ENABLED)
+        )
+        if lower_half_priority and len(candidates) >= int(STACK_LOWER_HALF_MIN_CANDIDATES):
+            frame_mid_y = float(frame_h) * 0.5
+            lower_half_indices = [
+                idx
+                for idx, cand in enumerate(candidates)
+                if float(cand.get("center_y", 0.0)) >= frame_mid_y
+            ]
+            if lower_half_indices:
+                allowed_indices = list(lower_half_indices)
+
         scores = [self._candidate_center_score(cand, frame_w, frame_h) for cand in candidates]
-        best_idx = min(range(len(candidates)), key=lambda i: scores[i])
+        best_idx = min(allowed_indices, key=lambda i: scores[i])
         chosen_idx = int(best_idx)
 
         lock_enabled = bool(getattr(self, "_center_lock_enabled", True))
@@ -1266,7 +1282,8 @@ class BrickDetector:
             radius = self._center_lock_radius(frame_w, frame_h)
             near_idx = None
             near_dist = float("inf")
-            for idx, cand in enumerate(candidates):
+            for idx in allowed_indices:
+                cand = candidates[idx]
                 dist = math.hypot(float(cand.get("center_x", 0.0)) - prev_x, float(cand.get("center_y", 0.0)) - prev_y)
                 if dist < near_dist:
                     near_dist = dist
@@ -2197,54 +2214,121 @@ class BrickDetector:
             )
         )
 
+        def _triangle_from_contour(cnt):
+            if cnt is None:
+                return None
+            try:
+                peri = float(cv2.arcLength(cnt, True))
+            except Exception:
+                peri = 0.0
+            if peri > 0.0:
+                try:
+                    approx = cv2.approxPolyDP(cnt, max(1.0, peri * 0.06), True)
+                except Exception:
+                    approx = None
+                if approx is not None and approx.shape[0] == 3:
+                    return approx.reshape(-1, 2).astype(np.float32)
+
+            try:
+                hull = cv2.convexHull(cnt)
+            except Exception:
+                hull = None
+            if hull is not None and len(hull) >= 3:
+                try:
+                    peri_h = float(cv2.arcLength(hull, True))
+                except Exception:
+                    peri_h = 0.0
+                if peri_h > 0.0:
+                    try:
+                        approx_h = cv2.approxPolyDP(hull, max(1.0, peri_h * 0.10), True)
+                    except Exception:
+                        approx_h = None
+                    if approx_h is not None and approx_h.shape[0] == 3:
+                        return approx_h.reshape(-1, 2).astype(np.float32)
+
+            # Last-resort geometric fit when contour is noisy but clearly triangular.
+            try:
+                tri_area_fit, tri_fit = cv2.minEnclosingTriangle(cnt)
+            except Exception:
+                tri_area_fit, tri_fit = None, None
+            if tri_fit is None:
+                return None
+            try:
+                tri = np.asarray(tri_fit, dtype=np.float32).reshape(-1, 2)
+            except Exception:
+                return None
+            if tri.shape != (3, 2):
+                return None
+            return tri
+
+        pass_profiles = [
+            {
+                "area_ratio_min": float(area_ratio_min),
+                "area_ratio_max": float(area_ratio_max),
+                "overlap_proj_min": float(overlap_min),
+                "overlap_tri_min": 0.65,
+            },
+            {
+                # Relax only enough to recover perspective/stacking misses.
+                "area_ratio_min": max(0.18, float(area_ratio_min) * 0.5),
+                "area_ratio_max": max(float(area_ratio_max), 2.2),
+                "overlap_proj_min": max(0.22, float(overlap_min) * 0.55),
+                "overlap_tri_min": 0.45,
+            },
+        ]
+
         best_poly = None
         best_score = None
-        for cnt in dark_cnts:
-            area = float(cv2.contourArea(cnt))
-            if area < max(4.0, min_area * 0.2):
-                continue
+        for pass_idx, profile in enumerate(pass_profiles):
+            for cnt in dark_cnts:
+                area = float(cv2.contourArea(cnt))
+                if area < max(4.0, min_area * 0.2):
+                    continue
 
-            peri = float(cv2.arcLength(cnt, True))
-            if peri <= 0.0:
-                continue
-            approx = cv2.approxPolyDP(cnt, max(1.0, peri * 0.06), True)
-            if approx is None or approx.shape[0] != 3:
-                continue
+                tri = _triangle_from_contour(cnt)
+                if tri is None:
+                    continue
 
-            tri = approx.reshape(-1, 2).astype(np.float32)
-            metrics = self._triangle_metrics(tri)
-            if not isinstance(metrics, dict):
-                continue
-            if float(metrics["side_ratio"]) > side_ratio_max:
-                continue
-            if float(metrics["angle_spread_deg"]) > angle_spread_max_deg:
-                continue
+                metrics = self._triangle_metrics(tri)
+                if not isinstance(metrics, dict):
+                    continue
+                if float(metrics["side_ratio"]) > side_ratio_max:
+                    continue
+                if float(metrics["angle_spread_deg"]) > angle_spread_max_deg:
+                    continue
 
-            tri_mask = np.zeros(cyan_mask.shape[:2], dtype=np.uint8)
-            tri_draw = np.round(tri).astype(np.int32).reshape(-1, 1, 2)
-            cv2.fillPoly(tri_mask, [tri_draw], 255)
-            tri_area = float(cv2.countNonZero(tri_mask))
-            if tri_area <= 0.0:
-                continue
-            area_ratio = tri_area / proj_area
-            if area_ratio < area_ratio_min or area_ratio > area_ratio_max:
-                continue
-            overlap_mask = cv2.bitwise_and(tri_mask, proj_mask)
-            overlap_area = float(cv2.countNonZero(overlap_mask))
-            overlap_proj_ratio = overlap_area / proj_area
-            if overlap_proj_ratio < overlap_min:
-                continue
-            overlap_tri_ratio = overlap_area / tri_area
-            if overlap_tri_ratio < 0.65:
-                continue
+                tri_mask = np.zeros(cyan_mask.shape[:2], dtype=np.uint8)
+                tri_draw = np.round(tri).astype(np.int32).reshape(-1, 1, 2)
+                cv2.fillPoly(tri_mask, [tri_draw], 255)
+                tri_area = float(cv2.countNonZero(tri_mask))
+                if tri_area <= 0.0:
+                    continue
+                area_ratio = tri_area / proj_area
+                if (
+                    area_ratio < float(profile["area_ratio_min"])
+                    or area_ratio > float(profile["area_ratio_max"])
+                ):
+                    continue
+                overlap_mask = cv2.bitwise_and(tri_mask, proj_mask)
+                overlap_area = float(cv2.countNonZero(overlap_mask))
+                overlap_proj_ratio = overlap_area / proj_area
+                if overlap_proj_ratio < float(profile["overlap_proj_min"]):
+                    continue
+                overlap_tri_ratio = overlap_area / tri_area
+                if overlap_tri_ratio < float(profile["overlap_tri_min"]):
+                    continue
 
-            # Prefer the most regular triangle among candidates.
-            score = float(metrics["side_ratio"] - 1.0) + (
-                float(metrics["angle_spread_deg"]) / 180.0
-            ) + abs(area_ratio - 1.0)
-            if best_score is None or score < best_score:
-                best_score = score
-                best_poly = tri
+                # Prefer regular, correctly-sized triangles and strict-pass matches.
+                score = float(metrics["side_ratio"] - 1.0) + (
+                    float(metrics["angle_spread_deg"]) / 180.0
+                ) + abs(area_ratio - 1.0)
+                if pass_idx > 0:
+                    score += 0.15
+                if best_score is None or score < best_score:
+                    best_score = score
+                    best_poly = tri
+            if best_poly is not None:
+                break
 
         return best_poly
 

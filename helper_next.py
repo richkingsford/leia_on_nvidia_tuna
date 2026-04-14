@@ -1636,6 +1636,32 @@ def select_align_brick_next_act(
         except (TypeError, ValueError):
             x_gate_outside_mm = float(angle_gate_outside_mm or 0.0)
         x_ratio = max(float(x_ratio), float(angle_ratio))
+
+    forward_turn_cfg = (
+        align_policy.get("forward_while_turning_assist")
+        if isinstance(align_policy.get("forward_while_turning_assist"), dict)
+        else {}
+    )
+    prefer_forward_for_x_axis = bool(forward_turn_cfg.get("prefer_forward_for_x_axis", False))
+    try:
+        prefer_forward_min_x_err_mm = max(
+            0.0,
+            float(_coerce_float(forward_turn_cfg.get("prefer_forward_min_x_err_mm"), 0.0) or 0.0),
+        )
+    except (TypeError, ValueError):
+        prefer_forward_min_x_err_mm = 0.0
+
+    # Only allow forward-bias x correction when moving forward also aligns
+    # with the distance objective for this step.
+    dist_allows_forward_for_bias = False
+    if d_required and dist_val is not None:
+        dir_key = str(d_direction or "").strip().lower()
+        if dir_key == "low":
+            dist_allows_forward_for_bias = bool(float(dist_val) > float(dist_target))
+        elif dir_key == "high":
+            dist_allows_forward_for_bias = False
+        else:
+            dist_allows_forward_for_bias = bool(float(dist_val) >= float(dist_target))
     try:
         ratio_eps = max(0.0, float(GAP_ALIGN_OUTSIDE_GATE_RATIO_EPS))
     except (TypeError, ValueError):
@@ -1706,12 +1732,19 @@ def select_align_brick_next_act(
     if x_required:
         x_score_fallback = int(align_brick_x_axis_one_shot_score(x_err_mm))
         x_curve_plan = _axis_curve_motion_plan("x", x_err_mm, fallback_score=x_score_fallback)
+        x_cmd = (
+            str(x_curve_plan.get("cmd"))
+            if isinstance(x_curve_plan, dict) and x_curve_plan.get("cmd") in ("l", "r")
+            else _x_axis_correction_cmd(x_err_mm)
+        )
+        if (
+            prefer_forward_for_x_axis
+            and dist_allows_forward_for_bias
+            and abs(float(x_err_mm)) > float(prefer_forward_min_x_err_mm)
+        ):
+            x_cmd = "f"
         x_candidate = {
-            "cmd": (
-                str(x_curve_plan.get("cmd"))
-                if isinstance(x_curve_plan, dict) and x_curve_plan.get("cmd") in ("l", "r")
-                else _x_axis_correction_cmd(x_err_mm)
-            ),
+            "cmd": str(x_cmd),
             "correction_type": "x_axis",
             "score": (
                 int(x_curve_plan.get("score"))
@@ -1724,7 +1757,11 @@ def select_align_brick_next_act(
                 if isinstance(x_curve_plan, dict) and x_curve_plan.get("duration_override_ms") is not None
                 else None
             ),
-            "reason": "x_axis_alignment",
+            "reason": (
+                "x_axis_forward_turn_bias"
+                if str(x_cmd) == "f"
+                else "x_axis_alignment"
+            ),
             "worst_metric": "xAxis_offset_abs",
             "ratio": float(x_ratio),
         }
@@ -1910,6 +1947,17 @@ def select_align_brick_next_act(
             if d_ratio > ratio_eps and not d_is_green:
                 candidates["distance"] = dict(dist_candidate)
 
+    if prefer_forward_for_x_axis:
+        dist_forward_candidate = candidates.get("distance")
+        if isinstance(dist_forward_candidate, dict) and str(dist_forward_candidate.get("cmd") or "").strip().lower() == "f":
+            if "x_axis" in candidates:
+                candidates.pop("x_axis", None)
+            if "x_axis" in recovery_fallback_candidates:
+                recovery_fallback_candidates.pop("x_axis", None)
+            dist_forward_candidate = dict(dist_forward_candidate)
+            dist_forward_candidate["reason"] = "forward_turn_bias_preferred"
+            candidates["distance"] = dist_forward_candidate
+
     dist_priority_cheat_active = False
     dist_priority_cheat_context = None
     if bool(align_policy.get("dist_priority_cheat_enabled")) and "distance" in candidates:
@@ -2012,6 +2060,8 @@ def select_align_brick_next_act(
             force_x_axis_focus = True
         elif dist_gap_mm > 150.0 and x_axis_gap_mm < 5.0:
             force_dist_focus = True
+    if prefer_forward_for_x_axis:
+        force_x_axis_focus = False
 
     def _best_alternative(
         excluded_types,
