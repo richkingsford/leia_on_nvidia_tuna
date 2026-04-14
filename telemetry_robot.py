@@ -2945,9 +2945,8 @@ def draw_telemetry_overlay(
         center_x = max(0, min(w - 1, center_x))
         center_y = int(h // 2)
         center_y = max(0, min(h - 1, center_y))
-        guide_color = (60, 60, 60)
-        cv2.line(frame, (center_x, 0), (center_x, h - 1), guide_color, 1)
-        cv2.line(frame, (0, center_y), (w - 1, center_y), guide_color, 1)
+        cv2.line(frame, (center_x, 0), (center_x, h - 1), ORANGE, 1)
+        cv2.line(frame, (0, center_y), (w - 1, center_y), ORANGE, 1)
 
     # 1. Background Panel (Left Side)
     if sidebar_mode:

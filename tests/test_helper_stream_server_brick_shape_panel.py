@@ -42,6 +42,9 @@ class TestHelperStreamServerBrickShapePanel(unittest.TestCase):
                                     "p2": {"x": 0, "y": 8},
                                 }
                             ],
+                            "shapeGate": {
+                                "mode": "negative_cutouts",
+                            },
                         }
                     },
                     indent=2,

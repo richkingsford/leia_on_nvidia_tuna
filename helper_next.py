@@ -2629,6 +2629,39 @@ def select_alignment_next_act(
         correction_type = "y_axis"
     else:
         correction_type = None
+    
+    # HARD RULE: Apply forward-while-turning-assist even in generic planner path.
+    # If forward_while_turning_assist is enabled, convert x-axis (L/R) commands to forward
+    # when appropriate, matching gap-planner behavior.
+    align_policy = _align_policy_for_step(process_rules, step)
+    forward_turn_cfg = (
+        align_policy.get("forward_while_turning_assist")
+        if isinstance(align_policy.get("forward_while_turning_assist"), dict)
+        else {}
+    )
+    if bool(forward_turn_cfg.get("enabled", False)) and bool(forward_turn_cfg.get("prefer_forward_for_x_axis", False)):
+        if cmd in ("l", "r") and dist_mm is not None:
+            # Check if moving forward aligns with distance objective
+            success_gates = _success_gates_for_step(process_rules, step)[1]
+            d_stats = success_gates.get("dist", {}) if isinstance(success_gates, dict) else {}
+            dist_target = _coerce_float(d_stats.get("target"), None)
+            d_direction = metric_direction_for_step("dist", step, process_rules=process_rules)
+            
+            # Allow forward-bias conversion when forward motion helps close distance gap
+            dist_conversion_allowed = False
+            if d_stats and dist_target is not None:
+                dir_key = str(d_direction or "").strip().lower()
+                if dir_key == "low":
+                    dist_conversion_allowed = bool(float(dist_mm) > float(dist_target))
+                elif dir_key == "high":
+                    dist_conversion_allowed = False
+                else:  # "band" or other
+                    dist_conversion_allowed = bool(float(dist_mm) >= float(dist_target))
+            
+            if dist_conversion_allowed and abs(float(x_axis_mm or 0.0)) > float(forward_turn_cfg.get("prefer_forward_min_x_err_mm", 0.3)):
+                cmd = "f"
+                correction_type = "distance"
+    
     return {
         "cmd": cmd,
         "correction_type": correction_type,

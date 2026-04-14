@@ -16109,28 +16109,30 @@ def run_alignment_segment(
                 world,
                 step,
             )
-            if bool(use_micro_align_gap_planner):
-                align_policy_cfg_local = step_rules.get("align_policy") if isinstance(step_rules, dict) else {}
-                if not isinstance(align_policy_cfg_local, dict):
-                    align_policy_cfg_local = {}
-                fwt_cfg = (
-                    align_policy_cfg_local.get("forward_while_turning_assist")
-                    if isinstance(align_policy_cfg_local.get("forward_while_turning_assist"), dict)
-                    else {}
-                )
-                if bool(fwt_cfg.get("enabled", False)) and bool(fwt_cfg.get("prefer_forward_for_x_axis", False)):
-                    cmd_key_local = str(cmd or "").strip().lower()
-                    if cmd_key_local in ("l", "r"):
-                        dist_now_local = local_gate_before_action.get("dist")
-                        dist_target_local = local_gate_before_action.get("dist_target")
+            # HARD RULE: Apply forward-turn-bias override regardless of planner type (gap or generic).
+            # If forward_while_turning_assist is enabled, convert L/R x-axis turns to F commands
+            # to enforce the new experimental forward-with-gentle-bias approach.
+            align_policy_cfg_local = step_rules.get("align_policy") if isinstance(step_rules, dict) else {}
+            if not isinstance(align_policy_cfg_local, dict):
+                align_policy_cfg_local = {}
+            fwt_cfg = (
+                align_policy_cfg_local.get("forward_while_turning_assist")
+                if isinstance(align_policy_cfg_local.get("forward_while_turning_assist"), dict)
+                else {}
+            )
+            if bool(fwt_cfg.get("enabled", False)) and bool(fwt_cfg.get("prefer_forward_for_x_axis", False)):
+                cmd_key_local = str(cmd or "").strip().lower()
+                if cmd_key_local in ("l", "r"):
+                    dist_now_local = local_gate_before_action.get("dist")
+                    dist_target_local = local_gate_before_action.get("dist_target")
+                    allow_forward_local = False
+                    try:
+                        allow_forward_local = float(dist_now_local) >= float(dist_target_local)
+                    except (TypeError, ValueError):
                         allow_forward_local = False
-                        try:
-                            allow_forward_local = float(dist_now_local) >= float(dist_target_local)
-                        except (TypeError, ValueError):
-                            allow_forward_local = False
-                        if allow_forward_local:
-                            cmd = "f"
-                            cmd_reason = "forward_turn_bias_runtime_override"
+                    if allow_forward_local:
+                        cmd = "f"
+                        cmd_reason = "forward_turn_bias_runtime_override" if bool(use_micro_align_gap_planner) else "forward_turn_bias_runtime_override_generic"
             unknown_required_gaps = _required_align_unknown_gaps(local_gate_before_action)
             if unknown_required_gaps and _should_fail_required_gap_unknown(
                 local_gate_before_action,
@@ -16966,28 +16968,30 @@ def run_alignment_segment(
                 world,
                 step,
             )
-            if bool(use_micro_align_gap_planner):
-                align_policy_cfg_local = step_rules.get("align_policy") if isinstance(step_rules, dict) else {}
-                if not isinstance(align_policy_cfg_local, dict):
-                    align_policy_cfg_local = {}
-                fwt_cfg = (
-                    align_policy_cfg_local.get("forward_while_turning_assist")
-                    if isinstance(align_policy_cfg_local.get("forward_while_turning_assist"), dict)
-                    else {}
-                )
-                if bool(fwt_cfg.get("enabled", False)) and bool(fwt_cfg.get("prefer_forward_for_x_axis", False)):
-                    cmd_key_local = str(cmd or "").strip().lower()
-                    if cmd_key_local in ("l", "r"):
-                        dist_now_local = local_gate_before_action.get("dist")
-                        dist_target_local = local_gate_before_action.get("dist_target")
+            # HARD RULE: Apply forward-turn-bias override regardless of planner type (gap or generic).
+            # If forward_while_turning_assist is enabled, convert L/R x-axis turns to F commands
+            # to enforce the new experimental forward-with-gentle-bias approach.
+            align_policy_cfg_local = step_rules.get("align_policy") if isinstance(step_rules, dict) else {}
+            if not isinstance(align_policy_cfg_local, dict):
+                align_policy_cfg_local = {}
+            fwt_cfg = (
+                align_policy_cfg_local.get("forward_while_turning_assist")
+                if isinstance(align_policy_cfg_local.get("forward_while_turning_assist"), dict)
+                else {}
+            )
+            if bool(fwt_cfg.get("enabled", False)) and bool(fwt_cfg.get("prefer_forward_for_x_axis", False)):
+                cmd_key_local = str(cmd or "").strip().lower()
+                if cmd_key_local in ("l", "r"):
+                    dist_now_local = local_gate_before_action.get("dist")
+                    dist_target_local = local_gate_before_action.get("dist_target")
+                    allow_forward_local = False
+                    try:
+                        allow_forward_local = float(dist_now_local) >= float(dist_target_local)
+                    except (TypeError, ValueError):
                         allow_forward_local = False
-                        try:
-                            allow_forward_local = float(dist_now_local) >= float(dist_target_local)
-                        except (TypeError, ValueError):
-                            allow_forward_local = False
-                        if allow_forward_local:
-                            cmd = "f"
-                            cmd_reason = "forward_turn_bias_runtime_override"
+                    if allow_forward_local:
+                        cmd = "f"
+                        cmd_reason = "forward_turn_bias_runtime_override_settle"
             unknown_required_gaps = _required_align_unknown_gaps(local_gate_before_action)
             if unknown_required_gaps and _should_fail_required_gap_unknown(local_gate_before_action):
                 if robot:

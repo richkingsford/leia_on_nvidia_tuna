@@ -9,23 +9,23 @@
 <text x="317.2" y="108.0" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">90mm</text>
 <text x="938.0" y="108.0" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">150mm</text>
 <text x="303.2" y="122.0" text-anchor="end" font-size="12" font-weight="700" fill="#5d676e">x=0</text>
-<circle class="step-history-dot" data-trend="unknown" cx="602.5" cy="122.9" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="601.8" cy="122.9" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="closer" cx="589.4" cy="123.1" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="589.4" cy="123.1" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="590.0" cy="123.1" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="590.1" cy="123.1" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="further" cx="599.1" cy="123.2" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="closer" cx="588.6" cy="123.1" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="588.6" cy="123.1" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="588.8" cy="123.1" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="588.6" cy="123.1" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="589.4" cy="123.1" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="further" cx="692.9" cy="121.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="closer" cx="588.6" cy="123.1" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="588.6" cy="123.1" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="588.8" cy="123.1" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="589.0" cy="123.1" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="589.0" cy="123.1" r="6.0" fill="#0b3d91" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<text x="315.6" y="113.9" text-anchor="middle" font-size="16" font-weight="600" fill="#233843" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">116</text>
+<circle class="step-history-dot" data-trend="unknown" cx="867.6" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="870.8" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="870.5" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="871.1" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="873.2" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="872.1" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="874.4" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="872.0" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="871.8" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="871.9" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="872.9" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="870.0" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="871.1" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="872.0" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="873.7" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="876.0" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="876.9" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="874.8" cy="118.5" r="6.0" fill="#0b3d91" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<text x="381.0" y="106.9" text-anchor="middle" font-size="16" font-weight="600" fill="#233843" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">144</text>
 </svg>

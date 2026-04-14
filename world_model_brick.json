@@ -160,7 +160,11 @@
             "cutout_triangle_angle_spread_max_deg": 75.0,
             "cutout_triangle_overlap_min": 0.5,
             "cutout_triangle_area_ratio_min": 0.45,
-            "cutout_triangle_area_ratio_max": 1.4
+            "cutout_triangle_area_ratio_max": 1.4,
+            "cutout_pair_x_axis_max_angle_deg": 15.0,
+            "cutout_focus_y_min_ratio": 0.5,
+            "cutout_focus_y_max_ratio": 0.68,
+            "cutout_focus_weight": 1.25
         }
     },
     "brick_database": {

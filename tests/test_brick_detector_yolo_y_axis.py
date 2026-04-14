@@ -263,7 +263,7 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
             "rect": ((320.0, 280.0), (40.0, 40.0), 0.0),
             "partial": True,
             "partial_kind": "bottom_half",
-            "partial_label": "BOTTOM HALF",
+            "partial_label": "LOWER PARTIAL",
         }
         det._segment_bricks_hsv = lambda *_args, **_kwargs: [primary, other]
 
@@ -273,10 +273,11 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         result = BrickDetector._process_bricks(det, frame, bricks)
 
         self.assertTrue(result[0])
-        self.assertEqual(det.last_partial_count, 2)
-        self.assertEqual(det.last_partial_labels, ["TOP HALF", "BOTTOM HALF"])
+        self.assertEqual(det.last_partial_count, 1)
+        self.assertEqual(det.last_partial_labels, ["TOP HALF"])
         self.assertEqual(det.last_primary_partial_kind, "top_half")
         self.assertEqual(det.last_primary_partial_label, "TOP HALF")
+        self.assertFalse(bool(result[7]))
 
     def test_draw_debug_hsv_colors_partial_primary_orange(self):
         det = self._detector_stub()

@@ -1235,32 +1235,64 @@ class StreamServer:
         if not isinstance(brick, dict):
             return fallback_html
 
-        face_polygon_raw = brick.get("facePolygon")
         face_cutouts_raw = brick.get("faceCutouts")
+        face_polygon_raw = brick.get("facePolygon")
         face_lines_raw = brick.get("faceLines")
-        if not isinstance(face_polygon_raw, list):
+        shape_gate = brick.get("shapeGate") if isinstance(brick.get("shapeGate"), dict) else {}
+        shape_gate_mode = str(shape_gate.get("mode") or "").strip().lower()
+
+        face_points = []
+        if isinstance(face_polygon_raw, list):
+            for row in face_polygon_raw:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    x = float(row.get("x"))
+                    y = float(row.get("y"))
+                except (TypeError, ValueError):
+                    continue
+                face_points.append((x, y))
+
+        cutout_polygons = []
+        if isinstance(face_cutouts_raw, list):
+            for cutout in face_cutouts_raw:
+                if not isinstance(cutout, list):
+                    continue
+                cutout_points = []
+                for row in cutout:
+                    if not isinstance(row, dict):
+                        continue
+                    try:
+                        cutout_points.append((float(row.get("x")), float(row.get("y"))))
+                    except (TypeError, ValueError):
+                        continue
+                if len(cutout_points) >= 3:
+                    cutout_polygons.append(cutout_points)
+
+        display_cutout_indicator = bool(
+            shape_gate_mode == "negative_cutouts" and cutout_polygons
+        )
+        extent_points = (
+            [pt for poly in cutout_polygons for pt in poly]
+            if display_cutout_indicator
+            else list(face_points)
+        )
+        if len(extent_points) < 3:
             return fallback_html
 
-        points = []
-        for row in face_polygon_raw:
-            if not isinstance(row, dict):
-                continue
-            try:
-                x = float(row.get("x"))
-                y = float(row.get("y"))
-            except (TypeError, ValueError):
-                continue
-            points.append((x, y))
-
-        if len(points) < 3:
-            return fallback_html
-
-        min_x = min(p[0] for p in points)
-        max_x = max(p[0] for p in points)
-        min_y = min(p[1] for p in points)
-        max_y = max(p[1] for p in points)
+        min_x = min(p[0] for p in extent_points)
+        max_x = max(p[0] for p in extent_points)
+        min_y = min(p[1] for p in extent_points)
+        max_y = max(p[1] for p in extent_points)
         span_x = max(1.0, max_x - min_x)
         span_y = max(1.0, max_y - min_y)
+        if display_cutout_indicator:
+            min_x -= max(2.0, span_x * 0.40)
+            max_x += max(2.0, span_x * 0.40)
+            min_y -= max(2.0, span_y * 0.55)
+            max_y += max(2.0, span_y * 0.55)
+            span_x = max(1.0, max_x - min_x)
+            span_y = max(1.0, max_y - min_y)
 
         svg_w = 260.0
         svg_h = 140.0
@@ -1277,24 +1309,41 @@ class StreamServer:
             # World-model Y is positive-up; SVG Y is positive-down.
             return pad + shape_offset_y + ((max_y - float(y_val)) * scale)
 
-        polygon_points = " ".join(f"{map_x(x):.2f},{map_y(y):.2f}" for x, y in points)
+        face_polygon_svg = ""
+        if not display_cutout_indicator and len(face_points) >= 3:
+            polygon_points = " ".join(
+                f"{map_x(x):.2f},{map_y(y):.2f}" for x, y in face_points
+            )
+            face_polygon_svg = (
+                f"<polygon points='{polygon_points}' fill='#1f9db1' stroke='#c7f6ff' stroke-width='2.0'/>"
+            )
+
+        indicator_backing_svg = ""
+        if display_cutout_indicator:
+            cutout_points = [pt for poly in cutout_polygons for pt in poly]
+            raw_min_x = min(p[0] for p in cutout_points)
+            raw_max_x = max(p[0] for p in cutout_points)
+            raw_min_y = min(p[1] for p in cutout_points)
+            raw_max_y = max(p[1] for p in cutout_points)
+            back_pad_x = max(2.0, (raw_max_x - raw_min_x) * 0.32)
+            back_pad_y = max(2.0, (raw_max_y - raw_min_y) * 0.45)
+            backing_points = [
+                (raw_min_x - back_pad_x, raw_min_y - back_pad_y),
+                (raw_min_x - back_pad_x, raw_max_y + back_pad_y),
+                (raw_max_x + back_pad_x, raw_max_y + back_pad_y),
+                (raw_max_x + back_pad_x, raw_min_y - back_pad_y),
+            ]
+            backing_svg_points = " ".join(
+                f"{map_x(x):.2f},{map_y(y):.2f}" for x, y in backing_points
+            )
+            indicator_backing_svg = (
+                f"<polygon points='{backing_svg_points}' fill='#1f9db1' stroke='#c7f6ff' stroke-width='2.0'/>"
+            )
 
         face_cutout_svg = ""
-        if isinstance(face_cutouts_raw, list):
+        if cutout_polygons:
             cutout_parts = []
-            for cutout in face_cutouts_raw:
-                if not isinstance(cutout, list):
-                    continue
-                cutout_points = []
-                for row in cutout:
-                    if not isinstance(row, dict):
-                        continue
-                    try:
-                        cutout_points.append((float(row.get("x")), float(row.get("y"))))
-                    except (TypeError, ValueError):
-                        continue
-                if len(cutout_points) < 3:
-                    continue
+            for cutout_points in cutout_polygons:
                 cutout_svg_points = " ".join(
                     f"{map_x(x):.2f},{map_y(y):.2f}" for x, y in cutout_points
                 )
@@ -1330,7 +1379,8 @@ class StreamServer:
             "<svg class='shape-svg' viewBox='0 0 260 140' width='250' height='134' xmlns='http://www.w3.org/2000/svg' "
             "role='img' aria-label='Brick face shape reference from world model coordinates'>"
             "<rect x='1' y='1' width='258' height='138' rx='8' fill='#11181d' stroke='#2f4a54' stroke-width='1.2'/>"
-            f"<polygon points='{polygon_points}' fill='#1f9db1' stroke='#c7f6ff' stroke-width='2.0'/>"
+            f"{indicator_backing_svg}"
+            f"{face_polygon_svg}"
             f"{face_cutout_svg}"
             f"{face_line_svg}"
             "<text x='14' y='16' fill='#d8fbff' font-size='10.5' font-family='monospace'>source: world_model_brick.json</text>"

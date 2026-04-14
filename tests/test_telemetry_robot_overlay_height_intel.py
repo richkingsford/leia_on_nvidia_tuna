@@ -10,6 +10,36 @@ import telemetry_robot
 
 
 class TestTelemetryRobotOverlayHeightIntel(unittest.TestCase):
+    def test_draw_overlay_colors_center_x_line_orange(self):
+        world = telemetry_robot.WorldModel()
+
+        frame = np.zeros((120, 160, 3), dtype=np.uint8)
+        telemetry_robot.draw_telemetry_overlay(
+            frame,
+            world,
+            draw_text=False,
+            show_center_line=True,
+        )
+
+        self.assertTrue(
+            np.array_equal(frame[10, 80], np.array([0, 165, 255], dtype=np.uint8))
+        )
+
+    def test_draw_overlay_colors_center_y_line_orange(self):
+        world = telemetry_robot.WorldModel()
+
+        frame = np.zeros((120, 160, 3), dtype=np.uint8)
+        telemetry_robot.draw_telemetry_overlay(
+            frame,
+            world,
+            draw_text=False,
+            show_center_line=True,
+        )
+
+        self.assertTrue(
+            np.array_equal(frame[60, 10], np.array([0, 165, 255], dtype=np.uint8))
+        )
+
     def test_draw_overlay_omits_redundant_supply_stack_count_in_brick_telemetry(self):
         world = telemetry_robot.WorldModel()
         world.brick["visible"] = True

@@ -55,6 +55,30 @@ class TestBrickDetectorYoloCenterLock(unittest.TestCase):
         selected = BrickDetector._select_center_brick(det, bricks, 640, 480)
         self.assertIs(selected, bricks[1])
 
+    def test_select_center_brick_uses_cutout_selection_anchor(self):
+        det = self._detector_stub()
+        bricks = [
+            {
+                "center_x": 320.0,
+                "center_y": 340.0,
+                "selection_anchor_x": 320.0,
+                "selection_anchor_y": 242.0,
+                "partial": False,
+            },
+            {"center_x": 320.0, "center_y": 260.0, "partial": False},
+        ]
+        selected = BrickDetector._select_center_brick(det, bricks, 640, 480)
+        self.assertIs(selected, bricks[0])
+
+    def test_select_center_brick_prefers_highest_candidate_below_midpoint(self):
+        det = self._detector_stub()
+        bricks = [
+            {"center_x": 318.0, "center_y": 252.0, "partial": False},
+            {"center_x": 320.0, "center_y": 332.0, "partial": False},
+        ]
+        selected = BrickDetector._select_center_brick(det, bricks, 640, 480)
+        self.assertIs(selected, bricks[0])
+
     def test_select_center_brick_uses_lock_hysteresis_when_scores_are_close(self):
         det = self._detector_stub()
         det._center_lock_prev_center = (282.0, 240.0)
@@ -109,7 +133,7 @@ class TestBrickDetectorYoloCenterLock(unittest.TestCase):
         self.assertEqual(top_info.get("label"), "TOP HALF")
         self.assertTrue(bool(bottom_info.get("partial")))
         self.assertEqual(bottom_info.get("kind"), "bottom_half")
-        self.assertEqual(bottom_info.get("label"), "BOTTOM HALF")
+        self.assertEqual(bottom_info.get("label"), "LOWER PARTIAL")
         self.assertTrue(bool(left_info.get("partial")))
         self.assertEqual(left_info.get("kind"), "left_partial")
         self.assertEqual(left_info.get("label"), "LEFT PARTIAL")

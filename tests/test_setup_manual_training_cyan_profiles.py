@@ -418,7 +418,7 @@ class TestSetupManualTrainingCyanProfiles(unittest.TestCase):
             conf_threshold = 0.15
             _smooth_alpha = 0.20
             input_size = 640
-            last_partial_labels = ["TOP HALF", "BOTTOM HALF"]
+            last_partial_labels = ["TOP HALF", "LOWER PARTIAL"]
             last_primary_partial_label = "TOP HALF"
 
         lines = setup_manual_training.cyan_stream_debug_lines(app, _Vision())
@@ -427,7 +427,7 @@ class TestSetupManualTrainingCyanProfiles(unittest.TestCase):
         self.assertEqual(lines[-1][1], (0, 165, 255))
         self.assertIn("PRIMARY TOP HALF", lines[-1][0])
         self.assertIn("TOP HALF x1", lines[-1][0])
-        self.assertIn("BOTTOM HALF x1", lines[-1][0])
+        self.assertIn("LOWER PARTIAL x1", lines[-1][0])
 
 
 if __name__ == "__main__":
