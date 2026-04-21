@@ -1,0 +1,124 @@
+{
+  "file_type": "turn_drive_trials",
+  "schema_version": 2,
+  "name": "trials",
+  "curve": {
+    "trial_format": "compact",
+    "sequence_style": "single_turn_drive",
+    "phase": "forward_right",
+    "label": "FORWARD+RIGHT",
+    "turn_strength": "strong",
+    "trial_count": 2,
+    "score_pct": 1,
+    "measured_phase_duration_ms": 150,
+    "measured_phase_duration_s": 0.15,
+    "setup_turn_duration_range_ms": {
+      "min_ms": 300,
+      "max_ms": 1000
+    },
+    "setup_turn_duration_range_s": {
+      "min_s": 0.3,
+      "max_s": 1.0
+    },
+    "setup_phase": {
+      "motor_pair": {
+        "left_motor_pwm": 133,
+        "right_motor_pwm": 0
+      }
+    },
+    "measured_phase": {
+      "stage": "measured_turn_drive",
+      "phase": "forward_right",
+      "label": "FORWARD+RIGHT",
+      "cmd": "r",
+      "drive_mode": "forward",
+      "turning": true,
+      "score_pct": 1,
+      "profile_name": "forward_pivot",
+      "action_note": "TURN+FWD",
+      "motor_pair": {
+        "left_motor_pwm": 133,
+        "left_motor_action": "b",
+        "right_motor_pwm": 0,
+        "right_motor_action": "f",
+        "display": "leftMotor=133(B) rightMotor=0(F)"
+      },
+      "pwm_override": 133,
+      "duration_ms": 150,
+      "duration_s": 0.15
+    }
+  },
+  "distribution": {
+    "kind": "single_phase_only",
+    "setup_durations_ms": [],
+    "setup_durations_s": [],
+    "setup_step_deltas_ms": []
+  },
+  "checks": {
+    "forward_once_then_backward_once_every_trial": false,
+    "turning_whenever_moving_every_trial": true,
+    "setup_durations_within_assumptions": true,
+    "setup_durations_evenly_increasing": true
+  },
+  "run_status": {
+    "status": "completed",
+    "trials_requested": 2,
+    "trials_completed": 2,
+    "stop_reason": "completed",
+    "usable_trials": 2,
+    "last_started_ts": 1776791952.533,
+    "last_completed_ts": 1776791958.246,
+    "seconds": 6.143
+  },
+  "curve_stats": {
+    "consistency_score_pct": 0.0,
+    "x_gap_close_rate_pct": 0.0,
+    "median_x_axis_change_mm": -0.012,
+    "median_dist_change_mm": 5.1,
+    "median_dist_traveled_mm": 5.1,
+    "median_x_gap_closed_mm": -0.012,
+    "median_start_confidence_pct": 76.171,
+    "median_end_confidence_pct": 81.253,
+    "median_confidence_delta_pct": 5.082,
+    "usable_trials": 2,
+    "production_worthy": false
+  },
+  "trials": [
+    {
+      "trial": 1,
+      "duration": 150,
+      "curvePair": "FORWARD+RIGHT",
+      "leftMotorPwr": 133,
+      "rightMotorPwr": 0,
+      "startDist": 269.892,
+      "distDelta": 6.428,
+      "xDelta": -0.176,
+      "xGapClosed": -0.176,
+      "startConf": 71.533,
+      "endConf": 80.808,
+      "usable": true,
+      "status": "completed",
+      "stopReason": "completed",
+      "measured_duration": 150,
+      "setupPwm": 133
+    },
+    {
+      "trial": 2,
+      "duration": 150,
+      "curvePair": "FORWARD+RIGHT",
+      "leftMotorPwr": 133,
+      "rightMotorPwr": 0,
+      "startDist": 276.32,
+      "distDelta": 3.772,
+      "xDelta": 0.152,
+      "xGapClosed": 0.152,
+      "startConf": 80.808,
+      "endConf": 81.698,
+      "usable": true,
+      "status": "completed",
+      "stopReason": "completed",
+      "measured_duration": 150,
+      "setupPwm": 133
+    }
+  ]
+}

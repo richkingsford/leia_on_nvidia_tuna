@@ -1,8 +1,8 @@
 {
-  "updated_at": 1776189576.068177,
+  "updated_at": 1776804979.9648538,
   "robot": {
-    "x_mm": 1.3017569447273099,
-    "y_mm": -36.11073321283868,
+    "x_mm": 527.1451982221425,
+    "y_mm": 1030.2966968585804,
     "z_mm": 0.0,
     "theta_deg": -90.0,
     "lift_mm": 0.0
@@ -15,8 +15,8 @@
     "lift_mm": 0.0
   },
   "leia": {
-    "x_mm": 1.3017569447273099,
-    "y_mm": -36.11073321283868,
+    "x_mm": 527.1451982221425,
+    "y_mm": 1030.2966968585804,
     "z_mm": 0.0,
     "theta_deg": -90.0,
     "label": "Leia"
@@ -29,14 +29,14 @@
       "y_mm": -180.0,
       "z_mm": 0.0,
       "theta_deg": 0.0,
-      "count": 5,
-      "height_mm": 220.0,
+      "count": null,
+      "height_mm": null,
       "confidence": null,
       "visible": true,
       "fixed": true,
       "render_footprint_mm": 54.0,
       "source": "default_layout_seed",
-      "last_seen_ts": 1776189576.0681145
+      "last_seen_ts": 1776804963.973231
     },
     "wall": {
       "name": "wall",
@@ -47,14 +47,16 @@
       "theta_deg": 180.0,
       "length_mm": 320.0,
       "render_footprint_mm": 54.0,
-      "height_mm": 44.0,
+      "height_mm": null,
       "confidence": null,
-      "visible": false,
+      "visible": true,
       "valid": false,
       "fixed": true,
-      "source": "default_layout_seed",
-      "last_seen_ts": null,
-      "count": 1
+      "source": "ALIGN_BRICK",
+      "last_seen_ts": 1776804963.9728727,
+      "observed_world_x_mm": 211.91338396970548,
+      "observed_world_y_mm": 0.0,
+      "observed_world_theta_deg": 180.0
     }
   },
   "active_target": {
@@ -72,24 +74,22 @@
   },
   "wall_reverse_plan": {
     "ok": true,
-    "reason": "planned",
-    "wall_behind_mm": 36.11073321283867,
-    "target_wall_distance_mm": 45.0,
-    "reverse_gap_mm": 0.0,
+    "reason": "wall_not_behind",
+    "wall_behind_mm": 0.0,
     "reverse_acts": 0,
     "actions": [
       {
         "cmd": "l",
-        "reason": "begin_turn_after_reverse"
+        "reason": "turn_now"
       }
     ]
   },
   "last_visible_brick": {
-    "visible": true,
-    "dist_mm": 143.89515512236687,
-    "x_axis_mm": -1.3018102161173135,
-    "y_axis_mm": 4.444803504440971,
-    "confidence": 59.80454087257385,
+    "visible": false,
+    "dist_mm": 0.0,
+    "x_axis_mm": 0.0,
+    "y_axis_mm": 0.0,
+    "confidence": 0.0,
     "angle_deg": 0.0
   }
 }

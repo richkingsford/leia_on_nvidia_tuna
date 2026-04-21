@@ -4608,7 +4608,7 @@ def _run_calibration_mode(app_state):
 
         borrowed_runtime = None
         shared_context = None
-        needs_isolated_runtime = str(getattr(selected, "key", "")).strip().lower() != "telemetry"
+        needs_isolated_runtime = not bool(getattr(selected, "borrow_manual_runtime", False))
         if needs_isolated_runtime:
             ok, reason = _suspend_manual_runtime_for_calibration(app_state)
             if not ok:

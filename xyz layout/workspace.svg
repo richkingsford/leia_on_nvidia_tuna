@@ -2,30 +2,15 @@
 <rect width="100%" height="100%" fill="#f4efe4" />
 <rect x="22" y="12" width="936" height="204" rx="18" fill="#f9f6ef" stroke="#d7d1c4" stroke-width="1.5" />
 <text x="490.0" y="42.0" text-anchor="middle" font-size="28" font-weight="900" fill="#233843">Bird View</text>
-<rect x="122.5" y="28.7" width="178.6" height="178.6" fill="#1f4b8f" stroke="#122d57" stroke-width="3" rx="12.0" />
-<text x="211.8" y="14.7" text-anchor="middle" font-size="28" font-weight="600" fill="#1d2830">Supply</text>
-<text x="211.8" y="134.0" text-anchor="middle" font-size="36.0" font-weight="700" fill="#ffffff">5</text>
-<line x1="317.2" y1="118.0" x2="938.0" y2="118.0" stroke="#b7aea0" stroke-width="1.6" stroke-dasharray="4 4" opacity="0.7" />
-<text x="317.2" y="108.0" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">90mm</text>
+<rect x="185.3" y="109.4" width="17.2" height="17.2" fill="#1f4b8f" stroke="#122d57" stroke-width="3" rx="12.0" />
+<text x="193.9" y="95.4" text-anchor="middle" font-size="28" font-weight="600" fill="#1d2830">Supply</text>
+<line x1="218.5" y1="118.0" x2="938.0" y2="118.0" stroke="#b7aea0" stroke-width="1.6" stroke-dasharray="4 4" opacity="0.7" />
+<text x="218.5" y="108.0" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">90mm</text>
 <text x="938.0" y="108.0" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">150mm</text>
-<text x="303.2" y="122.0" text-anchor="end" font-size="12" font-weight="700" fill="#5d676e">x=0</text>
-<circle class="step-history-dot" data-trend="unknown" cx="867.6" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="870.8" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="870.5" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="871.1" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="873.2" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="872.1" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="874.4" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="872.0" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="871.8" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="871.9" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="872.9" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="870.0" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="871.1" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="872.0" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="873.7" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="876.0" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="876.9" cy="118.5" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<circle class="step-history-dot" data-trend="neutral" cx="874.8" cy="118.5" r="6.0" fill="#0b3d91" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
-<text x="381.0" y="106.9" text-anchor="middle" font-size="16" font-weight="600" fill="#233843" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">144</text>
+<text x="204.5" y="122.0" text-anchor="end" font-size="12" font-weight="700" fill="#5d676e">x=0</text>
+<circle class="step-history-dot" data-trend="unknown" cx="938.0" cy="172.0" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="closer" cx="938.0" cy="172.0" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="neutral" cx="938.0" cy="172.0" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<circle class="step-history-dot" data-trend="further" cx="938.0" cy="172.0" r="6.0" fill="#0b3d91" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" />
+<text x="300.2" y="139.6" text-anchor="middle" font-size="16" font-weight="600" fill="#233843" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">1320</text>
 </svg>

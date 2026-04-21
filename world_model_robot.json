@@ -147,6 +147,34 @@
         "outer_ratio": 1.0,
         "duration_mode": "max_turn_drive",
         "action_note": "TURN+BWD"
+      },
+      "forward_pivot_min_inner": {
+        "drive_mode": "forward",
+        "inner_ratio": 0.01,
+        "outer_ratio": 1.0,
+        "duration_mode": "max_turn_drive",
+        "action_note": "TURN+FWD"
+      },
+      "backward_pivot_min_inner": {
+        "drive_mode": "backward",
+        "inner_ratio": 0.01,
+        "outer_ratio": 1.0,
+        "duration_mode": "max_turn_drive",
+        "action_note": "TURN+BWD"
+      },
+      "forward_arc_gentle_02": {
+        "drive_mode": "forward",
+        "inner_ratio": 0.7,
+        "outer_ratio": 1.0,
+        "duration_mode": "max_turn_drive",
+        "action_note": "TURN+FWD"
+      },
+      "backward_arc_gentle_02": {
+        "drive_mode": "backward",
+        "inner_ratio": 0.7,
+        "outer_ratio": 1.0,
+        "duration_mode": "max_turn_drive",
+        "action_note": "TURN+BWD"
       }
     }
   },

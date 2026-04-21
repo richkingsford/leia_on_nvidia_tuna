@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1220" height="760" viewBox="0 0 1220 760" role="img" aria-labelledby="title desc">
+<title id="title">trial duration plot</title>
+<desc id="desc">Forward setup duration in milliseconds on the horizontal axis, forward-only xDelta in millimeters on the vertical axis, and circle diameter representing absolute distance traveled.</desc>
+<defs>
+  <style>
+    .title { fill: #18242c; font: 900 34px 'Arial', sans-serif; letter-spacing: -0.03em; }
+    .subtitle { fill: #5a6770; font: 14px 'Arial', sans-serif; }
+    .axis-label { fill: #5a6770; font: 700 13px 'Arial', sans-serif; letter-spacing: 0.08em; text-transform: uppercase; }
+    .tick { fill: #5a6770; font: 12px 'Arial', sans-serif; }
+    .panel-title { fill: #18242c; font: 700 15px 'Arial', sans-serif; letter-spacing: 0.06em; text-transform: uppercase; }
+    .panel-body { fill: #18242c; font: 13px 'Arial', sans-serif; }
+    .panel-muted { fill: #5a6770; font: 12px 'Arial', sans-serif; }
+  </style>
+</defs>
+<rect width="100%" height="100%" fill="#f4efe4" />
+<rect x="18" y="18" width="1184" height="724" rx="28" fill="#fffaf2" stroke="#d8cdb7" stroke-width="1.5" />
+<text x="88" y="56" class="title">Forward Duration vs Forward X Delta</text>
+<text x="88" y="82" class="subtitle">forwardLeft_backRight • FORWARD+LEFT -&gt; BACK+RIGHT</text>
+<text x="88" y="100" class="subtitle">X axis is setup forward duration (ms). Dot diameter = |distDelta| in mm.</text>
+<rect x="88" y="118" width="772" height="500" rx="22" fill="#fff7eb" stroke="#eadfca" stroke-width="1.2" />
+<line x1="88" y1="618.0" x2="860" y2="618.0" stroke="#ddd1be" stroke-width="1" stroke-dasharray="5 8" />
+<text x="74" y="622.0" text-anchor="end" class="tick">-4.23</text>
+<line x1="88" y1="534.7" x2="860" y2="534.7" stroke="#ddd1be" stroke-width="1" stroke-dasharray="5 8" />
+<text x="74" y="538.7" text-anchor="end" class="tick">0.38</text>
+<line x1="88" y1="451.3" x2="860" y2="451.3" stroke="#ddd1be" stroke-width="1" stroke-dasharray="5 8" />
+<text x="74" y="455.3" text-anchor="end" class="tick">5.00</text>
+<line x1="88" y1="368.0" x2="860" y2="368.0" stroke="#ddd1be" stroke-width="1" stroke-dasharray="5 8" />
+<text x="74" y="372.0" text-anchor="end" class="tick">9.61</text>
+<line x1="88" y1="284.7" x2="860" y2="284.7" stroke="#ddd1be" stroke-width="1" stroke-dasharray="5 8" />
+<text x="74" y="288.7" text-anchor="end" class="tick">14.22</text>
+<line x1="88" y1="201.3" x2="860" y2="201.3" stroke="#ddd1be" stroke-width="1" stroke-dasharray="5 8" />
+<text x="74" y="205.3" text-anchor="end" class="tick">18.84</text>
+<line x1="88" y1="118.0" x2="860" y2="118.0" stroke="#ddd1be" stroke-width="1" stroke-dasharray="5 8" />
+<text x="74" y="122.0" text-anchor="end" class="tick">23.45</text>
+<line x1="88.0" y1="118" x2="88.0" y2="618" stroke="#efe4d2" stroke-width="1" />
+<line x1="88.0" y1="618" x2="88.0" y2="626" stroke="#8f8372" stroke-width="1" />
+<text x="88.0" y="646" text-anchor="end" transform="rotate(-32 88.0 646)" class="tick">246 ms</text>
+<line x1="216.7" y1="118" x2="216.7" y2="618" stroke="#efe4d2" stroke-width="1" />
+<line x1="216.7" y1="618" x2="216.7" y2="626" stroke="#8f8372" stroke-width="1" />
+<text x="216.7" y="646" text-anchor="end" transform="rotate(-32 216.7 646)" class="tick">256 ms</text>
+<line x1="345.3" y1="118" x2="345.3" y2="618" stroke="#efe4d2" stroke-width="1" />
+<line x1="345.3" y1="618" x2="345.3" y2="626" stroke="#8f8372" stroke-width="1" />
+<text x="345.3" y="646" text-anchor="end" transform="rotate(-32 345.3 646)" class="tick">265 ms</text>
+<line x1="474.0" y1="118" x2="474.0" y2="618" stroke="#efe4d2" stroke-width="1" />
+<line x1="474.0" y1="618" x2="474.0" y2="626" stroke="#8f8372" stroke-width="1" />
+<text x="474.0" y="646" text-anchor="end" transform="rotate(-32 474.0 646)" class="tick">275 ms</text>
+<line x1="602.7" y1="118" x2="602.7" y2="618" stroke="#efe4d2" stroke-width="1" />
+<line x1="602.7" y1="618" x2="602.7" y2="626" stroke="#8f8372" stroke-width="1" />
+<text x="602.7" y="646" text-anchor="end" transform="rotate(-32 602.7 646)" class="tick">285 ms</text>
+<line x1="731.3" y1="118" x2="731.3" y2="618" stroke="#efe4d2" stroke-width="1" />
+<line x1="731.3" y1="618" x2="731.3" y2="626" stroke="#8f8372" stroke-width="1" />
+<text x="731.3" y="646" text-anchor="end" transform="rotate(-32 731.3 646)" class="tick">294 ms</text>
+<line x1="860.0" y1="118" x2="860.0" y2="618" stroke="#efe4d2" stroke-width="1" />
+<line x1="860.0" y1="618" x2="860.0" y2="626" stroke="#8f8372" stroke-width="1" />
+<text x="860.0" y="646" text-anchor="end" transform="rotate(-32 860.0 646)" class="tick">304 ms</text>
+<line x1="88" y1="618" x2="860" y2="618" stroke="#897d6d" stroke-width="1.4" />
+<line x1="88" y1="118" x2="88" y2="618" stroke="#897d6d" stroke-width="1.4" />
+<text x="474.0" y="692" text-anchor="middle" class="axis-label">Forward Setup Duration (ms)</text>
+<text x="26" y="368.0" text-anchor="middle" class="axis-label" transform="rotate(-90 26 368.0)">Forward xDelta (mm)</text>
+<polyline points="141.2,541.6 367.5,435.8 580.5,306.1 806.8,194.4" fill="none" stroke="#0d5c63" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" opacity="0.45" />
+<circle cx="141.2" cy="541.6" r="9.0" fill="#c1811f" fill-opacity="0.82" stroke="#18242c" stroke-opacity="0.28" stroke-width="1.4" />
+<circle cx="367.5" cy="435.8" r="9.2" fill="#0d7c66" fill-opacity="0.82" stroke="#18242c" stroke-opacity="0.28" stroke-width="1.4" />
+<circle cx="580.5" cy="306.1" r="9.3" fill="#0d7c66" fill-opacity="0.82" stroke="#18242c" stroke-opacity="0.28" stroke-width="1.4" />
+<circle cx="806.8" cy="194.4" r="27.0" fill="#0d7c66" fill-opacity="0.82" stroke="#18242c" stroke-opacity="0.28" stroke-width="1.4" />
+<rect x="902" y="108" width="268" height="516" rx="22" fill="#f8f0e2" stroke="#e2d3bd" stroke-width="1.2" />
+<text x="920" y="138" class="panel-title">Legend</text>
+<circle cx="928" cy="166" r="7" fill="#0d7c66" /><text x="944" y="170" class="panel-body">positive xDelta</text>
+<circle cx="928" cy="192" r="7" fill="#bf3b2b" /><text x="944" y="196" class="panel-body">negative xDelta</text>
+<circle cx="928" cy="218" r="7" fill="#c1811f" /><text x="944" y="222" class="panel-body">near zero</text>
+<text x="920" y="264" class="panel-title">Bubble Diameter</text>
+<circle cx="944" cy="302" r="14.4" fill="#0d5c63" fill-opacity="0.12" stroke="#0d5c63" stroke-width="1.4" />
+<text x="994" y="306" class="panel-body">187.9 mm</text>
+<circle cx="944" cy="364" r="20.7" fill="#0d5c63" fill-opacity="0.12" stroke="#0d5c63" stroke-width="1.4" />
+<text x="994" y="368" class="panel-body">407.2 mm</text>
+<circle cx="944" cy="426" r="27.0" fill="#0d5c63" fill-opacity="0.12" stroke="#0d5c63" stroke-width="1.4" />
+<text x="994" y="430" class="panel-body">626.4 mm</text>
+<text x="920" y="510" class="panel-title">Current Stats</text>
+<text x="920" y="538" class="panel-muted">usable trials</text>
+<text x="1152" y="538" text-anchor="end" class="panel-body">4</text>
+<text x="920" y="562" class="panel-muted">close rate</text>
+<text x="1152" y="562" text-anchor="end" class="panel-body">100.0%</text>
+<text x="920" y="586" class="panel-muted">median xDelta</text>
+<text x="1152" y="586" text-anchor="end" class="panel-body">10.026 mm</text>
+<text x="920" y="610" class="panel-muted">median dist traveled</text>
+<text x="1152" y="610" text-anchor="end" class="panel-body">9.51 mm</text>
+<text x="920" y="634" class="panel-muted">production worthy</text>
+<text x="1152" y="634" text-anchor="end" class="panel-body">True</text>
+</svg>

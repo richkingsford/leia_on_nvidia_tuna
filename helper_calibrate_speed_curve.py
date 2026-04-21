@@ -10,14 +10,16 @@ stay in one menu and one livestream.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import termios
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable
 
+import helper_random_back_turn_experiment
 from calibration import helper_calibrate_dist
-from calibration.helper_calibrate import get_shared_stream_runtime, use_shared_stream_runtime
+from calibration.helper_calibrate import get_shared_calibration_context, get_shared_stream_runtime, use_shared_stream_runtime
 from calibration import helper_calibrate_motion
 from calibration import helper_calibrate_speed
 from calibration import helper_calibrate_x_dist
@@ -49,11 +51,15 @@ def _default_stream_url() -> str:
     return str(format_stream_url(host, port))
 
 
+TRIALS_DIR_DEFAULT = Path(__file__).resolve().parent / "trials"
+
+
 @dataclass(frozen=True)
 class CalibrateOption:
     key: str
     label: str
     runner: Callable[[], int | None]
+    borrow_manual_runtime: bool = False
 
 
 OPTIONS: tuple[CalibrateOption, ...] = (
@@ -216,12 +222,136 @@ def run_guided_distance_calibration() -> int:
     return 0
 
 
+def _load_trial_manifest(path: Path) -> dict | None:
+    try:
+        payload = json.loads(Path(path).read_text())
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _trial_file_paths(trials_dir: Path | None = None) -> list[Path]:
+    root = Path(trials_dir) if trials_dir is not None else TRIALS_DIR_DEFAULT
+    if not root.exists() or not root.is_dir():
+        return []
+    return sorted(
+        [
+            path
+            for path in root.iterdir()
+            if path.is_file()
+            and not str(path.name).startswith(".")
+            and str(path.suffix).lower() == ".json"
+        ],
+        key=lambda path: str(path.name).lower(),
+    )
+
+
+def _run_trial_manifest_file(path: Path) -> int:
+    manifest = _load_trial_manifest(path)
+    if not isinstance(manifest, dict):
+        print(f"[CALIBRATE] Invalid trial file: {path}")
+        return 2
+    shared_context = get_shared_calibration_context() or {}
+    robot = shared_context.get("robot")
+    world = shared_context.get("world")
+    vision = shared_context.get("vision")
+    vision_mode = str(shared_context.get("vision_mode") or "").strip() or None
+    curve_cfg = helper_random_back_turn_experiment._trial_manifest_curve_config(manifest)
+    created_robot = False
+    if robot is None:
+        robot = helper_random_back_turn_experiment.Robot()
+        created_robot = True
+    if world is None:
+        world = helper_random_back_turn_experiment.WorldModel()
+        world.step_state = helper_random_back_turn_experiment.StepState.ALIGN_BRICK
+    try:
+        result = helper_random_back_turn_experiment.run_close_dist_x_axis_one_act_experiment(
+            robot=robot,
+            world=world,
+            vision=vision,
+            vision_mode=vision_mode,
+            yolo_model_path=None,
+            score=int(curve_cfg.get("score_pct") or helper_random_back_turn_experiment.DEFAULT_SCORE),
+            trials=int(
+                len(helper_random_back_turn_experiment._trial_manifest_trials_list(manifest))
+                or curve_cfg.get("trial_count")
+                or helper_random_back_turn_experiment.DEFAULT_CLOSE_DIST_X_AXIS_ONE_ACT_TRIALS
+            ),
+            phase_duration_ms=int(
+                curve_cfg.get("measured_phase_duration_ms")
+                or helper_random_back_turn_experiment.DEFAULT_CLOSE_DIST_X_AXIS_ONE_ACT_DURATION_MS
+            ),
+            phase=str(curve_cfg.get("phase") or helper_random_back_turn_experiment.DEFAULT_CLOSE_DIST_X_AXIS_ONE_ACT_PHASE),
+            strength=str(
+                curve_cfg.get("turn_strength")
+                or helper_random_back_turn_experiment.DEFAULT_ALTERNATING_TURN_DRIVE_STRENGTH
+            ),
+            distance_band_mm=float(
+                curve_cfg.get("distance_band_mm")
+                or helper_random_back_turn_experiment.DEFAULT_ALTERNATING_TURN_DRIVE_DISTANCE_BAND_MM
+            ),
+            observe_timeout_s=float(helper_random_back_turn_experiment.DEFAULT_OBSERVE_TIMEOUT_S),
+            relaxed_timeout_s=float(helper_random_back_turn_experiment.DEFAULT_RELAXED_TIMEOUT_S),
+            setup_forward_range_ms=curve_cfg.get("setup_turn_duration_range_ms"),
+            trial_manifest=manifest,
+            trials_path=Path(path),
+            log_path=None,
+        )
+        print(json.dumps(result, indent=2))
+        return 0 if bool(result.get("ok")) else 1
+    finally:
+        if created_robot:
+            try:
+                robot.close()
+            except Exception:
+                pass
+
+
+def _trial_file_options(trials_dir: Path | None = None) -> tuple[CalibrateOption, ...]:
+    rows: list[CalibrateOption] = []
+    for path in _trial_file_paths(trials_dir):
+        manifest = _load_trial_manifest(path)
+        stem = str(path.stem)
+        if isinstance(manifest, dict):
+            curve_cfg = helper_random_back_turn_experiment._trial_manifest_curve_config(manifest)
+            trial_count = int(
+                len(helper_random_back_turn_experiment._trial_manifest_trials_list(manifest))
+                or curve_cfg.get("trial_count")
+                or helper_random_back_turn_experiment.DEFAULT_CLOSE_DIST_X_AXIS_ONE_ACT_TRIALS
+            )
+            suffix = f" ({trial_count} trials)"
+        else:
+            suffix = " (invalid file)"
+        rows.append(
+            CalibrateOption(
+                key=str(stem),
+                label=f"Trial File: {stem}{suffix}",
+                runner=(lambda trial_path=Path(path): _run_trial_manifest_file(trial_path)),
+                borrow_manual_runtime=True,
+            )
+        )
+    return tuple(rows)
+
+
+def _menu_options() -> tuple[CalibrateOption, ...]:
+    return tuple(OPTIONS) + tuple(_trial_file_options())
+
+
 def _print_menu() -> None:
+    options = _menu_options()
+    base_count = len(OPTIONS)
     print("\nCalibration Options")
     print("-------------------")
     print("Run motion-duration, breakaway, and telemetry-value calibrations.\n")
-    for index, option in enumerate(OPTIONS, start=1):
+    for index, option in enumerate(options, start=1):
+        if index == base_count + 1:
+            print("\nTrial Files")
+            print("-----------")
         print(f"  {index}. {option.label} [{option.key}]")
+    if len(options) == base_count:
+        print("\nTrial Files")
+        print("-----------")
+        print(f"  none found in {TRIALS_DIR_DEFAULT}")
     print("  q. Quit")
 
 
@@ -229,7 +359,7 @@ def _resolve_choice(text: str) -> CalibrateOption | None:
     token = str(text or "").strip().lower()
     if not token:
         return None
-    for index, option in enumerate(OPTIONS, start=1):
+    for index, option in enumerate(_menu_options(), start=1):
         if token in (str(index), str(option.key).lower()):
             return option
     return None
