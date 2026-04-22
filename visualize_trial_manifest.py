@@ -55,6 +55,9 @@ def _forward_only_rows(manifest: dict) -> list[dict]:
     setup_phase = dict(curve.get("setup_phase") or {})
     setup_pair = dict(setup_phase.get("motor_pair") or {})
     expected_curve_pair = str(curve.get("curve_pair_label") or "").strip()
+    adaptive_curve_pairs = bool(str(curve.get("turn_selection_policy") or "").strip()) or str(
+        curve.get("sequence_style") or ""
+    ).strip().lower().startswith("adaptive_")
     setup_range_cfg = dict(curve.get("setup_turn_duration_range_ms") or {})
     setup_min_ms = _coerce_float(setup_range_cfg.get("min_ms"))
     setup_max_ms = _coerce_float(setup_range_cfg.get("max_ms"))
@@ -74,7 +77,12 @@ def _forward_only_rows(manifest: dict) -> list[dict]:
         if row.get("usable") is not True:
             continue
         row_curve_pair = str(row.get("curvePair") or "").strip()
-        if expected_curve_pair and row_curve_pair and row_curve_pair != expected_curve_pair:
+        if (
+            not adaptive_curve_pairs
+            and expected_curve_pair
+            and row_curve_pair
+            and row_curve_pair != expected_curve_pair
+        ):
             continue
 
         measured_duration = _coerce_float(row.get("setupDurationMs"))
@@ -89,7 +97,9 @@ def _forward_only_rows(manifest: dict) -> list[dict]:
         if setup_max_ms is not None and measured_duration > float(setup_max_ms):
             continue
 
-        x_gap_closed = _coerce_float(row.get("xDelta"))
+        x_gap_closed = _coerce_float(row.get("xGapClosed"))
+        if x_gap_closed is None:
+            x_gap_closed = _coerce_float(row.get("xDelta"))
         dist_delta = _coerce_float(row.get("distDelta"))
         if x_gap_closed is None or dist_delta is None:
             continue

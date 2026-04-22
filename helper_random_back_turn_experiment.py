@@ -734,6 +734,25 @@ def _pose_snapshot(pose: dict | None) -> dict | None:
             if pose.get("samples_used") is not None
             else None
         ),
+        "lite_frame_count": (
+            int(pose.get("lite_frame_count"))
+            if pose.get("lite_frame_count") is not None
+            else None
+        ),
+        "lite_frame_first_id": (
+            int(pose.get("lite_frame_first_id"))
+            if pose.get("lite_frame_first_id") is not None
+            else None
+        ),
+        "lite_frame_last_id": (
+            int(pose.get("lite_frame_last_id"))
+            if pose.get("lite_frame_last_id") is not None
+            else None
+        ),
+        "lite_frame_span_s": _round_triplet(pose.get("lite_frame_span_s")),
+        "sample_obs_ts_start": _round_triplet(pose.get("sample_obs_ts_start")),
+        "sample_obs_ts_end": _round_triplet(pose.get("sample_obs_ts_end")),
+        "sample_obs_span_s": _round_triplet(pose.get("sample_obs_span_s")),
     }
 
 
@@ -747,6 +766,115 @@ def _pose_summary_text(pose: dict | None) -> str:
         f"angle={_round_triplet(pose.get('angle'))}deg "
         f"conf={_round_triplet(pose.get('confidence'))}% "
         f"via {str(pose.get('pose_source') or 'unknown')}"
+    )
+
+
+def _observation_latency_details(
+    *,
+    send_result: dict | None,
+    pose: dict | None,
+) -> dict:
+    send_started_ts = _coerce_float((send_result or {}).get("send_started_ts"), None)
+    send_completed_ts = _coerce_float((send_result or {}).get("send_completed_ts"), None)
+    obs_ts = _coerce_float((pose or {}).get("obs_ts"), None)
+    sample_obs_ts_start = _coerce_float((pose or {}).get("sample_obs_ts_start"), None)
+    sample_obs_ts_end = _coerce_float((pose or {}).get("sample_obs_ts_end"), None)
+    return {
+        "send_started_ts": _round_triplet(send_started_ts),
+        "send_completed_ts": _round_triplet(send_completed_ts),
+        "observation_ts": _round_triplet(obs_ts),
+        "sample_obs_ts_start": _round_triplet(sample_obs_ts_start),
+        "sample_obs_ts_end": _round_triplet(sample_obs_ts_end),
+        "send_to_observation_s": _round_triplet(
+            (float(obs_ts) - float(send_completed_ts))
+            if obs_ts is not None and send_completed_ts is not None
+            else None
+        ),
+        "send_to_sample_start_s": _round_triplet(
+            (float(sample_obs_ts_start) - float(send_completed_ts))
+            if sample_obs_ts_start is not None and send_completed_ts is not None
+            else None
+        ),
+        "send_span_s": _round_triplet(
+            (float(send_completed_ts) - float(send_started_ts))
+            if send_started_ts is not None and send_completed_ts is not None
+            else None
+        ),
+        "lite_frame_count": (
+            int(pose.get("lite_frame_count"))
+            if isinstance(pose, dict) and pose.get("lite_frame_count") is not None
+            else None
+        ),
+        "lite_required_frames": (
+            int(pose.get("lite_required_frames"))
+            if isinstance(pose, dict) and pose.get("lite_required_frames") is not None
+            else None
+        ),
+        "samples_used": (
+            int(pose.get("samples_used"))
+            if isinstance(pose, dict) and pose.get("samples_used") is not None
+            else None
+        ),
+        "lite_frame_span_s": _round_triplet((pose or {}).get("lite_frame_span_s")),
+        "lite_frame_first_id": (
+            int(pose.get("lite_frame_first_id"))
+            if isinstance(pose, dict) and pose.get("lite_frame_first_id") is not None
+            else None
+        ),
+        "lite_frame_last_id": (
+            int(pose.get("lite_frame_last_id"))
+            if isinstance(pose, dict) and pose.get("lite_frame_last_id") is not None
+            else None
+        ),
+    }
+
+
+def _observation_latency_log_text(
+    *,
+    stage_label: str,
+    send_result: dict | None,
+    pose: dict | None,
+    meta: dict | None = None,
+) -> str:
+    details = _observation_latency_details(send_result=send_result, pose=pose)
+    mode_text = str((meta or {}).get("mode") or "")
+    return (
+        f"{str(stage_label)} observe: mode={mode_text or 'unknown'} "
+        f"send->obs={_round_triplet(details.get('send_to_observation_s'))}s "
+        f"send->sample_start={_round_triplet(details.get('send_to_sample_start_s'))}s "
+        f"samples={details.get('samples_used')} req_frames/sample={details.get('lite_required_frames')} "
+        f"unique_frames={details.get('lite_frame_count')} "
+        f"frame_ids={details.get('lite_frame_first_id')}..{details.get('lite_frame_last_id')} "
+        f"frame_span={_round_triplet(details.get('lite_frame_span_s'))}s"
+    )
+
+
+def _latest_smoothed_frame_ts(world) -> float | None:
+    history = getattr(world, "_smoothed_frame_history", None)
+    if not history:
+        return None
+    for entry in reversed(list(history)):
+        if not isinstance(entry, dict):
+            continue
+        ts = _coerce_float(entry.get("timestamp"), None)
+        if ts is not None:
+            return float(ts)
+    return None
+
+
+def _post_act_observe_not_before_ts(
+    *,
+    send_result: dict | None,
+    effective_duration_ms: int | float | None,
+    settle_s: float,
+) -> float | None:
+    send_completed_ts = _coerce_float((send_result or {}).get("send_completed_ts"), None)
+    effective_duration_s = _coerce_float(effective_duration_ms, None)
+    if send_completed_ts is None or effective_duration_s is None:
+        return None
+    return float(send_completed_ts) + max(
+        float(settle_s),
+        (float(effective_duration_s) / 1000.0) + 0.05,
     )
 
 
@@ -2107,6 +2235,10 @@ def build_close_dist_x_axis_one_act_trials_manifest(
             )
         else:
             manifest["setup_plan_unavailable"] = True
+    setup_deltas_ms = [
+        int(setup_durations_ms[idx + 1]) - int(setup_durations_ms[idx])
+        for idx in range(len(setup_durations_ms) - 1)
+    ]
     manifest["distribution"] = {}
     manifest["curve"]["setup_phase"] = _trial_manifest_phase_template_from_segment(
         _trial_manifest_segment(
@@ -3895,6 +4027,7 @@ def observe_alignment_pose(
     timeout_s: float = DEFAULT_OBSERVE_TIMEOUT_S,
     relaxed_timeout_s: float = DEFAULT_RELAXED_TIMEOUT_S,
     reobserve_rounds: int = DEFAULT_REOBSERVE_ROUNDS,
+    min_sample_time: float | None = None,
     log_fn=None,
 ):
     logger = log_fn if callable(log_fn) else (lambda *_args, **_kwargs: None)
@@ -3906,6 +4039,7 @@ def observe_alignment_pose(
         world=world,
         samples=int(samples),
         timeout_s=float(timeout_s),
+        min_sample_time=min_sample_time,
         hold_s=float(DEFAULT_SETTLE_S),
         reobserve_rounds=int(reobserve_rounds),
         relaxed_timeout_s=float(relaxed_timeout_s),
@@ -3919,6 +4053,7 @@ def observe_alignment_pose(
     lite_pose_hits = int(diag.get("lite_pose_hits") or 0)
     fallback_pose = _current_world_pose(world, obs_ts=time.time())
     fallback_visible = bool((getattr(world, "brick", {}) or {}).get("visible"))
+    latest_frame_ts = _latest_smoothed_frame_ts(world)
     fallback_has_pose = (
         isinstance(fallback_pose, dict)
         and _coerce_float(fallback_pose.get("offset_x"), None) is not None
@@ -3926,6 +4061,9 @@ def observe_alignment_pose(
     )
     if bool(fallback_visible) and bool(fallback_has_pose) and (
         int(raw_visible_hits) > 0 or int(lite_pose_hits) > 0
+    ) and (
+        min_sample_time is None
+        or (latest_frame_ts is not None and float(latest_frame_ts) >= float(min_sample_time))
     ):
         logger(
             "[RANDOM EXPERIMENT] Observation fallback: accepting latest visible world pose "
@@ -5698,12 +5836,14 @@ def run_close_dist_x_axis_one_act_experiment(
                         "post_pose": None,
                         "post_meta": {},
                         "post_summary": "not_attempted",
+                        "observation_latency": {},
                     },
                     "plan": None,
                     "send_result": {},
                     "post_pose": None,
                     "post_meta": {},
                     "post_summary": "unavailable",
+                    "observation_latency": {},
                     "delta_mm": {
                         "x_axis": None,
                         "y_axis": None,
@@ -5911,7 +6051,11 @@ def run_close_dist_x_axis_one_act_experiment(
                         (forward_send_result or {}).get("duration_ms")
                         or int(forward_duration_ms or 0)
                     )
-                    time.sleep(max(float(settle_used_s), (float(effective_forward_duration_ms) / 1000.0) + 0.05))
+                    setup_observe_not_before_ts = _post_act_observe_not_before_ts(
+                        send_result=forward_send_result,
+                        effective_duration_ms=effective_forward_duration_ms,
+                        settle_s=float(settle_used_s),
+                    )
                     setup_pose, setup_meta = observe_alignment_pose(
                         vision=vision,
                         world=world,
@@ -5919,11 +6063,21 @@ def run_close_dist_x_axis_one_act_experiment(
                         timeout_s=float(observe_timeout_s),
                         relaxed_timeout_s=float(relaxed_timeout_s),
                         reobserve_rounds=int(reobserve_rounds),
+                        min_sample_time=setup_observe_not_before_ts,
                         log_fn=logger,
                     )
                     trial_row["setup_forward"]["post_pose"] = _pose_snapshot(setup_pose)
                     trial_row["setup_forward"]["post_meta"] = dict(setup_meta or {})
                     trial_row["setup_forward"]["post_summary"] = _pose_summary_text(setup_pose)
+                    trial_row["setup_forward"]["observation_latency"] = _observation_latency_details(
+                        send_result=forward_send_result,
+                        pose=setup_pose,
+                    )
+                    logger(
+                        "[CLOSE X+DIST] Trial "
+                        f"{int(trial_index)} setup "
+                        f"{_observation_latency_log_text(stage_label='', send_result=forward_send_result, pose=setup_pose, meta=setup_meta).strip()}"
+                    )
                     if setup_pose is None:
                         stop_reason = f"lost_pose_after_setup_forward_trial_{int(trial_index)}"
                         trial_rows.append(trial_row)
@@ -6055,7 +6209,11 @@ def run_close_dist_x_axis_one_act_experiment(
                     (send_result or {}).get("duration_ms")
                     or int(plan.get("duration_ms") or duration_used_ms)
                 )
-                time.sleep(max(float(settle_used_s), (float(effective_duration_ms) / 1000.0) + 0.05))
+                measured_observe_not_before_ts = _post_act_observe_not_before_ts(
+                    send_result=send_result,
+                    effective_duration_ms=effective_duration_ms,
+                    settle_s=float(settle_used_s),
+                )
 
                 post_pose, post_meta = observe_alignment_pose(
                     vision=vision,
@@ -6064,11 +6222,16 @@ def run_close_dist_x_axis_one_act_experiment(
                     timeout_s=float(observe_timeout_s),
                     relaxed_timeout_s=float(relaxed_timeout_s),
                     reobserve_rounds=int(reobserve_rounds),
+                    min_sample_time=measured_observe_not_before_ts,
                     log_fn=logger,
                 )
                 trial_row["post_pose"] = _pose_snapshot(post_pose)
                 trial_row["post_meta"] = dict(post_meta or {})
                 trial_row["post_summary"] = _pose_summary_text(post_pose)
+                trial_row["observation_latency"] = _observation_latency_details(
+                    send_result=send_result,
+                    pose=post_pose,
+                )
                 trial_row["delta_mm"] = {
                     "x_axis": _trial_result_number(_pose_metric_delta(current_pose, post_pose, "offset_x"), absolute=True),
                     "y_axis": _trial_result_number(_pose_metric_delta(current_pose, post_pose, "offset_y"), absolute=True),
@@ -6096,6 +6259,11 @@ def run_close_dist_x_axis_one_act_experiment(
                     stop_reason=stop_reason,
                 )
                 _write_trials_manifest(trials_path, trial_manifest_used)
+                logger(
+                    "[CLOSE X+DIST] Trial "
+                    f"{int(trial_index)} measured "
+                    f"{_observation_latency_log_text(stage_label='', send_result=send_result, pose=post_pose, meta=post_meta).strip()}"
+                )
                 logger(
                     "[CLOSE X+DIST] Trial "
                     f"{int(trial_index)} delta: "

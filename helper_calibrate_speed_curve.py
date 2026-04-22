@@ -13,9 +13,16 @@ import argparse
 import json
 import sys
 import termios
+import warnings
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"Unable to import Axes3D.*",
+    category=UserWarning,
+)
 
 import helper_random_back_turn_experiment
 from calibration import helper_calibrate_dist

@@ -603,6 +603,66 @@ def pose_from_measurement(
         return None
 
 
+def _frame_ids_from_observation_frames(frames) -> list[int]:
+    frame_ids = []
+    seen = set()
+    for frame in frames or []:
+        if not isinstance(frame, dict):
+            continue
+        try:
+            frame_id = int(frame.get("frame_id", 0) or 0)
+        except (TypeError, ValueError):
+            frame_id = 0
+        if frame_id <= 0 or frame_id in seen:
+            continue
+        seen.add(frame_id)
+        frame_ids.append(int(frame_id))
+    return frame_ids
+
+
+def _frame_timestamps_from_observation_frames(frames) -> list[float]:
+    timestamps = []
+    for frame in frames or []:
+        if not isinstance(frame, dict):
+            continue
+        ts = coerce_finite_float(frame.get("timestamp"))
+        if ts is None:
+            continue
+        timestamps.append(float(ts))
+    return timestamps
+
+
+def _latest_observation_frames(
+    world,
+    *,
+    required_frames: int,
+    latest_unique_smoothed_frames: Callable,
+    min_frame_time: float | None = None,
+):
+    if min_frame_time is None:
+        return latest_unique_smoothed_frames(world, required_frames)
+    try:
+        return latest_unique_smoothed_frames(
+            world,
+            required_frames,
+            min_timestamp=float(min_frame_time),
+        )
+    except TypeError:
+        frames = latest_unique_smoothed_frames(world, required_frames)
+    min_frame_time_val = coerce_finite_float(min_frame_time)
+    if min_frame_time_val is None:
+        return frames
+    filtered = []
+    for frame in frames or []:
+        if not isinstance(frame, dict):
+            continue
+        frame_ts = coerce_finite_float(frame.get("timestamp"))
+        if frame_ts is None or float(frame_ts) < float(min_frame_time_val):
+            continue
+        filtered.append(frame)
+    return filtered
+
+
 def lite_pose_from_world(
     world,
     *,
@@ -614,10 +674,16 @@ def lite_pose_from_world(
     lite_gate_unique_frames: Callable,
     process_rules=None,
     min_lite_unique_frames: int = 3,
+    min_frame_time: float | None = None,
 ) -> dict | None:
     required_frames = max(1, int(lite_gate_unique_frames(step) or 1))
     required_frames = max(required_frames, min(max(1, int(samples)), int(min_lite_unique_frames)))
-    frames = latest_unique_smoothed_frames(world, required_frames)
+    frames = _latest_observation_frames(
+        world,
+        required_frames=required_frames,
+        latest_unique_smoothed_frames=latest_unique_smoothed_frames,
+        min_frame_time=min_frame_time,
+    )
     if len(frames) < int(required_frames):
         return None
     measurement = average_smoothed_frames(
@@ -625,12 +691,30 @@ def lite_pose_from_world(
         step=step,
         process_rules=process_rules,
     )
-    return pose_from_measurement(
+    pose = pose_from_measurement(
         measurement,
         obs_ts=obs_ts,
         pose_source="lite_smoothed",
         lite_required_frames=required_frames,
     )
+    if not isinstance(pose, dict):
+        return None
+    frame_ids = _frame_ids_from_observation_frames(frames)
+    frame_timestamps = _frame_timestamps_from_observation_frames(frames)
+    pose["lite_frame_count"] = int(len(frame_ids))
+    pose["lite_frame_ids"] = [int(frame_id) for frame_id in frame_ids]
+    pose["lite_frame_first_id"] = int(frame_ids[0]) if frame_ids else None
+    pose["lite_frame_last_id"] = int(frame_ids[-1]) if frame_ids else None
+    pose["lite_frame_ts_start"] = float(frame_timestamps[0]) if frame_timestamps else None
+    pose["lite_frame_ts_end"] = float(frame_timestamps[-1]) if frame_timestamps else None
+    pose["lite_frame_span_s"] = (
+        float(frame_timestamps[-1] - frame_timestamps[0])
+        if len(frame_timestamps) >= 2
+        else 0.0
+        if frame_timestamps
+        else None
+    )
+    return pose
 
 
 def brick_pose_from_world(world, *, obs_ts: float) -> dict | None:
@@ -643,6 +727,32 @@ def brick_pose_from_world(world, *, obs_ts: float) -> dict | None:
 def aggregate_pose_samples(poses: list[dict]) -> dict | None:
     if not poses:
         return None
+    unique_frame_ids = []
+    seen_frame_ids = set()
+    frame_timestamps = []
+    obs_timestamps = []
+    for pose in poses:
+        if not isinstance(pose, dict):
+            continue
+        for frame_id in pose.get("lite_frame_ids") or []:
+            try:
+                frame_id_val = int(frame_id)
+            except (TypeError, ValueError):
+                continue
+            if frame_id_val <= 0 or frame_id_val in seen_frame_ids:
+                continue
+            seen_frame_ids.add(frame_id_val)
+            unique_frame_ids.append(int(frame_id_val))
+        for key in ("lite_frame_ts_start", "lite_frame_ts_end"):
+            ts = coerce_finite_float(pose.get(key))
+            if ts is None:
+                continue
+            frame_timestamps.append(float(ts))
+        obs_ts = coerce_finite_float(pose.get("obs_ts"))
+        if obs_ts is not None:
+            obs_timestamps.append(float(obs_ts))
+    frame_timestamps.sort()
+    obs_timestamps.sort()
     return {
         "offset_y": float(statistics.median([float(item["offset_y"]) for item in poses])),
         "offset_x": float(statistics.median([float(item["offset_x"]) for item in poses])),
@@ -653,6 +763,28 @@ def aggregate_pose_samples(poses: list[dict]) -> dict | None:
         "pose_source": str(poses[-1].get("pose_source") or "unknown"),
         "lite_required_frames": coerce_int(poses[-1].get("lite_required_frames")),
         "samples_used": len(poses),
+        "lite_frame_count": int(len(unique_frame_ids)),
+        "lite_frame_ids": [int(frame_id) for frame_id in unique_frame_ids],
+        "lite_frame_first_id": int(unique_frame_ids[0]) if unique_frame_ids else None,
+        "lite_frame_last_id": int(unique_frame_ids[-1]) if unique_frame_ids else None,
+        "lite_frame_ts_start": float(frame_timestamps[0]) if frame_timestamps else None,
+        "lite_frame_ts_end": float(frame_timestamps[-1]) if frame_timestamps else None,
+        "lite_frame_span_s": (
+            float(frame_timestamps[-1] - frame_timestamps[0])
+            if len(frame_timestamps) >= 2
+            else 0.0
+            if frame_timestamps
+            else None
+        ),
+        "sample_obs_ts_start": float(obs_timestamps[0]) if obs_timestamps else None,
+        "sample_obs_ts_end": float(obs_timestamps[-1]) if obs_timestamps else None,
+        "sample_obs_span_s": (
+            float(obs_timestamps[-1] - obs_timestamps[0])
+            if len(obs_timestamps) >= 2
+            else 0.0
+            if obs_timestamps
+            else None
+        ),
     }
 
 
@@ -703,12 +835,11 @@ def read_pose(
         except (TypeError, ValueError):
             pass
     while len(poses) < int(target_samples) and time.time() < float(deadline):
-        now = time.time()
-        if min_sample_time is not None and now < float(min_sample_time):
-            time.sleep(float(observe_sleep_s))
-            continue
         pose = None
         try:
+            # Keep the vision stream advancing while we wait for the post-act
+            # freshness cutoff; the pose builder still rejects frames older than
+            # min_sample_time via min_frame_time.
             update_world_from_vision(world, vision, log=False)
             if callable(on_vision_update):
                 on_vision_update()
@@ -726,6 +857,7 @@ def read_pose(
                 lite_gate_unique_frames=lite_gate_unique_frames,
                 process_rules=getattr(world, "process_rules", None),
                 min_lite_unique_frames=int(min_lite_unique_frames),
+                min_frame_time=min_sample_time,
             )
         except Exception:
             pose = None
@@ -784,7 +916,7 @@ def observe_pose_with_reobserve(
             world,
             samples=target_samples,
             timeout_s=max(float(timeout_s), float(relaxed_timeout_s)),
-            min_sample_time=None,
+            min_sample_time=min_sample_time,
             min_samples_required=required_samples,
             on_vision_update=on_vision_update,
         )

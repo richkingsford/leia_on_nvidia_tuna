@@ -1,8 +1,8 @@
 {
-  "updated_at": 1776804979.9648538,
+  "updated_at": 1776878886.0205972,
   "robot": {
-    "x_mm": 527.1451982221425,
-    "y_mm": 1030.2966968585804,
+    "x_mm": -38.87195152114881,
+    "y_mm": 83.71569301263867,
     "z_mm": 0.0,
     "theta_deg": -90.0,
     "lift_mm": 0.0
@@ -15,8 +15,8 @@
     "lift_mm": 0.0
   },
   "leia": {
-    "x_mm": 527.1451982221425,
-    "y_mm": 1030.2966968585804,
+    "x_mm": -38.87195152114881,
+    "y_mm": 83.71569301263867,
     "z_mm": 0.0,
     "theta_deg": -90.0,
     "label": "Leia"
@@ -36,7 +36,7 @@
       "fixed": true,
       "render_footprint_mm": 54.0,
       "source": "default_layout_seed",
-      "last_seen_ts": 1776804963.973231
+      "last_seen_ts": 1776878886.0205345
     },
     "wall": {
       "name": "wall",
@@ -50,12 +50,12 @@
       "height_mm": null,
       "confidence": null,
       "visible": true,
-      "valid": false,
+      "valid": true,
       "fixed": true,
       "source": "ALIGN_BRICK",
-      "last_seen_ts": 1776804963.9728727,
-      "observed_world_x_mm": 211.91338396970548,
-      "observed_world_y_mm": 0.0,
+      "last_seen_ts": 1776878885.2255282,
+      "observed_world_x_mm": 254.38801710813732,
+      "observed_world_y_mm": 7.793697848999794,
       "observed_world_theta_deg": 180.0
     }
   },
@@ -85,11 +85,11 @@
     ]
   },
   "last_visible_brick": {
-    "visible": false,
-    "dist_mm": 0.0,
-    "x_axis_mm": 0.0,
-    "y_axis_mm": 0.0,
-    "confidence": 0.0,
-    "angle_deg": 0.0
+    "visible": true,
+    "dist_mm": 266.5651803146818,
+    "x_axis_mm": 39.29196874120798,
+    "y_axis_mm": 2.9693241460334665,
+    "confidence": 76.28269791603088,
+    "angle_deg": 1.1952514838567854
   }
 }

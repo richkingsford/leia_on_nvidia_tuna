@@ -20,6 +20,7 @@ from telemetry_robot import SPEED_SCORE_MAX, SPEED_SCORE_MIN
 DEFAULT_CURVE_FILE = Path(__file__).resolve().parent / "world_model_left_right_curve.json"
 DEFAULT_Y_CURVE_FILE = Path(__file__).resolve().parent / "world_model_up_down_curve.json"
 DEFAULT_DIST_CURVE_FILE = Path(__file__).resolve().parent / "world_model_forward_backward_curve.json"
+DEFAULT_TURN_DRIVE_TRIALS_DIR = Path(__file__).resolve().parent / "trials"
 DEFAULT_CURVE_BINS_MM = (
     0.5,
     1.0,
@@ -330,6 +331,179 @@ def calibrated_axis_motion_for_error(
         return None
     out = dict(profile)
     out["err_mm"] = float(err_mm)
+    return out
+
+
+def _turn_drive_trial_manifest_paths(trials_dir: Optional[Path] = None) -> List[Path]:
+    root = Path(trials_dir) if trials_dir is not None else DEFAULT_TURN_DRIVE_TRIALS_DIR
+    if not root.exists() or not root.is_dir():
+        return []
+    return sorted(
+        [
+            path
+            for path in root.iterdir()
+            if path.is_file()
+            and not str(path.name).startswith(".")
+            and str(path.suffix).lower() == ".json"
+        ],
+        key=lambda path: str(path.name).lower(),
+    )
+
+
+def _turn_drive_profile_override_from_manifest(
+    *,
+    measured_phase: dict,
+    cmd: str,
+    drive_mode: str,
+) -> Optional[tuple[int, dict]]:
+    if not isinstance(measured_phase, dict):
+        return None
+    motor_pair = measured_phase.get("motor_pair") if isinstance(measured_phase.get("motor_pair"), dict) else {}
+    left_pwm = _float_or_none(motor_pair.get("left_motor_pwm"))
+    right_pwm = _float_or_none(motor_pair.get("right_motor_pwm"))
+    if left_pwm is None or right_pwm is None:
+        return None
+    cmd_key = str(cmd or "").strip().lower()
+    drive_mode_key = str(drive_mode or "").strip().lower()
+    if cmd_key not in {"l", "r"} or drive_mode_key not in {"forward", "backward"}:
+        return None
+
+    pwm_override = _float_or_none(measured_phase.get("pwm_override"))
+    base_pwm = int(round(float(pwm_override))) if pwm_override is not None and float(pwm_override) > 0.0 else int(round(max(float(left_pwm), float(right_pwm))))
+    if base_pwm <= 0:
+        return None
+
+    if cmd_key == "l":
+        inner_pwm = float(left_pwm)
+        outer_pwm = float(right_pwm)
+    else:
+        outer_pwm = float(left_pwm)
+        inner_pwm = float(right_pwm)
+
+    profile_override = {
+        "profile_name": str(measured_phase.get("profile_name") or "").strip() or None,
+        "drive_mode": str(drive_mode_key),
+        "inner_ratio": max(0.0, min(1.0, float(inner_pwm) / float(base_pwm))),
+        "outer_ratio": max(0.0, min(1.0, float(outer_pwm) / float(base_pwm))),
+        "duration_mode": "turn",
+        "action_note": str(measured_phase.get("action_note") or "").strip() or (
+            "TURN+FWD" if drive_mode_key == "forward" else "TURN+BWD"
+        ),
+    }
+    return int(base_pwm), profile_override
+
+
+def production_turn_drive_curve_plan(
+    *,
+    cmd: str,
+    drive_mode: str,
+    current_dist_mm: float,
+    x_err_mm: float,
+    trials_dir: Optional[Path] = None,
+) -> Optional[dict]:
+    cmd_key = str(cmd or "").strip().lower()
+    drive_mode_key = str(drive_mode or "").strip().lower()
+    if cmd_key not in {"l", "r"} or drive_mode_key not in {"forward", "backward"}:
+        return None
+
+    current_dist = _float_or_none(current_dist_mm)
+    x_gap_needed = _float_or_none(x_err_mm)
+    if x_gap_needed is None:
+        return None
+    x_gap_needed = abs(float(x_gap_needed))
+    if x_gap_needed <= 0.0:
+        return None
+
+    candidates = []
+    for path in _turn_drive_trial_manifest_paths(trials_dir):
+        payload = _load_json_payload(path)
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("file_type") or "").strip().lower() != "turn_drive_trials":
+            continue
+        if not bool(payload.get("production")):
+            continue
+        curve_stats = payload.get("curve_stats") if isinstance(payload.get("curve_stats"), dict) else {}
+        if not bool(curve_stats.get("production_worthy", False)):
+            continue
+        curve_cfg = payload.get("curve") if isinstance(payload.get("curve"), dict) else {}
+        measured_phase = curve_cfg.get("measured_phase") if isinstance(curve_cfg.get("measured_phase"), dict) else {}
+        if str(measured_phase.get("cmd") or "").strip().lower() != cmd_key:
+            continue
+        if str(measured_phase.get("drive_mode") or "").strip().lower() != drive_mode_key:
+            continue
+        profile_bits = _turn_drive_profile_override_from_manifest(
+            measured_phase=measured_phase,
+            cmd=cmd_key,
+            drive_mode=drive_mode_key,
+        )
+        if profile_bits is None:
+            continue
+        pwm_override, profile_override = profile_bits
+        score_val = _float_or_none(measured_phase.get("score_pct"))
+        manifest_name = str(payload.get("name") or path.stem).strip() or path.stem
+        for row in list(payload.get("trials_backwards") or []):
+            if not isinstance(row, dict):
+                continue
+            if row.get("usable") is not True:
+                continue
+            duration_ms = _float_or_none(row.get("measuredDurationMs"))
+            start_dist = _float_or_none(row.get("startDist"))
+            x_gap_closed = _float_or_none(row.get("xGapClosed"))
+            if duration_ms is None or start_dist is None or x_gap_closed is None:
+                continue
+            if float(duration_ms) <= 0.0 or float(x_gap_closed) <= 0.0:
+                continue
+            candidates.append(
+                {
+                    "manifest_name": str(manifest_name),
+                    "trial": int(round(float(row.get("trial") or 0))) if _float_or_none(row.get("trial")) is not None else None,
+                    "score": int(round(float(score_val))) if score_val is not None else 1,
+                    "duration_override_ms": int(round(float(duration_ms))),
+                    "start_dist_mm": float(start_dist),
+                    "x_gap_closed_mm": float(x_gap_closed),
+                    "pwm_override": int(pwm_override),
+                    "profile_override": dict(profile_override),
+                }
+            )
+
+    if not candidates:
+        return None
+
+    def _candidate_key(item: dict) -> tuple[float, float, float, float, float]:
+        dist_delta = (
+            abs(float(item.get("start_dist_mm") or 0.0) - float(current_dist))
+            if current_dist is not None
+            else 0.0
+        )
+        gap_closed = float(item.get("x_gap_closed_mm") or 0.0)
+        covers_gap = gap_closed >= float(x_gap_needed)
+        if covers_gap:
+            return (
+                0.0,
+                float(dist_delta),
+                float(gap_closed - float(x_gap_needed)),
+                float(item.get("duration_override_ms") or 0.0),
+                0.0,
+            )
+        return (
+            1.0,
+            float(dist_delta),
+            abs(float(x_gap_needed) - float(gap_closed)),
+            -float(gap_closed),
+            float(item.get("duration_override_ms") or 0.0),
+        )
+
+    chosen = min(candidates, key=_candidate_key)
+    curve_name = (
+        f"{str(chosen.get('manifest_name') or '')} trial {int(chosen.get('trial') or 0)} "
+        f"(start_dist={float(chosen.get('start_dist_mm') or 0.0):.3f}mm, "
+        f"x_gap_closed={float(chosen.get('x_gap_closed_mm') or 0.0):.3f}mm)"
+    ).strip()
+    out = dict(chosen)
+    out["curve_name"] = str(curve_name)
+    out["curve_value_mm"] = float(chosen.get("x_gap_closed_mm") or 0.0)
+    out["source"] = "production_turn_drive_trials"
     return out
 
 

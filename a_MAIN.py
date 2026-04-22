@@ -87,7 +87,6 @@ from helper_x_axis_turn_experiment import (
     parse_observe_while_moving_trial_input,
     run_observe_while_moving_trial,
 )
-import helper_calibrate_speed_curve
 import telemetry_robot as telemetry_robot_module
 from telemetry_robot import (
     WorldModel,
@@ -4576,6 +4575,10 @@ def _resume_manual_runtime_after_calibration(app_state, borrowed_runtime: dict |
 
 
 def _run_calibration_mode(app_state):
+    # Import calibration helpers on demand so normal manual startup does not
+    # load calibration-only deps or emit unrelated import warnings.
+    import helper_calibrate_speed_curve
+
     with app_state.lock:
         if bool(app_state.auto_running):
             log_line("[CALIBRATE] Finish or cancel the current auto-step before entering calibration mode.")
@@ -5441,6 +5444,12 @@ def keyboard_thread(app_state):
             _wait_for_auto_idle(timeout_s=15.0)
             log_line(f"[CUSTOM RUNS] Trial {int(trial_idx)}/{int(trials)} complete.")
         log_line("[CUSTOM RUNS] Finished.")
+
+    # Drop any queued launch keystrokes so we only react to fresh operator input.
+    try:
+        termios.tcflush(sys.stdin, termios.TCIFLUSH)
+    except Exception:
+        pass
 
     while app_state.running:
         ch = getch()

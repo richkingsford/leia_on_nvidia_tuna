@@ -19,6 +19,7 @@ from helper_vision_config import (
     demos_dir_for_mode,
 )
 import helper_gate_utils as gate_utils
+import helper_close_gaps
 import helper_crosshair_stack_count
 import helper_xyz_coords
 import helper_turn_drive_motion
@@ -2669,6 +2670,8 @@ def send_robot_command_pwm(
         respect_requested_duration=respect_requested_duration,
     )
     cmd_sent = cmd
+    send_started_ts = None
+    send_completed_ts = None
 
     requested_score = None
     if speed_score is not None:
@@ -2802,17 +2805,22 @@ def send_robot_command_pwm(
 
                 seg_send_result = None
                 if hasattr(robot, "send_command_pwm"):
+                    if send_started_ts is None:
+                        send_started_ts = time.time()
                     seg_send_result = robot.send_command_pwm(
                         seg_cmd_model,
                         seg_pwm,
                         duration_ms=seg_duration_model_ms,
                     )
                 else:
+                    if send_started_ts is None:
+                        send_started_ts = time.time()
                     seg_send_result = robot.send_command(
                         seg_cmd_model,
                         seg_power,
                         duration_ms=seg_duration_model_ms,
                     )
+                send_completed_ts = time.time()
 
                 seg_cmd_sent = cmd_sent
                 seg_pwm_actual = int(seg_pwm)
@@ -2895,7 +2903,7 @@ def send_robot_command_pwm(
                         wire_text = wire_text[:177] + "..."
                     world._last_action_wire = str(wire_text)
                     world._last_action_wire_step = normalize_step_label(step)
-                    world._last_action_wire_time = time.time()
+                    world._last_action_wire_time = float(send_completed_ts or time.time())
 
                 record_action_display(
                     world,
@@ -2924,6 +2932,8 @@ def send_robot_command_pwm(
                     "turn_intensity_effective": turn_intensity_effective,
                     "motion_intensity_requested": motion_intensity_requested,
                     "motion_intensity_effective": motion_intensity_effective,
+                    "send_started_ts": float(send_started_ts) if send_started_ts is not None else None,
+                    "send_completed_ts": float(send_completed_ts) if send_completed_ts is not None else None,
                     "segments": sent_segments,
                     "ease_in_out_note": ease_note,
                     "anti_alias_note": ease_note,
@@ -2951,15 +2961,19 @@ def send_robot_command_pwm(
 
     send_result = None
     if custom_actions and hasattr(robot, "send_custom_actions_pwm"):
+        send_started_ts = time.time()
         send_result = robot.send_custom_actions_pwm(
             cmd,
             custom_actions,
             duration_ms=duration_used_ms,
         )
     elif hasattr(robot, "send_command_pwm"):
+        send_started_ts = time.time()
         send_result = robot.send_command_pwm(cmd, pwm_val, duration_ms=duration_used_ms)
     else:
+        send_started_ts = time.time()
         send_result = robot.send_command(cmd, power_val, duration_ms=duration_used_ms)
+    send_completed_ts = time.time()
     if isinstance(send_result, dict):
         cmd_sent = send_result.get("cmd_sent") or cmd_sent
         try:
@@ -2979,7 +2993,7 @@ def send_robot_command_pwm(
             wire_text = f"{cmd_sent} {int(pwm_val)} {int(duration_used_ms)}"
         world._last_action_wire = str(wire_text)
         world._last_action_wire_step = normalize_step_label(step)
-        world._last_action_wire_time = time.time()
+        world._last_action_wire_time = float(send_completed_ts or time.time())
 
     power_from_pwm = telemetry_robot_module.pwm_to_power(pwm_val)
     if power_from_pwm is not None:
@@ -3018,6 +3032,8 @@ def send_robot_command_pwm(
         "turn_intensity_effective": turn_intensity_effective,
         "motion_intensity_requested": motion_intensity_requested,
         "motion_intensity_effective": motion_intensity_effective,
+        "send_started_ts": float(send_started_ts) if send_started_ts is not None else None,
+        "send_completed_ts": float(send_completed_ts) if send_completed_ts is not None else None,
         "ease_in_out_note": ease_note,
         "anti_alias_note": ease_note,
         "action_note": action_note,
@@ -8927,8 +8943,9 @@ def post_act_analysis(world, vision, step=None, log=True, *, include_pause=True,
     return refresh_world_after_action(world, vision, log=log)
 
 
-def _latest_unique_smoothed_frames(world, required_frames):
+def _latest_unique_smoothed_frames(world, required_frames, min_timestamp=None):
     required = max(1, int(required_frames or 1))
+    min_timestamp_val = _as_float(min_timestamp, None)
     history = getattr(world, "_smoothed_frame_history", None)
     if not history:
         return []
@@ -8938,6 +8955,10 @@ def _latest_unique_smoothed_frames(world, required_frames):
         frame_id = int(entry.get("frame_id", 0) or 0)
         if frame_id <= 0 or frame_id in seen_frame_ids:
             continue
+        if min_timestamp_val is not None:
+            entry_ts = _as_float(entry.get("timestamp"), None)
+            if entry_ts is None or float(entry_ts) < float(min_timestamp_val):
+                continue
         seen_frame_ids.add(frame_id)
         selected.append(entry)
         if len(selected) >= required:
@@ -11576,6 +11597,34 @@ def run_alignment_segment(
         )
         if not isinstance(assist_request, dict):
             return None
+        manifest_curve_plan = helper_close_gaps.production_turn_drive_curve_plan(
+            cmd=cmd_local,
+            drive_mode=str(assist_request.get("drive_mode") or ""),
+            current_dist_mm=(local_gate_before_action or {}).get("dist"),
+            x_err_mm=(local_gate_before_action or {}).get("x_err"),
+        )
+        if isinstance(manifest_curve_plan, dict):
+            plan = helper_turn_drive_motion.build_turn_drive_motion_plan(
+                cmd=cmd_local,
+                score=int(manifest_curve_plan.get("score") or speed_score_local or 1),
+                hold_duration_ms=manifest_curve_plan.get("duration_override_ms"),
+                pwm_override=manifest_curve_plan.get("pwm_override"),
+                profile_override=(
+                    dict(manifest_curve_plan.get("profile_override") or {})
+                    if isinstance(manifest_curve_plan.get("profile_override"), dict)
+                    else None
+                ),
+                drive_mode=assist_request.get("drive_mode"),
+                metadata={
+                    "step": normalize_step_label(step),
+                    "curve_name": manifest_curve_plan.get("curve_name"),
+                    "curve_value_mm": manifest_curve_plan.get("curve_value_mm"),
+                    "curve_trial": manifest_curve_plan.get("trial"),
+                    "curve_source": manifest_curve_plan.get("source"),
+                },
+            )
+            if isinstance(plan, dict):
+                return plan
         plan = helper_turn_drive_motion.build_turn_drive_motion_plan(
             cmd=cmd_local,
             score=speed_score_local,

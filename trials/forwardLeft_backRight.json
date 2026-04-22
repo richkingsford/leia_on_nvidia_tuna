@@ -1,0 +1,123 @@
+{
+  "production": true,
+  "locked": true,
+  "locked_at_iso": "2026-04-21T19:15:19Z",
+  "locked_note": "Production-validated curve. Production uses trials 2-10 from the 150-400ms sweep; trial 1 (150ms) is excluded as an outlier. Use as baseline for future micro-adjustment experiments.",
+  "file_type": "turn_drive_trials",
+  "schema_version": 2,
+  "name": "forwardLeft_backRight",
+  "curve": {
+    "sequence_style": "fixed_forward_left_then_back_right",
+    "phase": "back_right",
+    "label": "BACK+RIGHT",
+    "turn_strength": "light",
+    "turn_style": "pivot_turn_with_slow_tread_min_pwm",
+    "score_pct": 1,
+    "trial_count": 10,
+    "reset_x_every_n_trials": 10,
+    "curve_pair_label": "FORWARD+LEFT -> BACK+RIGHT",
+    "setup_turn_duration_range_ms": {
+      "min_ms": 150,
+      "max_ms": 400
+    },
+    "setup_phase": {
+      "stage": "setup_forward_turn",
+      "phase": "forward_left",
+      "label": "FORWARD+LEFT",
+      "cmd": "l",
+      "drive_mode": "forward",
+      "turning": true,
+      "score_pct": 1,
+      "pwm_override": 199,
+      "profile_name": "forward_pivot_min_inner",
+      "action_note": "TURN+FWD",
+      "motor_pair": {
+        "left_motor_pwm": 1,
+        "left_motor_action": "b",
+        "right_motor_pwm": 199,
+        "right_motor_action": "f",
+        "display": "leftMotor=1(B) rightMotor=199(F)"
+      }
+    },
+    "measured_phase": {
+      "stage": "measured_backward_turn",
+      "phase": "back_right",
+      "label": "BACK+RIGHT",
+      "cmd": "r",
+      "drive_mode": "backward",
+      "turning": true,
+      "score_pct": 1,
+      "pwm_override": 191,
+      "profile_name": "backward_pivot_min_inner",
+      "action_note": "TURN+BWD",
+      "motor_pair": {
+        "left_motor_pwm": 191,
+        "left_motor_action": "f",
+        "right_motor_pwm": 100,
+        "right_motor_action": "b",
+        "display": "leftMotor=191(F) rightMotor=100(B)"
+      }
+    },
+    "trial_format": "compact",
+    "distance_hold_policy": "fixed_setup_forward_left",
+    "distance_hold_rule": "always use forward left setup before measured back right",
+    "measured_turn_duration_range_ms": {
+      "min_ms": 150,
+      "max_ms": 400
+    }
+  },
+  "distribution": {},
+  "checks": {
+    "forward_once_then_backward_once_every_trial": true,
+    "turning_whenever_moving_every_trial": true,
+    "setup_durations_within_assumptions": true,
+    "setup_durations_evenly_increasing": false
+  },
+  "run_status": {
+    "status": "completed",
+    "trials_requested": 10,
+    "trials_completed": 10,
+    "stop_reason": "completed",
+    "usable_trials": 9,
+    "last_started_ts": 1776878821.378,
+    "last_completed_ts": 1776878886.048,
+    "seconds": 65.108
+  },
+  "curve_stats": {
+    "consistency_score_pct": 100.0,
+    "x_gap_close_rate_pct": 100.0,
+    "median_x_axis_change_mm": 12.304,
+    "median_dist_change_mm": 10.708,
+    "median_dist_traveled_mm": 10.708,
+    "median_x_gap_closed_mm": 7.962,
+    "median_start_confidence_pct": 78.018,
+    "median_end_confidence_pct": 79.57,
+    "median_confidence_delta_pct": 0.662,
+    "usable_trials": 9,
+    "production_worthy": true
+  },
+  "trials_forward": [
+    {"trial": 1, "setupDurationMs": 150, "setupProfile": "forward_pivot_min_inner", "setupScore": 1, "setupPwm": null, "setupLeftMotorPwr": 1, "setupRightMotorPwr": 199, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199},
+    {"trial": 2, "setupDurationMs": 178, "setupProfile": "forward_pivot_min_inner", "setupScore": 1, "setupPwm": null, "setupLeftMotorPwr": 1, "setupRightMotorPwr": 199, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199},
+    {"trial": 3, "setupDurationMs": 206, "setupProfile": "forward_pivot_min_inner", "setupScore": 1, "setupPwm": null, "setupLeftMotorPwr": 1, "setupRightMotorPwr": 199, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199},
+    {"trial": 4, "setupDurationMs": 233, "setupProfile": "forward_pivot_min_inner", "setupScore": 1, "setupPwm": null, "setupLeftMotorPwr": 1, "setupRightMotorPwr": 199, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199},
+    {"trial": 5, "setupDurationMs": 261, "setupProfile": "forward_pivot_min_inner", "setupScore": 1, "setupPwm": null, "setupLeftMotorPwr": 1, "setupRightMotorPwr": 199, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199},
+    {"trial": 6, "setupDurationMs": 289, "setupProfile": "forward_pivot_min_inner", "setupScore": 1, "setupPwm": null, "setupLeftMotorPwr": 1, "setupRightMotorPwr": 199, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199},
+    {"trial": 7, "setupDurationMs": 317, "setupProfile": "forward_pivot_min_inner", "setupScore": 1, "setupPwm": null, "setupLeftMotorPwr": 1, "setupRightMotorPwr": 199, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199},
+    {"trial": 8, "setupDurationMs": 344, "setupProfile": "forward_pivot_min_inner", "setupScore": 1, "setupPwm": null, "setupLeftMotorPwr": 1, "setupRightMotorPwr": 199, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199},
+    {"trial": 9, "setupDurationMs": 372, "setupProfile": "forward_pivot_min_inner", "setupScore": 1, "setupPwm": null, "setupLeftMotorPwr": 1, "setupRightMotorPwr": 199, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199},
+    {"trial": 10, "setupDurationMs": 400, "setupProfile": "forward_pivot_min_inner", "setupScore": 1, "setupPwm": null, "setupLeftMotorPwr": 1, "setupRightMotorPwr": 199, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199}
+  ],
+  "trials_backwards": [
+    {"trial": 1, "measuredDurationMs": 150, "measuredProfile": "backward_pivot_min_inner", "measuredScore": 1, "measuredPwm": null, "measuredLeftMotorPwr": 191, "measuredRightMotorPwr": 100, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199, "startDist": 257.118, "distDelta": 11.019, "xDelta": 1.856, "xGapClosed": 8.491, "startConf": 59.808, "endConf": 66.298, "usable": false, "status": "excluded", "stopReason": "production_outlier_excluded"},
+    {"trial": 2, "measuredDurationMs": 178, "measuredProfile": "backward_pivot_min_inner", "measuredScore": 1, "measuredPwm": null, "measuredLeftMotorPwr": 191, "measuredRightMotorPwr": 100, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199, "startDist": 259.128, "distDelta": 10.708, "xDelta": 12.803, "xGapClosed": 1.256, "startConf": 78.244, "endConf": 79.975, "usable": true, "status": "completed", "stopReason": "completed"},
+    {"trial": 3, "measuredDurationMs": 206, "measuredProfile": "backward_pivot_min_inner", "measuredScore": 1, "measuredPwm": null, "measuredLeftMotorPwr": 191, "measuredRightMotorPwr": 100, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199, "startDist": 263.491, "distDelta": 7.938, "xDelta": 14.525, "xGapClosed": 5.056, "startConf": 78.765, "endConf": 77.795, "usable": true, "status": "completed", "stopReason": "completed"},
+    {"trial": 4, "measuredDurationMs": 233, "measuredProfile": "backward_pivot_min_inner", "measuredScore": 1, "measuredPwm": null, "measuredLeftMotorPwr": 191, "measuredRightMotorPwr": 100, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199, "startDist": 266.485, "distDelta": 10.476, "xDelta": 10.697, "xGapClosed": 6.093, "startConf": 74.309, "endConf": 79.867, "usable": true, "status": "completed", "stopReason": "completed"},
+    {"trial": 5, "measuredDurationMs": 261, "measuredProfile": "backward_pivot_min_inner", "measuredScore": 1, "measuredPwm": null, "measuredLeftMotorPwr": 191, "measuredRightMotorPwr": 100, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199, "startDist": 266.935, "distDelta": 10.369, "xDelta": 12.005, "xGapClosed": 7.01, "startConf": 77.371, "endConf": 68.677, "usable": true, "status": "completed", "stopReason": "completed"},
+    {"trial": 6, "measuredDurationMs": 289, "measuredProfile": "backward_pivot_min_inner", "measuredScore": 1, "measuredPwm": null, "measuredLeftMotorPwr": 191, "measuredRightMotorPwr": 100, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199, "startDist": 269.02, "distDelta": 9.756, "xDelta": 13.516, "xGapClosed": 7.962, "startConf": 78.908, "endConf": 79.57, "usable": true, "status": "completed", "stopReason": "completed"},
+    {"trial": 7, "measuredDurationMs": 317, "measuredProfile": "backward_pivot_min_inner", "measuredScore": 1, "measuredPwm": null, "measuredLeftMotorPwr": 191, "measuredRightMotorPwr": 100, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199, "startDist": 270.917, "distDelta": 13.795, "xDelta": 12.077, "xGapClosed": 8.575, "startConf": 78.018, "endConf": 78.967, "usable": true, "status": "completed", "stopReason": "completed"},
+    {"trial": 8, "measuredDurationMs": 344, "measuredProfile": "backward_pivot_min_inner", "measuredScore": 1, "measuredPwm": null, "measuredLeftMotorPwr": 191, "measuredRightMotorPwr": 100, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199, "startDist": 272.393, "distDelta": 12.954, "xDelta": 11.491, "xGapClosed": 9.282, "startConf": 76.102, "endConf": 74.485, "usable": true, "status": "completed", "stopReason": "completed"},
+    {"trial": 9, "measuredDurationMs": 372, "measuredProfile": "backward_pivot_min_inner", "measuredScore": 1, "measuredPwm": null, "measuredLeftMotorPwr": 191, "measuredRightMotorPwr": 100, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199, "startDist": 274.54, "distDelta": 16.714, "xDelta": 12.304, "xGapClosed": 13.309, "startConf": 77.708, "endConf": 80.286, "usable": true, "status": "completed", "stopReason": "completed"},
+    {"trial": 10, "measuredDurationMs": 400, "measuredProfile": "backward_pivot_min_inner", "measuredScore": 1, "measuredPwm": null, "measuredLeftMotorPwr": 191, "measuredRightMotorPwr": 100, "curvePair": "FORWARD+LEFT -> BACK+RIGHT", "leftMotorPwr": 1, "rightMotorPwr": 199, "startDist": 275.12, "distDelta": 18.003, "xDelta": 14.513, "xGapClosed": 13.452, "startConf": 80.879, "endConf": 80.988, "usable": true, "status": "completed", "stopReason": "completed"}
+  ]
+}
