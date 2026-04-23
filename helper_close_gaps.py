@@ -433,7 +433,7 @@ def _production_turn_drive_setup_phase_plan(
             "trial": None,
             "score": int(round(float(score_val))) if score_val is not None else 1,
             "duration_override_ms": None,
-            "pwm_override": int(pwm_override),
+            "pwm_override": None,
             "profile_override": dict(profile_override),
             "curve_name": f"{manifest_name} forward-setup",
             "curve_value_mm": None,

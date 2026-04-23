@@ -1,24 +1,24 @@
 {
-  "updated_at": 1776912435.8763952,
+  "updated_at": 1776951515.9559484,
   "robot": {
-    "x_mm": -404.4107612272438,
-    "y_mm": 1195.1030798474037,
+    "x_mm": 27.435469702516937,
+    "y_mm": 336.2113556200942,
     "z_mm": 0.0,
-    "theta_deg": -94.28620118999326,
-    "lift_mm": 0.4142884191737932
+    "theta_deg": -89.4273768275862,
+    "lift_mm": -92.85900610148946
   },
   "raw_robot": {
-    "x_mm": 103.1380379699655,
-    "y_mm": -9.29280670072757,
+    "x_mm": 15.328106205026417,
+    "y_mm": 0.0730071060209955,
     "z_mm": 0.0,
-    "theta_deg": -4.286201189993238,
-    "lift_mm": 0.4142884191737932
+    "theta_deg": 0.5726231724137931,
+    "lift_mm": -92.85900610148946
   },
   "leia": {
-    "x_mm": -404.4107612272438,
-    "y_mm": 1195.1030798474037,
-    "z_mm": 0.0,
-    "theta_deg": -94.28620118999326,
+    "x_mm": 27.435469702516937,
+    "y_mm": 336.2113556200942,
+    "z_mm": 2.4447470330750107,
+    "theta_deg": -89.4273768275862,
     "label": "Leia"
   },
   "objects": {
@@ -29,14 +29,14 @@
       "y_mm": -180.0,
       "z_mm": 0.0,
       "theta_deg": 0.0,
-      "count": null,
-      "height_mm": null,
+      "count": 5,
+      "height_mm": 220.0,
       "confidence": null,
       "visible": true,
       "fixed": true,
       "render_footprint_mm": 54.0,
       "source": "default_layout_seed",
-      "last_seen_ts": 1776912435.8763628
+      "last_seen_ts": 1776951515.9558847
     },
     "wall": {
       "name": "wall",
@@ -47,15 +47,16 @@
       "theta_deg": 180.0,
       "length_mm": 320.0,
       "render_footprint_mm": 54.0,
-      "height_mm": null,
+      "height_mm": 44.0,
       "confidence": null,
       "visible": true,
       "valid": false,
       "fixed": true,
       "source": "ALIGN_BRICK",
-      "last_seen_ts": 1776912435.5393088,
-      "observed_world_x_mm": 19.76450031142585,
-      "observed_world_y_mm": 149.33165069811687,
+      "last_seen_ts": 1776951346.529502,
+      "count": 1,
+      "observed_world_x_mm": 61.39951708718024,
+      "observed_world_y_mm": -196.33568172574553,
       "observed_world_theta_deg": 180.0
     }
   },
@@ -86,10 +87,10 @@
   },
   "last_visible_brick": {
     "visible": true,
-    "dist_mm": 1438.3438327084968,
-    "x_axis_mm": 601.8510054239256,
-    "y_axis_mm": 8.988314489756709,
-    "confidence": 70.80310583114624,
-    "angle_deg": -2.1054359436035157
+    "dist_mm": 516.9399081797933,
+    "x_axis_mm": -32.65809014022993,
+    "y_axis_mm": 4.846403004875162,
+    "confidence": 66.78873151540756,
+    "angle_deg": 78.23303363735647
   }
 }

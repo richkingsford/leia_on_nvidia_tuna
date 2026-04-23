@@ -304,6 +304,9 @@
                     "forward_profile": "forward_pivot",
                     "backward_profile": "backward_pivot"
                 },
+                "forward_while_turning_assist": {
+                    "enabled": false
+                },
                 "target_lock_enabled": true,
                 "target_lock_center_prefer_enabled": true,
                 "target_lock_stack_signature_guard_enabled": false,
