@@ -1,24 +1,24 @@
 {
-  "updated_at": 1776878886.0205972,
+  "updated_at": 1776912435.8763952,
   "robot": {
-    "x_mm": -38.87195152114881,
-    "y_mm": 83.71569301263867,
+    "x_mm": -404.4107612272438,
+    "y_mm": 1195.1030798474037,
     "z_mm": 0.0,
-    "theta_deg": -90.0,
-    "lift_mm": 0.0
+    "theta_deg": -94.28620118999326,
+    "lift_mm": 0.4142884191737932
   },
   "raw_robot": {
-    "x_mm": 0.0,
-    "y_mm": 0.0,
+    "x_mm": 103.1380379699655,
+    "y_mm": -9.29280670072757,
     "z_mm": 0.0,
-    "theta_deg": 0.0,
-    "lift_mm": 0.0
+    "theta_deg": -4.286201189993238,
+    "lift_mm": 0.4142884191737932
   },
   "leia": {
-    "x_mm": -38.87195152114881,
-    "y_mm": 83.71569301263867,
+    "x_mm": -404.4107612272438,
+    "y_mm": 1195.1030798474037,
     "z_mm": 0.0,
-    "theta_deg": -90.0,
+    "theta_deg": -94.28620118999326,
     "label": "Leia"
   },
   "objects": {
@@ -36,7 +36,7 @@
       "fixed": true,
       "render_footprint_mm": 54.0,
       "source": "default_layout_seed",
-      "last_seen_ts": 1776878886.0205345
+      "last_seen_ts": 1776912435.8763628
     },
     "wall": {
       "name": "wall",
@@ -50,12 +50,12 @@
       "height_mm": null,
       "confidence": null,
       "visible": true,
-      "valid": true,
+      "valid": false,
       "fixed": true,
       "source": "ALIGN_BRICK",
-      "last_seen_ts": 1776878885.2255282,
-      "observed_world_x_mm": 254.38801710813732,
-      "observed_world_y_mm": 7.793697848999794,
+      "last_seen_ts": 1776912435.5393088,
+      "observed_world_x_mm": 19.76450031142585,
+      "observed_world_y_mm": 149.33165069811687,
       "observed_world_theta_deg": 180.0
     }
   },
@@ -86,10 +86,10 @@
   },
   "last_visible_brick": {
     "visible": true,
-    "dist_mm": 266.5651803146818,
-    "x_axis_mm": 39.29196874120798,
-    "y_axis_mm": 2.9693241460334665,
-    "confidence": 76.28269791603088,
-    "angle_deg": 1.1952514838567854
+    "dist_mm": 1438.3438327084968,
+    "x_axis_mm": 601.8510054239256,
+    "y_axis_mm": 8.988314489756709,
+    "confidence": 70.80310583114624,
+    "angle_deg": -2.1054359436035157
   }
 }

@@ -301,7 +301,8 @@
                     "enabled": true,
                     "require_dist_outside_gate": true,
                     "min_dist_outside_mm": 0.0,
-                    "forward_profile": "forward_pivot"
+                    "forward_profile": "forward_pivot",
+                    "backward_profile": "backward_pivot"
                 },
                 "target_lock_enabled": true,
                 "target_lock_center_prefer_enabled": true,

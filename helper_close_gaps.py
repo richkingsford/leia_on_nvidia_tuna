@@ -393,6 +393,55 @@ def _turn_drive_profile_override_from_manifest(
     return int(base_pwm), profile_override
 
 
+def _production_turn_drive_setup_phase_plan(
+    cmd: str,
+    trials_dir: Optional[Path] = None,
+) -> Optional[dict]:
+    """Return motor settings from the setup_phase (forward turn) of a trial file."""
+    cmd_key = str(cmd or "").strip().lower()
+    if cmd_key not in {"l", "r"}:
+        return None
+    for path in _turn_drive_trial_manifest_paths(trials_dir):
+        payload = _load_json_payload(path)
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("file_type") or "").strip().lower() != "turn_drive_trials":
+            continue
+        if not bool(payload.get("production")):
+            continue
+        curve_stats = payload.get("curve_stats") if isinstance(payload.get("curve_stats"), dict) else {}
+        if not bool(curve_stats.get("production_worthy", False)):
+            continue
+        curve_cfg = payload.get("curve") if isinstance(payload.get("curve"), dict) else {}
+        setup_phase = curve_cfg.get("setup_phase") if isinstance(curve_cfg.get("setup_phase"), dict) else {}
+        if str(setup_phase.get("cmd") or "").strip().lower() != cmd_key:
+            continue
+        if str(setup_phase.get("drive_mode") or "").strip().lower() != "forward":
+            continue
+        profile_bits = _turn_drive_profile_override_from_manifest(
+            measured_phase=setup_phase,
+            cmd=cmd_key,
+            drive_mode="forward",
+        )
+        if profile_bits is None:
+            continue
+        pwm_override, profile_override = profile_bits
+        score_val = _float_or_none(setup_phase.get("score_pct"))
+        manifest_name = str(payload.get("name") or path.stem).strip() or path.stem
+        return {
+            "manifest_name": str(manifest_name),
+            "trial": None,
+            "score": int(round(float(score_val))) if score_val is not None else 1,
+            "duration_override_ms": None,
+            "pwm_override": int(pwm_override),
+            "profile_override": dict(profile_override),
+            "curve_name": f"{manifest_name} forward-setup",
+            "curve_value_mm": None,
+            "source": "production_turn_drive_trials_forward",
+        }
+    return None
+
+
 def production_turn_drive_curve_plan(
     *,
     cmd: str,
@@ -405,6 +454,9 @@ def production_turn_drive_curve_plan(
     drive_mode_key = str(drive_mode or "").strip().lower()
     if cmd_key not in {"l", "r"} or drive_mode_key not in {"forward", "backward"}:
         return None
+
+    if drive_mode_key == "forward":
+        return _production_turn_drive_setup_phase_plan(cmd=cmd_key, trials_dir=trials_dir)
 
     current_dist = _float_or_none(current_dist_mm)
     x_gap_needed = _float_or_none(x_err_mm)
