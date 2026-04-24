@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ALIGN_BRICK Run View</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      display: flex;
+      min-height: 100vh;
+      background: #ede8df;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      color: #10202b;
+    }
+    .charts {
+      flex: 1;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      min-width: 0;
+    }
+    .chart-card {
+      background: #faf7f2;
+      border: 1px solid #d9d3c8;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 4px 18px rgba(16,32,43,0.07);
+    }
+    .chart-card svg { display: block; width: 100%; height: auto; }
+    .sidebar {
+      width: 320px;
+      flex-shrink: 0;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      border-left: 1px solid #ccc8bf;
+      background: #f5f1ea;
+      overflow-y: auto;
+    }
+    .sidebar h2 {
+      font-size: 15px;
+      font-weight: 700;
+      color: #233843;
+    }
+    .prompt {
+      font-size: 13px;
+      color: #7a7368;
+      line-height: 1.55;
+    }
+    .entry-card {
+      background: #fff;
+      border: 1px solid #d9d3c8;
+      border-radius: 12px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .entry-card h3 {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      color: #5d676e;
+    }
+    .kv-table { width: 100%; border-collapse: collapse; }
+    .kv-table td { padding: 3px 0; font-size: 13px; vertical-align: top; }
+    .kv-table td:first-child { color: #7a7368; white-space: nowrap; padding-right: 10px; width: 40%; }
+    .kv-table td:last-child { font-weight: 600; color: #10202b; }
+    .err-ok { color: #2f9e44; }
+    .err-bad { color: #d94841; }
+    .err-warn { color: #c59d2a; }
+    .trend-closer { background: #d3f9d8; color: #2f9e44; }
+    .trend-further { background: #ffe3e3; color: #d94841; }
+    .trend-neutral { background: #fff3cd; color: #c59d2a; }
+    .trend-unknown { background: #f1f3f5; color: #868e96; }
+    .trend-badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 99px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .act-badge {
+      display: inline-block;
+      background: #233843;
+      color: #fff;
+      padding: 3px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: .03em;
+    }
+    [data-entry] { cursor: pointer; transition: opacity .1s; }
+    [data-entry]:hover { opacity: .75; }
+    .dot-selected { stroke: #ff7a00 !important; stroke-width: 3.5px !important; }
+    .legend { display: flex; flex-wrap: wrap; gap: 8px; }
+    .legend-item { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #5d676e; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  </style>
+</head>
+<body>
+  <div class="charts">
+    <div class="chart-card"><svg xmlns="http://www.w3.org/2000/svg" width="980" height="228" viewBox="0 0 980 228">
+<rect width="100%" height="100%" fill="#f4efe4" />
+<rect x="22" y="12" width="936" height="204" rx="18" fill="#f9f6ef" stroke="#d7d1c4" stroke-width="1.5" />
+<text x="490.0" y="42.0" text-anchor="middle" font-size="28" font-weight="900" fill="#233843">Bird View</text>
+<rect x="190.1" y="115.5" width="4.9" height="4.9" fill="#1f4b8f" stroke="#122d57" stroke-width="3" rx="12.0" />
+<text x="192.5" y="101.5" text-anchor="middle" font-size="28" font-weight="600" fill="#1d2830">Supply</text>
+<line x1="211.0" y1="118.0" x2="938.0" y2="118.0" stroke="#b7aea0" stroke-width="1.6" stroke-dasharray="4 4" opacity="0.7" />
+<text x="211.0" y="108.0" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">134mm</text>
+<text x="938.0" y="108.0" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">164mm</text>
+<text x="197.0" y="122.0" text-anchor="end" font-size="12" font-weight="700" fill="#5d676e">x=6</text>
+<rect x="453.3" y="100.0" width="242.3" height="36.0" fill="#2aae6c" fill-opacity="0.13" stroke="#2aae6c" stroke-width="1.8" stroke-dasharray="5 3" rx="3" />
+<line x1="574.5" y1="90.0" x2="574.5" y2="146.0" stroke="#1f8f58" stroke-width="1.8" stroke-linecap="round" />
+<line x1="443.3" y1="118.0" x2="705.7" y2="118.0" stroke="#1f8f58" stroke-width="1.8" stroke-linecap="round" />
+<text x="574.5" y="84.0" text-anchor="middle" font-size="11" font-weight="800" fill="#1f8f58">dist 149.3 ±5.0</text>
+<text x="441.3" y="113.0" text-anchor="end" font-size="11" font-weight="800" fill="#1f8f58">x 6.0</text>
+<text x="707.7" y="132.0" text-anchor="start" font-size="11" font-weight="700" fill="#1f8f58">±5.0</text>
+<polyline class="step-history-path" points="924.5,163.0 933.5,163.0 942.5,163.0 944.0,163.0 933.5,137.2 942.5,137.2 933.5,102.4 942.5,102.4 933.5,92.1 942.5,92.1 933.5,141.3 942.5,141.3 924.5,172.0 933.5,172.0 942.5,172.0 944.0,172.0 924.5,181.0 933.5,181.0" fill="none" stroke="#7a95bb" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.82" />
+<circle class="step-history-dot" data-trend="unknown" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 0, &quot;dist&quot;: 404.7, &quot;x&quot;: -45.89, &quot;y&quot;: 3.18, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: &quot;[ACT] F 1%&quot;, &quot;trend&quot;: &quot;unknown&quot;}" cx="924.5" cy="163.0" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<circle class="step-history-dot" data-trend="neutral" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 1, &quot;dist&quot;: 404.7, &quot;x&quot;: -45.89, &quot;y&quot;: 3.18, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: &quot;[ACT] F 1%&quot;, &quot;trend&quot;: &quot;neutral&quot;}" cx="933.5" cy="163.0" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<circle class="step-history-dot" data-trend="further" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 2, &quot;dist&quot;: 416.6, &quot;x&quot;: -33.89, &quot;y&quot;: 3.16, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: &quot;[ACT] F 1%&quot;, &quot;trend&quot;: &quot;further&quot;}" cx="942.5" cy="163.0" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<circle class="step-history-dot" data-trend="neutral" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 3, &quot;dist&quot;: 416.6, &quot;x&quot;: -33.89, &quot;y&quot;: 3.16, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: &quot;[ACT] R 10%&quot;, &quot;trend&quot;: &quot;neutral&quot;}" cx="944.0" cy="163.0" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<circle class="step-history-dot" data-trend="closer" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 4, &quot;dist&quot;: 411.1, &quot;x&quot;: 0.69, &quot;y&quot;: 3.24, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: &quot;[ACT] R 10%&quot;, &quot;trend&quot;: &quot;closer&quot;}" cx="933.5" cy="137.2" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<circle class="step-history-dot" data-trend="neutral" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 5, &quot;dist&quot;: 411.1, &quot;x&quot;: 0.69, &quot;y&quot;: 3.24, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: &quot;[ACT] F 1%&quot;, &quot;trend&quot;: &quot;neutral&quot;}" cx="942.5" cy="137.2" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<circle class="step-history-dot" data-trend="closer" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 6, &quot;dist&quot;: 387.2, &quot;x&quot;: 10.36, &quot;y&quot;: 3.23, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: &quot;[ACT] F 1%&quot;, &quot;trend&quot;: &quot;closer&quot;}" cx="933.5" cy="102.4" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<circle class="step-history-dot" data-trend="neutral" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 7, &quot;dist&quot;: 387.2, &quot;x&quot;: 10.36, &quot;y&quot;: 3.23, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: &quot;[ACT] F 1%&quot;, &quot;trend&quot;: &quot;neutral&quot;}" cx="942.5" cy="102.4" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<circle class="step-history-dot" data-trend="closer" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 8, &quot;dist&quot;: 376.7, &quot;x&quot;: 13.22, &quot;y&quot;: 3.19, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: &quot;[ACT] F 1%&quot;, &quot;trend&quot;: &quot;closer&quot;}" cx="933.5" cy="92.1" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<circle class="step-history-dot" data-trend="neutral" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 9, &quot;dist&quot;: 376.7, &quot;x&quot;: 13.22, &quot;y&quot;: 3.19, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: &quot;[ACT] F 1%&quot;, &quot;trend&quot;: &quot;neutral&quot;}" cx="942.5" cy="92.1" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<circle class="step-history-dot" data-trend="further" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 10, &quot;dist&quot;: 391.3, &quot;x&quot;: -0.43, &quot;y&quot;: 3.08, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: &quot;[ACT] F 1%&quot;, &quot;trend&quot;: &quot;further&quot;}" cx="933.5" cy="141.3" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<circle class="step-history-dot" data-trend="neutral" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 11, &quot;dist&quot;: 391.3, &quot;x&quot;: -0.43, &quot;y&quot;: 3.08, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: &quot;[ACT] L 1%&quot;, &quot;trend&quot;: &quot;neutral&quot;}" cx="942.5" cy="141.3" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<circle class="step-history-dot" data-trend="further" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 12, &quot;dist&quot;: 430.3, &quot;x&quot;: -31.05, &quot;y&quot;: 2.93, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: &quot;[ACT] L 1%&quot;, &quot;trend&quot;: &quot;further&quot;}" cx="924.5" cy="172.0" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<circle class="step-history-dot" data-trend="neutral" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 13, &quot;dist&quot;: 430.3, &quot;x&quot;: -31.05, &quot;y&quot;: 2.93, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: &quot;[ACT] R 1%&quot;, &quot;trend&quot;: &quot;neutral&quot;}" cx="933.5" cy="172.0" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<circle class="step-history-dot" data-trend="further" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 14, &quot;dist&quot;: 451.9, &quot;x&quot;: -36.59, &quot;y&quot;: 2.6, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: &quot;[ACT] R 1%&quot;, &quot;trend&quot;: &quot;further&quot;}" cx="942.5" cy="172.0" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<circle class="step-history-dot" data-trend="neutral" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 15, &quot;dist&quot;: 451.9, &quot;x&quot;: -36.59, &quot;y&quot;: 2.6, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: &quot;[ACT] R 8%&quot;, &quot;trend&quot;: &quot;neutral&quot;}" cx="944.0" cy="172.0" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<circle class="step-history-dot" data-trend="closer" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 16, &quot;dist&quot;: 449.1, &quot;x&quot;: -49.6, &quot;y&quot;: 2.5, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: &quot;[ACT] R 8%&quot;, &quot;trend&quot;: &quot;closer&quot;}" cx="924.5" cy="181.0" r="6.0" fill="#63d7ff" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<circle class="step-history-dot" data-trend="neutral" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 17, &quot;dist&quot;: 449.1, &quot;x&quot;: -49.6, &quot;y&quot;: 2.5, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: &quot;[ACT] R 9%&quot;, &quot;trend&quot;: &quot;neutral&quot;}" cx="933.5" cy="181.0" r="6.0" fill="#0b3d91" fill-opacity="0.98" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<text x="45.4" y="140.2" text-anchor="middle" font-size="16" font-weight="600" fill="#233843" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">1890</text>
+</svg></div>
+    <div class="chart-card"><svg xmlns="http://www.w3.org/2000/svg" width="980" height="360" viewBox="0 0 980 360">
+<rect width="100%" height="100%" fill="#f4efe4" />
+<rect x="22" y="22" width="936" height="316" rx="24" fill="#f9f6ef" stroke="#d7d1c4" stroke-width="1.5" />
+<text x="490.0" y="52.0" text-anchor="middle" font-size="28" font-weight="900" fill="#233843">Mast View</text>
+<rect x="170.0" y="148.0" width="92.0" height="92.0" fill="#1f4b8f" stroke="#122d57" stroke-width="3" rx="12.0" />
+<text x="216.0" y="134.0" text-anchor="middle" font-size="28" font-weight="600" fill="#1d2830">Supply</text>
+<line class="mast-zero-guide" x1="86.0" y1="194.0" x2="162.0" y2="194.0" stroke="#c8c2b5" stroke-width="2.6" stroke-linecap="round" />
+<text x="76.0" y="199.0" text-anchor="end" font-size="12" font-weight="700" fill="#5d676e">0mm</text>
+<text x="76.0" y="95.5" text-anchor="end" font-size="11" font-weight="600" fill="#5d676e">+10mm</text>
+<text x="76.0" y="300.5" text-anchor="end" font-size="11" font-weight="600" fill="#5d676e">-10mm</text>
+<rect x="272.0" y="128.1" width="598.0" height="47.1" fill="#2aae6c" fill-opacity="0.13" stroke="#2aae6c" stroke-width="1.8" stroke-dasharray="5 3" rx="3" />
+<line x1="262.0" y1="151.7" x2="880.0" y2="151.7" stroke="#1f8f58" stroke-width="1.8" stroke-linecap="round" />
+<text x="258.0" y="155.7" text-anchor="end" font-size="11" font-weight="800" fill="#1f8f58">target 4.1</text>
+<text x="258.0" y="132.1" text-anchor="end" font-size="11" font-weight="700" fill="#1f8f58">+2.3</text>
+<text x="258.0" y="179.2" text-anchor="end" font-size="11" font-weight="700" fill="#1f8f58">-2.3</text>
+<g id="mast-history">
+<line class="mast-history-lead" x1="264.0" y1="168.4" x2="272.0" y2="168.4" stroke="#0b3d91" stroke-width="1.4" stroke-linecap="round" opacity="0.95" />
+<polyline class="mast-history-trace" points="272.0,168.4 307.2,168.4 342.4,167.4 377.5,167.4 412.7,164.0 447.9,164.0 483.1,162.4 518.2,162.4 553.4,161.3 588.6,161.3 623.8,160.9 658.9,160.9 694.1,160.8 729.3,160.8 764.5,161.6 799.6,161.6 834.8,161.4 870.0,161.4" fill="none" stroke="#9db4da" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.55" />
+<line class="mast-history-segment" data-recency="older" x1="870.0" y1="161.4" x2="834.8" y2="161.4" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="834.8" y1="161.4" x2="799.6" y2="161.6" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="799.6" y1="161.6" x2="764.5" y2="161.6" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="764.5" y1="161.6" x2="729.3" y2="160.8" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="729.3" y1="160.8" x2="694.1" y2="160.8" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="694.1" y1="160.8" x2="658.9" y2="160.9" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="658.9" y1="160.9" x2="623.8" y2="160.9" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="623.8" y1="160.9" x2="588.6" y2="161.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="588.6" y1="161.3" x2="553.4" y2="161.3" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="553.4" y1="161.3" x2="518.2" y2="162.4" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="518.2" y1="162.4" x2="483.1" y2="162.4" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="483.1" y1="162.4" x2="447.9" y2="164.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="447.9" y1="164.0" x2="412.7" y2="164.0" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="older" x1="412.7" y1="164.0" x2="377.5" y2="167.4" stroke="#d3d7dd" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="n-2" x1="377.5" y1="167.4" x2="342.4" y2="167.4" stroke="#63d7ff" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="n-1" x1="342.4" y1="167.4" x2="307.2" y2="168.4" stroke="#2563eb" stroke-width="1" stroke-linecap="round" />
+<line class="mast-history-segment" data-recency="current" x1="307.2" y1="168.4" x2="272.0" y2="168.4" stroke="#0b3d91" stroke-width="1" stroke-linecap="round" />
+<circle class="mast-history-dot" data-entry="{&quot;view&quot;: &quot;mast&quot;, &quot;idx&quot;: 0, &quot;dist&quot;: 404.7, &quot;x&quot;: -45.89, &quot;y&quot;: 3.18, &quot;lift&quot;: 0.9, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null}" cx="870.0" cy="161.4" r="5" fill="#9db4da" fill-opacity="0.9" stroke="#f9f6ef" stroke-width="1.5" style="cursor:pointer" />
+<circle class="mast-history-dot" data-entry="{&quot;view&quot;: &quot;mast&quot;, &quot;idx&quot;: 1, &quot;dist&quot;: 404.7, &quot;x&quot;: -45.89, &quot;y&quot;: 3.18, &quot;lift&quot;: 0.9, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null}" cx="834.8" cy="161.4" r="5" fill="#9db4da" fill-opacity="0.9" stroke="#f9f6ef" stroke-width="1.5" style="cursor:pointer" />
+<circle class="mast-history-dot" data-entry="{&quot;view&quot;: &quot;mast&quot;, &quot;idx&quot;: 2, &quot;dist&quot;: 416.6, &quot;x&quot;: -33.89, &quot;y&quot;: 3.16, &quot;lift&quot;: 0.9, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null}" cx="799.6" cy="161.6" r="5" fill="#9db4da" fill-opacity="0.9" stroke="#f9f6ef" stroke-width="1.5" style="cursor:pointer" />
+<circle class="mast-history-dot" data-entry="{&quot;view&quot;: &quot;mast&quot;, &quot;idx&quot;: 3, &quot;dist&quot;: 416.6, &quot;x&quot;: -33.89, &quot;y&quot;: 3.16, &quot;lift&quot;: 0.9, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null}" cx="764.5" cy="161.6" r="5" fill="#9db4da" fill-opacity="0.9" stroke="#f9f6ef" stroke-width="1.5" style="cursor:pointer" />
+<circle class="mast-history-dot" data-entry="{&quot;view&quot;: &quot;mast&quot;, &quot;idx&quot;: 4, &quot;dist&quot;: 411.1, &quot;x&quot;: 0.69, &quot;y&quot;: 3.24, &quot;lift&quot;: 0.9, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null}" cx="729.3" cy="160.8" r="5" fill="#9db4da" fill-opacity="0.9" stroke="#f9f6ef" stroke-width="1.5" style="cursor:pointer" />
+<circle class="mast-history-dot" data-entry="{&quot;view&quot;: &quot;mast&quot;, &quot;idx&quot;: 5, &quot;dist&quot;: 411.1, &quot;x&quot;: 0.69, &quot;y&quot;: 3.24, &quot;lift&quot;: 0.9, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null}" cx="694.1" cy="160.8" r="5" fill="#9db4da" fill-opacity="0.9" stroke="#f9f6ef" stroke-width="1.5" style="cursor:pointer" />
+<circle class="mast-history-dot" data-entry="{&quot;view&quot;: &quot;mast&quot;, &quot;idx&quot;: 6, &quot;dist&quot;: 387.2, &quot;x&quot;: 10.36, &quot;y&quot;: 3.23, &quot;lift&quot;: 0.9, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null}" cx="658.9" cy="160.9" r="5" fill="#9db4da" fill-opacity="0.9" stroke="#f9f6ef" stroke-width="1.5" style="cursor:pointer" />
+<circle class="mast-history-dot" data-entry="{&quot;view&quot;: &quot;mast&quot;, &quot;idx&quot;: 7, &quot;dist&quot;: 387.2, &quot;x&quot;: 10.36, &quot;y&quot;: 3.23, &quot;lift&quot;: 0.9, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null}" cx="623.8" cy="160.9" r="5" fill="#9db4da" fill-opacity="0.9" stroke="#f9f6ef" stroke-width="1.5" style="cursor:pointer" />
+<circle class="mast-history-dot" data-entry="{&quot;view&quot;: &quot;mast&quot;, &quot;idx&quot;: 8, &quot;dist&quot;: 376.7, &quot;x&quot;: 13.22, &quot;y&quot;: 3.19, &quot;lift&quot;: 0.9, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null}" cx="588.6" cy="161.3" r="5" fill="#9db4da" fill-opacity="0.9" stroke="#f9f6ef" stroke-width="1.5" style="cursor:pointer" />
+<circle class="mast-history-dot" data-entry="{&quot;view&quot;: &quot;mast&quot;, &quot;idx&quot;: 9, &quot;dist&quot;: 376.7, &quot;x&quot;: 13.22, &quot;y&quot;: 3.19, &quot;lift&quot;: 0.9, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null}" cx="553.4" cy="161.3" r="5" fill="#9db4da" fill-opacity="0.9" stroke="#f9f6ef" stroke-width="1.5" style="cursor:pointer" />
+<circle class="mast-history-dot" data-entry="{&quot;view&quot;: &quot;mast&quot;, &quot;idx&quot;: 10, &quot;dist&quot;: 391.3, &quot;x&quot;: -0.43, &quot;y&quot;: 3.08, &quot;lift&quot;: 0.9, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null}" cx="518.2" cy="162.4" r="5" fill="#9db4da" fill-opacity="0.9" stroke="#f9f6ef" stroke-width="1.5" style="cursor:pointer" />
+<circle class="mast-history-dot" data-entry="{&quot;view&quot;: &quot;mast&quot;, &quot;idx&quot;: 11, &quot;dist&quot;: 391.3, &quot;x&quot;: -0.43, &quot;y&quot;: 3.08, &quot;lift&quot;: 0.9, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null}" cx="483.1" cy="162.4" r="5" fill="#9db4da" fill-opacity="0.9" stroke="#f9f6ef" stroke-width="1.5" style="cursor:pointer" />
+<circle class="mast-history-dot" data-entry="{&quot;view&quot;: &quot;mast&quot;, &quot;idx&quot;: 12, &quot;dist&quot;: 430.3, &quot;x&quot;: -31.05, &quot;y&quot;: 2.93, &quot;lift&quot;: 0.9, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null}" cx="447.9" cy="164.0" r="5" fill="#9db4da" fill-opacity="0.9" stroke="#f9f6ef" stroke-width="1.5" style="cursor:pointer" />
+<circle class="mast-history-dot" data-entry="{&quot;view&quot;: &quot;mast&quot;, &quot;idx&quot;: 13, &quot;dist&quot;: 430.3, &quot;x&quot;: -31.05, &quot;y&quot;: 2.93, &quot;lift&quot;: 0.9, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null}" cx="412.7" cy="164.0" r="5" fill="#9db4da" fill-opacity="0.9" stroke="#f9f6ef" stroke-width="1.5" style="cursor:pointer" />
+<circle class="mast-history-dot" data-entry="{&quot;view&quot;: &quot;mast&quot;, &quot;idx&quot;: 14, &quot;dist&quot;: 451.9, &quot;x&quot;: -36.59, &quot;y&quot;: 2.6, &quot;lift&quot;: 0.9, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null}" cx="377.5" cy="167.4" r="5" fill="#9db4da" fill-opacity="0.9" stroke="#f9f6ef" stroke-width="1.5" style="cursor:pointer" />
+<circle class="mast-history-dot" data-entry="{&quot;view&quot;: &quot;mast&quot;, &quot;idx&quot;: 15, &quot;dist&quot;: 451.9, &quot;x&quot;: -36.59, &quot;y&quot;: 2.6, &quot;lift&quot;: 0.9, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null}" cx="342.4" cy="167.4" r="5" fill="#9db4da" fill-opacity="0.9" stroke="#f9f6ef" stroke-width="1.5" style="cursor:pointer" />
+<circle class="mast-history-dot" data-entry="{&quot;view&quot;: &quot;mast&quot;, &quot;idx&quot;: 16, &quot;dist&quot;: 449.1, &quot;x&quot;: -49.6, &quot;y&quot;: 2.5, &quot;lift&quot;: 0.9, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null}" cx="307.2" cy="168.4" r="5" fill="#9db4da" fill-opacity="0.9" stroke="#f9f6ef" stroke-width="1.5" style="cursor:pointer" />
+<circle class="mast-history-dot" data-entry="{&quot;view&quot;: &quot;mast&quot;, &quot;idx&quot;: 17, &quot;dist&quot;: 449.1, &quot;x&quot;: -49.6, &quot;y&quot;: 2.5, &quot;lift&quot;: 0.9, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null}" cx="272.0" cy="168.4" r="5" fill="#0b3d91" fill-opacity="0.9" stroke="#f9f6ef" stroke-width="1.5" style="cursor:pointer" />
+</g>
+</svg></div>
+  </div>
+  <div class="sidebar">
+    <div>
+      <h2>ALIGN_BRICK</h2>
+      <p class="prompt" style="margin-top:6px">Click any dot to see what the robot was thinking at that moment.</p>
+    </div>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:#2f9e44"></div> Closer</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#d94841"></div> Further</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#c59d2a"></div> Neutral</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#0b3d91"></div> Latest</div>
+    </div>
+    <div id="detail" style="display:none"></div>
+    <p class="prompt" id="no-selection">No dot selected yet.</p>
+  </div>
+
+  <script>
+    const DIST_TARGET = 149.26, DIST_TOL = 5.0;
+    const X_TARGET = 6.03, X_TOL = 5.0;
+    const Y_TARGET = 4.13, Y_TOL = 2.3;
+
+    function fmt(v, dec) {
+      return v === null || v === undefined ? '—' : Number(v).toFixed(dec);
+    }
+    function errClass(err, tol) {
+      if (err === null || err === undefined) return '';
+      return Math.abs(err) <= tol ? 'err-ok' : 'err-bad';
+    }
+    function errSign(v) {
+      if (v === null || v === undefined) return '—';
+      return (v >= 0 ? '+' : '') + Number(v).toFixed(1) + 'mm';
+    }
+    function trendClass(t) { return 'trend-' + (t || 'unknown'); }
+
+    let selectedDot = null;
+
+    function spreadOverlappingBirdDots() {
+      const dots = Array.from(document.querySelectorAll('.step-history-dot[data-entry]'));
+      if (!dots.length) return;
+      const groups = new Map();
+      dots.forEach(dot => {
+        const key = `${dot.getAttribute('cx')},${dot.getAttribute('cy')}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(dot);
+      });
+      groups.forEach(group => {
+        if (group.length <= 1) return;
+        const baseX = Number(group[0].getAttribute('cx'));
+        const baseY = Number(group[0].getAttribute('cy'));
+        const cols = Math.ceil(Math.sqrt(group.length));
+        const spacing = 9;
+        group.forEach((dot, idx) => {
+          const row = Math.floor(idx / cols);
+          const col = idx % cols;
+          const px = baseX + (col - (cols - 1) / 2) * spacing;
+          const py = baseY + (row - (Math.ceil(group.length / cols) - 1) / 2) * spacing;
+          dot.setAttribute('cx', px.toFixed(1));
+          dot.setAttribute('cy', py.toFixed(1));
+        });
+      });
+      const points = dots.map(dot => `${dot.getAttribute('cx')},${dot.getAttribute('cy')}`);
+      const path = document.querySelector('.step-history-path');
+      if (path && points.length >= 2) path.setAttribute('points', points.join(' '));
+    }
+
+    document.addEventListener('click', function(e) {
+      const dot = e.target.closest('[data-entry]');
+      if (!dot) return;
+      selectDot(dot);
+    });
+
+    function selectDot(dot) {
+      if (!dot) return;
+      if (selectedDot) selectedDot.classList.remove('dot-selected');
+      dot.classList.add('dot-selected');
+      selectedDot = dot;
+      const entry = JSON.parse(dot.dataset.entry);
+      showEntry(entry);
+    }
+
+    window.addEventListener('DOMContentLoaded', function() {
+      spreadOverlappingBirdDots();
+      const dots = Array.from(document.querySelectorAll('[data-entry]'));
+      if (dots.length) selectDot(dots[dots.length - 1]);
+    });
+
+    function showEntry(e) {
+      const distErr = e.dist !== null && e.dist !== undefined ? e.dist - DIST_TARGET : null;
+      const xErr = e.x !== null && e.x !== undefined ? e.x - X_TARGET : null;
+      const yErr = e.y !== null && e.y !== undefined ? e.y - Y_TARGET : null;
+
+      const trendHtml = e.trend
+        ? `<span class="trend-badge ${trendClass(e.trend)}">${e.trend}</span>`
+        : '';
+
+      // Infer which gap was targeted from the decision sentence or error magnitudes
+      function gapTarget() {
+        if (!e.note) {
+          // Fallback: infer from largest absolute error
+          const gaps = [
+            {label:'dist', err: distErr, tol: DIST_TOL},
+            {label:'x_axis', err: xErr, tol: X_TOL},
+            {label:'y_axis', err: yErr, tol: Y_TOL},
+          ].filter(g => g.err !== null && Math.abs(g.err) > g.tol);
+          if (!gaps.length) return 'all in gate — holding';
+          gaps.sort((a,b) => Math.abs(b.err) - Math.abs(a.err));
+          return `closing ${gaps[0].label} gap (${errSign(gaps[0].err)})`;
+        }
+        return null;
+      }
+
+      const decisionNote = e.note || null;
+      const decisionFallback = gapTarget();
+      const hasDecision = decisionNote || decisionFallback;
+
+      document.getElementById('no-selection').style.display = 'none';
+      document.getElementById('detail').style.display = '';
+      document.getElementById('detail').innerHTML = `
+        <div class="entry-card">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <h3>Position</h3>
+            ${trendHtml}
+          </div>
+          <table class="kv-table">
+            <tr><td>dist</td><td class="${errClass(distErr, DIST_TOL)}">${fmt(e.dist,1)}mm</td></tr>
+            <tr><td>x_axis</td><td class="${errClass(xErr, X_TOL)}">${fmt(e.x,2)}mm</td></tr>
+            <tr><td>y_axis</td><td class="${errClass(yErr, Y_TOL)}">${fmt(e.y,2)}mm</td></tr>
+            ${e.lift !== undefined && e.lift !== null ? `<tr><td>lift</td><td>${fmt(e.lift,1)}mm</td></tr>` : ''}
+          </table>
+        </div>
+        <div class="entry-card">
+          <h3>Error from goal</h3>
+          <table class="kv-table">
+            <tr><td>dist (±${DIST_TOL}mm)</td><td class="${errClass(distErr, DIST_TOL)}">${errSign(distErr)}</td></tr>
+            <tr><td>x_axis (±${X_TOL}mm)</td><td class="${errClass(xErr, X_TOL)}">${errSign(xErr)}</td></tr>
+            <tr><td>y_axis (±${Y_TOL}mm)</td><td class="${errClass(yErr, Y_TOL)}">${errSign(yErr)}</td></tr>
+          </table>
+        </div>
+        ${hasDecision ? `
+        <div class="entry-card">
+          <h3>Previous act</h3>
+          ${decisionNote
+            ? `<p style="margin:0;font-size:13px;line-height:1.5;color:#1a2430;font-family:monospace;white-space:pre-wrap">${decisionNote}</p>`
+            : `<p style="margin:0;font-size:13px;color:#5d676e">${decisionFallback}</p>`
+          }
+        </div>` : ''}
+      `;
+    }
+  </script>
+</body>
+</html>

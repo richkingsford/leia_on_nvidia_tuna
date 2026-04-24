@@ -72,7 +72,7 @@ def _gap_plan(cmd, score, correction_type):
 
 
 class TestTelemetryProcessAlignCrosshairGuard(unittest.TestCase):
-    def _run_align_crosshair_case(self, plans, *, require_retry_block=False):
+    def _run_align_crosshair_case(self, plans):
         world = _DummyWorld()
         robot = _DummyRobot()
         send_cmds = []
@@ -97,8 +97,7 @@ class TestTelemetryProcessAlignCrosshairGuard(unittest.TestCase):
                 _world.brick["inCrosshairs"] = True
 
         def _fake_observe_success(*_args, **_kwargs):
-            ready_calls = 4 if require_retry_block else 3
-            if planner_calls["n"] >= ready_calls and len(send_cmds) == 6:
+            if planner_calls["n"] >= 3 and len(send_cmds) == 6:
                 return {"success_met": True, "hold_for_confirm": False}
             return {"success_met": False, "hold_for_confirm": False}
 
@@ -114,8 +113,6 @@ class TestTelemetryProcessAlignCrosshairGuard(unittest.TestCase):
 
         def _fake_send_robot_command(*args, **kwargs):
             cmd = str(args[3])
-            if require_retry_block and cmd == "l" and send_cmds.count("l") >= 3:
-                raise AssertionError("x-axis correction repeated after crosshair recovery")
             send_cmds.append(cmd)
             return {
                 "cmd_sent": cmd,
@@ -156,54 +153,30 @@ class TestTelemetryProcessAlignCrosshairGuard(unittest.TestCase):
 
         return ok, reason, send_cmds, print_lines
 
-    def test_align_brick_crosshair_guard_hard_fails_if_planner_repeats_disqualified_gap_type(self):
+    def test_align_brick_crosshair_guard_does_not_recover_or_fail_on_false_crosshair(self):
         ok, reason, send_cmds, print_lines = self._run_align_crosshair_case(
             [_gap_plan("l", 12, "x_axis")],
-            require_retry_block=True,
         )
 
-        self.assertFalse(ok)
-        self.assertEqual(reason, "planner_disqualified_gap_type_x_axis")
-        self.assertEqual(send_cmds, ["l", "l", "l", "r", "r", "r"])
-        self.assertTrue(
-            any(
-                "inCrosshairs continuity guard:" in line
-                and "restoring the previous 3 act(s)" in line
-                for line in print_lines
-            )
-        )
-        self.assertTrue(
-            any(
-                "post-recovery disqualified gap types" in line
-                and "x_axis" in line
-                for line in print_lines
-            )
-        )
-        self.assertTrue(
-            any(
-                "planner picked disqualified gap type 'x_axis'" in line
-                and "hard failing" in line
-                for line in print_lines
-            )
-        )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "success gate")
+        self.assertEqual(send_cmds, ["l", "l", "l", "l", "l", "l"])
+        self.assertFalse(any("inCrosshairs continuity guard:" in line for line in print_lines))
+        self.assertFalse(any("post-recovery disqualified gap types" in line for line in print_lines))
 
-    def test_align_brick_crosshair_guard_reverses_full_three_act_sequence_including_mast(self):
+    def test_align_brick_false_crosshair_keeps_using_planner_until_success_gate(self):
         ok, reason, send_cmds, print_lines = self._run_align_crosshair_case(
             [
                 _gap_plan("l", 12, "x_axis"),
                 _gap_plan("d", 9, "y_axis"),
                 _gap_plan("f", 15, "distance"),
             ],
-            require_retry_block=False,
         )
 
         self.assertTrue(ok)
         self.assertEqual(reason, "success gate")
-        self.assertEqual(send_cmds, ["l", "d", "f", "b", "u", "r"])
+        self.assertEqual(send_cmds, ["l", "d", "f", "f", "f", "f"])
+        self.assertFalse(any("Crosshair lock" in line for line in print_lines))
         self.assertTrue(
-            any(
-                "recent-acts=L 12%, D 9%, F 15%" in line
-                for line in print_lines
-            )
+            all(cmd not in send_cmds for cmd in ("b", "u", "r"))
         )
-

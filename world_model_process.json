@@ -227,7 +227,7 @@
                 "x_axis_turn_drive_assist": {
                     "enabled": true,
                     "require_dist_outside_gate": true,
-                    "min_dist_outside_mm": 0.0,
+                    "min_dist_outside_mm": 3.0,
                     "forward_profile": "forward_pivot"
                 },
                 "target_lock_enabled": true,
@@ -300,7 +300,7 @@
                 "x_axis_turn_drive_assist": {
                     "enabled": true,
                     "require_dist_outside_gate": true,
-                    "min_dist_outside_mm": 0.0,
+                    "min_dist_outside_mm": 3.0,
                     "forward_profile": "forward_pivot",
                     "backward_profile": "backward_pivot"
                 },

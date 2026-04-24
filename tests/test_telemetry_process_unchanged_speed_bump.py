@@ -141,6 +141,11 @@ class TestTelemetryProcessUnchangedSpeedBump(unittest.TestCase):
         self.assertEqual(act.get("cmd"), "d")
         self.assertEqual(act.get("score"), 1)
 
+    def test_no_breakway_speed_bump_from_one_percent_is_not_noop(self):
+        bumped = telemetry_process._escalated_speed_score_after_no_breakway(1, 1.15)
+
+        self.assertGreater(bumped, 1)
+
     def test_repeated_unchanged_action_escalates_speed_after_three_same_acts(self):
         class _World:
             def __init__(self):

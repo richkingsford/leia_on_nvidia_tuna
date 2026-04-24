@@ -1549,6 +1549,35 @@ def _cap_auto_speed_score(score):
     return min(int(score_val), int(AUTO_SPEED_SCORE_HARD_MAX))
 
 
+def _one_percent_align_baseline_score(step, *, step_rules=None):
+    step_key = normalize_step_label(step) or str(step or "").strip().upper()
+    if step_key != "ALIGN_BRICK":
+        return None
+    return int(getattr(telemetry_robot_module, "SPEED_SCORE_MIN", 1) or 1)
+
+
+def _escalated_speed_score_after_no_breakway(score, factor):
+    try:
+        original = telemetry_robot_module.normalize_speed_score(score)
+    except Exception:
+        original = int(getattr(telemetry_robot_module, "SPEED_SCORE_MIN", 1) or 1)
+    try:
+        factor_val = float(factor)
+    except (TypeError, ValueError):
+        factor_val = 1.0
+    try:
+        raw = min(100.0, float(original) * max(1.0, float(factor_val)))
+        bumped = int(telemetry_robot_module.normalize_speed_score(raw))
+    except Exception:
+        bumped = int(original)
+    if factor_val > 1.0 and int(bumped) <= int(original):
+        try:
+            bumped = telemetry_robot_module.normalize_speed_score(int(original) + 1)
+        except Exception:
+            bumped = int(original) + 1
+    return int(bumped)
+
+
 def _align_correction_type_for_cmd(cmd, *, fallback=None):
     cmd_key = str(cmd or "").strip().lower()
     if cmd_key in ("f", "b"):
@@ -2998,7 +3027,13 @@ def send_robot_command_pwm(
     power_from_pwm = telemetry_robot_module.pwm_to_power(pwm_val)
     if power_from_pwm is not None:
         power_val = max(0.0, min(1.0, float(power_from_pwm)))
-    score_effective = _score_effective_for_cmd(cmd_sent, power_val, speed_score)
+    if custom_actions:
+        # Custom tread-pair curves intentionally use explicit motor PWM while
+        # preserving the logical operator command score. Do not re-label a 1%
+        # curve as 48%/54% just because one tread has a high calibrated PWM.
+        score_effective = speed_score
+    else:
+        score_effective = _score_effective_for_cmd(cmd_sent, power_val, speed_score)
     record_action_display(
         world,
         step,
@@ -11631,12 +11666,41 @@ def run_alignment_segment(
         )
         if not isinstance(assist_request, dict):
             return None
+        requested_drive_mode = str(assist_request.get("drive_mode") or "")
         manifest_curve_plan = helper_close_gaps.production_turn_drive_curve_plan(
             cmd=cmd_local,
-            drive_mode=str(assist_request.get("drive_mode") or ""),
+            drive_mode=requested_drive_mode,
             current_dist_mm=(local_gate_before_action or {}).get("dist"),
             x_err_mm=(local_gate_before_action or {}).get("x_err"),
         )
+        # Prefer a measured turn+drive curve over the setup half of a trial pair
+        # when both distance and x-axis need correction. Setup rows describe the
+        # preconditioning act; measured rows describe the actual one-act closure.
+        if (
+            isinstance(manifest_curve_plan, dict)
+            and manifest_curve_plan.get("duration_override_ms") is None
+            and str(manifest_curve_plan.get("source") or "") == "production_turn_drive_trials_forward"
+        ):
+            alternate_drive_mode = "backward" if requested_drive_mode == "forward" else "forward"
+            align_policy_local = step_rules.get("align_policy") if isinstance(step_rules, dict) else {}
+            assist_cfg_local = (
+                align_policy_local.get("x_axis_turn_drive_assist")
+                if isinstance(align_policy_local, dict)
+                and isinstance(align_policy_local.get("x_axis_turn_drive_assist"), dict)
+                else {}
+            )
+            alternate_profile_key = f"{alternate_drive_mode}_profile"
+            if str(assist_cfg_local.get(alternate_profile_key) or "").strip():
+                alternate_curve_plan = helper_close_gaps.production_turn_drive_curve_plan(
+                    cmd=cmd_local,
+                    drive_mode=alternate_drive_mode,
+                    current_dist_mm=(local_gate_before_action or {}).get("dist"),
+                    x_err_mm=(local_gate_before_action or {}).get("x_err"),
+                )
+                if isinstance(alternate_curve_plan, dict) and alternate_curve_plan.get("duration_override_ms") is not None:
+                    manifest_curve_plan = alternate_curve_plan
+                    assist_request = dict(assist_request)
+                    assist_request["drive_mode"] = alternate_drive_mode
         if isinstance(manifest_curve_plan, dict):
             plan = helper_turn_drive_motion.build_turn_drive_motion_plan(
                 cmd=cmd_local,
@@ -11668,6 +11732,51 @@ def run_alignment_segment(
             metadata={"step": normalize_step_label(step)},
         )
         return plan if isinstance(plan, dict) else None
+
+    def _turn_drive_attempt_log_text(turn_drive_plan, local_gate_before_action):
+        if not isinstance(turn_drive_plan, dict):
+            return None
+        actions = [item for item in (turn_drive_plan.get("actions") or []) if isinstance(item, dict)]
+        if not actions:
+            return None
+        metadata = turn_drive_plan.get("metadata") if isinstance(turn_drive_plan.get("metadata"), dict) else {}
+        curve_name = str(metadata.get("curve_name") or "").strip()
+        if not curve_name:
+            profile = str(turn_drive_plan.get("profile_name") or "").strip()
+            curve_name = profile or str(turn_drive_plan.get("drive_mode") or "turn-drive").strip()
+        try:
+            duration_ms = int(round(float(turn_drive_plan.get("duration_ms") or 0)))
+        except (TypeError, ValueError):
+            duration_ms = 0
+
+        motor_by_target = {}
+        for action in actions:
+            target = str(action.get("target") or "").strip().lower()
+            if target in {"l", "r"}:
+                motor_by_target[target] = action
+
+        def _motor_text(target, label):
+            action = motor_by_target.get(target) or {}
+            try:
+                pwm_val = int(round(float(action.get("pwm") or 0)))
+            except (TypeError, ValueError):
+                pwm_val = 0
+            action_cmd = str(action.get("action") or "").strip().upper() or "S"
+            return f"{label}_motor at {pwm_val} power ({action_cmd})"
+
+        gap_bits = []
+        gate = local_gate_before_action if isinstance(local_gate_before_action, dict) else {}
+        for label, key in (("dist", "dist_err"), ("x_axis", "x_err")):
+            try:
+                gap_bits.append(f"{label} {float(gate.get(key)):+.1f}mm")
+            except (TypeError, ValueError):
+                pass
+        gap_text = f" to close {' and '.join(gap_bits)}" if gap_bits else ""
+        return (
+            f"Matching curve: {curve_name}; "
+            f"Turning {_motor_text('l', 'L')} and {_motor_text('r', 'R')} "
+            f"for {duration_ms}ms{gap_text}."
+        )
 
     def _build_forward_turn_assist_for_action(local_gate_before_action, *, cmd_local, speed_score_local):
         plan = helper_telemetry_forward_while_turning.build_forward_while_turning_plan(
@@ -11993,6 +12102,11 @@ def run_alignment_segment(
             return y_axis_num
         if y_axis_num is None:
             return None
+        # If actual y is already within the success gate, don't apply the hold offset —
+        # there is no gap to close, so acting would overshoot into worse territory.
+        if y_axis_success_target is not None and y_axis_success_tol > 0.0:
+            if abs(float(y_axis_num) - float(y_axis_success_target)) <= float(y_axis_success_tol):
+                return float(y_axis_num)
         return float(y_axis_num) - float(y_axis_hold_offset_mm)
 
     def _apply_align_motion_update(cmd_local, speed_local, action_meta_local):
@@ -12473,9 +12587,6 @@ def run_alignment_segment(
 
     def _maybe_run_in_crosshairs_continuity_guard(*, phase_label="align"):
         nonlocal in_crosshairs_continuity_latched_true
-        nonlocal stale_pre_obs_streak, stale_frame_streak, not_visible_streak
-        nonlocal last_visible_ts, prev_log_correction_type, prev_log_x_err, prev_log_y_err, prev_log_dist
-        nonlocal force_gap_switch_after_recovery, last_align_signature
 
         if not bool(in_crosshairs_continuity_guard_enabled):
             return "disabled"
@@ -12490,104 +12601,11 @@ def run_alignment_segment(
             return "inactive"
         if crosshair_now is None:
             return "wait"
-        if not bool(in_crosshairs_continuity_latched_true):
-            return "steady"
-
-        confirm_frames = int(in_crosshairs_continuity_guard_confirm_frames)
-        crosshair_confirmed = crosshair_now
-        crosshair_samples = (crosshair_now,)
-        if int(confirm_frames) > 1:
-            crosshair_confirmed, crosshair_samples = _observe_descend_crosshair_confident(
-                confirm_frames=confirm_frames,
-            )
-        if crosshair_confirmed is True:
-            in_crosshairs_continuity_latched_true = True
-            return "steady"
-
-        sample_text = _crosshair_sample_text(crosshair_samples)
-        if crosshair_confirmed is None:
-            if not align_silent:
-                _print_exception_line(
-                    (
-                        f"[{step_key}] inCrosshairs continuity guard: visible={_visible_state_text(visible_now)}, "
-                        f"focus dipped after lock, but observation is unstable "
-                        f"(obs{int(confirm_frames)}=[{sample_text}]); holding for re-observation."
-                    )
-                )
-            if robot:
-                robot.stop()
-            if observer:
-                observer("action", world, vision, None, 0.0, "in_crosshairs_continuity_guard_hold")
-            return "hold"
-
-        if not align_silent:
-            _print_exception_line(
-                (
-                    f"[{step_key}] inCrosshairs continuity guard: visible={_visible_state_text(visible_now)}, "
-                    f"inCrosshairs latched YES then dropped to NO "
-                    f"(obs{int(confirm_frames)}=[{sample_text}]); restoring the previous "
-                    f"{int(in_crosshairs_continuity_guard_reverse_max_acts)} act(s)."
-                )
-            )
-            _print_exception_line(
-                (
-                    f"[{step_key}] inCrosshairs continuity guard context: "
-                    f"phase={str(phase_label)}, recent-acts="
-                    f"{_format_recent_align_acts_for_recovery(in_crosshairs_continuity_guard_reverse_max_acts)}, "
-                    f"last-act={_format_last_align_action_for_recovery()}."
-                )
-            )
-
-        reason = (
-            f"inCrosshairs dropped YES->NO during {str(phase_label)} "
-            f"(obs{int(confirm_frames)}=[{sample_text}])"
-        )
-        recovery = _recover_in_crosshairs_lock(
-            source=f"{str(phase_label)}_in_crosshairs_guard",
-            reason=reason,
-            reverse_max_acts=int(in_crosshairs_continuity_guard_reverse_max_acts),
-            confirm_frames=confirm_frames,
-        )
-        if bool((recovery or {}).get("ok")):
-            stale_pre_obs_streak = 0
-            stale_frame_streak = 0
-            not_visible_streak = 0
-            last_visible_ts = time.time()
-            _set_post_recovery_disqualify_types(
-                source="in_crosshairs_continuity_guard",
-                preferred_types=(recovery or {}).get("recovered_types"),
-            )
-            prev_log_correction_type = None
-            prev_log_x_err = None
-            prev_log_y_err = None
-            prev_log_dist = None
-            force_gap_switch_after_recovery = True
-            gap_planner_state.pop("gap_rotation", None)
-            last_align_signature = None
-            update_world_from_vision(world, vision, log=not align_silent)
-            brick_after = getattr(world, "brick", {}) or {}
-            visible_after = bool(brick_after.get("visible"))
-            crosshair_after = _read_post_desc_crosshair()
-            in_crosshairs_continuity_latched_true = bool(visible_after and crosshair_after is True)
-            if not align_silent:
-                _print_exception_line(
-                    (
-                        f"[{step_key}] inCrosshairs continuity guard recovery result: "
-                        f"visible={_visible_state_text(visible_after)}, "
-                        f"inCrosshairs={_crosshair_state_text(crosshair_after)}; "
-                        "continuing with a fresh re-plan."
-                    )
-                )
-            return "recovered"
-
-        if not align_silent:
-            _print_exception_line(
-                (
-                    f"[{step_key}] inCrosshairs continuity guard recovery failed after confirmed lock loss; "
-                    "stopping to avoid switching to the next brick."
-                )
-            )
-        return "failed"
+        # inCrosshairs is an alignment signal, not visibility. A false value must
+        # not trigger rollback/recovery; normal gap planning should keep nudging
+        # until the configured success gates pass or true brick visibility is lost.
+        _ = phase_label
+        return "steady"
 
     def _run_step_post_success_descend():
         nonlocal step_post_desc_run_once
@@ -16412,6 +16430,9 @@ def run_alignment_segment(
             if isinstance(turn_drive_plan, dict):
                 custom_action_specs = list(turn_drive_plan.get("actions") or [])
                 action_note = str(turn_drive_plan.get("action_note") or "").strip() or None
+                curve_attempt_note = _turn_drive_attempt_log_text(turn_drive_plan, local_gate_before_action)
+                if curve_attempt_note:
+                    action_note = _join_action_notes(action_note, curve_attempt_note)
                 try:
                     plan_duration_ms = int(round(float(turn_drive_plan.get("duration_ms") or 0)))
                 except (TypeError, ValueError):
@@ -16427,6 +16448,15 @@ def run_alignment_segment(
                     plan_duration_ms = 0
                 if plan_duration_ms > 0:
                     send_duration_override_ms = int(plan_duration_ms)
+            baseline_score = _one_percent_align_baseline_score(step, step_rules=step_rules)
+            if (
+                baseline_score is not None
+                and not bool(is_search_action)
+                and cmd in ("f", "b", "l", "r")
+                and custom_action_specs is None
+            ):
+                speed_score = int(baseline_score)
+                speed = float(telemetry_robot_module.manual_speed_for_cmd(cmd, speed_score))
             action_signature = _action_signature(
                 cmd,
                 speed_score,
@@ -16471,10 +16501,9 @@ def run_alignment_segment(
                     else:
                         if speed_score is not None:
                             try:
-                                speed_score = int(
-                                    telemetry_robot_module.normalize_speed_score(
-                                        min(100, float(speed_score) * speed_attempt_factor)
-                                    )
+                                speed_score = _escalated_speed_score_after_no_breakway(
+                                    speed_score,
+                                    speed_attempt_factor,
                                 )
                             except (TypeError, ValueError):
                                 speed_score = speed_score
@@ -16503,10 +16532,9 @@ def run_alignment_segment(
                     else:
                         if speed_score is not None:
                             try:
-                                speed_score = int(
-                                    telemetry_robot_module.normalize_speed_score(
-                                        min(100, float(speed_score) * speed_attempt_factor)
-                                    )
+                                speed_score = _escalated_speed_score_after_no_breakway(
+                                    speed_score,
+                                    speed_attempt_factor,
                                 )
                             except (TypeError, ValueError):
                                 speed_score = speed_score
@@ -16570,6 +16598,9 @@ def run_alignment_segment(
                 score_effective = action_meta.get("score_effective")
                 if score_effective is None:
                     score_effective = action_meta.get("score_model", speed_score)
+                detailed_action_line = auto_action_detail_text(cmd, score_effective, action_meta=action_meta)
+                if detailed_action_line:
+                    world._last_action_line = f"[ACT] {detailed_action_line}"
             if use_micro_align_gap_planner:
                 try:
                     x_sig = round(float(local_gate_before_action.get("x_err")), 2)
@@ -17199,6 +17230,9 @@ def run_alignment_segment(
             if isinstance(turn_drive_plan, dict):
                 custom_action_specs = list(turn_drive_plan.get("actions") or [])
                 action_note = str(turn_drive_plan.get("action_note") or "").strip() or None
+                curve_attempt_note = _turn_drive_attempt_log_text(turn_drive_plan, local_gate_before_action)
+                if curve_attempt_note:
+                    action_note = _join_action_notes(action_note, curve_attempt_note)
                 try:
                     plan_duration_ms = int(round(float(turn_drive_plan.get("duration_ms") or 0)))
                 except (TypeError, ValueError):
@@ -17214,6 +17248,14 @@ def run_alignment_segment(
                     plan_duration_ms = 0
                 if plan_duration_ms > 0:
                     send_duration_override_ms = int(plan_duration_ms)
+            baseline_score = _one_percent_align_baseline_score(step, step_rules=step_rules)
+            if (
+                baseline_score is not None
+                and cmd in ("f", "b", "l", "r")
+                and custom_action_specs is None
+            ):
+                speed_score = int(baseline_score)
+                speed = float(telemetry_robot_module.manual_speed_for_cmd(cmd, speed_score))
             action_meta = send_robot_command(
                 robot,
                 world,
@@ -17234,6 +17276,9 @@ def run_alignment_segment(
                 score_effective = action_meta.get("score_effective")
                 if score_effective is None:
                     score_effective = action_meta.get("score_model", speed_score)
+                detailed_action_line = auto_action_detail_text(cmd, score_effective, action_meta=action_meta)
+                if detailed_action_line:
+                    world._last_action_line = f"[ACT] {detailed_action_line}"
             if not align_silent:
                 settle_action_idx = int(settle_action_idx) + 1
                 _emit_align_shorthand_action_line(

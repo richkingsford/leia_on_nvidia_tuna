@@ -34,9 +34,9 @@
       "motor_pair": {
         "left_motor_pwm": 199,
         "left_motor_action": "b",
-        "right_motor_pwm": 1,
+        "right_motor_pwm": 0,
         "right_motor_action": "f",
-        "display": "leftMotor=199(B) rightMotor=1(F)"
+        "display": "leftMotor=199(B) rightMotor=0(STOP)"
       }
     },
     "measured_phase": {

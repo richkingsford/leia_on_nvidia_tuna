@@ -704,7 +704,9 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
         self.assertEqual(reason, "success gate")
         self.assertEqual(len(sent_calls), 1)
         sent_kwargs = sent_calls[0]["kwargs"]
-        self.assertEqual(sent_kwargs.get("action_note"), "TURN+FWD")
+        self.assertIn("TURN+FWD", sent_kwargs.get("action_note"))
+        self.assertIn("Matching curve:", sent_kwargs.get("action_note"))
+        self.assertIn("Turning L_motor", sent_kwargs.get("action_note"))
         custom_action_specs = list(sent_kwargs.get("custom_action_specs") or [])
         self.assertEqual(len(custom_action_specs), 2)
         self.assertEqual(custom_action_specs[0].get("target"), "l")

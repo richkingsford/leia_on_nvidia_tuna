@@ -12,8 +12,8 @@ import time
 from copy import deepcopy
 from pathlib import Path
 
-XYZ_LAYOUT_DIR = Path(__file__).resolve().parent / "xyz layout"
-LIVE_HTML_PATH = XYZ_LAYOUT_DIR / "index.html"
+XYZ_LAYOUT_DIR = Path(__file__).resolve().parent / "trials"
+LIVE_HTML_PATH = XYZ_LAYOUT_DIR / "run_view.html"
 LIVE_SVG_PATH = XYZ_LAYOUT_DIR / "workspace.svg"
 LIVE_MAST_SVG_PATH = XYZ_LAYOUT_DIR / "mast_view.svg"
 LIVE_JSON_PATH = XYZ_LAYOUT_DIR / "workspace.json"
@@ -58,6 +58,12 @@ BIRD_X_AXIS_TRACK_DEFAULT_EXTENT_MM = 10.0
 BIRD_X_AXIS_TRACK_EXPANDED_EXTENT_MM = 20.0
 BIRD_X_AXIS_TRACK_EXPAND_THRESHOLD_MM = 10.0
 BIRD_X_AXIS_TRACK_HALF_SPAN_PX = 54.0
+BIRD_DIST_TARGET_MM = 149.26
+BIRD_DIST_TOL_MM = 5.0
+BIRD_X_AXIS_TARGET_MM = 6.03
+BIRD_X_AXIS_TOL_MM = 5.0
+MAST_Y_AXIS_TARGET_MM = 4.13
+MAST_Y_AXIS_TOL_MM = 2.3
 
 SVG_WIDTH = 980
 BIRD_SVG_HEIGHT = 228
@@ -723,7 +729,11 @@ def sync_from_world(world, *, reason: str = "sync", render: bool = True) -> dict
     _clamp_robot_clear_of_objects(state)
     _sync_leia_pose(state, world)
     state["updated_at"] = time.time()
-    _append_history(state, {"type": "sync", "reason": str(reason), "ts": state["updated_at"]})
+    sync_entry: dict = {"type": "sync", "reason": str(reason), "ts": state["updated_at"]}
+    last_action_line = getattr(world, "_last_action_line", None)
+    if last_action_line:
+        sync_entry["note_after"] = str(last_action_line)
+    _append_history(state, sync_entry)
     if bool(render):
         _write_live_assets(state)
     return state
@@ -1590,12 +1600,14 @@ def render_workspace_svg(state: dict | None) -> str:
             if dist_mm is None:
                 dist_mm = BIRD_DIST_TRACK_MAX_MM
 
-            ratio = _bird_distance_track_ratio(dist_mm)
-            px = float(near_x) + (float(far_x) - float(near_x)) * ratio
+            dist_ratio_raw = (float(dist_mm) - 134.26) / 30.0
+            dist_ratio = max(0.0, min(1.0, float(dist_ratio_raw)))
+            px = float(near_x) + (float(far_x) - float(near_x)) * dist_ratio
             x_axis_mm = _coerce_float(entry.get("x_axis_mm"), None)
             if x_axis_mm is None:
                 return float(px), float(track_y)
-            x_ratio = max(-1.0, min(1.0, float(x_axis_mm) / float(bird_x_axis_extent_mm)))
+            x_ratio_raw = (float(x_axis_mm) - float(BIRD_X_AXIS_TARGET_MM)) / 15.0
+            x_ratio = max(-1.0, min(1.0, float(x_ratio_raw)))
             py = float(track_y) - (x_ratio * float(BIRD_X_AXIS_TRACK_HALF_SPAN_PX))
             py = max(58.0, min(float(BIRD_SVG_HEIGHT) - 26.0, float(py)))
             return float(px), float(py)
@@ -1603,36 +1615,114 @@ def render_workspace_svg(state: dict | None) -> str:
             return project(float(entry.get("x_mm", 0.0)), float(entry.get("y_mm", 0.0)))
 
     if isinstance(stack_screen, list) and len(stack_screen) >= 3:
-        guide_start = _bird_history_screen_point({"target_range_mm": float(BIRD_DIST_TRACK_NEAR_MM)})
-        guide_end = _bird_history_screen_point({"target_range_mm": float(BIRD_DIST_TRACK_MAX_MM)})
+        guide_start = _bird_history_screen_point({"target_range_mm": 134.26})
+        guide_end = _bird_history_screen_point({"target_range_mm": 164.26})
         svg_parts.append(
             f'<line x1="{guide_start[0]:.1f}" y1="{guide_start[1]:.1f}" x2="{guide_end[0]:.1f}" y2="{guide_end[1]:.1f}" stroke="#b7aea0" stroke-width="1.6" stroke-dasharray="4 4" opacity="0.7" />'
         )
         svg_parts.append(
-            f'<text x="{guide_start[0]:.1f}" y="{guide_start[1] - 10:.1f}" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">{int(BIRD_DIST_TRACK_NEAR_MM)}mm</text>'
+            f'<text x="{guide_start[0]:.1f}" y="{guide_start[1] - 10:.1f}" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">134mm</text>'
         )
         svg_parts.append(
-            f'<text x="{guide_end[0]:.1f}" y="{guide_end[1] - 10:.1f}" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">{int(BIRD_DIST_TRACK_MAX_MM)}mm</text>'
+            f'<text x="{guide_end[0]:.1f}" y="{guide_end[1] - 10:.1f}" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">164mm</text>'
         )
         svg_parts.append(
-            f'<text x="{guide_start[0] - 14.0:.1f}" y="{guide_start[1] + 4.0:.1f}" text-anchor="end" font-size="12" font-weight="700" fill="#5d676e">x=0</text>'
+            f'<text x="{guide_start[0] - 14.0:.1f}" y="{guide_start[1] + 4.0:.1f}" text-anchor="end" font-size="12" font-weight="700" fill="#5d676e">x=6</text>'
+        )
+        dist_low = float(BIRD_DIST_TARGET_MM) - float(BIRD_DIST_TOL_MM)
+        dist_high = float(BIRD_DIST_TARGET_MM) + float(BIRD_DIST_TOL_MM)
+        x_low = float(BIRD_X_AXIS_TARGET_MM) - float(BIRD_X_AXIS_TOL_MM)
+        x_high = float(BIRD_X_AXIS_TARGET_MM) + float(BIRD_X_AXIS_TOL_MM)
+        gate_tl = _bird_history_screen_point({"dist_mm": dist_low, "x_axis_mm": x_high})
+        gate_br = _bird_history_screen_point({"dist_mm": dist_high, "x_axis_mm": x_low})
+        gate_center = _bird_history_screen_point(
+            {"dist_mm": float(BIRD_DIST_TARGET_MM), "x_axis_mm": float(BIRD_X_AXIS_TARGET_MM)}
+        )
+        gate_rx = min(gate_tl[0], gate_br[0])
+        gate_ry = min(gate_tl[1], gate_br[1])
+        gate_rw = abs(gate_br[0] - gate_tl[0])
+        gate_rh = abs(gate_br[1] - gate_tl[1])
+        svg_parts.append(
+            f'<rect x="{gate_rx:.1f}" y="{gate_ry:.1f}" width="{gate_rw:.1f}" height="{gate_rh:.1f}" '
+            'fill="#2aae6c" fill-opacity="0.13" stroke="#2aae6c" stroke-width="1.8" '
+            'stroke-dasharray="5 3" rx="3" />'
+        )
+        svg_parts.append(
+            f'<line x1="{gate_center[0]:.1f}" y1="{gate_ry - 10.0:.1f}" x2="{gate_center[0]:.1f}" y2="{gate_ry + gate_rh + 10.0:.1f}" '
+            'stroke="#1f8f58" stroke-width="1.8" stroke-linecap="round" />'
+        )
+        svg_parts.append(
+            f'<line x1="{gate_rx - 10.0:.1f}" y1="{gate_center[1]:.1f}" x2="{gate_rx + gate_rw + 10.0:.1f}" y2="{gate_center[1]:.1f}" '
+            'stroke="#1f8f58" stroke-width="1.8" stroke-linecap="round" />'
+        )
+        svg_parts.append(
+            f'<text x="{gate_center[0]:.1f}" y="{gate_ry - 16.0:.1f}" text-anchor="middle" font-size="11" font-weight="800" fill="#1f8f58">dist {BIRD_DIST_TARGET_MM:.1f} ±{BIRD_DIST_TOL_MM:.1f}</text>'
+        )
+        svg_parts.append(
+            f'<text x="{gate_rx - 12.0:.1f}" y="{gate_center[1] - 5.0:.1f}" text-anchor="end" font-size="11" font-weight="800" fill="#1f8f58">x {BIRD_X_AXIS_TARGET_MM:.1f}</text>'
+        )
+        svg_parts.append(
+            f'<text x="{gate_rx + gate_rw + 12.0:.1f}" y="{gate_center[1] + 14.0:.1f}" text-anchor="start" font-size="11" font-weight="700" fill="#1f8f58">±{BIRD_X_AXIS_TOL_MM:.1f}</text>'
         )
 
     if bird_history:
         previous_entry = None
         history_count = len(bird_history)
-        history_points: list[tuple[float, float]] = []
+        history_rows: list[dict] = []
         for idx, entry in enumerate(bird_history):
             trend = _step_history_trend(previous_entry, entry)
             color = _bird_history_fill_color(idx, history_count)
             hx, hy = _bird_history_screen_point(entry)
-            history_points.append((float(hx), float(hy)))
-            svg_parts.append(
-                f'<circle class="step-history-dot" data-trend="{trend}" cx="{hx:.1f}" cy="{hy:.1f}" '
-                f'r="{float(BIRD_HISTORY_DOT_RADIUS_PX):.1f}" fill="{color}" fill-opacity="0.98" '
-                'stroke="#f9f6ef" stroke-width="2" />'
+            entry_data = html.escape(json.dumps({
+                "view": "bird",
+                "idx": idx,
+                "dist": round(float(entry["dist_mm"]), 1) if entry.get("dist_mm") is not None else None,
+                "x": round(float(entry["x_axis_mm"]), 2) if entry.get("x_axis_mm") is not None else None,
+                "y": round(float(entry["y_axis_mm"]), 2) if entry.get("y_axis_mm") is not None else None,
+                "act": entry.get("action_after"),
+                "score": entry.get("score_after"),
+                "note": entry.get("note_after"),
+                "trend": trend,
+            }), quote=True)
+            history_rows.append(
+                {
+                    "x": float(hx),
+                    "y": float(hy),
+                    "trend": trend,
+                    "color": color,
+                    "entry_data": entry_data,
+                }
             )
             previous_entry = entry
+
+        duplicate_groups: dict[tuple[float, float], list[int]] = {}
+        for idx, row in enumerate(history_rows):
+            key = (round(float(row["x"]), 1), round(float(row["y"]), 1))
+            duplicate_groups.setdefault(key, []).append(idx)
+        for indices in duplicate_groups.values():
+            if len(indices) <= 1:
+                continue
+            cols = int(math.ceil(math.sqrt(len(indices))))
+            rows = int(math.ceil(len(indices) / max(1, cols)))
+            spacing_px = 9.0
+            base_x = float(history_rows[indices[0]]["x"])
+            base_y = float(history_rows[indices[0]]["y"])
+            for spread_idx, row_idx in enumerate(indices):
+                row_num = int(spread_idx // cols)
+                col_num = int(spread_idx % cols)
+                hx = base_x + (float(col_num) - (float(cols) - 1.0) * 0.5) * spacing_px
+                hy = base_y + (float(row_num) - (float(rows) - 1.0) * 0.5) * spacing_px
+                history_rows[row_idx]["x"] = max(36.0, min(float(SVG_WIDTH) - 36.0, float(hx)))
+                history_rows[row_idx]["y"] = max(50.0, min(float(BIRD_SVG_HEIGHT) - 22.0, float(hy)))
+
+        history_points = [(float(row["x"]), float(row["y"])) for row in history_rows]
+        for row in history_rows:
+            svg_parts.append(
+                f'<circle class="step-history-dot" data-trend="{row["trend"]}" data-entry="{row["entry_data"]}" '
+                f'cx="{float(row["x"]):.1f}" cy="{float(row["y"]):.1f}" '
+                f'r="{float(BIRD_HISTORY_DOT_RADIUS_PX):.1f}" fill="{row["color"]}" fill-opacity="0.98" '
+                'stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />'
+            )
         if len(history_points) >= 2:
             svg_parts.insert(
                 len(svg_parts) - history_count,
@@ -1770,6 +1860,29 @@ def render_mast_svg(state: dict | None) -> str:
     svg_parts.append(
         f'<text x="{plot_left - 10:.1f}" y="{bottom_label_y + 4:.1f}" text-anchor="end" font-size="11" font-weight="600" fill="#5d676e">-{int(axis_extent_mm)}mm</text>'
     )
+    mast_gate_top_y = project_y_axis_to_y(float(MAST_Y_AXIS_TARGET_MM) + float(MAST_Y_AXIS_TOL_MM))
+    mast_gate_bottom_y = project_y_axis_to_y(float(MAST_Y_AXIS_TARGET_MM) - float(MAST_Y_AXIS_TOL_MM))
+    mast_gate_center_y = project_y_axis_to_y(float(MAST_Y_AXIS_TARGET_MM))
+    svg_parts.append(
+        f'<rect x="{history_left_x:.1f}" y="{mast_gate_top_y:.1f}" '
+        f'width="{history_right_x - history_left_x:.1f}" height="{mast_gate_bottom_y - mast_gate_top_y:.1f}" '
+        'fill="#2aae6c" fill-opacity="0.13" stroke="#2aae6c" stroke-width="1.8" '
+        'stroke-dasharray="5 3" rx="3" />'
+    )
+    svg_parts.append(
+        f'<line x1="{history_left_x - 10.0:.1f}" y1="{mast_gate_center_y:.1f}" '
+        f'x2="{history_right_x + 10.0:.1f}" y2="{mast_gate_center_y:.1f}" '
+        'stroke="#1f8f58" stroke-width="1.8" stroke-linecap="round" />'
+    )
+    svg_parts.append(
+        f'<text x="{history_left_x - 14.0:.1f}" y="{mast_gate_center_y + 4.0:.1f}" text-anchor="end" font-size="11" font-weight="800" fill="#1f8f58">target {MAST_Y_AXIS_TARGET_MM:.1f}</text>'
+    )
+    svg_parts.append(
+        f'<text x="{history_left_x - 14.0:.1f}" y="{mast_gate_top_y + 4.0:.1f}" text-anchor="end" font-size="11" font-weight="700" fill="#1f8f58">+{MAST_Y_AXIS_TOL_MM:.1f}</text>'
+    )
+    svg_parts.append(
+        f'<text x="{history_left_x - 14.0:.1f}" y="{mast_gate_bottom_y + 4.0:.1f}" text-anchor="end" font-size="11" font-weight="700" fill="#1f8f58">-{MAST_Y_AXIS_TOL_MM:.1f}</text>'
+    )
 
     if mast_history:
         svg_parts.append('<g id="mast-history">')
@@ -1811,6 +1924,26 @@ def render_mast_svg(state: dict | None) -> str:
                     f'stroke="{style["stroke"]}" stroke-width="{style["stroke_width"]}" '
                     'stroke-linecap="round" />'
                 )
+        for pt_idx, (px, py) in enumerate(history_points):
+            entry = mast_history[pt_idx] if pt_idx < len(mast_history) else {}
+            entry_data = html.escape(json.dumps({
+                "view": "mast",
+                "idx": pt_idx,
+                "dist": round(float(entry["dist_mm"]), 1) if entry.get("dist_mm") is not None else None,
+                "x": round(float(entry["x_axis_mm"]), 2) if entry.get("x_axis_mm") is not None else None,
+                "y": round(float(entry["y_axis_mm"]), 2) if entry.get("y_axis_mm") is not None else None,
+                "lift": round(float(entry["current_lift_mm"]), 1) if entry.get("current_lift_mm") is not None else None,
+                "act": entry.get("action_type"),
+                "score": entry.get("speed_score"),
+                "note": entry.get("action_note"),
+            }), quote=True)
+            is_latest = (pt_idx == len(history_points) - 1)
+            dot_fill = "#0b3d91" if is_latest else "#9db4da"
+            svg_parts.append(
+                f'<circle class="mast-history-dot" data-entry="{entry_data}" '
+                f'cx="{px:.1f}" cy="{py:.1f}" r="5" fill="{dot_fill}" fill-opacity="0.9" '
+                'stroke="#f9f6ef" stroke-width="1.5" style="cursor:pointer" />'
+            )
         svg_parts.append("</g>")
 
     # Remove current camera dot as well (no dots, only lines)
@@ -1840,112 +1973,273 @@ def _summary_payload(state: dict) -> dict:
 
 def render_workspace_html(state: dict | None) -> str:
     snapshot = _normalized_render_snapshot(state)
-    svg = render_workspace_svg(snapshot)
+    bird_svg = render_workspace_svg(snapshot)
     mast_svg = render_mast_svg(snapshot)
-    summary_json = json.dumps(_summary_payload(snapshot), indent=2)
+    active = snapshot.get("active_target") or {}
+    step_name = str(active.get("step_name") or "").upper() or "RUN"
+    dist_target = 149.26
+    dist_tol = 5.0
+    x_target = 6.03
+    x_tol = 5.0
+    y_target = 4.13
+    y_tol = 2.3
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Leia Workspace XYZ</title>
+  <title>{html.escape(step_name)} Run View</title>
   <style>
-    :root {{
-      --bg: #efe8d9;
-      --panel: rgba(255,255,255,0.9);
-      --ink: #10202b;
-      --muted: #5d676e;
-      --line: rgba(16,32,43,0.12);
-    }}
-    html, body {{
-      margin: 0;
-      min-height: 100%;
-      background: radial-gradient(circle at top, #f8f2e5 0%, var(--bg) 72%);
-      color: var(--ink);
-      font-family: "Segoe UI", sans-serif;
-    }}
+    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{
-      display: grid;
-      place-items: center;
+      display: flex;
+      min-height: 100vh;
+      background: #ede8df;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      color: #10202b;
+    }}
+    .charts {{
+      flex: 1;
       padding: 18px;
-      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      min-width: 0;
     }}
-    .shell {{
-      width: min(1320px, 100%);
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 340px;
-      gap: 18px;
-    }}
-    .stage-stack {{
-      display: grid;
-      gap: 18px;
-    }}
-    .stage, .panel {{
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 20px;
-      box-shadow: 0 20px 48px rgba(16,32,43,0.09);
+    .chart-card {{
+      background: #faf7f2;
+      border: 1px solid #d9d3c8;
+      border-radius: 16px;
       overflow: hidden;
+      box-shadow: 0 4px 18px rgba(16,32,43,0.07);
     }}
-    .stage {{
-      padding: 12px;
-    }}
-    .panel {{
+    .chart-card svg {{ display: block; width: 100%; height: auto; }}
+    .sidebar {{
+      width: 320px;
+      flex-shrink: 0;
       padding: 18px;
-      display: grid;
-      gap: 12px;
-      align-content: start;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      border-left: 1px solid #ccc8bf;
+      background: #f5f1ea;
+      overflow-y: auto;
     }}
-    h1 {{
-      margin: 0;
-      font-size: 20px;
-      line-height: 1.2;
+    .sidebar h2 {{
+      font-size: 15px;
+      font-weight: 700;
+      color: #233843;
     }}
-    p {{
-      margin: 0;
-      color: var(--muted);
+    .prompt {{
       font-size: 13px;
-      line-height: 1.45;
+      color: #7a7368;
+      line-height: 1.55;
     }}
-    pre {{
-      margin: 0;
-      max-height: 560px;
-      overflow: auto;
-      padding: 12px;
-      border-radius: 14px;
-      background: rgba(16,32,43,0.05);
-      border: 1px solid rgba(16,32,43,0.08);
+    .entry-card {{
+      background: #fff;
+      border: 1px solid #d9d3c8;
+      border-radius: 12px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }}
+    .entry-card h3 {{
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      color: #5d676e;
+    }}
+    .kv-table {{ width: 100%; border-collapse: collapse; }}
+    .kv-table td {{ padding: 3px 0; font-size: 13px; vertical-align: top; }}
+    .kv-table td:first-child {{ color: #7a7368; white-space: nowrap; padding-right: 10px; width: 40%; }}
+    .kv-table td:last-child {{ font-weight: 600; color: #10202b; }}
+    .err-ok {{ color: #2f9e44; }}
+    .err-bad {{ color: #d94841; }}
+    .err-warn {{ color: #c59d2a; }}
+    .trend-closer {{ background: #d3f9d8; color: #2f9e44; }}
+    .trend-further {{ background: #ffe3e3; color: #d94841; }}
+    .trend-neutral {{ background: #fff3cd; color: #c59d2a; }}
+    .trend-unknown {{ background: #f1f3f5; color: #868e96; }}
+    .trend-badge {{
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 99px;
       font-size: 12px;
-      line-height: 1.38;
+      font-weight: 700;
     }}
-    @media (max-width: 1080px) {{
-      .shell {{
-        grid-template-columns: 1fr;
-      }}
+    .act-badge {{
+      display: inline-block;
+      background: #233843;
+      color: #fff;
+      padding: 3px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: .03em;
     }}
+    [data-entry] {{ cursor: pointer; transition: opacity .1s; }}
+    [data-entry]:hover {{ opacity: .75; }}
+    .dot-selected {{ stroke: #ff7a00 !important; stroke-width: 3.5px !important; }}
+    .legend {{ display: flex; flex-wrap: wrap; gap: 8px; }}
+    .legend-item {{ display: flex; align-items: center; gap: 5px; font-size: 12px; color: #5d676e; }}
+    .legend-dot {{ width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }}
   </style>
 </head>
 <body>
-  <div class="shell">
-    <div class="stage-stack">
-      <div class="stage">{svg}</div>
-      <div class="stage">{mast_svg}</div>
-    </div>
-    <div class="panel">
-      <div>
-        <h1>Leia Workspace XYZ</h1>
-        <p>Live workspace snapshot. Open this file once and it will refresh every 2 seconds while the helper rewrites it.</p>
-      </div>
-      <div>
-        <p><strong>Files</strong></p>
-        <p>{html.escape(str(LIVE_HTML_PATH))}</p>
-        <p>{html.escape(str(LIVE_SVG_PATH))}</p>
-        <p>{html.escape(str(LIVE_MAST_SVG_PATH))}</p>
-        <p>{html.escape(str(LIVE_JSON_PATH))}</p>
-      </div>
-      <pre>{html.escape(summary_json)}</pre>
-    </div>
+  <div class="charts">
+    <div class="chart-card">{bird_svg}</div>
+    <div class="chart-card">{mast_svg}</div>
   </div>
+  <div class="sidebar">
+    <div>
+      <h2>{html.escape(step_name)}</h2>
+      <p class="prompt" style="margin-top:6px">Click any dot to see what the robot was thinking at that moment.</p>
+    </div>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:#2f9e44"></div> Closer</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#d94841"></div> Further</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#c59d2a"></div> Neutral</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#0b3d91"></div> Latest</div>
+    </div>
+    <div id="detail" style="display:none"></div>
+    <p class="prompt" id="no-selection">No dot selected yet.</p>
+  </div>
+
+  <script>
+    const DIST_TARGET = {dist_target}, DIST_TOL = {dist_tol};
+    const X_TARGET = {x_target}, X_TOL = {x_tol};
+    const Y_TARGET = {y_target}, Y_TOL = {y_tol};
+
+    function fmt(v, dec) {{
+      return v === null || v === undefined ? '—' : Number(v).toFixed(dec);
+    }}
+    function errClass(err, tol) {{
+      if (err === null || err === undefined) return '';
+      return Math.abs(err) <= tol ? 'err-ok' : 'err-bad';
+    }}
+    function errSign(v) {{
+      if (v === null || v === undefined) return '—';
+      return (v >= 0 ? '+' : '') + Number(v).toFixed(1) + 'mm';
+    }}
+    function trendClass(t) {{ return 'trend-' + (t || 'unknown'); }}
+
+    let selectedDot = null;
+
+    function spreadOverlappingBirdDots() {{
+      const dots = Array.from(document.querySelectorAll('.step-history-dot[data-entry]'));
+      if (!dots.length) return;
+      const groups = new Map();
+      dots.forEach(dot => {{
+        const key = `${{dot.getAttribute('cx')}},${{dot.getAttribute('cy')}}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(dot);
+      }});
+      groups.forEach(group => {{
+        if (group.length <= 1) return;
+        const baseX = Number(group[0].getAttribute('cx'));
+        const baseY = Number(group[0].getAttribute('cy'));
+        const cols = Math.ceil(Math.sqrt(group.length));
+        const spacing = 9;
+        group.forEach((dot, idx) => {{
+          const row = Math.floor(idx / cols);
+          const col = idx % cols;
+          const px = baseX + (col - (cols - 1) / 2) * spacing;
+          const py = baseY + (row - (Math.ceil(group.length / cols) - 1) / 2) * spacing;
+          dot.setAttribute('cx', px.toFixed(1));
+          dot.setAttribute('cy', py.toFixed(1));
+        }});
+      }});
+      const points = dots.map(dot => `${{dot.getAttribute('cx')}},${{dot.getAttribute('cy')}}`);
+      const path = document.querySelector('.step-history-path');
+      if (path && points.length >= 2) path.setAttribute('points', points.join(' '));
+    }}
+
+    document.addEventListener('click', function(e) {{
+      const dot = e.target.closest('[data-entry]');
+      if (!dot) return;
+      selectDot(dot);
+    }});
+
+    function selectDot(dot) {{
+      if (!dot) return;
+      if (selectedDot) selectedDot.classList.remove('dot-selected');
+      dot.classList.add('dot-selected');
+      selectedDot = dot;
+      const entry = JSON.parse(dot.dataset.entry);
+      showEntry(entry);
+    }}
+
+    window.addEventListener('DOMContentLoaded', function() {{
+      spreadOverlappingBirdDots();
+      const dots = Array.from(document.querySelectorAll('[data-entry]'));
+      if (dots.length) selectDot(dots[dots.length - 1]);
+    }});
+
+    function showEntry(e) {{
+      const distErr = e.dist !== null && e.dist !== undefined ? e.dist - DIST_TARGET : null;
+      const xErr = e.x !== null && e.x !== undefined ? e.x - X_TARGET : null;
+      const yErr = e.y !== null && e.y !== undefined ? e.y - Y_TARGET : null;
+
+      const trendHtml = e.trend
+        ? `<span class="trend-badge ${{trendClass(e.trend)}}">${{e.trend}}</span>`
+        : '';
+
+      // Infer which gap was targeted from the decision sentence or error magnitudes
+      function gapTarget() {{
+        if (!e.note) {{
+          // Fallback: infer from largest absolute error
+          const gaps = [
+            {{label:'dist', err: distErr, tol: DIST_TOL}},
+            {{label:'x_axis', err: xErr, tol: X_TOL}},
+            {{label:'y_axis', err: yErr, tol: Y_TOL}},
+          ].filter(g => g.err !== null && Math.abs(g.err) > g.tol);
+          if (!gaps.length) return 'all in gate — holding';
+          gaps.sort((a,b) => Math.abs(b.err) - Math.abs(a.err));
+          return `closing ${{gaps[0].label}} gap (${{errSign(gaps[0].err)}})`;
+        }}
+        return null;
+      }}
+
+      const decisionNote = e.note || null;
+      const decisionFallback = gapTarget();
+      const hasDecision = decisionNote || decisionFallback;
+
+      document.getElementById('no-selection').style.display = 'none';
+      document.getElementById('detail').style.display = '';
+      document.getElementById('detail').innerHTML = `
+        <div class="entry-card">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <h3>Position</h3>
+            ${{trendHtml}}
+          </div>
+          <table class="kv-table">
+            <tr><td>dist</td><td class="${{errClass(distErr, DIST_TOL)}}">${{fmt(e.dist,1)}}mm</td></tr>
+            <tr><td>x_axis</td><td class="${{errClass(xErr, X_TOL)}}">${{fmt(e.x,2)}}mm</td></tr>
+            <tr><td>y_axis</td><td class="${{errClass(yErr, Y_TOL)}}">${{fmt(e.y,2)}}mm</td></tr>
+            ${{e.lift !== undefined && e.lift !== null ? `<tr><td>lift</td><td>${{fmt(e.lift,1)}}mm</td></tr>` : ''}}
+          </table>
+        </div>
+        <div class="entry-card">
+          <h3>Error from goal</h3>
+          <table class="kv-table">
+            <tr><td>dist (±${{DIST_TOL}}mm)</td><td class="${{errClass(distErr, DIST_TOL)}}">${{errSign(distErr)}}</td></tr>
+            <tr><td>x_axis (±${{X_TOL}}mm)</td><td class="${{errClass(xErr, X_TOL)}}">${{errSign(xErr)}}</td></tr>
+            <tr><td>y_axis (±${{Y_TOL}}mm)</td><td class="${{errClass(yErr, Y_TOL)}}">${{errSign(yErr)}}</td></tr>
+          </table>
+        </div>
+        ${{hasDecision ? `
+        <div class="entry-card">
+          <h3>Previous act</h3>
+          ${{decisionNote
+            ? `<p style="margin:0;font-size:13px;line-height:1.5;color:#1a2430;font-family:monospace;white-space:pre-wrap">${{decisionNote}}</p>`
+            : `<p style="margin:0;font-size:13px;color:#5d676e">${{decisionFallback}}</p>`
+          }}
+        </div>` : ''}}
+      `;
+    }}
+  </script>
 </body>
 </html>
 """

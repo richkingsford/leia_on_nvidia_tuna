@@ -214,6 +214,32 @@ class HelperXyzCoordsTests(unittest.TestCase):
         self.assertGreater(max(ys) - min(ys), 0.0)
         self.assertIn('data-trend="closer"', svg)
 
+    def test_run_view_html_includes_detailed_action_note(self):
+        world = _DummyWorld()
+        world.step_state = "ALIGN_BRICK"
+        world.brick.update(
+            {
+                "visible": True,
+                "dist": 173.3,
+                "x_axis": 39.58,
+                "y_axis": 3.22,
+                "confidence": 0.9,
+            }
+        )
+        world._last_action_line = (
+            "[ACT] L 1% (pwm=199, power=0.780, 400ms, TURN+BWD | "
+            "Matching curve: forwardRight_backLeft trial 10; "
+            "Turning L_motor at 61 power (F) and R_motor at 199 power (B) for 400ms "
+            "to close dist +24.0mm and x_axis +33.5mm.)"
+        )
+        state = helper_xyz_coords.sync_from_world(world, reason="vision", render=False)
+
+        rendered = helper_xyz_coords.render_workspace_html(state)
+
+        self.assertIn("Matching curve: forwardRight_backLeft trial 10", rendered)
+        self.assertIn("Turning L_motor at 61 power", rendered)
+        self.assertIn("R_motor at 199 power", rendered)
+
     def test_render_workspace_svg_uses_mast_style_stack_card_for_supply(self):
         world = _DummyWorld()
 
@@ -285,8 +311,11 @@ class HelperXyzCoordsTests(unittest.TestCase):
         world = _DummyWorld()
         svg = helper_xyz_coords.render_workspace_svg(helper_xyz_coords.sync_from_world(world, render=False))
 
-        self.assertIn(">90mm</text>", svg)
-        self.assertIn(">150mm</text>", svg)
+        self.assertIn(">134mm</text>", svg)
+        self.assertIn(">164mm</text>", svg)
+        self.assertIn("dist 149.3 ±5.0", svg)
+        self.assertIn("x 6.0", svg)
+        self.assertIn(">±5.0</text>", svg)
 
     def test_render_workspace_svg_keeps_supply_stack_vertically_anchored(self):
         world = _DummyWorld()
