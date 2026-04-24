@@ -54,7 +54,9 @@ BIRD_DIST_TRACK_NEAR_MM = 90.0
 BIRD_DIST_TRACK_MAX_MM = 150.0
 BIRD_DIST_TRACK_MARGIN_PX = 42.0
 BIRD_DIST_TRACK_STACK_GAP_PX = 16.0
-BIRD_X_AXIS_TRACK_EXTENT_MM = 140.0
+BIRD_X_AXIS_TRACK_DEFAULT_EXTENT_MM = 10.0
+BIRD_X_AXIS_TRACK_EXPANDED_EXTENT_MM = 20.0
+BIRD_X_AXIS_TRACK_EXPAND_THRESHOLD_MM = 10.0
 BIRD_X_AXIS_TRACK_HALF_SPAN_PX = 54.0
 
 SVG_WIDTH = 980
@@ -65,7 +67,9 @@ SVG_PADDING = 80
 MAST_SVG_HEIGHT = 360
 MAST_VIEW_MIN_MM = 0.0
 MAST_VIEW_MAX_MM = 20.0
-MAST_Y_AXIS_EXTENT_MM = 20.0
+MAST_Y_AXIS_DEFAULT_EXTENT_MM = 10.0
+MAST_Y_AXIS_EXPANDED_EXTENT_MM = 20.0
+MAST_Y_AXIS_EXPAND_THRESHOLD_MM = 10.0
 MAST_HISTORY_LINE_CURRENT = {"recency": "current", "stroke": "#0b3d91", "stroke_width": "1"}
 MAST_HISTORY_LINE_PREVIOUS = {"recency": "n-1", "stroke": "#2563eb", "stroke_width": "1"}
 MAST_HISTORY_LINE_PREVIOUS_2 = {"recency": "n-2", "stroke": "#63d7ff", "stroke_width": "1"}
@@ -1343,6 +1347,61 @@ def _mast_history_screen_points(
     ]
 
 
+def _autoscaled_axis_extent_mm(
+    values,
+    *,
+    default_extent_mm: float,
+    expanded_extent_mm: float,
+    expand_threshold_mm: float,
+) -> float:
+    default_extent = max(1.0, float(_coerce_float(default_extent_mm, 10.0) or 10.0))
+    expanded_extent = max(default_extent, float(_coerce_float(expanded_extent_mm, default_extent) or default_extent))
+    expand_threshold = max(0.0, float(_coerce_float(expand_threshold_mm, default_extent) or default_extent))
+    for value in values or ():
+        numeric = _coerce_float(value, None)
+        if numeric is None or not math.isfinite(float(numeric)):
+            continue
+        if abs(float(numeric)) > float(expand_threshold):
+            return float(expanded_extent)
+    return float(default_extent)
+
+
+def _bird_x_axis_track_extent_mm(state: dict) -> float:
+    bird_history = _current_step_bird_history(state)
+    values = [
+        float(_coerce_float(entry.get("x_axis_mm"), None))
+        for entry in bird_history
+        if _coerce_float(entry.get("x_axis_mm"), None) is not None
+    ]
+    current_x_axis_mm = _coerce_float((state.get("last_visible_brick") or {}).get("x_axis_mm"), None)
+    if current_x_axis_mm is not None:
+        values.append(float(current_x_axis_mm))
+    return _autoscaled_axis_extent_mm(
+        values,
+        default_extent_mm=BIRD_X_AXIS_TRACK_DEFAULT_EXTENT_MM,
+        expanded_extent_mm=BIRD_X_AXIS_TRACK_EXPANDED_EXTENT_MM,
+        expand_threshold_mm=BIRD_X_AXIS_TRACK_EXPAND_THRESHOLD_MM,
+    )
+
+
+def _mast_y_axis_extent_mm(state: dict) -> float:
+    mast_history = _current_step_mast_history(state)
+    values = [
+        float(_coerce_float(entry.get("y_axis_mm"), None))
+        for entry in mast_history
+        if _coerce_float(entry.get("y_axis_mm"), None) is not None
+    ]
+    current_y_axis_mm = _coerce_float((state.get("last_visible_brick") or {}).get("y_axis_mm"), None)
+    if current_y_axis_mm is not None:
+        values.append(float(current_y_axis_mm))
+    return _autoscaled_axis_extent_mm(
+        values,
+        default_extent_mm=MAST_Y_AXIS_DEFAULT_EXTENT_MM,
+        expanded_extent_mm=MAST_Y_AXIS_EXPANDED_EXTENT_MM,
+        expand_threshold_mm=MAST_Y_AXIS_EXPAND_THRESHOLD_MM,
+    )
+
+
 def _stack_visual_style(stack_name: str | None) -> dict:
     key = str(stack_name or "").strip().lower()
     if key == "wall":
@@ -1393,6 +1452,7 @@ def render_workspace_svg(state: dict | None) -> str:
     active_target = snapshot.get("active_target") or {}
     active_name = active_target.get("object_name")
     bird_history = _current_step_bird_history(snapshot)
+    bird_x_axis_extent_mm = _bird_x_axis_track_extent_mm(snapshot)
     
     svg_parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{SVG_WIDTH}" height="{BIRD_SVG_HEIGHT}" viewBox="0 0 {SVG_WIDTH} {BIRD_SVG_HEIGHT}">',
@@ -1535,7 +1595,7 @@ def render_workspace_svg(state: dict | None) -> str:
             x_axis_mm = _coerce_float(entry.get("x_axis_mm"), None)
             if x_axis_mm is None:
                 return float(px), float(track_y)
-            x_ratio = max(-1.0, min(1.0, float(x_axis_mm) / float(BIRD_X_AXIS_TRACK_EXTENT_MM)))
+            x_ratio = max(-1.0, min(1.0, float(x_axis_mm) / float(bird_x_axis_extent_mm)))
             py = float(track_y) - (x_ratio * float(BIRD_X_AXIS_TRACK_HALF_SPAN_PX))
             py = max(58.0, min(float(BIRD_SVG_HEIGHT) - 26.0, float(py)))
             return float(px), float(py)
@@ -1561,16 +1621,25 @@ def render_workspace_svg(state: dict | None) -> str:
     if bird_history:
         previous_entry = None
         history_count = len(bird_history)
+        history_points: list[tuple[float, float]] = []
         for idx, entry in enumerate(bird_history):
             trend = _step_history_trend(previous_entry, entry)
             color = _bird_history_fill_color(idx, history_count)
             hx, hy = _bird_history_screen_point(entry)
+            history_points.append((float(hx), float(hy)))
             svg_parts.append(
                 f'<circle class="step-history-dot" data-trend="{trend}" cx="{hx:.1f}" cy="{hy:.1f}" '
                 f'r="{float(BIRD_HISTORY_DOT_RADIUS_PX):.1f}" fill="{color}" fill-opacity="0.98" '
                 'stroke="#f9f6ef" stroke-width="2" />'
             )
             previous_entry = entry
+        if len(history_points) >= 2:
+            svg_parts.insert(
+                len(svg_parts) - history_count,
+                f'<polyline class="step-history-path" points="{_polygon_points(history_points)}" '
+                'fill="none" stroke="#7a95bb" stroke-width="2.4" stroke-linecap="round" '
+                'stroke-linejoin="round" opacity="0.82" />',
+            )
 
     # Add distance displays
     robot_x = float(robot.get("x_mm", 0.0))
@@ -1651,19 +1720,10 @@ def render_mast_svg(state: dict | None) -> str:
     stack_x = 216.0
     stack_size_px = 92.0
     zero_y = plot_top + (plot_height * 0.5)
-    axis_extent_mm = max(1.0, float(MAST_Y_AXIS_EXTENT_MM))
     stack_right_x = float(stack_x) + (float(stack_size_px) * 0.5)
     history_left_x = max(plot_left + 18.0, stack_right_x + 10.0)
     history_right_x = plot_right - 24.0
-
-    y_axis_values = [
-        float(_coerce_float(entry.get("y_axis_mm"), 0.0) or 0.0)
-        for entry in mast_history
-        if _coerce_float(entry.get("y_axis_mm"), None) is not None
-    ]
-    current_y_axis_mm = _coerce_float(last_visible.get("y_axis_mm"), None)
-    if current_y_axis_mm is not None:
-        y_axis_values.append(float(current_y_axis_mm))
+    axis_extent_mm = _mast_y_axis_extent_mm(snapshot)
 
     def project_y_axis_to_y(y_axis_mm: float | None) -> float:
         if y_axis_mm is None:

@@ -9551,6 +9551,7 @@ def run_full_gatecheck_after_act(
     required_frames = max(0, int(required_new_frames or 0))
     truth_hit = False
     truth_by = None
+    last_gate_obs = None
     for _ in range(checks_per_act):
         if required_frames > 0:
             gate_utils.wait_for_fresh_frames(
@@ -9564,13 +9565,41 @@ def run_full_gatecheck_after_act(
             update_world_from_vision(world, vision, log=log)
         if observer:
             observer("frame", world, vision, None, None, None)
-        success_met = gatecheck_after_move(world, step, tracker, phase=phase, log=log)
+        gate_obs = observe_success_gatecheck(
+            world,
+            step,
+            tracker,
+            phase=phase,
+            log=log,
+        )
+        last_gate_obs = dict(gate_obs or {})
+        success_met = bool((gate_obs or {}).get("success_met"))
         status = getattr(world, "_gatecheck_status", None)
         if success_met or (isinstance(status, dict) and bool(status.get("truth_ok", False))):
             truth_hit = True
             if isinstance(status, dict) and status.get("truth_by"):
                 truth_by = status.get("truth_by")
     status = getattr(world, "_gatecheck_status", None)
+    if world is not None and isinstance(last_gate_obs, dict):
+        try:
+            world._recent_post_act_gatecheck = {
+                "step": normalize_step_label(step) or str(step),
+                "phase": str(phase or ""),
+                "success_ok": bool(last_gate_obs.get("success_ok")),
+                "instant_success_ok": bool(last_gate_obs.get("instant_success_ok")),
+                "effective_success_ok": bool(last_gate_obs.get("effective_success_ok")),
+                "success_met": bool(last_gate_obs.get("success_met")),
+                "hold_for_confirm": bool(last_gate_obs.get("hold_for_confirm")),
+                "truth_ok": (
+                    bool(status.get("truth_ok", False))
+                    if isinstance(status, dict)
+                    else bool(truth_hit)
+                ),
+                "frame_id": int(getattr(world, "_frame_id", 0) or 0),
+                "timestamp": time.time(),
+            }
+        except Exception:
+            pass
     if truth_hit and isinstance(status, dict):
         status["truth_ok"] = True
         if truth_by:
@@ -10068,6 +10097,11 @@ def run_alignment_segment(
     confirm_callback=None,
     align_silent=False,
 ):
+    try:
+        world._recent_post_act_gatecheck = None
+    except Exception:
+        pass
+
     def _classify_align_delta_class(
         *,
         correction_type,
@@ -11645,6 +11679,29 @@ def run_alignment_segment(
             metadata={"step": normalize_step_label(step)},
         )
         return plan if isinstance(plan, dict) else None
+
+    def _consume_recent_post_act_gatecheck(*, phase_label):
+        cached = getattr(world, "_recent_post_act_gatecheck", None)
+        if not isinstance(cached, dict):
+            return None
+        cached_step = normalize_step_label(cached.get("step")) or str(cached.get("step") or "")
+        current_step = normalize_step_label(step) or str(step or "")
+        if str(cached_step) != str(current_step):
+            return None
+        if str(cached.get("phase") or "") != str(phase_label or ""):
+            return None
+        try:
+            world._recent_post_act_gatecheck = None
+        except Exception:
+            pass
+        return {
+            "success_ok": bool(cached.get("success_ok")),
+            "instant_success_ok": bool(cached.get("instant_success_ok")),
+            "effective_success_ok": bool(cached.get("effective_success_ok")),
+            "success_met": bool(cached.get("success_met")),
+            "hold_for_confirm": bool(cached.get("hold_for_confirm")),
+            "_reused_post_act_gatecheck": True,
+        }
 
     start_cmd = scan_cmd
     start_speed = action_speeds["scan"]
@@ -15656,7 +15713,9 @@ def run_alignment_segment(
         loop_id += 1
         world.loop_id = loop_id
         step_norm = normalize_step_label(step)
-        update_world_from_vision(world, vision, log=not align_silent)
+        reused_post_act_gatecheck = _consume_recent_post_act_gatecheck(phase_label="align")
+        if reused_post_act_gatecheck is None:
+            update_world_from_vision(world, vision, log=not align_silent)
         visible_now = _observed_bool((getattr(world, "brick", None) or {}).get("visible"))
         if bool(phase1_requires_visible_then_align) and not bool(phase1_visible_passed):
             if bool(visible_now):
@@ -15693,7 +15752,7 @@ def run_alignment_segment(
         if obs_note:
             world._last_obs_note = None
         # pause1 removed per request
-        if observer:
+        if observer and reused_post_act_gatecheck is None:
             observer("frame", world, vision, None, None, None)
         crosshair_guard_status = _maybe_run_in_crosshairs_continuity_guard(phase_label="align")
         if crosshair_guard_status == "failed":
@@ -15702,14 +15761,16 @@ def run_alignment_segment(
         if crosshair_guard_status in {"hold", "recovered"}:
             time.sleep(CONTROL_DT)
             continue
-        gate_obs = None
-        gate_obs = observe_success_gatecheck(
-            world,
-            step,
-            success_tracker,
-            phase="align",
-            log=not align_silent,
-        )
+        if reused_post_act_gatecheck is None:
+            gate_obs = observe_success_gatecheck(
+                world,
+                step,
+                success_tracker,
+                phase="align",
+                log=not align_silent,
+            )
+        else:
+            gate_obs = dict(reused_post_act_gatecheck)
         success_met = bool(gate_obs.get("success_met"))
         if success_met:
             return _complete_alignment_success("success gate", tracker=success_tracker)
@@ -16248,6 +16309,13 @@ def run_alignment_segment(
                     world=world,
                 )
                 if unknown_metric:
+                    if not bool(use_micro_align_gap_planner):
+                        if robot:
+                            robot.stop()
+                        if observer:
+                            observer("action", world, vision, None, 0.0, f"wait_missing_{str(unknown_metric)}")
+                        time.sleep(CONTROL_DT)
+                        continue
                     if robot:
                         robot.stop()
                     step_label = normalize_step_label(step) or str(step or "ALIGN")
@@ -16280,45 +16348,46 @@ def run_alignment_segment(
             if confirm_callback:
                 if not confirm_callback(world, vision):
                     return False, "confirm cancelled"
-            pre_action_obs = pre_action_success_observation(
-                world,
-                vision,
-                step,
-                success_tracker,
-                phase="align",
-                robot=robot,
-                observer=observer,
-                log=not align_silent,
-                success_log=not align_silent,
-            )
-            if bool((pre_action_obs or {}).get("success_met")):
-                return _complete_alignment_success("success gate", tracker=success_tracker)
-            if bool((pre_action_obs or {}).get("hold_for_confirm")):
-                time.sleep(CONTROL_DT)
-                continue
-            # Hard no-wiggle edge guard: re-observe immediately before sending
-            # motion and skip the act if gate confirmation is already passing or
-            # in hold-for-confirm state.
-            edge_status = getattr(world, "_gatecheck_status", None)
-            if isinstance(edge_status, dict) and bool(edge_status.get("truth_ok", False)):
-                return _complete_alignment_success("success gate", tracker=success_tracker)
-            update_world_from_vision(world, vision, log=not align_silent)
-            if observer:
-                observer("frame", world, vision, None, None, None)
-            edge_obs = observe_success_gatecheck(
-                world,
-                step,
-                success_tracker,
-                phase="align",
-                log=False,
-            )
-            if bool((edge_obs or {}).get("success_met")):
-                return _complete_alignment_success("success gate", tracker=success_tracker)
-            if bool((edge_obs or {}).get("hold_for_confirm")):
-                if robot:
-                    robot.stop()
-                time.sleep(CONTROL_DT)
-                continue
+            if reused_post_act_gatecheck is None:
+                pre_action_obs = pre_action_success_observation(
+                    world,
+                    vision,
+                    step,
+                    success_tracker,
+                    phase="align",
+                    robot=robot,
+                    observer=observer,
+                    log=not align_silent,
+                    success_log=not align_silent,
+                )
+                if bool((pre_action_obs or {}).get("success_met")):
+                    return _complete_alignment_success("success gate", tracker=success_tracker)
+                if bool((pre_action_obs or {}).get("hold_for_confirm")):
+                    time.sleep(CONTROL_DT)
+                    continue
+                # The immediate post-act gatecheck already gave us one fresh
+                # confident observation for this decision cycle. Only run the
+                # pre-send edge guard when we did not just consume that result.
+                edge_status = getattr(world, "_gatecheck_status", None)
+                if isinstance(edge_status, dict) and bool(edge_status.get("truth_ok", False)):
+                    return _complete_alignment_success("success gate", tracker=success_tracker)
+                update_world_from_vision(world, vision, log=not align_silent)
+                if observer:
+                    observer("frame", world, vision, None, None, None)
+                edge_obs = observe_success_gatecheck(
+                    world,
+                    step,
+                    success_tracker,
+                    phase="align",
+                    log=False,
+                )
+                if bool((edge_obs or {}).get("success_met")):
+                    return _complete_alignment_success("success gate", tracker=success_tracker)
+                if bool((edge_obs or {}).get("hold_for_confirm")):
+                    if robot:
+                        robot.stop()
+                    time.sleep(CONTROL_DT)
+                    continue
             turn_drive_plan = None
             forward_turn_plan = None
             send_duration_override_ms = duration_override_ms
@@ -16877,11 +16946,13 @@ def run_alignment_segment(
     while time.time() < settle_deadline:
         loop_id += 1
         world.loop_id = loop_id
-        update_world_from_vision(world, vision, log=not align_silent)
+        reused_post_act_gatecheck = _consume_recent_post_act_gatecheck(phase_label="settle")
+        if reused_post_act_gatecheck is None:
+            update_world_from_vision(world, vision, log=not align_silent)
         obs_note = getattr(world, "_last_obs_note", None)
         if obs_note:
             world._last_obs_note = None
-        if observer:
+        if observer and reused_post_act_gatecheck is None:
             observer("frame", world, vision, None, None, None)
         crosshair_guard_status = _maybe_run_in_crosshairs_continuity_guard(phase_label="settle")
         if crosshair_guard_status == "failed":
@@ -16890,14 +16961,16 @@ def run_alignment_segment(
         if crosshair_guard_status in {"hold", "recovered"}:
             time.sleep(CONTROL_DT)
             continue
-        gate_obs = None
-        gate_obs = observe_success_gatecheck(
-            world,
-            step,
-            settle_tracker,
-            phase="settle",
-            log=not align_silent,
-        )
+        if reused_post_act_gatecheck is None:
+            gate_obs = observe_success_gatecheck(
+                world,
+                step,
+                settle_tracker,
+                phase="settle",
+                log=not align_silent,
+            )
+        else:
+            gate_obs = dict(reused_post_act_gatecheck)
         if bool(gate_obs.get("success_met")):
             return _complete_alignment_success("success gate", tracker=settle_tracker)
         if bool(gate_obs.get("hold_for_confirm")):
@@ -17068,6 +17141,13 @@ def run_alignment_segment(
                 world=world,
             )
             if unknown_metric:
+                if not bool(use_micro_align_gap_planner):
+                    if robot:
+                        robot.stop()
+                    if observer:
+                        observer("action", world, vision, None, 0.0, f"wait_missing_settle_{str(unknown_metric)}")
+                    time.sleep(CONTROL_DT)
+                    continue
                 if robot:
                     robot.stop()
                 step_label = normalize_step_label(step) or str(step or "ALIGN")

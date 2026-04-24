@@ -1352,6 +1352,21 @@ class StreamServer:
                 )
             face_cutout_svg = "".join(cutout_parts)
 
+        pink_dot_svg = ""
+        pink_dot_raw = brick.get("pinkDot")
+        if isinstance(pink_dot_raw, dict):
+            try:
+                pd_x = float(pink_dot_raw.get("x", 0.0))
+                pd_y = float(pink_dot_raw.get("y", 9.0))
+                pd_r = float(pink_dot_raw.get("radius_mm", 2.5))
+                pd_r_svg = max(3.0, pd_r * scale)
+                pink_dot_svg = (
+                    f"<circle cx='{map_x(pd_x):.2f}' cy='{map_y(pd_y):.2f}' r='{pd_r_svg:.1f}' "
+                    "fill='#BE2646' stroke='#ffd0d8' stroke-width='1.2'/>"
+                )
+            except (TypeError, ValueError):
+                pass
+
         face_line_svg = ""
         if isinstance(face_lines_raw, list):
             line_parts = []
@@ -1382,6 +1397,7 @@ class StreamServer:
             f"{indicator_backing_svg}"
             f"{face_polygon_svg}"
             f"{face_cutout_svg}"
+            f"{pink_dot_svg}"
             f"{face_line_svg}"
             "<text x='14' y='16' fill='#d8fbff' font-size='10.5' font-family='monospace'>source: world_model_brick.json</text>"
             "</svg>"

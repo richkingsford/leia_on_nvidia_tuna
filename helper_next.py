@@ -2063,6 +2063,56 @@ def select_align_brick_next_act(
     if prefer_forward_for_x_axis:
         force_x_axis_focus = False
 
+    both_x_and_dist_outside = bool("x_axis" in candidates and "distance" in candidates)
+    x_axis_turn_drive_cfg = (
+        align_policy.get("x_axis_turn_drive_assist")
+        if isinstance(align_policy.get("x_axis_turn_drive_assist"), dict)
+        else {}
+    )
+    x_axis_turn_drive_enabled = bool(x_axis_turn_drive_cfg.get("enabled", False))
+    x_axis_turn_drive_require_dist_outside = bool(
+        x_axis_turn_drive_cfg.get("require_dist_outside_gate", True)
+    )
+    try:
+        x_axis_turn_drive_min_dist_outside_mm = max(
+            0.0,
+            float(_coerce_float(x_axis_turn_drive_cfg.get("min_dist_outside_mm"), 0.0) or 0.0),
+        )
+    except (TypeError, ValueError):
+        x_axis_turn_drive_min_dist_outside_mm = 0.0
+
+    def _is_joint_x_dist_candidate(row):
+        if not both_x_and_dist_outside or not isinstance(row, dict):
+            return False
+        corr_key = str(row.get("correction_type") or "").strip().lower()
+        cmd_key = str(row.get("cmd") or "").strip().lower()
+        if corr_key == "x_axis":
+            if cmd_key not in {"l", "r"} or not bool(x_axis_turn_drive_enabled):
+                return False
+            if bool(x_axis_turn_drive_require_dist_outside) and not bool(d_ratio > ratio_eps):
+                return False
+            return float(dist_gate_outside_mm or 0.0) >= float(x_axis_turn_drive_min_dist_outside_mm)
+        if corr_key == "distance":
+            return bool(forward_turn_cfg.get("enabled", False)) and cmd_key == "f"
+        return False
+
+    def _best_joint_x_dist_candidate():
+        viable = [
+            dict(candidates.get(corr_key))
+            for corr_key in ("x_axis", "distance")
+            if _is_joint_x_dist_candidate(candidates.get(corr_key))
+        ]
+        if not viable:
+            return None
+        viable.sort(
+            key=lambda row: (
+                _priority_ratio(row.get("correction_type"), row.get("ratio", 0.0)),
+                1.0 if str(row.get("correction_type") or "").strip().lower() == "x_axis" else 0.0,
+            ),
+            reverse=True,
+        )
+        return viable[0]
+
     def _best_alternative(
         excluded_types,
         *,
@@ -2192,6 +2242,12 @@ def select_align_brick_next_act(
                 chosen = alt
                 chosen_type = str(chosen.get("correction_type") or "").strip().lower()
                 rotation_override = True
+    if chosen_type in {"x_axis", "distance"}:
+        joint_choice = _best_joint_x_dist_candidate()
+        if joint_choice is not None and not _is_joint_x_dist_candidate(chosen):
+            chosen = dict(joint_choice)
+            chosen_type = str(chosen.get("correction_type") or "").strip().lower()
+            rotation_override = True
 
     gap_rotation_active = False
     gap_rotation_chunk_switch = False
@@ -2459,6 +2515,17 @@ def select_align_brick_next_act(
         gap_focus_state["active_type"] = None
         gap_focus_state["count"] = 0
 
+    if _is_joint_x_dist_candidate(chosen):
+        chosen = dict(chosen)
+        chosen["_combined_gap_action"] = True
+        reason_key = str(chosen.get("reason") or "").strip().lower()
+        if reason_key in {"x_axis_alignment", "distance_alignment", "forward_turn_bias_preferred"}:
+            chosen["reason"] = (
+                "x_axis_distance_single_act"
+                if str(chosen.get("correction_type") or "").strip().lower() == "x_axis"
+                else "distance_x_axis_single_act"
+            )
+
     correction_type = chosen.get("correction_type")
     score_float = chosen.get("score_float")
     try:
@@ -2505,6 +2572,7 @@ def select_align_brick_next_act(
         "duration_override_ms": duration_override_ms,
         "reason": str(reason),
         "worst_metric": worst_metric,
+        "combined_gap_action": bool(chosen.get("_combined_gap_action")),
         "rotation_override": bool(rotation_override),
         "cheat_dist_priority": bool(chosen.get("_cheat_dist_priority")),
         "cheat_dist_priority_context": (

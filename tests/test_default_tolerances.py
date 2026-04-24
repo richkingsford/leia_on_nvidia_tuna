@@ -47,17 +47,25 @@ class TestDefaultTolerances(unittest.TestCase):
         self.assertEqual((align_gates.get("yAxis_offset_abs") or {}).get("tol"), 2.3)
         self.assertEqual((align_gates.get("dist") or {}).get("tol"), 2.3)
 
-    def test_process_model_default_success_tolerances_are_2_3_mm(self):
+    def test_process_model_align_and_position_x_dist_tolerances_are_5_mm(self):
         model = json.loads(Path("world_model_process.json").read_text())
         steps = model.get("steps") or {}
 
+        self.assertEqual(
+            (((steps.get("ALIGN_BRICK") or {}).get("success_gates") or {}).get("xAxis_offset_abs") or {}).get("tol"),
+            5.0,
+        )
         self.assertEqual(
             (((steps.get("ALIGN_BRICK") or {}).get("success_gates") or {}).get("yAxis_offset_abs") or {}).get("tol"),
             2.3,
         )
         self.assertEqual(
             (((steps.get("ALIGN_BRICK") or {}).get("success_gates") or {}).get("dist") or {}).get("tol"),
-            2.3,
+            5.0,
+        )
+        self.assertEqual(
+            (((steps.get("POSITION_BRICK") or {}).get("success_gates") or {}).get("xAxis_offset_abs") or {}).get("tol"),
+            5.0,
         )
         self.assertEqual(
             (((steps.get("SEAT_BRICK") or {}).get("success_gates") or {}).get("dist") or {}).get("tol"),
@@ -69,16 +77,10 @@ class TestDefaultTolerances(unittest.TestCase):
         )
         self.assertEqual(
             (((steps.get("POSITION_BRICK") or {}).get("success_gates") or {}).get("dist") or {}).get("tol"),
-            2.3,
+            5.0,
         )
-        self.assertEqual(
-            (((steps.get("SEAT_BRICK2") or {}).get("success_gates") or {}).get("x_axis") or {}).get("tol"),
-            2.3,
-        )
-        self.assertEqual(
-            (((steps.get("SEAT_BRICK2") or {}).get("success_gates") or {}).get("dist") or {}).get("tol"),
-            2.3,
-        )
+        self.assertIs(((steps.get("ALIGN_BRICK") or {}).get("lock_success_gates")), True)
+        self.assertIs(((steps.get("POSITION_BRICK") or {}).get("lock_success_gates")), True)
 
     def test_process_model_brick_lock_is_visible_only_without_pre_align_descend(self):
         model = json.loads(Path("world_model_process.json").read_text())

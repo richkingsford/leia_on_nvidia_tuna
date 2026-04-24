@@ -30,6 +30,7 @@ from helper_brick_detector_yolo import (
     CYAN_HSV_TIGHT_UPPER,
     CYAN_HSV_WIDE_LOWER,
     CYAN_HSV_WIDE_UPPER,
+    PINK_DOT_HEX_SHADES,
 )
 from helper_manual_config import load_manual_training_config
 from helper_vision_config import (
@@ -2252,6 +2253,25 @@ def _cyan_shade_footer_lines():
     return lines
 
 
+def _pink_dot_shade_footer_lines():
+    lines = []
+    for shade_hex_raw in PINK_DOT_HEX_SHADES:
+        shade_hex = "#" + str(shade_hex_raw).strip().lstrip("#")
+        dot_style = (
+            "display:inline-block;width:11px;height:11px;border-radius:999px;"
+            f"background:{shade_hex};border:1px solid rgba(255,255,255,0.38);"
+            "box-shadow:0 0 0 1px rgba(0,0,0,0.35) inset;"
+        )
+        shade_html = html.escape(str(shade_hex))
+        lines.append(
+            "<span style='display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;'>"
+            f"<span aria-hidden='true' style='{dot_style}'></span>"
+            f"<span style='color:#d89ab0;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;'>{shade_html}</span>"
+            "</span>"
+        )
+    return lines
+
+
 def _one_percent_discovery_footer_lines():
     lines = []
     for row_text in telemetry_robot_module.one_percent_discovery_lines():
@@ -2283,6 +2303,9 @@ def stream_footer_html():
     cyan_shade_lines = _cyan_shade_footer_lines()
     if cyan_shade_lines:
         sections.append(_footer_section_html("Crown Brick Shades", cyan_shade_lines))
+    pink_dot_lines = _pink_dot_shade_footer_lines()
+    if pink_dot_lines:
+        sections.append(_footer_section_html("Pink Dot Shades", pink_dot_lines))
     one_pct_lines = _one_percent_discovery_footer_lines()
     if one_pct_lines:
         sections.append(_footer_section_html("Shared 1% Floor", one_pct_lines))
@@ -6626,15 +6649,6 @@ def command_loop(app_state):
                     if dur_sent is not None:
                         pieces.append(str(int(dur_sent)))
                     wire_text = " ".join([p for p in pieces if p])
-                wire_log = _format_hotkey_wire_log(
-                    hotkey,
-                    cmd,
-                    score_used,
-                    send_result,
-                    fallback_wire_text=wire_text,
-                )
-                if wire_log:
-                    log_line(wire_log)
             # Micro-adjustments (1% speed-score) should pull a fresh vision read so
             # bird/mast views update immediately after each tiny act.
             read_vision_for_refresh = bool(

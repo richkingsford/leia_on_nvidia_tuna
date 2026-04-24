@@ -195,9 +195,10 @@ class HelperXyzCoordsTests(unittest.TestCase):
         radii = re.findall(r'class="step-history-dot"[^>]* r="([0-9.]+)"', svg)
         fills = re.findall(r'class="step-history-dot"[^>]* fill="(#[0-9a-fA-F]{6})"', svg)
         ys = [float(value) for value in re.findall(r'class="step-history-dot"[^>]* cy="([0-9.]+)"', svg)]
+        trace_match = re.search(r'class="step-history-path"[^>]* points="([^"]+)"', svg)
 
         self.assertNotIn('class="camera-dot"', svg)
-        self.assertNotIn('class="step-history-path"', svg)
+        self.assertIsNotNone(trace_match)
         self.assertEqual(svg.count('class="step-history-dot"'), 3)
         self.assertEqual(radii, ["6.0", "6.0", "6.0"])
         self.assertNotIn('id="grid"', svg)
@@ -209,6 +210,7 @@ class HelperXyzCoordsTests(unittest.TestCase):
                 helper_xyz_coords.BIRD_HISTORY_COLOR_NEWEST.lower(),
             ],
         )
+        self.assertEqual(len(str(trace_match.group(1)).split()), 3)
         self.assertGreater(max(ys) - min(ys), 0.0)
         self.assertIn('data-trend="closer"', svg)
 
@@ -243,6 +245,41 @@ class HelperXyzCoordsTests(unittest.TestCase):
         self.assertEqual(helper_xyz_coords._bird_distance_track_ratio(80.0), 0.0)
         self.assertEqual(helper_xyz_coords._bird_distance_track_ratio(150.0), 1.0)
         self.assertGreater(helper_xyz_coords._bird_distance_track_ratio(120.0), 0.0)
+
+    def test_autoscaled_axis_extent_stays_at_default_through_10mm_and_expands_after(self):
+        self.assertEqual(
+            helper_xyz_coords._autoscaled_axis_extent_mm(
+                [-10.0, 0.0, 10.0],
+                default_extent_mm=10.0,
+                expanded_extent_mm=20.0,
+                expand_threshold_mm=10.0,
+            ),
+            10.0,
+        )
+        self.assertEqual(
+            helper_xyz_coords._autoscaled_axis_extent_mm(
+                [10.1],
+                default_extent_mm=10.0,
+                expanded_extent_mm=20.0,
+                expand_threshold_mm=10.0,
+            ),
+            20.0,
+        )
+
+    def test_bird_x_axis_track_extent_defaults_to_10mm_and_expands_to_20mm(self):
+        world = _DummyWorld()
+        helper_xyz_coords.sync_from_world(world, render=False)
+        world.brick["visible"] = True
+        world.brick["dist"] = 120.0
+        world.brick["x_axis"] = 10.0
+        state = helper_xyz_coords.sync_from_world(world, reason="vision", render=False)
+
+        self.assertEqual(helper_xyz_coords._bird_x_axis_track_extent_mm(state), 10.0)
+
+        world.brick["x_axis"] = 10.1
+        state = helper_xyz_coords.sync_from_world(world, reason="vision", render=False)
+
+        self.assertEqual(helper_xyz_coords._bird_x_axis_track_extent_mm(state), 20.0)
 
     def test_render_workspace_svg_labels_sweet_zone_distance_track(self):
         world = _DummyWorld()
@@ -384,6 +421,25 @@ class HelperXyzCoordsTests(unittest.TestCase):
         self.assertIn('stroke="#d3d7dd" stroke-width="1"', mast_svg)
         self.assertIn("Supply", mast_svg)
         self.assertNotIn(">Wall<", mast_svg)
+
+    def test_render_mast_svg_uses_plus_minus_10mm_by_default_and_20mm_after_threshold(self):
+        world = _DummyWorld()
+        world.brick["visible"] = True
+        world.brick["dist"] = 120.0
+        world.brick["y_axis"] = 10.0
+        state = helper_xyz_coords.sync_from_world(world, reason="vision", render=False)
+
+        mast_svg = helper_xyz_coords.render_mast_svg(state)
+        self.assertIn(">+10mm</text>", mast_svg)
+        self.assertIn(">-10mm</text>", mast_svg)
+        self.assertNotIn(">+20mm</text>", mast_svg)
+
+        world.brick["y_axis"] = 10.1
+        state = helper_xyz_coords.sync_from_world(world, reason="vision", render=False)
+
+        mast_svg = helper_xyz_coords.render_mast_svg(state)
+        self.assertIn(">+20mm</text>", mast_svg)
+        self.assertIn(">-20mm</text>", mast_svg)
 
     def test_build_viewbox_uses_tighter_default_zoom(self):
         world = _DummyWorld()

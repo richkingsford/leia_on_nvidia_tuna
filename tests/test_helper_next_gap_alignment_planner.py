@@ -398,6 +398,90 @@ class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
         self.assertEqual(plan.get("correction_type"), "x_axis", plan)
         self.assertIn(plan.get("cmd"), ("l", "r"), plan)
 
+    def test_gap_planner_prefers_turn_drive_single_act_when_x_and_dist_are_both_outside(self):
+        process_rules = {
+            "ALIGN_BRICK": {
+                "align_policy": {
+                    "forward_while_turning_assist": {"enabled": False},
+                    "x_axis_turn_drive_assist": {
+                        "enabled": True,
+                        "require_dist_outside_gate": True,
+                        "min_dist_outside_mm": 0.0,
+                        "forward_profile": "forward_pivot",
+                        "backward_profile": "backward_pivot",
+                    },
+                },
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 2.0},
+                    "dist": {"target": 100.0, "tol": 5.0},
+                },
+            }
+        }
+        orig = helper_next.compute_alignment_decision
+        try:
+            helper_next.compute_alignment_decision = lambda **kwargs: {
+                "cmd": "f",
+                "worst_metric": "dist",
+                "speed_score": 5,
+            }
+            plan = helper_next.select_align_brick_next_act(
+                process_rules=process_rules,
+                learned_rules={},
+                step="ALIGN_BRICK",
+                x_axis_mm=9.0,
+                y_axis_mm=0.0,
+                dist_mm=140.0,
+                visible=True,
+                angle_deg=0.0,
+                duration_s=0.05,
+            )
+        finally:
+            helper_next.compute_alignment_decision = orig
+
+        self.assertEqual(plan.get("correction_type"), "x_axis", plan)
+        self.assertIn(plan.get("cmd"), ("l", "r"), plan)
+        self.assertTrue(bool(plan.get("combined_gap_action")), plan)
+        self.assertEqual(plan.get("reason"), "x_axis_distance_single_act", plan)
+
+    def test_gap_planner_marks_forward_turn_single_act_when_distance_move_can_cover_x(self):
+        process_rules = {
+            "POSITION_BRICK": {
+                "align_policy": {
+                    "forward_while_turning_assist": {"enabled": True},
+                    "x_axis_turn_drive_assist": {"enabled": False},
+                },
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 2.0},
+                    "dist": {"target": 100.0, "tol": 5.0},
+                },
+            }
+        }
+        orig = helper_next.compute_alignment_decision
+        try:
+            helper_next.compute_alignment_decision = lambda **kwargs: {
+                "cmd": "f",
+                "worst_metric": "dist",
+                "speed_score": 5,
+            }
+            plan = helper_next.select_align_brick_next_act(
+                process_rules=process_rules,
+                learned_rules={},
+                step="POSITION_BRICK",
+                x_axis_mm=-6.0,
+                y_axis_mm=0.0,
+                dist_mm=130.0,
+                visible=True,
+                angle_deg=0.0,
+                duration_s=0.05,
+            )
+        finally:
+            helper_next.compute_alignment_decision = orig
+
+        self.assertEqual(plan.get("correction_type"), "distance", plan)
+        self.assertEqual(plan.get("cmd"), "f", plan)
+        self.assertTrue(bool(plan.get("combined_gap_action")), plan)
+        self.assertEqual(plan.get("reason"), "distance_x_axis_single_act", plan)
+
     def test_gap_planner_keeps_its_own_gap_speed_instead_of_analytics_override(self):
         process_rules = {
             "BRICK_LOCK_WALL": {

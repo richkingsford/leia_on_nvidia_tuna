@@ -138,6 +138,42 @@ CYAN_HSV_WIDE_LOWER, CYAN_HSV_WIDE_UPPER = _cyan_palette_hsv_range(
 
 CYAN_HSV_LOWER = np.array(CYAN_HSV_BALANCED_LOWER)
 CYAN_HSV_UPPER = np.array(CYAN_HSV_BALANCED_UPPER)
+
+PINK_DOT_HEX_SHADES = ("B8304C", "BE2646", "B8244C")
+
+
+def _pink_dot_hsv_range(
+    *,
+    hue_margin: int = 5,
+    sat_margin: int = 40,
+    val_margin_lower: int = 50,
+    val_ceiling: int = 220,
+) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    hsv_values = [_hex_to_opencv_hsv(h) for h in PINK_DOT_HEX_SHADES]
+    min_h = min(v[0] for v in hsv_values)
+    max_h = max(v[0] for v in hsv_values)
+    min_s = min(v[1] for v in hsv_values)
+    min_v = min(v[2] for v in hsv_values)
+    lower = (
+        max(0, int(round(float(min_h) - float(hue_margin)))),
+        max(0, int(round(float(min_s) - float(sat_margin)))),
+        max(0, int(round(float(min_v) - float(val_margin_lower)))),
+    )
+    upper = (
+        min(179, int(round(float(max_h) + float(hue_margin)))),
+        255,
+        min(255, int(val_ceiling)),
+    )
+    return lower, upper
+
+
+_PINK_DOT_HSV_LOWER_TUPLE, _PINK_DOT_HSV_UPPER_TUPLE = _pink_dot_hsv_range()
+PINK_DOT_HSV_LOWER = np.array(_PINK_DOT_HSV_LOWER_TUPLE, dtype=np.uint8)
+PINK_DOT_HSV_UPPER = np.array(_PINK_DOT_HSV_UPPER_TUPLE, dtype=np.uint8)
+PINK_DOT_COLOR_BGR = (70, 38, 190)   # BE2646 in BGR
+CONF_GATE_PCT = 65.0                 # minimum combined confidence to report a brick
+PINK_DOT_CONF_BONUS = 25.0           # confidence bonus when pink dot is confirmed
+
 HSV_ERODE_KERNEL = 5
 HSV_ERODE_ITERATIONS = 2
 HSV_MIN_AREA_RATIO = 0.05       # Min 5% of YOLO bbox area = real brick
@@ -794,6 +830,31 @@ class BrickDetector:
         if height_dist is None:
             return float(width_dist)
         return float((0.8 * float(width_dist)) + (0.2 * float(height_dist)))
+
+    def _dist_from_triangle_span(self, cutout_polys):
+        """Estimate dist from the pixel span between confirmed triangle outer edges.
+
+        The outer left edge of the left triangle and the outer right edge of the
+        right triangle together span BRICK_WIDTH_MM in world-model coordinates,
+        so applying the pinhole formula gives a stable dist estimate that is
+        independent of YOLO bounding-box noise.
+
+        Returns None if fewer than two triangle polygons are available or the
+        computed span is degenerate.
+        """
+        if not isinstance(cutout_polys, list) or len(cutout_polys) < 2:
+            return None
+        p0 = np.asarray(cutout_polys[0], dtype=np.float32)
+        p1 = np.asarray(cutout_polys[1], dtype=np.float32)
+        if p0.ndim != 2 or p0.shape[0] < 3 or p1.ndim != 2 or p1.shape[0] < 3:
+            return None
+        # Sort so p0 is the left triangle (smaller mean x).
+        if float(np.mean(p0[:, 0])) > float(np.mean(p1[:, 0])):
+            p0, p1 = p1, p0
+        span_px = float(np.max(p1[:, 0])) - float(np.min(p0[:, 0]))
+        if span_px < 2.0:
+            return None
+        return (BRICK_WIDTH_MM * self.focal_px) / span_px
 
     def _smooth(self, new_val, prev_val):
         """Exponential moving average for temporal smoothing."""
@@ -1649,23 +1710,67 @@ class BrickDetector:
             self.last_primary_confidence = float(yolo_conf)
             conf_pct = float(yolo_conf) * 100.0
 
+            # Pink dot detection: confirms the brick and boosts confidence.
+            dot_found, dot_cx, dot_cy = self._detect_pink_dot_in_brick(frame, primary)
+            # When YOLO found nothing at all (top conf = 0), the only signal that
+            # distinguishes a real brick from a background false positive is the pink dot.
+            if self.last_max_confidence == 0.0 and not dot_found:
+                self.last_status = "low confidence"
+                self.last_primary_confidence = 0.0
+                return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+            combined_conf = conf_pct + (PINK_DOT_CONF_BONUS if dot_found else 0.0)
+            if combined_conf < CONF_GATE_PCT:
+                self.last_status = "low confidence"
+                self.last_primary_confidence = 0.0
+                return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+            conf_pct = min(100.0, combined_conf)
+            primary["_dot_found"] = dot_found
+            primary["_dot_cx"] = dot_cx
+            primary["_dot_cy"] = dot_cy
+
             # Angle from contour with jump clamping to prevent 0/90 flips
             raw_angle = self._refine_angle_for_primary(frame, primary)
             angle = self._smooth_angle(raw_angle, self._prev_angle)
             self._prev_angle = angle
 
-            # Distance from apparent brick size, using width as the primary cue.
+            # Distance from apparent brick size.
+            # When both triangles are confirmed use their pixel span: the outer
+            # left edge to outer right edge spans BRICK_WIDTH_MM in world model,
+            # giving a much more stable signal than the YOLO bounding box.
             _, _, ind_bw, ind_bh = primary["bbox"]
             raw_dist = self._estimate_distance_from_box(ind_bw, ind_bh, primary.get("partial_kind"))
+            tri_span_dist = self._dist_from_triangle_span(
+                primary.get("negative_cutout_polygons")
+            )
+            if tri_span_dist is not None:
+                raw_dist = tri_span_dist
             dist = self._smooth(raw_dist, self._prev_dist)
             self._prev_dist = dist
 
-            # Horizontal offset from camera center to brick center in mm.
-            raw_offset_x = self._estimate_offset_x_mm(primary["center_x"], dist)
+            # Horizontal and vertical offsets anchored to triangles + dot centroid
+            # when all markers are detected; otherwise falls back to contour centroid.
+            anchor_cx = float(primary["center_x"])
+            anchor_cy = float(primary["center_y"])
+            if dot_found and dot_cx is not None:
+                cutout_polys = primary.get("negative_cutout_polygons") or []
+                tri_cx_list = []
+                tri_cy_list = []
+                for poly in cutout_polys:
+                    arr = np.asarray(poly, dtype=np.float32)
+                    if arr.ndim == 2 and arr.shape[0] >= 3:
+                        tri_cx_list.append(float(np.mean(arr[:, 0])))
+                        tri_cy_list.append(float(np.mean(arr[:, 1])))
+                if tri_cx_list:
+                    all_cx = tri_cx_list + [float(dot_cx)]
+                    all_cy = tri_cy_list + [float(dot_cy)]
+                    anchor_cx = sum(all_cx) / len(all_cx)
+                    anchor_cy = sum(all_cy) / len(all_cy)
+
+            raw_offset_x = self._estimate_offset_x_mm(anchor_cx, dist)
             offset_x = self._smooth(raw_offset_x, self._prev_offset)
             self._prev_offset = offset_x
 
-            raw_cam_height = self._estimate_cam_height(primary["center_y"], dist)
+            raw_cam_height = self._estimate_cam_height(anchor_cy, dist)
             cam_height = self._smooth(raw_cam_height, self._prev_offset_y)
             self._prev_offset_y = cam_height
 
@@ -1747,6 +1852,15 @@ class BrickDetector:
         self.last_status = "target locked"
         self.last_primary_confidence = float(conf)
         conf_pct = float(conf) * 100.0
+
+        fallback_primary_bbox = {"bbox": (x1, y1, x2 - x1, y2 - y1)}
+        dot_found_fb, _, _ = self._detect_pink_dot_in_brick(frame, fallback_primary_bbox)
+        combined_conf_fb = conf_pct + (PINK_DOT_CONF_BONUS if dot_found_fb else 0.0)
+        if combined_conf_fb < CONF_GATE_PCT:
+            self.last_status = "low confidence"
+            self.last_primary_confidence = 0.0
+            return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        conf_pct = min(100.0, combined_conf_fb)
 
         raw_angle = self._estimate_angle(frame, x1, y1, x2, y2)
         angle = self._smooth_angle(raw_angle, self._prev_angle)
@@ -1991,6 +2105,7 @@ class BrickDetector:
         self._face_polygon_model = None
         self._face_cutouts_model = []
         self._face_lines_model = []
+        self._pink_dot_model_xy = (0.0, 13.0)
         self._face_shape_gate_mode = BRICK_FACE_GATE_MODE_DEFAULT
         self._negative_cutout_cyan_fill_max = float(NEGATIVE_CUTOUT_CYAN_FILL_MAX)
         self._negative_cutout_ring_cyan_min = float(NEGATIVE_CUTOUT_RING_CYAN_MIN)
@@ -2171,6 +2286,16 @@ class BrickDetector:
                 self._negative_cutout_focus_weight = max(
                     0.0,
                     float(shape_gate.get("cutout_focus_weight")),
+                )
+            except (TypeError, ValueError):
+                pass
+
+        pink_dot = brick.get("pinkDot")
+        if isinstance(pink_dot, dict):
+            try:
+                self._pink_dot_model_xy = (
+                    float(pink_dot.get("x", 0.0)),
+                    float(pink_dot.get("y", 9.0)),
                 )
             except (TypeError, ValueError):
                 pass
@@ -3599,6 +3724,63 @@ class BrickDetector:
             end = tuple(np.intp(np.round(p1)))
             cv2.line(frame, start, end, outline_color, outline_thickness, cv2.LINE_AA)
 
+    def _detect_pink_dot_in_brick(self, frame, primary):
+        """Search for the pink dot marker in the lower portion of the brick bbox.
+
+        Returns (found, center_x_px, center_y_px).  The dot sits below the
+        dark triangle cutouts, so we search the lower ~45% of the bounding box.
+        """
+        bx, by, bw, bh = primary["bbox"]
+        if bw <= 0 or bh <= 0:
+            return False, None, None
+        search_top = by + int(bh * 0.55)
+        search_bot = min(frame.shape[0], by + bh)
+        search_left = max(0, bx - int(bw * 0.05))
+        search_right = min(frame.shape[1], bx + bw + int(bw * 0.05))
+        if search_top >= search_bot or search_left >= search_right:
+            return False, None, None
+        crop = frame[search_top:search_bot, search_left:search_right]
+        if crop.size == 0:
+            return False, None, None
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, PINK_DOT_HSV_LOWER, PINK_DOT_HSV_UPPER)
+        pink_px = int(cv2.countNonZero(mask))
+        min_px = max(4, int(bw * bh * 0.003))
+        if pink_px < min_px:
+            return False, None, None
+        M = cv2.moments(mask)
+        if M["m00"] <= 0:
+            return False, None, None
+        cx = int(round(M["m10"] / M["m00"])) + search_left
+        cy = int(round(M["m01"] / M["m00"])) + search_top
+        return True, cx, cy
+
+    def _draw_pink_dot_on_brick(self, frame, primary):
+        """Draw the pink dot on the overlay — filled if detected, hollow if projected."""
+        if not isinstance(primary, dict):
+            return
+        dot_found = bool(primary.get("_dot_found"))
+        dot_cx = primary.get("_dot_cx")
+        dot_cy = primary.get("_dot_cy")
+        if dot_found and dot_cx is not None and dot_cy is not None:
+            cv2.circle(frame, (int(dot_cx), int(dot_cy)), 6, PINK_DOT_COLOR_BGR, -1)
+            cv2.circle(frame, (int(dot_cx), int(dot_cy)), 6, (240, 200, 220), 1)
+        else:
+            rect = primary.get("rect")
+            if rect is None:
+                return
+            try:
+                rect_points = self._ordered_rect_points(rect)
+                dot_xy = getattr(self, "_pink_dot_model_xy", None) or (0.0, 9.0)
+                dot_model = np.asarray([list(dot_xy)], dtype=np.float32)
+                dot_proj = self._project_model_points_to_rect(dot_model, rect_points)
+                if dot_proj is not None and len(dot_proj) >= 1:
+                    dx = int(round(float(dot_proj[0, 0])))
+                    dy = int(round(float(dot_proj[0, 1])))
+                    cv2.circle(frame, (dx, dy), 6, PINK_DOT_COLOR_BGR, 1)
+            except Exception:
+                pass
+
     def _draw_debug_hsv(self, frame, yolo_bricks, hsv_bricks, primary,
                         angle, dist, offset_x, conf):
         """Draw enhanced debug visualization for HSV-segmented bricks."""
@@ -3609,6 +3791,7 @@ class BrickDetector:
                 primary = dict(primary)
                 primary["debug_outline_contour"] = refined_outline
             self._draw_primary_face_outline(frame, primary)
+            self._draw_pink_dot_on_brick(frame, primary)
             pcx, pcy = primary["center_x"], primary["center_y"]
             primary_color = PARTIAL_COLOR_BGR if bool(primary.get("partial")) else (0, 255, 0)
             cv2.drawMarker(frame, (pcx, pcy), primary_color,

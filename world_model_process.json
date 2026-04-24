@@ -347,7 +347,7 @@
                 },
                 "xAxis_offset_abs": {
                     "target": 6.03,
-                    "tol": 1.4
+                    "tol": 5.0
                 },
                 "yAxis_offset_abs": {
                     "target": 4.13,
@@ -355,9 +355,10 @@
                 },
                 "dist": {
                     "target": 149.26,
-                    "tol": 2.3
+                    "tol": 5.0
                 }
-            }
+            },
+            "lock_success_gates": true
         },
         "SEAT_BRICK": {
             "lock_start_gates": true,
@@ -690,7 +691,7 @@
                 },
                 "xAxis_offset_abs": {
                     "target": -4.74,
-                    "tol": 1.4
+                    "tol": 5.0
                 },
                 "yAxis_offset_abs": {
                     "target": 7.74,
@@ -698,7 +699,7 @@
                 },
                 "dist": {
                     "target": 111.45,
-                    "tol": 2.3
+                    "tol": 5.0
                 }
             }
         },

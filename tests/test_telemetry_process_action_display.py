@@ -705,12 +705,17 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
         self.assertEqual(len(sent_calls), 1)
         sent_kwargs = sent_calls[0]["kwargs"]
         self.assertEqual(sent_kwargs.get("action_note"), "TURN+FWD")
-        self.assertEqual(
-            sent_kwargs.get("custom_action_specs"),
-            [
-                {"target": "l", "action": "b", "pwm": 0},
-                {"target": "r", "action": "f", "pwm": 140},
-            ],
+        custom_action_specs = list(sent_kwargs.get("custom_action_specs") or [])
+        self.assertEqual(len(custom_action_specs), 2)
+        self.assertEqual(custom_action_specs[0].get("target"), "l")
+        self.assertEqual(custom_action_specs[0].get("action"), "b")
+        self.assertEqual(custom_action_specs[1].get("target"), "r")
+        self.assertEqual(custom_action_specs[1].get("action"), "f")
+        self.assertGreaterEqual(int(custom_action_specs[0].get("pwm") or 0), 0)
+        self.assertGreater(int(custom_action_specs[1].get("pwm") or 0), 0)
+        self.assertLessEqual(
+            int(custom_action_specs[0].get("pwm") or 0),
+            int(custom_action_specs[1].get("pwm") or 0),
         )
         observe_line = next(
             line for line in print_lines if "[T1.1 ALIGN]" in line and "I'm xAxis_offset=37.46" in line

@@ -298,7 +298,10 @@ def smoothed_brick_snapshot(world):
             keep.reverse()
 
             def _mean(key):
-                values = [float(frame.get(key, 0.0) or 0.0) for frame in keep]
+                if key == "dist":
+                    values = [float(frame.get(key, 0.0) or 0.0) for frame in keep if frame.get("visible")]
+                else:
+                    values = [float(frame.get(key, 0.0) or 0.0) for frame in keep]
                 return sum(values) / len(values) if values else 0.0
 
             def _majority(key):
