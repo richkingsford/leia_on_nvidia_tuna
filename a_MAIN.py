@@ -3017,6 +3017,8 @@ def run_auto_step(app_state, obj_enum):
             return False
         if "missing speedscore" in reason_norm or "invalid speedscore" in reason_norm:
             return False
+        if reason_norm.startswith("act_limit"):
+            return False
         return True
 
     prior_suppress_skip_start_log = bool(getattr(app_state.world, "_suppress_start_gate_skip_log", False))

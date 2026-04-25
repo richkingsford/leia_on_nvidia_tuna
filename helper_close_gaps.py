@@ -433,7 +433,7 @@ def _production_turn_drive_setup_phase_plan(
             "trial": None,
             "score": int(round(float(score_val))) if score_val is not None else 1,
             "duration_override_ms": None,
-            "pwm_override": None,
+            "pwm_override": int(pwm_override),
             "profile_override": dict(profile_override),
             "curve_name": f"{manifest_name} forward-setup",
             "curve_value_mm": None,
@@ -1023,13 +1023,8 @@ def curve_is_usable(stats: Optional[dict]) -> bool:
 
 # Distance error bands for ALIGN_BRICK micro-adjustments.
 ALIGN_BRICK_DIST_ERROR_SCORE_BANDS = (
-    (2.0, 1.0),
-    (3.0, 1.5),
-    (4.0, 2.0),
-    (5.0, 2.5),
-    (6.0, 3.0),
-    (8.0, 4.0),
-    (1000.0, 5.0),
+    (40.0, 1.0),     # dist_err < 40mm: score 1 (like r/f hotkeys — slow when near gate)
+    (1000.0, 50.0),  # dist_err >= 40mm: score 50 (like w/s hotkeys — faster when far)
 )
 
 ALIGN_BRICK_X_AXIS_CURVE_ALPHA = 1.67

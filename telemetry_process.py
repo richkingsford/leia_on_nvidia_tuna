@@ -3091,6 +3091,7 @@ def send_robot_command(
     ease_in_out_enabled=None,
     custom_action_specs=None,
     action_note=None,
+    score_cap_exempt=False,
 ):
     if robot is None or cmd is None:
         return None
@@ -3219,7 +3220,8 @@ def send_robot_command(
         return None
     if auto_mode:
         score_used = telemetry_robot_module.normalize_speed_score(score_used)
-        score_used = _cap_auto_speed_score(score_used)
+        if not bool(score_cap_exempt):
+            score_used = _cap_auto_speed_score(score_used)
     power, pwm, score_used, duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd(cmd, score_used)
     if duration_override_val is not None and duration_override_val > 0:
         duration_ms = int(duration_override_val)
@@ -13698,6 +13700,11 @@ def run_alignment_segment(
     prev_log_y_err = None
     prev_log_dist = None
     align_action_idx = 0
+    _max_auto_acts_raw = align_policy_cfg.get("max_auto_acts") if isinstance(align_policy_cfg, dict) else None
+    try:
+        max_auto_acts = int(_max_auto_acts_raw) if _max_auto_acts_raw is not None else None
+    except (TypeError, ValueError):
+        max_auto_acts = None
     stale_pre_obs_streak = 0
     stale_frame_streak = 0
     not_visible_streak = 0
@@ -16452,7 +16459,7 @@ def run_alignment_segment(
             if (
                 baseline_score is not None
                 and not bool(is_search_action)
-                and cmd in ("f", "b", "l", "r")
+                and cmd in ("l", "r")
                 and custom_action_specs is None
             ):
                 speed_score = int(baseline_score)
@@ -16578,6 +16585,8 @@ def run_alignment_segment(
                         )
                     pause_after_fail(robot)
                     return False, "no_breakway_contingency_exhausted"
+            _align_policy_local = step_rules.get("align_policy") if isinstance(step_rules, dict) else {}
+            _step_cap_exempt = bool((_align_policy_local or {}).get("auto_speed_hard_cap_exempt", False))
             action_meta = send_robot_command(
                 robot,
                 world,
@@ -16590,6 +16599,7 @@ def run_alignment_segment(
                 ease_in_out_enabled=False,
                 custom_action_specs=custom_action_specs,
                 action_note=action_note,
+                score_cap_exempt=_step_cap_exempt,
             )
             cmd_sent = cmd
             score_effective = speed_score
@@ -16654,8 +16664,19 @@ def run_alignment_segment(
                         last_align_signature = None
                         continue
                     return False, "lost_vision_stale_observation"
+            align_action_idx = int(align_action_idx) + 1
+            if max_auto_acts is not None and align_action_idx >= int(max_auto_acts):
+                if robot:
+                    robot.stop()
+                if not align_silent:
+                    print(
+                        format_headline(
+                            f"[ACT LIMIT] {step_key}: reached {int(align_action_idx)}/{int(max_auto_acts)} act limit; stopping.",
+                            COLOR_RED,
+                        )
+                    )
+                return False, f"act_limit_{int(max_auto_acts)}"
             if not align_silent:
-                align_action_idx = int(align_action_idx) + 1
                 if (
                     "_search_" in cmd_reason_key
                     or cmd_reason_key.endswith("_scan_visible_false")
@@ -17251,11 +17272,13 @@ def run_alignment_segment(
             baseline_score = _one_percent_align_baseline_score(step, step_rules=step_rules)
             if (
                 baseline_score is not None
-                and cmd in ("f", "b", "l", "r")
+                and cmd in ("l", "r")
                 and custom_action_specs is None
             ):
                 speed_score = int(baseline_score)
                 speed = float(telemetry_robot_module.manual_speed_for_cmd(cmd, speed_score))
+            _align_policy_settle = step_rules.get("align_policy") if isinstance(step_rules, dict) else {}
+            _settle_cap_exempt = bool((_align_policy_settle or {}).get("auto_speed_hard_cap_exempt", False))
             action_meta = send_robot_command(
                 robot,
                 world,
@@ -17268,6 +17291,7 @@ def run_alignment_segment(
                 ease_in_out_enabled=False,
                 custom_action_specs=custom_action_specs,
                 action_note=action_note,
+                score_cap_exempt=_settle_cap_exempt,
             )
             cmd_sent = cmd
             score_effective = speed_score

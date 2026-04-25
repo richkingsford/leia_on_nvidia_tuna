@@ -37,13 +37,8 @@ ALIGN_STEPS_SHARED_DIST_SCORE_BANDS = (
 # Maps distance error MM to speed score (can be fractional for fine control).
 # Lines: (error_threshold_mm, score) - if error < threshold, use this score
 ALIGN_BRICK_DIST_ERROR_SCORE_BANDS = (
-    (2.0, 1.0),      # dist_err < 2.0mm: score 1.0 (~3% power)
-    (3.0, 1.5),      # dist_err < 3.0mm: score 1.5 (~5% power)
-    (4.0, 2.0),      # dist_err < 4.0mm: score 2.0 (~6% power)
-    (5.0, 2.5),      # dist_err < 5.0mm: score 2.5 (~7% power)
-    (6.0, 3.0),      # dist_err < 6.0mm: score 3.0 (~10% power)
-    (8.0, 4.0),      # dist_err < 8.0mm: score 4.0 (~13% power)
-    (1000.0, 5.0),   # dist_err >= 8.0mm: score 5.0 (~17% power) fallback
+    (40.0, 1.0),     # dist_err < 40mm: score 1 (like r/f hotkeys — slow when near gate)
+    (1000.0, 50.0),  # dist_err >= 40mm: score 50 (like w/s hotkeys — faster when far)
 )
 ALIGN_BRICK_X_AXIS_CURVE_ALPHA = 1.67
 ALIGN_BRICK_X_AXIS_CURVE_CAP = 24.78
@@ -493,11 +488,11 @@ def _axis_curve_motion_plan(axis: str, err_mm: float, *, fallback_score: int) ->
     if abs_err < ALIGN_SAFETY_GAP_MM:
         return None
 
-    # Forward/back distance correction should stay tied to the real calibrated
-    # chassis response rather than the nominal score percentage. Sparse drive
-    # score anchors can make interpolated low scores effectively indistinguishable
-    # from 1%, which is what caused auto forward pulses to underperform here.
-    if axis_key in {"dist", "distance"}:
+    # For large dist errors (>=40mm), skip calibration and use the score bands
+    # directly (score 50 like w/s hotkeys). The aruco calibration was designed
+    # for fine-tuning at close range and returns 10% / 750ms for all errors,
+    # which is far too slow when the robot is far from the target.
+    if axis_key in {"dist", "distance"} and abs_err < 40.0:
         plan = helper_close_gaps.calibrated_axis_motion_for_error(axis=axis_key, err_mm=err_mm)
         if isinstance(plan, dict):
             try:
@@ -513,6 +508,11 @@ def _axis_curve_motion_plan(axis: str, err_mm: float, *, fallback_score: int) ->
                 out["duration_override_ms"] = int(duration_override_ms)
                 return out
 
+    # For dist errors >= 40mm, return None so the caller uses the score-band
+    # score (50) with standard duration — much more power for large gaps.
+    if axis_key in {"dist", "distance"} and abs_err >= 40.0:
+        return None
+
     # If error is above 8mm, use adaptive micro-scaling with fixed duration
     if abs_err >= 8.0:
         # Linear interpolation: 2% at 9mm, 20% at 100mm
@@ -520,7 +520,7 @@ def _axis_curve_motion_plan(axis: str, err_mm: float, *, fallback_score: int) ->
         # score = 2 + t * (20 - 2)
         raw_score = 2.0 + (abs_err - 9.0) * (18.0 / 91.0)
         score = int(round(max(2.0, min(20.0, raw_score))))
-        
+
         return {
             "axis": axis,
             "cmd": helper_close_gaps.axis_cmd_for_error(axis, err_mm),

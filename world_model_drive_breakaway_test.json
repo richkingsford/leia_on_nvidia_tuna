@@ -1,6 +1,6 @@
 {
   "ok": true,
-  "seconds": 0.002399444580078125,
+  "seconds": 0.0018146038055419922,
   "settings": {
     "hotkeys": [
       "q"
@@ -49,7 +49,7 @@
           },
           "dist_error_mm": 0.0,
           "x_axis_error_mm": 0.0,
-          "seconds": 1.5020370483398438e-05
+          "seconds": 1.3828277587890625e-05
         },
         {
           "ok": true,
@@ -60,7 +60,7 @@
           },
           "dist_error_mm": 0.0,
           "x_axis_error_mm": 0.0,
-          "seconds": 5.7220458984375e-06
+          "seconds": 6.67572021484375e-06
         }
       ],
       "rows": [

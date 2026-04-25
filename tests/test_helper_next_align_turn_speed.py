@@ -195,7 +195,7 @@ class TestHelperNextAlignTurnSpeed(unittest.TestCase):
         self.assertEqual(act.get("cmd"), "f")
         self.assertEqual(act.get("duration_override_ms"), 380)
         self.assertEqual(act.get("score"), 5)
-        mock_curve.assert_any_call("dist", 40.0, fallback_score=5)
+        mock_curve.assert_any_call("dist", 40.0, fallback_score=1)
 
     def test_dist_axis_curve_motion_plan_prefers_calibrated_distance_profile_for_large_gap(self):
         calibrated = {
