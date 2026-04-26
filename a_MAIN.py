@@ -1182,7 +1182,15 @@ def _log_motion_event_and_state(app_state, cmd, speed, score, duration_ms=None):
         dur_ms = int(round(float(duration_ms))) if duration_ms is not None else int(CONTROL_DT * 1000)
     except (TypeError, ValueError):
         dur_ms = int(CONTROL_DT * 1000)
-    evt = MotionEvent(action_type, power_u8, max(1, int(dur_ms)), speed_score=score)
+    evt = MotionEvent(
+        action_type,
+        power_u8,
+        max(1, int(dur_ms)),
+        speed_score=score,
+        action_note=getattr(app_state.world, "_last_action_note", None),
+        action_display=getattr(app_state.world, "_last_action_sent_display", None),
+        custom_action_specs=getattr(app_state.world, "_last_action_custom_actions", None),
+    )
     app_state.logger.log_event(evt, app_state.world.step_state.value)
     app_state.logger.log_state(app_state.world)
     with app_state.lock:

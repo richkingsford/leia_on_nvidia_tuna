@@ -1,5 +1,7 @@
 import re
 import sys
+import json
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -538,6 +540,48 @@ class HelperXyzCoordsTests(unittest.TestCase):
         self.assertAlmostEqual(float(state["raw_robot"]["y_mm"]), float(world.y), places=3)
         self.assertNotAlmostEqual(float(state["robot"]["y_mm"]), 0.0, places=3)
         self.assertAlmostEqual(float(state["leia"]["x_mm"]), float(state["robot"]["x_mm"]), places=3)
+
+    def test_run_log_replay_preserves_action_note_and_custom_actions(self):
+        events = [
+            {"type": "keyframe", "timestamp": 1.0, "marker": "NOMINAL_START", "step": "ALIGN_BRICK"},
+            {
+                "type": "action",
+                "timestamp": 1.1,
+                "command": "forward",
+                "speedScore": 100,
+                "actionNote": "FWD+RIGHT-CURVE",
+                "actionDisplay": "F 100% (FWD+RIGHT-CURVE)",
+                "customActionSpecs": [
+                    {"target": "l", "action": "b", "pwm": 199},
+                    {"target": "r", "action": "f", "pwm": 0},
+                ],
+            },
+            {
+                "type": "state",
+                "timestamp": 1.2,
+                "run_id": "run_test",
+                "attempt_id": 1,
+                "robot_pose": {"x": 0.0, "y": 0.0, "theta": 0.0, "height_mm": 0.0},
+                "brick": {
+                    "visible": True,
+                    "dist": 300.0,
+                    "x_axis": -49.0,
+                    "y_axis": 2.0,
+                },
+                "lift_height": 0.0,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_path = Path(tmp_dir) / "run.json"
+            log_path.write_text(json.dumps(events))
+            state = helper_xyz_coords.build_state_from_run_log(log_path)
+
+        self.assertTrue(state.get("run_replay"))
+        self.assertEqual(len(state.get("history") or []), 1)
+        entry = state["history"][0]
+        self.assertEqual(entry.get("action_after"), "F 100% (FWD+RIGHT-CURVE)")
+        self.assertEqual(entry.get("note_after"), "FWD+RIGHT-CURVE")
+        self.assertEqual(entry.get("custom_action_specs")[0]["pwm"], 199)
 
 
 if __name__ == "__main__":

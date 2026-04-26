@@ -393,11 +393,116 @@ def _turn_drive_profile_override_from_manifest(
     return int(base_pwm), profile_override
 
 
+def _production_turn_drive_forward_from_paired_trials(
+    cmd: str,
+    x_err_mm: float,
+    trials_dir: Optional[Path] = None,
+) -> Optional[dict]:
+    """Return forward-pivot plan with duration matched to x-gap from paired backward trials."""
+    cmd_key = str(cmd or "").strip().lower()
+    if cmd_key not in {"l", "r"}:
+        return None
+    x_gap_needed = _float_or_none(x_err_mm)
+    if x_gap_needed is None:
+        return None
+    x_gap_needed = abs(float(x_gap_needed))
+    if x_gap_needed <= 0.0:
+        return None
+
+    for path in _turn_drive_trial_manifest_paths(trials_dir):
+        payload = _load_json_payload(path)
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("file_type") or "").strip().lower() != "turn_drive_trials":
+            continue
+        if not bool(payload.get("production")):
+            continue
+        curve_stats = payload.get("curve_stats") if isinstance(payload.get("curve_stats"), dict) else {}
+        if not bool(curve_stats.get("production_worthy", False)):
+            continue
+        curve_cfg = payload.get("curve") if isinstance(payload.get("curve"), dict) else {}
+        setup_phase = curve_cfg.get("setup_phase") if isinstance(curve_cfg.get("setup_phase"), dict) else {}
+        if str(setup_phase.get("cmd") or "").strip().lower() != cmd_key:
+            continue
+        if str(setup_phase.get("drive_mode") or "").strip().lower() != "forward":
+            continue
+
+        profile_bits = _turn_drive_profile_override_from_manifest(
+            measured_phase=setup_phase,
+            cmd=cmd_key,
+            drive_mode="forward",
+        )
+        if profile_bits is None:
+            continue
+        pwm_override, profile_override = profile_bits
+        score_val = _float_or_none(setup_phase.get("score_pct"))
+        manifest_name = str(payload.get("name") or path.stem).strip() or path.stem
+
+        # Build backward-trial x-gap index keyed by trial number.
+        bwd_by_trial: dict = {}
+        for t in list(payload.get("trials_backwards") or []):
+            if not isinstance(t, dict) or t.get("usable") is not True:
+                continue
+            trial_num = _float_or_none(t.get("trial"))
+            x_gap_closed = _float_or_none(t.get("xGapClosed"))
+            if trial_num is None or x_gap_closed is None or float(x_gap_closed) <= 0.0:
+                continue
+            bwd_by_trial[int(round(float(trial_num)))] = float(x_gap_closed)
+
+        # Pair each forward trial with its backward x-gap value.
+        candidates = []
+        for fwd_t in list(payload.get("trials_forward") or []):
+            if not isinstance(fwd_t, dict):
+                continue
+            trial_num = _float_or_none(fwd_t.get("trial"))
+            setup_dur = _float_or_none(fwd_t.get("setupDurationMs"))
+            if trial_num is None or setup_dur is None or float(setup_dur) <= 0.0:
+                continue
+            trial_int = int(round(float(trial_num)))
+            x_gap_closed = bwd_by_trial.get(trial_int)
+            if x_gap_closed is None:
+                continue
+            candidates.append({
+                "trial": trial_int,
+                "x_gap_closed_mm": float(x_gap_closed),
+                "duration_ms": int(round(float(setup_dur))),
+            })
+
+        if not candidates:
+            continue
+
+        def _candidate_key(item: dict) -> tuple:
+            gap_closed = float(item["x_gap_closed_mm"])
+            covers_gap = gap_closed >= float(x_gap_needed)
+            if covers_gap:
+                return (0.0, float(gap_closed - float(x_gap_needed)), float(item["duration_ms"]), 0.0)
+            return (1.0, abs(float(x_gap_needed) - float(gap_closed)), -float(gap_closed), float(item["duration_ms"]))
+
+        chosen = min(candidates, key=_candidate_key)
+        curve_name = (
+            f"{manifest_name} fwd trial {int(chosen['trial'])} "
+            f"(x_gap_ref={float(chosen['x_gap_closed_mm']):.3f}mm)"
+        ).strip()
+        return {
+            "manifest_name": str(manifest_name),
+            "trial": int(chosen["trial"]),
+            "score": int(round(float(score_val))) if score_val is not None else 1,
+            "duration_override_ms": int(chosen["duration_ms"]),
+            "x_gap_closed_mm": float(chosen["x_gap_closed_mm"]),
+            "pwm_override": int(pwm_override),
+            "profile_override": dict(profile_override),
+            "curve_name": str(curve_name),
+            "curve_value_mm": float(chosen["x_gap_closed_mm"]),
+            "source": "production_turn_drive_trials_forward",
+        }
+    return None
+
+
 def _production_turn_drive_setup_phase_plan(
     cmd: str,
     trials_dir: Optional[Path] = None,
 ) -> Optional[dict]:
-    """Return motor settings from the setup_phase (forward turn) of a trial file."""
+    """Return fixed motor settings from the setup_phase — fallback when no paired trials."""
     cmd_key = str(cmd or "").strip().lower()
     if cmd_key not in {"l", "r"}:
         return None
@@ -456,6 +561,12 @@ def production_turn_drive_curve_plan(
         return None
 
     if drive_mode_key == "forward":
+        # Prefer x-gap-matched duration from paired trials; fall back to fixed setup_phase.
+        paired = _production_turn_drive_forward_from_paired_trials(
+            cmd=cmd_key, x_err_mm=x_err_mm, trials_dir=trials_dir
+        )
+        if paired is not None:
+            return paired
         return _production_turn_drive_setup_phase_plan(cmd=cmd_key, trials_dir=trials_dir)
 
     current_dist = _float_or_none(current_dist_mm)
@@ -540,8 +651,8 @@ def production_turn_drive_curve_plan(
             )
         return (
             1.0,
-            float(dist_delta),
             abs(float(x_gap_needed) - float(gap_closed)),
+            float(dist_delta),
             -float(gap_closed),
             float(item.get("duration_override_ms") or 0.0),
         )
@@ -1023,8 +1134,10 @@ def curve_is_usable(stats: Optional[dict]) -> bool:
 
 # Distance error bands for ALIGN_BRICK micro-adjustments.
 ALIGN_BRICK_DIST_ERROR_SCORE_BANDS = (
-    (40.0, 1.0),     # dist_err < 40mm: score 1 (like r/f hotkeys — slow when near gate)
-    (1000.0, 50.0),  # dist_err >= 40mm: score 50 (like w/s hotkeys — faster when far)
+    (8.0, 1.0),      # dist_err < 8mm: hard shared safety floor
+    (20.0, 5.0),     # small but real distance gaps need more than the 1% floor
+    (40.0, 20.0),    # mid-range gaps should close in a small number of acts
+    (1000.0, 50.0),  # far gaps use w/s-style drive authority
 )
 
 ALIGN_BRICK_X_AXIS_CURVE_ALPHA = 1.67
@@ -1047,20 +1160,47 @@ ALIGN_SAFETY_GAP_MM = 8.0
 ALIGN_TURN_SAFETY_GAP_MM = ALIGN_SAFETY_GAP_MM
 
 
-def align_brick_dist_error_speed_score(dist_error_mm: float) -> float:
+def _dist_error_score_bands_from_policy(align_policy=None):
+    if isinstance(align_policy, dict):
+        raw_bands = align_policy.get("dist_error_score_bands")
+        if isinstance(raw_bands, (list, tuple)):
+            bands = []
+            for item in raw_bands:
+                if isinstance(item, dict):
+                    upper = item.get("upper_mm")
+                    score = item.get("score")
+                elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                    upper = item[0]
+                    score = item[1]
+                else:
+                    continue
+                try:
+                    upper_f = float(upper)
+                    score_f = float(score)
+                except (TypeError, ValueError):
+                    continue
+                if upper_f > 0.0:
+                    bands.append((upper_f, score_f))
+            if bands:
+                return tuple(sorted(bands, key=lambda row: row[0]))
+    return ALIGN_BRICK_DIST_ERROR_SCORE_BANDS
+
+
+def align_brick_dist_error_speed_score(dist_error_mm: float, *, align_policy=None) -> float:
     try:
         error_mm = abs(float(dist_error_mm))
     except (TypeError, ValueError):
         return 1.0
     if gap_safe_score(error_mm):
         return float(SPEED_SCORE_MIN)
-    for upper_bound, score in ALIGN_BRICK_DIST_ERROR_SCORE_BANDS:
+    bands = _dist_error_score_bands_from_policy(align_policy)
+    for upper_bound, score in bands:
         try:
             if error_mm < float(upper_bound):
                 return float(score)
         except (TypeError, ValueError):
             continue
-    return float(ALIGN_BRICK_DIST_ERROR_SCORE_BANDS[-1][1]) if ALIGN_BRICK_DIST_ERROR_SCORE_BANDS else 1.0
+    return float(bands[-1][1]) if bands else 1.0
 
 
 def gap_safe_score(gap_mm):
@@ -1125,10 +1265,10 @@ def align_brick_y_axis_one_shot_score(y_err_mm: float) -> int:
     return int(SPEED_SCORE_MIN)
 
 
-def align_gap_correction_speed_score(correction_type, gap_mm, *, cmd=None) -> int:
+def align_gap_correction_speed_score(correction_type, gap_mm, *, cmd=None, align_policy=None) -> int:
     corr_key = str(correction_type or "").strip().lower()
     if corr_key == "distance":
-        base_score = int(round(float(align_brick_dist_error_speed_score(gap_mm))))
+        base_score = int(round(float(align_brick_dist_error_speed_score(gap_mm, align_policy=align_policy))))
         cmd_key = str(cmd or "f").strip().lower() or "f"
     elif corr_key == "y_axis":
         base_score = int(align_brick_y_axis_one_shot_score(gap_mm))

@@ -2765,6 +2765,8 @@ def send_robot_command_pwm(
         if isinstance(custom_action_specs, (list, tuple))
         else []
     )
+    if world is not None:
+        world._last_action_custom_actions = [dict(spec) for spec in custom_actions] if custom_actions else None
     ease_profile = None
     ease_note = None
     # Easing can run in two modes:
@@ -3640,6 +3642,9 @@ def _align_brick_lite_fail_fallback_action(world, step, *, prefer_effective_samp
         return None
     process_rules = getattr(world, "process_rules", None) or {}
     step_cfg = process_rules.get(step_key_local, {}) if isinstance(process_rules, dict) else {}
+    align_policy_local = step_cfg.get("align_policy") if isinstance(step_cfg, dict) else {}
+    if not isinstance(align_policy_local, dict):
+        align_policy_local = {}
     success_gates = step_cfg.get("success_gates") if isinstance(step_cfg, dict) else {}
     if not isinstance(success_gates, dict) or not success_gates:
         return None
@@ -3710,6 +3715,18 @@ def _align_brick_lite_fail_fallback_action(world, step, *, prefer_effective_samp
     if not isinstance(best, dict):
         return None
 
+    # HARD RULE: never correct a metric that the current observation shows is
+    # already within its success band. Averaged/smoothed frames can include stale
+    # readings; the live brick state is authoritative for in-gate decisions.
+    metric_key_best = str(best.get("metric") or "").strip()
+    if metric_key_best and isinstance(current_source, dict):
+        current_val = gate_utils.metric_value_from_measurement(current_source, metric_key_best)
+        if current_val is not None:
+            stats_best = success_gates.get(metric_key_best, {})
+            dir_best = metric_direction(metric_key_best, step_key_local, process_rules=process_rules)
+            if _gate_entry_matches(metric_key_best, current_val, stats_best, dir_best):
+                return None
+
     correction_type = str(best.get("correction_type") or "")
     value_num = float(best.get("value", 0.0))
     target_num = float(best.get("target", 0.0))
@@ -3719,6 +3736,7 @@ def _align_brick_lite_fail_fallback_action(world, step, *, prefer_effective_samp
             "distance",
             abs(float(value_num) - float(target_num)),
             cmd=cmd_local,
+            align_policy=align_policy_local,
         )
         reason_local = "lite_fail_fallback_dist"
     elif correction_type == "y_axis":
@@ -7507,6 +7525,10 @@ def _auto_diag_lite_gate_detail(world, step):
                 lite_required = max(0, int(lite_meta.get("required", 0) or 0))
             if lite_collected <= 0:
                 lite_collected = max(0, int(lite_meta.get("collected", 0) or 0))
+    elif mode == "traditional":
+        brick_now = getattr(world, "brick", None)
+        if isinstance(brick_now, dict):
+            measurement = dict(brick_now)
     rows = _success_gate_state_rows(
         world,
         step_key,
@@ -11781,7 +11803,17 @@ def run_alignment_segment(
         )
 
     def _build_forward_turn_assist_for_action(local_gate_before_action, *, cmd_local, speed_score_local):
-        plan = helper_telemetry_forward_while_turning.build_forward_while_turning_plan(
+        curve_plan = helper_telemetry_forward_while_turning.build_curve_drive_while_turning_plan(
+            step_rules=step_rules,
+            cmd=cmd_local,
+            speed_score=speed_score_local,
+            local_gate_status=local_gate_before_action,
+            hold_duration_ms=duration_override_ms,
+            metadata={"step": normalize_step_label(step)},
+        )
+        if isinstance(curve_plan, dict):
+            return curve_plan
+        plan = helper_telemetry_forward_while_turning.build_drive_while_turning_plan(
             step_rules=step_rules,
             cmd=cmd_local,
             speed_score=speed_score_local,
@@ -12107,7 +12139,10 @@ def run_alignment_segment(
         # If actual y is already within the success gate, don't apply the hold offset —
         # there is no gap to close, so acting would overshoot into worse territory.
         if y_axis_success_target is not None and y_axis_success_tol > 0.0:
-            if abs(float(y_axis_num) - float(y_axis_success_target)) <= float(y_axis_success_tol):
+            # The hold is a descent stop, not a command to climb back upward to
+            # the temporary shelf. If the marker is already at or below the
+            # upper edge of the final band, let normal y targeting handle it.
+            if float(y_axis_num) <= (float(y_axis_success_target) + float(y_axis_success_tol)):
                 return float(y_axis_num)
         return float(y_axis_num) - float(y_axis_hold_offset_mm)
 
@@ -16427,7 +16462,7 @@ def run_alignment_segment(
             if (
                 not bool(is_search_action)
                 and bool(use_micro_align_gap_planner)
-                and cmd == "f"
+                and cmd in ("f", "b")
             ):
                 forward_turn_plan = _build_forward_turn_assist_for_action(
                     local_gate_before_action,
@@ -16449,6 +16484,10 @@ def run_alignment_segment(
             elif isinstance(forward_turn_plan, dict):
                 custom_action_specs = list(forward_turn_plan.get("actions") or [])
                 action_note = str(forward_turn_plan.get("action_note") or "").strip() or None
+                if bool(forward_turn_plan.get("curve_assist")):
+                    curve_attempt_note = _turn_drive_attempt_log_text(forward_turn_plan, local_gate_before_action)
+                    if curve_attempt_note:
+                        action_note = _join_action_notes(action_note, curve_attempt_note)
                 try:
                     plan_duration_ms = int(round(float(forward_turn_plan.get("duration_ms") or 0)))
                 except (TypeError, ValueError):
@@ -17242,7 +17281,7 @@ def run_alignment_segment(
                     cmd_local=cmd,
                     speed_score_local=speed_score,
                 )
-            if bool(use_micro_align_gap_planner) and cmd == "f":
+            if bool(use_micro_align_gap_planner) and cmd in ("f", "b"):
                 forward_turn_plan = _build_forward_turn_assist_for_action(
                     local_gate_before_action,
                     cmd_local=cmd,
@@ -17263,6 +17302,10 @@ def run_alignment_segment(
             elif isinstance(forward_turn_plan, dict):
                 custom_action_specs = list(forward_turn_plan.get("actions") or [])
                 action_note = str(forward_turn_plan.get("action_note") or "").strip() or None
+                if bool(forward_turn_plan.get("curve_assist")):
+                    curve_attempt_note = _turn_drive_attempt_log_text(forward_turn_plan, local_gate_before_action)
+                    if curve_attempt_note:
+                        action_note = _join_action_notes(action_note, curve_attempt_note)
                 try:
                     plan_duration_ms = int(round(float(forward_turn_plan.get("duration_ms") or 0)))
                 except (TypeError, ValueError):

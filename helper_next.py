@@ -37,8 +37,10 @@ ALIGN_STEPS_SHARED_DIST_SCORE_BANDS = (
 # Maps distance error MM to speed score (can be fractional for fine control).
 # Lines: (error_threshold_mm, score) - if error < threshold, use this score
 ALIGN_BRICK_DIST_ERROR_SCORE_BANDS = (
-    (40.0, 1.0),     # dist_err < 40mm: score 1 (like r/f hotkeys — slow when near gate)
-    (1000.0, 50.0),  # dist_err >= 40mm: score 50 (like w/s hotkeys — faster when far)
+    (8.0, 1.0),      # dist_err < 8mm: hard shared safety floor
+    (20.0, 5.0),     # small but real distance gaps need more than the 1% floor
+    (40.0, 20.0),    # mid-range gaps should close in a small number of acts
+    (1000.0, 50.0),  # far gaps use w/s-style drive authority
 )
 ALIGN_BRICK_X_AXIS_CURVE_ALPHA = 1.67
 ALIGN_BRICK_X_AXIS_CURVE_CAP = 24.78
@@ -279,7 +281,33 @@ def align_steps_dist_speed_score(dist_mm: float, fallback_score: int) -> int:
     )
 
 
-def align_brick_dist_error_speed_score(dist_error_mm: float) -> float:
+def _dist_error_score_bands_from_policy(align_policy=None):
+    if isinstance(align_policy, dict):
+        raw_bands = align_policy.get("dist_error_score_bands")
+        if isinstance(raw_bands, (list, tuple)):
+            bands = []
+            for item in raw_bands:
+                if isinstance(item, dict):
+                    upper = item.get("upper_mm")
+                    score = item.get("score")
+                elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                    upper = item[0]
+                    score = item[1]
+                else:
+                    continue
+                try:
+                    upper_f = float(upper)
+                    score_f = float(score)
+                except (TypeError, ValueError):
+                    continue
+                if upper_f > 0.0:
+                    bands.append((upper_f, score_f))
+            if bands:
+                return tuple(sorted(bands, key=lambda row: row[0]))
+    return ALIGN_BRICK_DIST_ERROR_SCORE_BANDS
+
+
+def align_brick_dist_error_speed_score(dist_error_mm: float, *, align_policy=None) -> float:
     """
     Calculate granular speed score for ALIGN_BRICK distance micro-adjustments.
     
@@ -304,7 +332,8 @@ def align_brick_dist_error_speed_score(dist_error_mm: float) -> float:
         return float(SPEED_SCORE_MIN)
     
     # Use banded lookup: find first band where error_mm < upper_bound
-    for upper_bound, score in ALIGN_BRICK_DIST_ERROR_SCORE_BANDS:
+    bands = _dist_error_score_bands_from_policy(align_policy)
+    for upper_bound, score in bands:
         try:
             bound = float(upper_bound)
             if error_mm < bound:
@@ -313,7 +342,7 @@ def align_brick_dist_error_speed_score(dist_error_mm: float) -> float:
             continue
     
     # Fallback to last score if exceeds all bands (shouldn't happen with large fallback)
-    return float(ALIGN_BRICK_DIST_ERROR_SCORE_BANDS[-1][1]) if ALIGN_BRICK_DIST_ERROR_SCORE_BANDS else 1.0
+    return float(bands[-1][1]) if bands else 1.0
 
 
 # HARD RULE: Gap < 8mm MUST use 1% speed — ALL axes, ALL correction types.
@@ -438,7 +467,7 @@ def align_brick_y_axis_one_shot_score(y_err_mm: float) -> int:
     return int(SPEED_SCORE_MIN)
 
 
-def align_gap_correction_speed_score(correction_type, gap_mm, *, cmd=None) -> int:
+def align_gap_correction_speed_score(correction_type, gap_mm, *, cmd=None, align_policy=None) -> int:
     """
     Return the shared micro-adjust speed score for a correction type.
 
@@ -447,7 +476,7 @@ def align_gap_correction_speed_score(correction_type, gap_mm, *, cmd=None) -> in
     """
     corr_key = str(correction_type or "").strip().lower()
     if corr_key == "distance":
-        base_score = int(round(float(align_brick_dist_error_speed_score(gap_mm))))
+        base_score = int(round(float(align_brick_dist_error_speed_score(gap_mm, align_policy=align_policy))))
         cmd_key = str(cmd or "f").strip().lower() or "f"
     elif corr_key == "y_axis":
         base_score = int(align_brick_y_axis_one_shot_score(gap_mm))
@@ -495,6 +524,10 @@ def _axis_curve_motion_plan(axis: str, err_mm: float, *, fallback_score: int) ->
     if axis_key in {"dist", "distance"} and abs_err < 40.0:
         plan = helper_close_gaps.calibrated_axis_motion_for_error(axis=axis_key, err_mm=err_mm)
         if isinstance(plan, dict):
+            predicted_mm = _coerce_float(plan.get("predicted_distance_mm"), None)
+            clamped_to = str(plan.get("duration_clamped_to") or "").strip().lower()
+            if clamped_to == "max" and predicted_mm is not None and float(predicted_mm) < (float(abs_err) * 0.75):
+                return None
             try:
                 duration_override_ms = int(round(float(plan.get("duration_override_ms"))))
             except (TypeError, ValueError):
@@ -1299,7 +1332,7 @@ def compute_alignment_analytics(world, process_rules, learned_rules, step, durat
                     dist_error_mm = abs(float(dist_signed_err))
             if dist_error_mm is None:
                 dist_error_mm = _coerce_float(mm_errors.get("dist"), 0.0) or 0.0
-            dist_score_float = align_brick_dist_error_speed_score(float(dist_error_mm))
+            dist_score_float = align_brick_dist_error_speed_score(float(dist_error_mm), align_policy=align_policy)
             speed_score = int(round(float(dist_score_float)))
         elif cmd in ("f", "b") and dist_score_mode in {"dist_value_bands", "dist_profile"}:
             base_score = _score_from_mm(mm_off, slow_mm, fast_mm)
@@ -1897,7 +1930,7 @@ def select_align_brick_next_act(
             dist_score_err_mm = dist_gate_outside_mm
             if dist_score_err_mm is None:
                 dist_score_err_mm = dist_err_mm
-            score_float_dist = float(align_brick_dist_error_speed_score(dist_score_err_mm))
+            score_float_dist = float(align_brick_dist_error_speed_score(dist_score_err_mm, align_policy=align_policy))
             dist_curve_plan = None
             if dist_curve_err_mm is not None:
                 dist_curve_plan = _axis_curve_motion_plan(
@@ -1950,12 +1983,17 @@ def select_align_brick_next_act(
     if prefer_forward_for_x_axis:
         dist_forward_candidate = candidates.get("distance")
         if isinstance(dist_forward_candidate, dict) and str(dist_forward_candidate.get("cmd") or "").strip().lower() == "f":
+            had_x_candidate = bool("x_axis" in candidates or "x_axis" in recovery_fallback_candidates)
             if "x_axis" in candidates:
                 candidates.pop("x_axis", None)
             if "x_axis" in recovery_fallback_candidates:
                 recovery_fallback_candidates.pop("x_axis", None)
             dist_forward_candidate = dict(dist_forward_candidate)
-            dist_forward_candidate["reason"] = "forward_turn_bias_preferred"
+            if had_x_candidate:
+                dist_forward_candidate["reason"] = "distance_x_axis_single_act"
+                dist_forward_candidate["_combined_gap_action"] = True
+            else:
+                dist_forward_candidate["reason"] = "forward_turn_bias_preferred"
             candidates["distance"] = dist_forward_candidate
 
     dist_priority_cheat_active = False
@@ -2043,9 +2081,8 @@ def select_align_brick_next_act(
         )
     )
 
-    # Single-source x-vs-dist safety focus (same intent as the best ALIGN_BRICK
-    # behavior): when far from target and x is off, fix x first; only force depth
-    # focus when extremely far and x is already reasonably aligned.
+    # Single-source x-vs-dist focus policy. Thresholds are step configuration,
+    # not controller constants, so step behavior stays in the world model.
     force_x_axis_focus = False
     force_dist_focus = False
     try:
@@ -2056,9 +2093,37 @@ def select_align_brick_next_act(
         x_axis_gap_mm = None
         dist_gap_mm = None
     if x_required and d_required and dist_gap_mm is not None and x_axis_gap_mm is not None:
-        if dist_gap_mm > 50.0 and x_axis_gap_mm > 2.0:
+        try:
+            focus_x_first_dist_gap_gt_mm = float(
+                _coerce_float(align_policy.get("focus_x_first_dist_gap_gt_mm"), 1000000000.0)
+                or 1000000000.0
+            )
+        except (TypeError, ValueError):
+            focus_x_first_dist_gap_gt_mm = 1000000000.0
+        try:
+            focus_x_first_x_gap_gt_mm = float(
+                _coerce_float(align_policy.get("focus_x_first_x_gap_gt_mm"), 1000000000.0)
+                or 1000000000.0
+            )
+        except (TypeError, ValueError):
+            focus_x_first_x_gap_gt_mm = 1000000000.0
+        try:
+            focus_dist_first_dist_gap_gt_mm = float(
+                _coerce_float(align_policy.get("focus_dist_first_dist_gap_gt_mm"), 150.0)
+                or 150.0
+            )
+        except (TypeError, ValueError):
+            focus_dist_first_dist_gap_gt_mm = 150.0
+        try:
+            focus_dist_first_x_gap_lt_mm = float(
+                _coerce_float(align_policy.get("focus_dist_first_x_gap_lt_mm"), 1000000000.0)
+                or 1000000000.0
+            )
+        except (TypeError, ValueError):
+            focus_dist_first_x_gap_lt_mm = 1000000000.0
+        if dist_gap_mm > focus_x_first_dist_gap_gt_mm and x_axis_gap_mm > focus_x_first_x_gap_gt_mm:
             force_x_axis_focus = True
-        elif dist_gap_mm > 150.0 and x_axis_gap_mm < 5.0:
+        elif dist_gap_mm > focus_dist_first_dist_gap_gt_mm and x_axis_gap_mm < focus_dist_first_x_gap_lt_mm:
             force_dist_focus = True
     if prefer_forward_for_x_axis:
         force_x_axis_focus = False

@@ -313,6 +313,8 @@ def _normalized_render_snapshot(state: dict | None) -> dict:
         "history_step_seq",
         "history_step_name",
         "micro_adjust_phase",
+        "run_replay",
+        "run_log_path",
     ):
         if key in state:
             snapshot[key] = _deepcopy(state.get(key))
@@ -1244,6 +1246,8 @@ def _current_step_observation_history(state: dict) -> list[dict]:
 
 def _current_step_bird_history(state: dict) -> list[dict]:
     observed = _current_step_observation_history(state)
+    if bool((state or {}).get("run_replay")):
+        return observed
     return observed[-int(BIRD_HISTORY_MAX_POINTS):]
 
 
@@ -1691,6 +1695,7 @@ def render_workspace_svg(state: dict | None) -> str:
                     "trend": trend,
                     "color": color,
                     "entry_data": entry_data,
+                    "is_first_after_action": bool(entry.get("is_first_after_action")),
                 }
             )
             previous_entry = entry
@@ -1717,10 +1722,11 @@ def render_workspace_svg(state: dict | None) -> str:
 
         history_points = [(float(row["x"]), float(row["y"])) for row in history_rows]
         for row in history_rows:
+            dot_opacity = "1.0" if row.get("is_first_after_action") else "0.4"
             svg_parts.append(
                 f'<circle class="step-history-dot" data-trend="{row["trend"]}" data-entry="{row["entry_data"]}" '
                 f'cx="{float(row["x"]):.1f}" cy="{float(row["y"]):.1f}" '
-                f'r="{float(BIRD_HISTORY_DOT_RADIUS_PX):.1f}" fill="{row["color"]}" fill-opacity="0.98" '
+                f'r="{float(BIRD_HISTORY_DOT_RADIUS_PX):.1f}" fill="{row["color"]}" fill-opacity="{dot_opacity}" '
                 'stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />'
             )
         if len(history_points) >= 2:
@@ -1958,7 +1964,7 @@ def render_mast_svg(state: dict | None) -> str:
 
 def _summary_payload(state: dict) -> dict:
     plan = _plan_reverse_then_turn_from_state(state, turn_cmd="l")
-    return {
+    payload = {
         "updated_at": float(state.get("updated_at", time.time())),
         "robot": _deepcopy(state.get("robot", {})),
         "raw_robot": _deepcopy(state.get("raw_robot", {})),
@@ -1969,9 +1975,16 @@ def _summary_payload(state: dict) -> dict:
         "wall_reverse_plan": plan,
         "last_visible_brick": _deepcopy(state.get("last_visible_brick", {})),
     }
+    if bool(state.get("run_replay")):
+        payload["run_replay"] = True
+        payload["run_log_path"] = str(state.get("run_log_path") or "")
+        payload["history"] = _deepcopy(state.get("history", []))
+    return payload
 
 
 def render_workspace_html(state: dict | None) -> str:
+    if isinstance(state, dict) and state.get("run_log") and not state.get("history"):
+        state = build_state_from_run_log(state["run_log"])
     snapshot = _normalized_render_snapshot(state)
     bird_svg = render_workspace_svg(snapshot)
     mast_svg = render_mast_svg(snapshot)
@@ -2243,6 +2256,131 @@ def render_workspace_html(state: dict | None) -> str:
 </body>
 </html>
 """
+def build_state_from_run_log(log_path: str | Path) -> dict:
+    """Parse a run log JSON file and build a state dict for rendering."""
+    try:
+        with open(log_path, encoding="utf-8") as f:
+            content = f.read().rstrip()
+    except Exception:
+        return {}
+    if not content.endswith("]"):
+        content = content.rstrip().rstrip(",") + "]"
+    try:
+        events = json.loads(content)
+    except Exception:
+        return {}
+    if not isinstance(events, list):
+        return {}
+
+    step_name = "ALIGN_BRICK"
+    for evt in events:
+        if isinstance(evt, dict) and evt.get("type") == "keyframe":
+            s = str(evt.get("step") or "").strip()
+            if s:
+                step_name = s
+                break
+
+    history = []
+    step_seq = 1
+    act_idx = 0
+    last_action = None
+    last_action_first_state_seen = None
+    for evt in events:
+        if not isinstance(evt, dict):
+            continue
+        evt_type = str(evt.get("type") or "").strip().lower()
+        if evt_type == "action":
+            last_action = evt
+            act_idx += 1
+        elif evt_type == "state":
+            brick = evt.get("brick") or {}
+            pose = evt.get("robot_pose") or {}
+            visible = bool(brick.get("visible", False))
+            dist = brick.get("dist")
+            x_axis = brick.get("x_axis")
+            y_axis = brick.get("y_axis")
+            if visible and dist is not None and x_axis is not None:
+                lift_height = _coerce_float(evt.get("lift_height"), None)
+                if lift_height is None:
+                    lift_height = _coerce_float(pose.get("height_mm"), 0.0) or 0.0
+                entry = {
+                    "type": "sync",
+                    "target_visible": True,
+                    "dist_mm": float(dist),
+                    "target_range_mm": float(dist),
+                    "x_axis_mm": float(x_axis),
+                    "y_axis_mm": (None if y_axis is None else float(y_axis)),
+                    "step_name": step_name,
+                    "step_seq": step_seq,
+                    "x_mm": float(pose.get("x", 0.0) or 0.0),
+                    "y_mm": float(pose.get("y", 0.0) or 0.0),
+                    "theta_deg": float(pose.get("theta", 0.0) or 0.0),
+                    "current_lift_mm": float(lift_height),
+                    "camera_height_mm": float(lift_height),
+                    "act_idx": act_idx,
+                }
+                is_first_after_action = False
+                if last_action is not None:
+                    action_cmd = str(last_action.get("command") or "")
+                    action_score = last_action.get("speedScore")
+                    action_note = str(last_action.get("actionNote") or "").strip()
+                    action_display = str(last_action.get("actionDisplay") or "").strip()
+                    entry["action_cmd"] = action_cmd
+                    entry["action_score"] = action_score
+                    entry["action_after"] = action_cmd
+                    entry["score_after"] = action_score
+                    entry["action_type"] = action_cmd
+                    entry["speed_score"] = action_score
+                    if action_note:
+                        entry["action_note"] = action_note
+                        entry["note_after"] = action_note
+                    if action_display:
+                        entry["action_display"] = action_display
+                        entry["action_after"] = action_display
+                    custom_specs = last_action.get("customActionSpecs")
+                    if isinstance(custom_specs, list) and custom_specs:
+                        entry["custom_action_specs"] = [
+                            dict(spec) for spec in custom_specs if isinstance(spec, dict)
+                        ]
+                    if last_action is not last_action_first_state_seen:
+                        is_first_after_action = True
+                        last_action_first_state_seen = last_action
+                entry["is_first_after_action"] = is_first_after_action
+                history.append(entry)
+
+    state = _default_workspace_state(render_enabled=False)
+    state["run_replay"] = True
+    state["run_log_path"] = str(log_path)
+    state["history"] = history
+    state["active_target"] = {
+        "step_name": step_name,
+        "history_step_seq": step_seq,
+    }
+    if history:
+        last = history[-1]
+        state["last_visible_brick"] = {
+            "visible": True,
+            "dist_mm": last.get("dist_mm"),
+            "x_axis_mm": last.get("x_axis_mm"),
+            "y_axis_mm": last.get("y_axis_mm"),
+        }
+    return state
+
+
+def write_run_view_from_log(log_path: str | Path | None = None) -> None:
+    """Regenerate run_view.html from a run log file (latest if not specified)."""
+    if log_path is None:
+        runs_dir = Path(__file__).resolve().parent / "Runs - cyan"
+        logs = sorted(runs_dir.glob("*.json"))
+        if not logs:
+            return
+        log_path = logs[-1]
+    state = build_state_from_run_log(log_path)
+    if not state:
+        return
+    _write_live_assets(state)
+
+
 def _write_live_assets(state: dict) -> None:
     try:
         XYZ_LAYOUT_DIR.mkdir(parents=True, exist_ok=True)

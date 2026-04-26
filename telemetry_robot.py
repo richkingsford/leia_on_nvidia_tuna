@@ -2126,12 +2126,28 @@ def _cmd_for_action_type(action_type):
     }.get(action_type)
 
 class MotionEvent:
-    def __init__(self, action_type, power=None, duration_ms=0, speed_score=None):
+    def __init__(
+        self,
+        action_type,
+        power=None,
+        duration_ms=0,
+        speed_score=None,
+        action_note=None,
+        action_display=None,
+        custom_action_specs=None,
+    ):
         self.action_type = action_type
         self.duration_ms = int(duration_ms) if duration_ms is not None else 0
         self.timestamp = time.time()
         self.speed_score = None
         self.power = 0
+        self.action_note = str(action_note).strip() if action_note else None
+        self.action_display = str(action_display).strip() if action_display else None
+        self.custom_action_specs = (
+            [dict(spec) for spec in custom_action_specs if isinstance(spec, dict)]
+            if isinstance(custom_action_specs, (list, tuple))
+            else None
+        )
 
         if speed_score is not None:
             try:
@@ -2768,6 +2784,15 @@ class TelemetryLogger:
             "command": event.action_type,
             "speedScore": None if speed_score is None else int(speed_score)
         }
+        action_note = getattr(event, "action_note", None)
+        if action_note:
+            data["actionNote"] = str(action_note)
+        action_display = getattr(event, "action_display", None)
+        if action_display:
+            data["actionDisplay"] = str(action_display)
+        custom_action_specs = getattr(event, "custom_action_specs", None)
+        if isinstance(custom_action_specs, list) and custom_action_specs:
+            data["customActionSpecs"] = [dict(spec) for spec in custom_action_specs if isinstance(spec, dict)]
 
         self._write_row(data)
 

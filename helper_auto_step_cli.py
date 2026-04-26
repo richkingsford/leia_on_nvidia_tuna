@@ -122,6 +122,15 @@ def run_single_auto_step(*, step_token: str, vision_mode: str | None):
         except Exception:
             pass
         try:
+            import helper_xyz_coords as _xyz
+            log_path = getattr(app_state, "log_path", None)
+            if log_path:
+                _xyz.write_run_view_from_log(log_path)
+            else:
+                _xyz.write_run_view_from_log()
+        except Exception:
+            pass
+        try:
             app_state.vision.close()
         except Exception:
             pass

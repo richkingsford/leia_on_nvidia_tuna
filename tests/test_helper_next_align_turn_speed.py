@@ -195,7 +195,7 @@ class TestHelperNextAlignTurnSpeed(unittest.TestCase):
         self.assertEqual(act.get("cmd"), "f")
         self.assertEqual(act.get("duration_override_ms"), 380)
         self.assertEqual(act.get("score"), 5)
-        mock_curve.assert_any_call("dist", 40.0, fallback_score=1)
+        mock_curve.assert_any_call("dist", 40.0, fallback_score=20)
 
     def test_dist_axis_curve_motion_plan_prefers_calibrated_distance_profile_for_large_gap(self):
         calibrated = {
@@ -219,6 +219,28 @@ class TestHelperNextAlignTurnSpeed(unittest.TestCase):
         self.assertEqual(plan, calibrated)
         mock_calibrated.assert_called_once_with(axis="dist", err_mm=20.0)
 
+    def test_dist_axis_curve_motion_plan_skips_max_clamped_profile_that_cannot_cover_gap(self):
+        calibrated = {
+            "axis": "dist",
+            "cmd": "f",
+            "gap_mm": 20.0,
+            "score": 10,
+            "speed_score_pct": 10.0,
+            "duration_override_ms": 750,
+            "predicted_distance_mm": 0.2,
+            "duration_clamped_to": "max",
+            "source": "aruco_marker_calibration",
+        }
+
+        with patch.object(
+            helper_next.helper_close_gaps,
+            "calibrated_axis_motion_for_error",
+            return_value=calibrated,
+        ):
+            plan = helper_next._axis_curve_motion_plan("dist", 20.0, fallback_score=5)
+
+        self.assertIsNone(plan)
+
     def test_align_prioritizes_dist_when_gap_exceeds_150mm_even_if_x_axis_off(self):
         world = _DummyWorld(20.0, dist=300.0)
         analytics = helper_next.compute_alignment_analytics(
@@ -231,6 +253,91 @@ class TestHelperNextAlignTurnSpeed(unittest.TestCase):
         self.assertEqual(analytics.get("worst_metric"), "dist")
         self.assertEqual(analytics.get("cmd"), "f")
         self.assertTrue(getattr(world, "_align_focus_dist", False))
+
+    def test_align_brick_far_dist_with_x_gap_uses_single_forward_bias_act_at_full_score(self):
+        rules = {
+            "ALIGN_BRICK": {
+                "align_policy": {
+                    "dist_score_mode": "dist_error_bands",
+                    "auto_speed_hard_cap_exempt": True,
+                    "dist_error_score_bands": [
+                        {"upper_mm": 8.0, "score": 1.0},
+                        {"upper_mm": 20.0, "score": 20.0},
+                        {"upper_mm": 40.0, "score": 20.0},
+                        {"upper_mm": 120.0, "score": 50.0},
+                        {"upper_mm": 1000.0, "score": 100.0},
+                    ],
+                    "forward_while_turning_assist": {
+                        "enabled": True,
+                        "prefer_forward_for_x_axis": True,
+                        "prefer_forward_min_x_err_mm": 0.3,
+                    },
+                },
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 6.03, "tol": 5.0},
+                    "yAxis_offset_abs": {"target": 4.13, "tol": 2.3},
+                    "dist": {"target": 149.26, "tol": 5.0},
+                },
+            }
+        }
+
+        plan = helper_next.select_align_brick_next_act(
+            process_rules=rules,
+            learned_rules={},
+            step="ALIGN_BRICK",
+            x_axis_mm=-52.44,
+            y_axis_mm=1.68,
+            dist_mm=364.77,
+            visible=True,
+            duration_s=0.05,
+        )
+
+        self.assertEqual(plan.get("cmd"), "f", plan)
+        self.assertEqual(plan.get("correction_type"), "distance", plan)
+        self.assertEqual(int(plan.get("score") or 0), 100, plan)
+        self.assertTrue(plan.get("combined_gap_action"), plan)
+        self.assertEqual(plan.get("reason"), "distance_x_axis_single_act", plan)
+
+    def test_align_brick_near_distance_outside_gate_uses_breakaway_score(self):
+        rules = {
+            "ALIGN_BRICK": {
+                "align_policy": {
+                    "dist_score_mode": "dist_error_bands",
+                    "auto_speed_hard_cap_exempt": True,
+                    "dist_error_score_bands": [
+                        {"upper_mm": 8.0, "score": 1.0},
+                        {"upper_mm": 20.0, "score": 20.0},
+                        {"upper_mm": 40.0, "score": 20.0},
+                        {"upper_mm": 120.0, "score": 50.0},
+                        {"upper_mm": 1000.0, "score": 100.0},
+                    ],
+                    "forward_while_turning_assist": {
+                        "enabled": True,
+                        "prefer_forward_for_x_axis": True,
+                    },
+                },
+                "success_gates": {
+                    "xAxis_offset_abs": {"target": 6.03, "tol": 5.0},
+                    "yAxis_offset_abs": {"target": 4.13, "tol": 2.3},
+                    "dist": {"target": 149.26, "tol": 5.0},
+                },
+            }
+        }
+
+        plan = helper_next.select_align_brick_next_act(
+            process_rules=rules,
+            learned_rules={},
+            step="ALIGN_BRICK",
+            x_axis_mm=0.0,
+            y_axis_mm=1.7,
+            dist_mm=166.8,
+            visible=True,
+            duration_s=0.05,
+        )
+
+        self.assertEqual(plan.get("cmd"), "f", plan)
+        self.assertEqual(plan.get("correction_type"), "distance", plan)
+        self.assertEqual(int(plan.get("score") or 0), 20, plan)
 
     def test_align_dist_focus_persists_until_gap_below_100mm(self):
         world = _DummyWorld(20.0, dist=300.0)

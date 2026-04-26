@@ -250,6 +250,63 @@ class TestSeatBrick2YAxisHoldException(unittest.TestCase):
             )
         )
 
+    def test_y_axis_hold_does_not_create_extra_upward_gap_below_final_band(self):
+        world = _DummyWorld()
+        robot = _DummyRobot()
+        planner_y_inputs = []
+        update_calls = {"n": 0}
+        observe_calls = {"n": 0}
+
+        def _fake_update_world(_world, _vision, log=True):
+            _ = log
+            update_calls["n"] += 1
+            _world.brick["visible"] = True
+            _world.brick["x_axis"] = 4.0
+            _world.brick["dist"] = 70.0
+            _world.brick["y_axis"] = -4.0
+            _world._frame_id = int(getattr(_world, "_frame_id", 0)) + 1
+
+        def _fake_observe_success_gatecheck(*_args, **_kwargs):
+            observe_calls["n"] += 1
+            return {"success_met": observe_calls["n"] >= 2, "hold_for_confirm": False}
+
+        def _fake_select_alignment_next_act(*_args, **kwargs):
+            y_axis_mm = kwargs.get("y_axis_mm")
+            planner_y_inputs.append(float(y_axis_mm) if y_axis_mm is not None else None)
+            return {
+                "planner": "gap",
+                "cmd": None,
+                "speed": 0.0,
+                "reason": "all_gaps_within_gate",
+                "score": None,
+            }
+
+        with patch.object(telemetry_process, "wait_for_start_gates", return_value="start"), \
+             patch.object(telemetry_process, "update_world_from_vision", side_effect=_fake_update_world), \
+             patch.object(telemetry_process, "observe_success_gatecheck", side_effect=_fake_observe_success_gatecheck), \
+             patch.object(telemetry_process.next_module, "select_alignment_next_act", side_effect=_fake_select_alignment_next_act), \
+             patch.object(telemetry_process.telemetry_brick, "success_gate_bounds", return_value={}), \
+             patch.object(telemetry_process.time, "sleep", return_value=None), \
+             patch.object(builtins, "print"):
+            ok, reason = telemetry_process.run_alignment_segment(
+                segment={"events": []},
+                step="SEAT_BRICK2",
+                robot=robot,
+                vision=object(),
+                world=world,
+                steps=[],
+                raw_steps=[],
+                observer=None,
+                analysis_pause_s=0.0,
+                confirm_callback=None,
+                align_silent=False,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(reason, "success gate")
+        self.assertGreaterEqual(len(planner_y_inputs), 1)
+        self.assertAlmostEqual(planner_y_inputs[0], -4.0, places=3)
+
     def test_post_success_mast_exception_runs_d_10_percent_x10(self):
         world = _DummyPostMastWorld()
         robot = _DummyRobot()

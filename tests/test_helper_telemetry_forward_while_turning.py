@@ -1,4 +1,6 @@
 import sys
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -6,6 +8,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import helper_close_gaps
 import helper_telemetry_forward_while_turning
+import telemetry_robot
 
 
 class TestHelperTelemetryForwardWhileTurning(unittest.TestCase):
@@ -201,6 +204,30 @@ class TestHelperTelemetryForwardWhileTurning(unittest.TestCase):
             ],
         )
 
+    def test_backward_drive_plan_does_not_reuse_forward_action_note(self):
+        plan = helper_telemetry_forward_while_turning.build_drive_while_turning_plan(
+            step_rules={
+                "align_policy": {
+                    "forward_while_turning_assist": {
+                        "enabled": True,
+                        "action_note": "FWD+TURN-BIAS",
+                    }
+                }
+            },
+            cmd="b",
+            speed_score=10,
+            local_gate_status={
+                "visible": True,
+                "x_err": -4.0,
+                "dist": 100.0,
+                "dist_target": 111.45,
+            },
+            hold_duration_ms=180,
+        )
+
+        self.assertIsInstance(plan, dict)
+        self.assertEqual(plan.get("action_note"), "BWD+TURN-BIAS")
+
     def test_build_plan_still_biases_turn_inside_x_tolerance_when_not_perfectly_aligned(self):
         plan = helper_telemetry_forward_while_turning.build_forward_while_turning_plan(
             step_rules={
@@ -328,6 +355,76 @@ class TestHelperTelemetryForwardWhileTurning(unittest.TestCase):
         self.assertEqual(plan.get("score"), 9)
         self.assertEqual(plan.get("score_boost_pct"), 8)
         self.assertAlmostEqual(float(plan.get("dist_gap_mm") or 0.0), 120.0)
+
+    def test_build_curve_plan_uses_forward_right_production_motor_pair(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trials_dir = Path(tmp_dir)
+            payload = {
+                "production": True,
+                "file_type": "turn_drive_trials",
+                "name": "forwardRight_backLeft",
+                "curve_stats": {"production_worthy": True},
+                "curve": {
+                    "setup_phase": {
+                        "cmd": "r",
+                        "drive_mode": "forward",
+                        "score_pct": 1,
+                        "pwm_override": 199,
+                        "profile_name": "forward_pivot_min_inner",
+                        "action_note": "TURN+FWD",
+                        "motor_pair": {
+                            "left_motor_pwm": 199,
+                            "left_motor_action": "b",
+                            "right_motor_pwm": 0,
+                            "right_motor_action": "f",
+                        },
+                    }
+                },
+            }
+            (trials_dir / "forwardRight_backLeft.json").write_text(json.dumps(payload))
+
+            plan = helper_telemetry_forward_while_turning.build_curve_drive_while_turning_plan(
+                step_rules={
+                    "align_policy": {
+                        "forward_while_turning_assist": {
+                            "enabled": True,
+                            "prefer_curve_for_x_axis": True,
+                        }
+                    }
+                },
+                cmd="f",
+                speed_score=100,
+                local_gate_status={
+                    "visible": True,
+                    "x_err": -49.7,
+                    "x_tol": 1.4,
+                    "dist": 308.8,
+                    "dist_target": 105.6,
+                    "dist_required": True,
+                    "dist_direction": "low",
+                },
+                trials_dir=trials_dir,
+            )
+
+        self.assertIsInstance(plan, dict)
+        self.assertEqual(plan.get("cmd"), "f")
+        self.assertEqual(plan.get("turn_cmd"), "r")
+        self.assertTrue(plan.get("curve_assist"))
+        self.assertEqual(plan.get("action_note"), "FWD+RIGHT-CURVE")
+        self.assertEqual(
+            plan.get("actions"),
+            [
+                {"target": "l", "action": "b", "pwm": 199},
+                {"target": "r", "action": "f", "pwm": 0},
+            ],
+        )
+        self.assertEqual(
+            int(plan.get("duration_ms") or 0),
+            int(telemetry_robot.speed_power_pwm_for_cmd("f", 100)[3]),
+        )
+        metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
+        self.assertEqual(metadata.get("curve_name"), "forwardRight_backLeft forward-setup")
+        self.assertEqual(metadata.get("curve_source"), "production_turn_drive_trials_forward")
 
 
 if __name__ == "__main__":
