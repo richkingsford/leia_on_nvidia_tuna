@@ -134,6 +134,7 @@ ALIGN_RECOVERY_SCAN_BURST_ACTS = 2
 ALIGN_RECOVERY_SCAN_OBSERVE_S = 0.6
 ALIGN_RECOVERY_LOST_VISIBLE_FRAMES = 3
 ALIGN_RECOVERY_LOST_VISIBLE_MIN_S = 0.20
+ALIGN_POST_ACTION_UNKNOWN_RECOVERY_FRAMES = 2
 ALIGN_RECOVERY_PREMOVE_RECHECK_ROUNDS = 3
 ALIGN_RECOVERY_PREMOVE_RECHECK_HOLD_MULTIPLIER = 3.0
 ALIGN_RECOVERY_PREMOVE_RECHECK_CYAN_HOLD_MULTIPLIER = 3.0
@@ -3222,7 +3223,7 @@ def send_robot_command(
         return None
     if auto_mode:
         score_used = telemetry_robot_module.normalize_speed_score(score_used)
-        if not bool(score_cap_exempt):
+        if cmd in ("f", "b", "l", "r") or not bool(score_cap_exempt):
             score_used = _cap_auto_speed_score(score_used)
     power, pwm, score_used, duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd(cmd, score_used)
     if duration_override_val is not None and duration_override_val > 0:
@@ -13767,6 +13768,8 @@ def run_alignment_segment(
     near_dist_vis_attempts = 0
     near_dist_vis_reminder_logged = False
     last_visible_dist_mm = None
+    post_action_unknown_streak = 0
+    post_action_unknown_last_missing = ()
     forward_stall_count = 0
     forward_stall_start_dist_err = None
     forward_stall_best_dist_err = None
@@ -14637,6 +14640,84 @@ def run_alignment_segment(
             print(format_headline("[RECOVERY] Reverse phase did not restore visibility.", COLOR_ORANGE_BRIGHT))
             print(format_headline("[RECOVERY] Failed to restore visibility.", COLOR_RED))
         return False
+
+    def _reset_after_visibility_recovery(*, source="recovery"):
+        nonlocal stale_pre_obs_streak, stale_frame_streak, not_visible_streak, last_visible_ts
+        nonlocal prev_log_correction_type, prev_log_x_err, prev_log_y_err, prev_log_dist
+        nonlocal force_gap_switch_after_recovery, last_align_signature
+        nonlocal post_action_unknown_streak, post_action_unknown_last_missing
+        stale_pre_obs_streak = 0
+        stale_frame_streak = 0
+        not_visible_streak = 0
+        last_visible_ts = time.time()
+        _set_post_recovery_disqualify_types(source=source)
+        prev_log_correction_type = None
+        prev_log_x_err = None
+        prev_log_y_err = None
+        prev_log_dist = None
+        force_gap_switch_after_recovery = True
+        gap_planner_state.pop("gap_rotation", None)
+        last_align_signature = None
+        post_action_unknown_streak = 0
+        post_action_unknown_last_missing = ()
+
+    def _post_action_unknown_fields():
+        local_gate = _align_local_gate_status_single_source(world, step)
+        missing = []
+        if not bool((local_gate or {}).get("visible")):
+            missing.append("visible")
+        for field in _required_align_unknown_gaps(local_gate):
+            if field not in missing:
+                missing.append(str(field))
+        return tuple(missing)
+
+    def _record_post_action_observation(*, use_gap_planner=False, is_search_action=False):
+        nonlocal post_action_unknown_streak, post_action_unknown_last_missing
+        if not bool(use_gap_planner) or bool(is_search_action):
+            post_action_unknown_streak = 0
+            post_action_unknown_last_missing = ()
+            return tuple()
+        missing = _post_action_unknown_fields()
+        if missing:
+            post_action_unknown_streak = int(post_action_unknown_streak) + 1
+            post_action_unknown_last_missing = tuple(missing)
+            return tuple(missing)
+        post_action_unknown_streak = 0
+        post_action_unknown_last_missing = ()
+        return tuple()
+
+    def _maybe_recover_post_action_unknowns():
+        nonlocal post_action_unknown_streak, post_action_unknown_last_missing
+        action_streak_ready = int(post_action_unknown_streak) >= int(ALIGN_POST_ACTION_UNKNOWN_RECOVERY_FRAMES)
+        frame_streak_ready = bool(
+            int(post_action_unknown_streak) > 0
+            and int(not_visible_streak) >= int(ALIGN_POST_ACTION_UNKNOWN_RECOVERY_FRAMES)
+        )
+        if not (action_streak_ready or frame_streak_ready):
+            return "skip"
+        if robot:
+            robot.stop()
+        missing_text = ", ".join(str(item) for item in post_action_unknown_last_missing if item) or "unknown"
+        streak_text = (
+            f"{int(post_action_unknown_streak)} consecutive actions"
+            if bool(action_streak_ready)
+            else f"{int(not_visible_streak)} consecutive post-action frames"
+        )
+        reason = (
+            "post-action observation unknown "
+            f"for {streak_text} "
+            f"(missing={missing_text})"
+        )
+        if not align_silent:
+            print(format_headline(f"[RECOVERY] trigger: {reason}", COLOR_ORANGE_BRIGHT))
+        premove_recheck = _hold_and_recheck_visibility()
+        if bool((premove_recheck or {}).get("visible")):
+            _reset_after_visibility_recovery(source="post_action_unknown_recheck")
+            return "recovered"
+        if _recover_visibility(source="post_action_unknown", reason=reason):
+            _reset_after_visibility_recovery(source="post_action_unknown")
+            return "recovered"
+        return "failed"
 
     def _hold_and_recheck_visibility(rounds=ALIGN_RECOVERY_PREMOVE_RECHECK_ROUNDS):
         try:
@@ -15797,6 +15878,8 @@ def run_alignment_segment(
                     )
         if visible_now:
             not_visible_streak = 0
+            post_action_unknown_streak = 0
+            post_action_unknown_last_missing = ()
             last_visible_ts = time.time()
             near_dist_vis_attempts = 0
             near_dist_vis_reminder_logged = False
@@ -15861,6 +15944,14 @@ def run_alignment_segment(
                     # Never block active micro adjustments on lock drift/loss.
                     _clear_align_brick_target_lock(clear_required=False)
                     align_target_lock_soft_bypass_active = True
+
+        post_unknown_recovery_status = _maybe_recover_post_action_unknowns()
+        if post_unknown_recovery_status == "recovered":
+            time.sleep(CONTROL_DT)
+            continue
+        if post_unknown_recovery_status == "failed":
+            pause_after_fail(robot)
+            return False, "lost_vision_post_action_unknown"
 
         exception_ran, exception_status = _maybe_run_progress_mast_exception()
         if exception_status == "confirm cancelled":
@@ -16626,6 +16717,17 @@ def run_alignment_segment(
                     return False, "no_breakway_contingency_exhausted"
             _align_policy_local = step_rules.get("align_policy") if isinstance(step_rules, dict) else {}
             _step_cap_exempt = bool((_align_policy_local or {}).get("auto_speed_hard_cap_exempt", False))
+            if max_auto_acts is not None and int(align_action_idx) >= int(max_auto_acts):
+                if robot:
+                    robot.stop()
+                if not align_silent:
+                    print(
+                        format_headline(
+                            f"[ACT LIMIT] {step_key}: reached {int(align_action_idx)}/{int(max_auto_acts)} act limit; stopping.",
+                            COLOR_RED,
+                        )
+                    )
+                return False, f"act_limit_{int(max_auto_acts)}"
             action_meta = send_robot_command(
                 robot,
                 world,
@@ -16704,17 +16806,6 @@ def run_alignment_segment(
                         continue
                     return False, "lost_vision_stale_observation"
             align_action_idx = int(align_action_idx) + 1
-            if max_auto_acts is not None and align_action_idx >= int(max_auto_acts):
-                if robot:
-                    robot.stop()
-                if not align_silent:
-                    print(
-                        format_headline(
-                            f"[ACT LIMIT] {step_key}: reached {int(align_action_idx)}/{int(max_auto_acts)} act limit; stopping.",
-                            COLOR_RED,
-                        )
-                    )
-                return False, f"act_limit_{int(max_auto_acts)}"
             if not align_silent:
                 if (
                     "_search_" in cmd_reason_key
@@ -16958,6 +17049,10 @@ def run_alignment_segment(
                     stalled_same_cmd_value = None
             if success_hit:
                 return _complete_alignment_success("success gate", tracker=success_tracker)
+            _record_post_action_observation(
+                use_gap_planner=use_micro_align_gap_planner,
+                is_search_action=is_search_action,
+            )
             _record_forward_stall_progress(
                 cmd_value=cmd,
                 dist_err_before_action=dist_err_before_action,

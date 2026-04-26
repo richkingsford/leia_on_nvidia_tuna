@@ -194,11 +194,13 @@ try:
 except (TypeError, ValueError):
     AUTO_CONTINUE_WAIT_S = 5.0
 AUTO_CONTINUE_WAIT_S = max(0.0, float(AUTO_CONTINUE_WAIT_S))
+RUN_LOG_RETENTION_MAX_S = 10 * 60 * 60
 try:
-    RUN_LOG_RETENTION_S = float(_MANUAL_CONFIG.get("run_log_retention_s", 3600.0))
+    RUN_LOG_RETENTION_S = float(_MANUAL_CONFIG.get("run_log_retention_s", RUN_LOG_RETENTION_MAX_S))
 except (TypeError, ValueError):
-    RUN_LOG_RETENTION_S = 3600.0
-RUN_LOG_RETENTION_S = max(0.0, float(RUN_LOG_RETENTION_S))
+    RUN_LOG_RETENTION_S = RUN_LOG_RETENTION_MAX_S
+RUN_LOG_RETENTION_S = min(max(0.0, float(RUN_LOG_RETENTION_S)), float(RUN_LOG_RETENTION_MAX_S))
+AUTO_STEP_ACT_LIMIT = 15
 
 
 def _build_stream_success_gate_step_options():
@@ -618,18 +620,21 @@ def _run_retention_dirs():
     return (
         base_dir / "Runs - aruco",
         base_dir / "Runs - cyan",
+        base_dir / "trials" / "run_views",
     )
 
 
-def _cleanup_stale_run_logs(*, run_folders=None, cutoff_age_s=None):
+def _cleanup_stale_run_logs(*, run_folders=None, cutoff_age_s=None, preserve_live_files=None):
     folders = tuple(run_folders or _run_retention_dirs())
     if cutoff_age_s is None:
         cutoff_age_s = float(RUN_LOG_RETENTION_S)
+    preserve = {"index.html"}
+    preserve.update(str(name) for name in (preserve_live_files or ()) if name)
     try:
         from calibration.helper_calibrate import cleanup_old_run_files
 
         cleanup_old_run_files(
-            preserve_live_files=(),
+            preserve_live_files=preserve,
             run_folders=folders,
             cutoff_age_s=float(cutoff_age_s),
         )
@@ -822,6 +827,11 @@ ATTEMPT_STATUS = {
 
 class AutoStepCancelled(Exception):
     """Raised to cooperatively abort a running auto-step (e.g. Esc pressed)."""
+    pass
+
+
+class AutoStepActLimit(Exception):
+    """Raised after an auto-step logs its final allowed action."""
     pass
 
 
@@ -2747,6 +2757,14 @@ def trash_current_session(app_state):
 
 def run_auto_step(app_state, obj_enum):
     step_key = normalize_step_label(obj_enum.value)
+    current_log_name = None
+    try:
+        current_log_path = getattr(app_state, "log_path", None)
+        if current_log_path:
+            current_log_name = Path(current_log_path).name
+    except Exception:
+        current_log_name = None
+    _cleanup_stale_run_logs(preserve_live_files=((current_log_name,) if current_log_name else ()))
     _set_stream_state_success_gate_step(app_state, step_key)
     print("\n" * 5, end="")
     log_line(f"[AUTO] Attempting {step_key}...")
@@ -2779,6 +2797,10 @@ def run_auto_step(app_state, obj_enum):
     if not segment:
         log_line(f"[AUTO] No demo segment found for {step_key}.")
         return False
+    prior_auto_step_act_limit = getattr(app_state, "auto_step_act_limit", None)
+    prior_world_auto_step_act_limit = getattr(app_state.world, "_auto_step_act_limit", None)
+    app_state.auto_step_act_limit = int(AUTO_STEP_ACT_LIMIT)
+    app_state.world._auto_step_act_limit = int(AUTO_STEP_ACT_LIMIT)
     _begin_auto_demo_logging(app_state, obj_enum)
     auto_demo_logging_started = True
 
@@ -3061,6 +3083,15 @@ def run_auto_step(app_state, obj_enum):
                         app_state.robot.stop()
                 except Exception:
                     pass
+            except AutoStepActLimit as exc:
+                ok = False
+                reason = str(exc) or f"act_limit_{int(AUTO_STEP_ACT_LIMIT)}"
+                try:
+                    if app_state.robot:
+                        app_state.robot.stop()
+                except Exception:
+                    pass
+                reset_repeat_act_guard(app_state.world, app_state.robot)
             except RuntimeError as exc:
                 if _is_repeat_act_safety_fail(exc):
                     ok = False
@@ -3101,6 +3132,8 @@ def run_auto_step(app_state, obj_enum):
             pass
         if auto_demo_logging_started:
             _end_auto_demo_logging(app_state, obj_enum)
+        app_state.auto_step_act_limit = prior_auto_step_act_limit
+        app_state.world._auto_step_act_limit = prior_world_auto_step_act_limit
     if ok:
         # Emit celebration event first so optional post-success bookkeeping
         # cannot suppress gong playback on stream clients.
@@ -3891,6 +3924,7 @@ def make_auto_observer(app_state):
     def _observer(stage, world, vision, cmd, speed, reason):
         if bool(getattr(app_state, "auto_cancel_event", None)) and app_state.auto_cancel_event.is_set():
             raise AutoStepCancelled()
+        act_limit_reached = None
         # replay_segment already refreshed world from vision before observer callbacks.
         # Avoid a second camera read here; it can stall stream updates on some cameras.
         if stage == "action" and cmd:
@@ -3898,10 +3932,33 @@ def make_auto_observer(app_state):
             duration_ms = getattr(world, "_last_action_duration_ms", None)
             sent_speed = getattr(world, "_last_action_speed", speed)
             _log_motion_event_and_state(app_state, cmd, sent_speed, score, duration_ms)
+            try:
+                act_limit = int(getattr(app_state, "auto_step_act_limit", 0) or 0)
+            except (TypeError, ValueError):
+                act_limit = 0
+            if act_limit > 0 and bool(getattr(app_state, "auto_demo_logging_active", False)):
+                try:
+                    act_count = int(getattr(app_state, "current_auto_action_count", 0) or 0)
+                except (TypeError, ValueError):
+                    act_count = 0
+                if act_count >= int(act_limit):
+                    act_limit_reached = (int(act_count), int(act_limit))
+                    try:
+                        if app_state.robot:
+                            app_state.robot.stop()
+                    except Exception:
+                        pass
         elif stage == "frame" and _demo_logging_active(app_state):
             if app_state.logger is not None and not getattr(app_state, "logger_closed", True):
                 app_state.logger.log_state(world)
         refresh_brick_telemetry(app_state, read_vision=False)
+        if act_limit_reached is not None:
+            act_count, act_limit = act_limit_reached
+            step_key = normalize_step_label(getattr(app_state, "current_auto_step", None)) or normalize_step_label(
+                getattr(world, "step_state", None)
+            ) or "AUTO"
+            log_line(f"[ACT LIMIT] {step_key}: reached {int(act_count)}/{int(act_limit)} act limit; hard stopping.")
+            raise AutoStepActLimit(f"act_limit_{int(act_limit)}")
     return _observer
 
 
@@ -4324,6 +4381,7 @@ class AppState:
         self.current_attempt_action_count = 0
         self.current_auto_step = None
         self.current_auto_action_count = 0
+        self.auto_step_act_limit = AUTO_STEP_ACT_LIMIT
         open_new_log(self)
         
         # ID Init

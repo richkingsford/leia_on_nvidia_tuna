@@ -7,6 +7,7 @@ import html
 import json
 import math
 import os
+import re
 import sys
 import time
 from copy import deepcopy
@@ -17,6 +18,8 @@ LIVE_HTML_PATH = XYZ_LAYOUT_DIR / "run_view.html"
 LIVE_SVG_PATH = XYZ_LAYOUT_DIR / "workspace.svg"
 LIVE_MAST_SVG_PATH = XYZ_LAYOUT_DIR / "mast_view.svg"
 LIVE_JSON_PATH = XYZ_LAYOUT_DIR / "workspace.json"
+RUN_VIEWS_DIR = XYZ_LAYOUT_DIR / "run_views"
+RUN_VIEWS_INDEX_PATH = RUN_VIEWS_DIR / "index.html"
 PROCESS_MODEL_FILE = Path(__file__).resolve().parent / "world_model_process.json"
 SCHEMA_VERSION = 1
 
@@ -50,8 +53,7 @@ STEP_HISTORY_COLOR_FURTHER = "#d94841"
 STEP_HISTORY_COLOR_NEUTRAL = "#c59d2a"
 STEP_HISTORY_COLOR_UNKNOWN = "#7b7668"
 BIRD_HISTORY_DOT_RADIUS_PX = 6.0
-BIRD_DIST_TRACK_NEAR_MM = 90.0
-BIRD_DIST_TRACK_MAX_MM = 150.0
+BIRD_DIST_TRACK_HALF_RANGE_MM = 60.0
 BIRD_DIST_TRACK_MARGIN_PX = 42.0
 BIRD_DIST_TRACK_STACK_GAP_PX = 16.0
 BIRD_X_AXIS_TRACK_DEFAULT_EXTENT_MM = 10.0
@@ -1080,10 +1082,18 @@ def _anchor_stack_screen_points(
 def _bird_distance_track_ratio(dist_mm: float | None) -> float:
     distance_val = _coerce_float(dist_mm, None)
     if distance_val is None:
-        distance_val = float(BIRD_DIST_TRACK_MAX_MM)
-    near_mm = float(BIRD_DIST_TRACK_NEAR_MM)
-    far_mm = max(float(near_mm) + 1.0, float(BIRD_DIST_TRACK_MAX_MM))
+        distance_val = _bird_dist_track_far_mm()
+    near_mm = _bird_dist_track_near_mm()
+    far_mm = max(float(near_mm) + 1.0, _bird_dist_track_far_mm())
     return max(0.0, min(1.0, (float(distance_val) - float(near_mm)) / (float(far_mm) - float(near_mm))))
+
+
+def _bird_dist_track_near_mm() -> float:
+    return float(BIRD_DIST_TARGET_MM) - float(BIRD_DIST_TRACK_HALF_RANGE_MM)
+
+
+def _bird_dist_track_far_mm() -> float:
+    return float(BIRD_DIST_TARGET_MM) + float(BIRD_DIST_TRACK_HALF_RANGE_MM)
 
 
 def _rotated_rect(center_x: float, center_y: float, theta_deg: float, length_mm: float, width_mm: float) -> list[tuple[float, float]]:
@@ -1602,10 +1612,9 @@ def render_workspace_svg(state: dict | None) -> str:
                 if ex is not None and ey is not None and tx_obj is not None and ty_obj is not None:
                     dist_mm = math.hypot(float(tx_obj) - float(ex), float(ty_obj) - float(ey))
             if dist_mm is None:
-                dist_mm = BIRD_DIST_TRACK_MAX_MM
+                dist_mm = _bird_dist_track_far_mm()
 
-            dist_ratio_raw = (float(dist_mm) - 134.26) / 30.0
-            dist_ratio = max(0.0, min(1.0, float(dist_ratio_raw)))
+            dist_ratio = _bird_distance_track_ratio(dist_mm)
             px = float(near_x) + (float(far_x) - float(near_x)) * dist_ratio
             x_axis_mm = _coerce_float(entry.get("x_axis_mm"), None)
             if x_axis_mm is None:
@@ -1619,16 +1628,18 @@ def render_workspace_svg(state: dict | None) -> str:
             return project(float(entry.get("x_mm", 0.0)), float(entry.get("y_mm", 0.0)))
 
     if isinstance(stack_screen, list) and len(stack_screen) >= 3:
-        guide_start = _bird_history_screen_point({"target_range_mm": 134.26})
-        guide_end = _bird_history_screen_point({"target_range_mm": 164.26})
+        guide_start_dist_mm = _bird_dist_track_near_mm()
+        guide_end_dist_mm = _bird_dist_track_far_mm()
+        guide_start = _bird_history_screen_point({"target_range_mm": guide_start_dist_mm})
+        guide_end = _bird_history_screen_point({"target_range_mm": guide_end_dist_mm})
         svg_parts.append(
             f'<line x1="{guide_start[0]:.1f}" y1="{guide_start[1]:.1f}" x2="{guide_end[0]:.1f}" y2="{guide_end[1]:.1f}" stroke="#b7aea0" stroke-width="1.6" stroke-dasharray="4 4" opacity="0.7" />'
         )
         svg_parts.append(
-            f'<text x="{guide_start[0]:.1f}" y="{guide_start[1] - 10:.1f}" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">134mm</text>'
+            f'<text x="{guide_start[0]:.1f}" y="{guide_start[1] - 10:.1f}" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">{guide_start_dist_mm:.0f}mm</text>'
         )
         svg_parts.append(
-            f'<text x="{guide_end[0]:.1f}" y="{guide_end[1] - 10:.1f}" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">164mm</text>'
+            f'<text x="{guide_end[0]:.1f}" y="{guide_end[1] - 10:.1f}" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">{guide_end_dist_mm:.0f}mm</text>'
         )
         svg_parts.append(
             f'<text x="{guide_start[0] - 14.0:.1f}" y="{guide_start[1] + 4.0:.1f}" text-anchor="end" font-size="12" font-weight="700" fill="#5d676e">x=6</text>'
@@ -2367,6 +2378,111 @@ def build_state_from_run_log(log_path: str | Path) -> dict:
     return state
 
 
+_RUN_VIEW_MONTHS = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+
+
+def _run_view_slug_from_log_path(log_path: str | Path) -> str:
+    stem = Path(log_path).stem if log_path else f"run_{int(time.time())}"
+    slug = re.sub(r"[^a-z0-9]+", "_", str(stem).strip().lower()).strip("_")
+    return slug or f"run_{int(time.time())}"
+
+
+def _run_view_js_string(value) -> str:
+    return str(value or "").replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _run_view_entry_for_file(path: Path) -> tuple[tuple, dict]:
+    stem = path.stem.lower()
+    m = re.match(r"^([a-z]{3})_(\d{1,2})_(\d{1,2})(\d{2})(am|pm)$", stem)
+    try:
+        mtime = float(path.stat().st_mtime)
+    except OSError:
+        mtime = 0.0
+    if m:
+        month_key, day_s, hour_s, minute_s, suffix = m.groups()
+        month_num = int(_RUN_VIEW_MONTHS.get(month_key, 0) or 0)
+        day = int(day_s)
+        hour_display = int(hour_s)
+        minute = int(minute_s)
+        hour_24 = int(hour_display % 12) + (12 if suffix == "pm" else 0)
+        try:
+            year = int(time.localtime(mtime).tm_year)
+        except Exception:
+            year = int(time.localtime().tm_year)
+        month_label = month_key.title()
+        entry = {
+            "file": path.name,
+            "label": f"{month_label} {day} {hour_display}:{minute:02d} {suffix.upper()}",
+            "group": f"{month_label} {day}",
+        }
+        return (year, month_num, day, hour_24, minute, mtime), entry
+    label = path.stem.replace("_", " ").strip().title() or path.name
+    entry = {"file": path.name, "label": label, "group": "Runs"}
+    return (0, 0, 0, 0, 0, mtime), entry
+
+
+def _run_view_entries_newest_first() -> list[dict]:
+    if not RUN_VIEWS_DIR.exists():
+        return []
+    rows = []
+    for path in RUN_VIEWS_DIR.glob("*.html"):
+        if path.name == RUN_VIEWS_INDEX_PATH.name:
+            continue
+        rows.append(_run_view_entry_for_file(path))
+    rows.sort(key=lambda row: row[0], reverse=True)
+    return [entry for _sort_key, entry in rows]
+
+
+def _render_run_views_block(entries: list[dict]) -> str:
+    lines = ["    const RUNS = ["]
+    for idx, entry in enumerate(entries):
+        comma = "," if idx < len(entries) - 1 else ""
+        lines.append(
+            "      { file: '"
+            + _run_view_js_string(entry.get("file"))
+            + "', label: '"
+            + _run_view_js_string(entry.get("label"))
+            + "', group: '"
+            + _run_view_js_string(entry.get("group"))
+            + f"' }}{comma}"
+        )
+    lines.append("    ];")
+    return "\n".join(lines)
+
+
+def _refresh_run_views_index() -> None:
+    if not RUN_VIEWS_INDEX_PATH.exists():
+        return
+    entries = _run_view_entries_newest_first()
+    try:
+        text = RUN_VIEWS_INDEX_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return
+    block = _render_run_views_block(entries)
+    new_text, count = re.subn(
+        r"    const RUNS = \[\n.*?\n    \];",
+        block,
+        text,
+        count=1,
+        flags=re.S,
+    )
+    if count and new_text != text:
+        RUN_VIEWS_INDEX_PATH.write_text(new_text, encoding="utf-8")
+
+
 def write_run_view_from_log(log_path: str | Path | None = None) -> None:
     """Regenerate run_view.html from a run log file (latest if not specified)."""
     if log_path is None:
@@ -2389,6 +2505,15 @@ def _write_live_assets(state: dict) -> None:
         html_content = render_workspace_html(state)
         with open(LIVE_HTML_PATH, "w", encoding="utf-8") as f:
             f.write(html_content)
+        run_log_path = state.get("run_log_path") if isinstance(state, dict) else None
+        if run_log_path:
+            try:
+                RUN_VIEWS_DIR.mkdir(parents=True, exist_ok=True)
+                saved_path = RUN_VIEWS_DIR / f"{_run_view_slug_from_log_path(run_log_path)}.html"
+                saved_path.write_text(html_content, encoding="utf-8")
+                _refresh_run_views_index()
+            except Exception as index_error:
+                print(f"[XYZ-LAYOUT-ERROR] Failed to update saved run view: {index_error}", file=sys.stderr)
             
         # 2. SVG
         svg_content = render_workspace_svg(state)

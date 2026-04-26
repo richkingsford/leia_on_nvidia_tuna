@@ -860,6 +860,49 @@ class TestHelperNextGapAlignmentPlanner(unittest.TestCase):
         self.assertNotEqual(plan.get("correction_type"), "x_axis", plan)
         self.assertTrue(bool(plan.get("gap_rotation_non_repeat_override")), plan)
 
+    def test_gap_rotation_recovery_clears_active_disqualified_type(self):
+        process_rules = {
+            "SEAT_BRICK2": {
+                "align_policy": {
+                    "gap_rotation_enabled": True,
+                    "gap_rotation_force_recovery_switch": True,
+                    "gap_rotation_chunk_min_mm": 3.0,
+                    "gap_rotation_chunk_max_mm": 6.0,
+                    "y_axis_edge_force_enabled": False,
+                    "y_axis_close_bottom_bias_enabled": False,
+                },
+                "success_gates": {
+                    "visible": {"min": True},
+                    "xAxis_offset_abs": {"target": 0.0, "tol": 1.5},
+                    "yAxis_offset_abs": {"target": 0.0, "tol": 1.5},
+                    "dist": {"target": 48.0, "tol": 4.0},
+                },
+            }
+        }
+        planner_state = {
+            "gap_rotation": {
+                "active_type": "distance",
+                "chunk_start_gap_mm": 12.0,
+                "chunk_target_mm": 6.0,
+            }
+        }
+        plan = helper_next.select_alignment_next_act(
+            process_rules=process_rules,
+            learned_rules={},
+            step="SEAT_BRICK2",
+            x_axis_mm=8.0,
+            y_axis_mm=4.0,
+            dist_mm=60.0,
+            visible=True,
+            angle_deg=0.0,
+            duration_s=0.05,
+            avoid_correction_type="distance",
+            planner_state=planner_state,
+        )
+        self.assertNotEqual(plan.get("correction_type"), "distance", plan)
+        self.assertEqual(planner_state["gap_rotation"].get("active_type"), plan.get("correction_type"))
+        self.assertTrue(bool(plan.get("gap_rotation_non_repeat_override")), plan)
+
     def test_gap_planner_holds_when_all_gaps_are_within_gates(self):
         process_rules = {
             "ALIGN_BRICK": {

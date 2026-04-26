@@ -2412,6 +2412,13 @@ def select_align_brick_next_act(
         if active_type not in {"x_axis", "y_axis", "distance"}:
             active_type = None
             rotation_state["active_type"] = None
+        if active_type and force_recovery_switch and active_type in avoid_corr_set:
+            rotation_state["last_completed_type"] = str(active_type)
+            rotation_state["active_type"] = None
+            rotation_state["chunk_start_gap_mm"] = None
+            rotation_state["chunk_target_mm"] = None
+            active_type = None
+            gap_rotation_non_repeat_override = True
         active_start_gap = _coerce_float(rotation_state.get("chunk_start_gap_mm"), None)
         active_target_gap = _coerce_float(rotation_state.get("chunk_target_mm"), None)
         active_gap_now = outside_mm_by_type.get(active_type, 0.0) if active_type else None

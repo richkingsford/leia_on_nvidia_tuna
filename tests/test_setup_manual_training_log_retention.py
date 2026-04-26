@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-import setup_manual_training
+import a_MAIN as setup_manual_training
 from telemetry_robot import TelemetryLogger
 
 
@@ -27,6 +27,22 @@ class _DummyOpenLogApp:
         self.log_path = None
         self.session_log_paths = []
         self.world = SimpleNamespace(run_id=None, attempt_id=None)
+
+
+class _NoopLock:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+class _StopRobot:
+    def __init__(self):
+        self.stop_calls = 0
+
+    def stop(self):
+        self.stop_calls += 1
 
 
 class TestSetupManualTrainingLogRetention(unittest.TestCase):
@@ -82,6 +98,96 @@ class TestSetupManualTrainingLogRetention(unittest.TestCase):
             self.assertFalse(old_aruco.exists())
             self.assertFalse(old_cyan.exists())
             self.assertTrue(fresh_aruco.exists())
+
+    def test_cleanup_stale_run_files_preserves_run_view_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_views = Path(tmp) / "trials" / "run_views"
+            run_views.mkdir(parents=True)
+            old_view = run_views / "old_run.html"
+            index = run_views / "index.html"
+            old_view.write_text("<html></html>\n")
+            index.write_text("<html></html>\n")
+            now_s = 20_000.0
+            stale_s = now_s - 3601.0
+            os.utime(old_view, (stale_s, stale_s))
+            os.utime(index, (stale_s, stale_s))
+            self._patch_time_now(lambda: now_s)
+
+            setup_manual_training._cleanup_stale_run_logs(
+                run_folders=(run_views,),
+                cutoff_age_s=3600.0,
+            )
+
+            self.assertFalse(old_view.exists())
+            self.assertTrue(index.exists())
+
+    def test_run_log_retention_default_is_ten_hours(self):
+        self.assertEqual(float(setup_manual_training.RUN_LOG_RETENTION_S), 10 * 60 * 60)
+
+    def test_run_auto_step_runs_retention_cleanup_before_loading_demos(self):
+        cleanup_calls = []
+        call_order = []
+        app = SimpleNamespace(
+            world=SimpleNamespace(),
+            robot=SimpleNamespace(),
+            demos_dir=Path("demos"),
+            log_path=Path("Runs - cyan") / "active.json",
+        )
+        step = SimpleNamespace(value="ALIGN_BRICK")
+
+        self._patch_module_attr("log_line", lambda msg: None)
+        self._patch_module_attr("_set_stream_state_success_gate_step", lambda *_args, **_kwargs: None)
+        self._patch_module_attr("reset_repeat_act_guard", lambda *_args, **_kwargs: None)
+        self._patch_module_attr(
+            "_cleanup_stale_run_logs",
+            lambda **kwargs: (call_order.append("cleanup"), cleanup_calls.append(dict(kwargs))),
+        )
+
+        def _load_demo_logs_empty(*_args, **_kwargs):
+            call_order.append("load_demo_logs")
+            return []
+
+        self._patch_module_attr("load_demo_logs", _load_demo_logs_empty)
+        self._patch_module_attr("update_process_model_from_demos", lambda *_args, **_kwargs: None)
+        self._patch_module_attr("refresh_autobuild_config", lambda *_args, **_kwargs: None)
+
+        ok = setup_manual_training.run_auto_step(app, step)
+
+        self.assertFalse(ok)
+        self.assertEqual(call_order[:2], ["cleanup", "load_demo_logs"])
+        self.assertEqual(len(cleanup_calls), 1)
+        self.assertEqual(cleanup_calls[0]["preserve_live_files"], ("active.json",))
+
+    def test_auto_observer_hard_stops_after_fifteenth_logged_action(self):
+        app = SimpleNamespace(
+            auto_cancel_event=None,
+            auto_demo_logging_active=True,
+            current_auto_step="ALIGN_BRICK",
+            current_auto_action_count=14,
+            auto_step_act_limit=15,
+            robot=_StopRobot(),
+            lock=_NoopLock(),
+        )
+        world = SimpleNamespace(_last_action_score=25, _last_action_duration_ms=100, _last_action_speed=0.4)
+        refresh_calls = []
+        messages = []
+
+        def _fake_log_motion(app_state, *_args, **_kwargs):
+            app_state.current_auto_action_count += 1
+
+        self._patch_module_attr("_log_motion_event_and_state", _fake_log_motion)
+        self._patch_module_attr("refresh_brick_telemetry", lambda *_args, **_kwargs: refresh_calls.append(True))
+        self._patch_module_attr("log_line", lambda msg: messages.append(str(msg)))
+
+        observer = setup_manual_training.make_auto_observer(app)
+
+        with self.assertRaises(setup_manual_training.AutoStepActLimit):
+            observer("action", world, None, "f", 0.4, "test")
+
+        self.assertEqual(app.current_auto_action_count, 15)
+        self.assertEqual(app.robot.stop_calls, 1)
+        self.assertEqual(len(refresh_calls), 1)
+        self.assertTrue(any("15/15" in msg for msg in messages))
 
     def test_open_new_log_runs_retention_cleanup_before_creating_log(self):
         with tempfile.TemporaryDirectory() as tmp:

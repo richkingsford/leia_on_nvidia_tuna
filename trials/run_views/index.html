@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Run Views</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #eef1f3;
+      --panel: #fbfcfd;
+      --panel-alt: #f5f7f8;
+      --line: #d8dee4;
+      --text: #10202b;
+      --muted: #65717c;
+      --strong: #233843;
+      --accent: #0b3d91;
+      --accent-soft: #e7effb;
+      --ok: #2f9e44;
+      --bad: #d94841;
+      --warn: #c59d2a;
+    }
+    body {
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", system-ui, sans-serif;
+      overflow: hidden;
+    }
+    .app {
+      display: grid;
+      grid-template-columns: 260px minmax(480px, 1fr) 340px;
+      height: 100vh;
+      min-width: 0;
+    }
+    .run-pane {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .run-pane-head {
+      padding: 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+    .run-pane-head h1 {
+      font-size: 17px;
+      font-weight: 800;
+      color: var(--strong);
+    }
+    .run-list {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+      flex-direction: column;
+      gap: 6px;
+      overflow-y: auto;
+      padding: 12px;
+    }
+    .run-group {
+      margin: 12px 4px 2px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+    .run-link {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-height: 48px;
+      justify-content: center;
+      padding: 8px 10px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      color: var(--text);
+      text-decoration: none;
+      background: transparent;
+    }
+    .run-link:hover {
+      border-color: #b9c8dd;
+      background: #f3f7fc;
+    }
+    .run-link.is-active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+    .run-link-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .run-link-meta {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .charts-pane {
+      min-width: 0;
+      overflow-y: auto;
+      padding: 16px;
+      background: var(--bg);
+    }
+    .charts {
+      display: flex;
+      width: 100%;
+      flex-direction: column;
+      gap: 14px;
+      min-width: 0;
+    }
+    .chart-card {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #faf7f2;
+      box-shadow: 0 3px 14px rgba(16, 32, 43, .06);
+    }
+    .chart-card svg {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+    .detail-pane {
+      min-width: 0;
+      overflow-y: auto;
+      border-left: 1px solid var(--line);
+      background: var(--panel);
+      padding: 16px;
+    }
+    .detail-pane h2 {
+      font-size: 15px;
+      font-weight: 800;
+      color: var(--strong);
+    }
+    .prompt {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      flex-shrink: 0;
+      border-radius: 50%;
+    }
+    .entry-card {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 14px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .entry-card h3 {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    .kv-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .kv-table td {
+      padding: 3px 0;
+      font-size: 13px;
+      vertical-align: top;
+    }
+    .kv-table td:first-child {
+      width: 42%;
+      padding-right: 10px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .kv-table td:last-child {
+      color: var(--text);
+      font-weight: 700;
+    }
+    .err-ok { color: var(--ok) !important; }
+    .err-bad { color: var(--bad) !important; }
+    .err-warn { color: var(--warn) !important; }
+    .trend-closer { background: #d3f9d8; color: var(--ok); }
+    .trend-further { background: #ffe3e3; color: var(--bad); }
+    .trend-neutral { background: #fff3cd; color: var(--warn); }
+    .trend-unknown { background: #f1f3f5; color: #868e96; }
+    .trend-badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .act-badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 6px;
+      background: var(--strong);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .03em;
+    }
+    [data-entry] {
+      cursor: pointer;
+      transition: opacity .1s;
+    }
+    [data-entry]:hover { opacity: .75; }
+    .dot-selected {
+      stroke: #ff7a00 !important;
+      stroke-width: 3.5px !important;
+    }
+    .empty-state {
+      display: grid;
+      min-height: 100%;
+      place-items: center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    @media (max-width: 980px) {
+      body { overflow: auto; }
+      .app {
+        grid-template-columns: 1fr;
+        height: auto;
+        min-height: 100vh;
+      }
+      .run-pane {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .run-list {
+        max-height: 220px;
+      }
+      .charts-pane,
+      .detail-pane {
+        overflow: visible;
+      }
+      .detail-pane {
+        border-left: 0;
+        border-top: 1px solid var(--line);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <nav class="run-pane" aria-label="Run views">
+      <div class="run-pane-head">
+        <h1>Run Views</h1>
+      </div>
+      <div class="run-list" id="runList"></div>
+    </nav>
+
+    <section class="charts-pane" id="chartsPane">
+      <div class="empty-state">Loading run view</div>
+    </section>
+
+    <aside class="detail-pane" id="detailPane">
+      <p class="prompt">Loading run details</p>
+    </aside>
+  </main>
+
+  <script>
+    const RUNS = [
+      { file: 'apr_26_451pm.html', label: 'Apr 26 4:51 PM', group: 'Apr 26' },
+      { file: 'apr_26_448pm.html', label: 'Apr 26 4:48 PM', group: 'Apr 26' },
+      { file: 'apr_26_424pm.html', label: 'Apr 26 4:24 PM', group: 'Apr 26' },
+      { file: 'apr_26_406pm.html', label: 'Apr 26 4:06 PM', group: 'Apr 26' },
+      { file: 'apr_26_316pm.html', label: 'Apr 26 3:16 PM', group: 'Apr 26' },
+      { file: 'apr_26_236pm.html', label: 'Apr 26 2:36 PM', group: 'Apr 26' },
+      { file: 'apr_26_234pm.html', label: 'Apr 26 2:34 PM', group: 'Apr 26' },
+      { file: 'apr_25_900pm.html', label: 'Apr 25 9:00 PM', group: 'Apr 25' },
+      { file: 'apr_25_858pm.html', label: 'Apr 25 8:58 PM', group: 'Apr 25' },
+      { file: 'apr_25_854pm.html', label: 'Apr 25 8:54 PM', group: 'Apr 25' },
+      { file: 'apr_25_849pm.html', label: 'Apr 25 8:49 PM', group: 'Apr 25' },
+      { file: 'apr_25_845pm.html', label: 'Apr 25 8:45 PM', group: 'Apr 25' },
+      { file: 'apr_25_834pm.html', label: 'Apr 25 8:34 PM', group: 'Apr 25' },
+      { file: 'apr_25_831pm.html', label: 'Apr 25 8:31 PM', group: 'Apr 25' },
+      { file: 'apr_25_829pm.html', label: 'Apr 25 8:29 PM', group: 'Apr 25' },
+      { file: 'apr_25_818pm.html', label: 'Apr 25 8:18 PM', group: 'Apr 25' }
+    ];
+
+    const DIST_TARGET = 149.26, DIST_TOL = 5.0;
+    const X_TARGET = 6.03, X_TOL = 5.0;
+    const Y_TARGET = 4.13, Y_TOL = 2.3;
+
+    const runList = document.getElementById('runList');
+    const chartsPane = document.getElementById('chartsPane');
+    const detailPane = document.getElementById('detailPane');
+    let availableRuns = RUNS.slice();
+    let currentRun = null;
+    let selectedDot = null;
+
+    function fmt(v, dec) {
+      return v === null || v === undefined ? '-' : Number(v).toFixed(dec);
+    }
+
+    function errClass(err, tol) {
+      if (err === null || err === undefined) return '';
+      return Math.abs(err) <= tol ? 'err-ok' : 'err-bad';
+    }
+
+    function errSign(v) {
+      if (v === null || v === undefined) return '-';
+      return (v >= 0 ? '+' : '') + Number(v).toFixed(1) + 'mm';
+    }
+
+    function trendClass(t) {
+      return 'trend-' + (t || 'unknown');
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function renderRunList(runs = availableRuns) {
+      let activeGroup = '';
+      if (!runs.length) {
+        runList.innerHTML = '<p class="prompt">No run views found.</p>';
+        return;
+      }
+      runList.innerHTML = runs.map(run => {
+        const group = run.group !== activeGroup
+          ? `<div class="run-group">${escapeHtml(run.group)}</div>`
+          : '';
+        activeGroup = run.group;
+        return `${group}
+          <a class="run-link" href="${escapeHtml(run.file)}" data-file="${escapeHtml(run.file)}">
+            <span class="run-link-title">${escapeHtml(run.label)}</span>
+            <span class="run-link-meta">${escapeHtml(run.file)}</span>
+          </a>`;
+      }).join('');
+    }
+
+    function setActiveRun(file) {
+      currentRun = file;
+      document.querySelectorAll('.run-link').forEach(link => {
+        link.classList.toggle('is-active', link.dataset.file === file);
+      });
+    }
+
+    function setError(message) {
+      chartsPane.innerHTML = `<div class="empty-state">${escapeHtml(message)}</div>`;
+      detailPane.innerHTML = `<p class="prompt">${escapeHtml(message)}</p>`;
+    }
+
+    async function loadRun(file, updateHash = true) {
+      setActiveRun(file);
+      selectedDot = null;
+      chartsPane.innerHTML = '<div class="empty-state">Loading run view</div>';
+      detailPane.innerHTML = '<p class="prompt">Loading run details</p>';
+
+      try {
+        const response = await fetch(file, { cache: 'no-cache' });
+        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+
+        const source = await response.text();
+        const doc = new DOMParser().parseFromString(source, 'text/html');
+        const charts = doc.querySelector('.charts');
+        const sidebar = doc.querySelector('.sidebar');
+        const title = doc.querySelector('title')?.textContent?.trim() || 'Run View';
+
+        if (!charts || !sidebar) {
+          throw new Error('Run View panes were not found in the saved HTML.');
+        }
+
+        const sidebarContent = sidebar.cloneNode(true);
+        sidebarContent.querySelectorAll('.run-list').forEach(list => list.remove());
+
+        chartsPane.innerHTML = `<div class="charts">${charts.innerHTML}</div>`;
+        detailPane.innerHTML = sidebarContent.innerHTML;
+        document.title = `${labelForRun(file)} - ${title}`;
+
+        spreadOverlappingBirdDots();
+        const dots = Array.from(chartsPane.querySelectorAll('[data-entry]'));
+        if (dots.length) selectDot(dots[dots.length - 1]);
+        if (updateHash) history.replaceState(null, '', `#${file.replace(/\.html$/i, '')}`);
+      } catch (err) {
+        setError(`Unable to load ${file}: ${err.message}`);
+      }
+    }
+
+    function labelForRun(file) {
+      return availableRuns.find(run => run.file === file)?.label || RUNS.find(run => run.file === file)?.label || file;
+    }
+
+    async function fileExists(file) {
+      try {
+        const response = await fetch(file, { method: 'HEAD', cache: 'no-cache' });
+        return response.ok;
+      } catch (_err) {
+        return false;
+      }
+    }
+
+    async function loadAvailableRuns() {
+      const checks = await Promise.all(RUNS.map(run => fileExists(run.file)));
+      availableRuns = RUNS.filter((_run, idx) => checks[idx]);
+      return availableRuns;
+    }
+
+    function spreadOverlappingBirdDots() {
+      const dots = Array.from(chartsPane.querySelectorAll('.step-history-dot[data-entry]'));
+      if (!dots.length) return;
+
+      const groups = new Map();
+      dots.forEach(dot => {
+        const key = `${dot.getAttribute('cx')},${dot.getAttribute('cy')}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(dot);
+      });
+
+      groups.forEach(group => {
+        if (group.length <= 1) return;
+        const baseX = Number(group[0].getAttribute('cx'));
+        const baseY = Number(group[0].getAttribute('cy'));
+        const cols = Math.ceil(Math.sqrt(group.length));
+        const rows = Math.ceil(group.length / cols);
+        const spacing = 9;
+
+        group.forEach((dot, idx) => {
+          const row = Math.floor(idx / cols);
+          const col = idx % cols;
+          const px = baseX + (col - (cols - 1) / 2) * spacing;
+          const py = baseY + (row - (rows - 1) / 2) * spacing;
+          dot.setAttribute('cx', px.toFixed(1));
+          dot.setAttribute('cy', py.toFixed(1));
+        });
+      });
+
+      const path = chartsPane.querySelector('.step-history-path');
+      const points = dots.map(dot => `${dot.getAttribute('cx')},${dot.getAttribute('cy')}`);
+      if (path && points.length >= 2) path.setAttribute('points', points.join(' '));
+    }
+
+    function selectDot(dot) {
+      if (!dot) return;
+      if (selectedDot) selectedDot.classList.remove('dot-selected');
+      dot.classList.add('dot-selected');
+      selectedDot = dot;
+
+      try {
+        showEntry(JSON.parse(dot.dataset.entry));
+      } catch (err) {
+        const detail = detailPane.querySelector('#detail');
+        if (detail) {
+          detail.style.display = '';
+          detail.innerHTML = `<div class="entry-card"><h3>Entry</h3><p class="prompt">Unable to parse dot data.</p></div>`;
+        }
+      }
+    }
+
+    function showEntry(e) {
+      const detail = detailPane.querySelector('#detail');
+      const noSelection = detailPane.querySelector('#no-selection');
+      if (!detail) return;
+
+      const distErr = e.dist !== null && e.dist !== undefined ? e.dist - DIST_TARGET : null;
+      const xErr = e.x !== null && e.x !== undefined ? e.x - X_TARGET : null;
+      const yErr = e.y !== null && e.y !== undefined ? e.y - Y_TARGET : null;
+
+      const trendHtml = e.trend
+        ? `<span class="trend-badge ${trendClass(e.trend)}">${escapeHtml(e.trend)}</span>`
+        : '';
+
+      function gapTarget() {
+        if (e.note) return null;
+
+        const gaps = [
+          { label: 'dist', err: distErr, tol: DIST_TOL },
+          { label: 'x_axis', err: xErr, tol: X_TOL },
+          { label: 'y_axis', err: yErr, tol: Y_TOL }
+        ].filter(gap => gap.err !== null && Math.abs(gap.err) > gap.tol);
+
+        if (!gaps.length) return 'all in gate - holding';
+        gaps.sort((a, b) => Math.abs(b.err) - Math.abs(a.err));
+        return `closing ${gaps[0].label} gap (${errSign(gaps[0].err)})`;
+      }
+
+      const decisionNote = e.note || null;
+      const decisionFallback = gapTarget();
+      const hasDecision = decisionNote || decisionFallback;
+
+      if (noSelection) noSelection.style.display = 'none';
+      detail.style.display = '';
+      detail.innerHTML = `
+        <div class="entry-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+            <h3>Position</h3>
+            ${trendHtml}
+          </div>
+          <table class="kv-table">
+            <tr><td>dist</td><td class="${errClass(distErr, DIST_TOL)}">${fmt(e.dist, 1)}mm</td></tr>
+            <tr><td>x_axis</td><td class="${errClass(xErr, X_TOL)}">${fmt(e.x, 2)}mm</td></tr>
+            <tr><td>y_axis</td><td class="${errClass(yErr, Y_TOL)}">${fmt(e.y, 2)}mm</td></tr>
+            ${e.lift !== undefined && e.lift !== null ? `<tr><td>lift</td><td>${fmt(e.lift, 1)}mm</td></tr>` : ''}
+          </table>
+        </div>
+        <div class="entry-card">
+          <h3>Error from goal</h3>
+          <table class="kv-table">
+            <tr><td>dist (+/-${DIST_TOL}mm)</td><td class="${errClass(distErr, DIST_TOL)}">${errSign(distErr)}</td></tr>
+            <tr><td>x_axis (+/-${X_TOL}mm)</td><td class="${errClass(xErr, X_TOL)}">${errSign(xErr)}</td></tr>
+            <tr><td>y_axis (+/-${Y_TOL}mm)</td><td class="${errClass(yErr, Y_TOL)}">${errSign(yErr)}</td></tr>
+          </table>
+        </div>
+        ${hasDecision ? `
+        <div class="entry-card">
+          <h3>Previous act</h3>
+          ${decisionNote
+            ? `<p style="margin:0;font-size:13px;line-height:1.5;color:#1a2430;font-family:monospace;white-space:pre-wrap">${escapeHtml(decisionNote)}</p>`
+            : `<p style="margin:0;font-size:13px;color:#5d676e">${escapeHtml(decisionFallback)}</p>`
+          }
+        </div>` : ''}
+      `;
+    }
+
+    document.addEventListener('click', event => {
+      const runLink = event.target.closest('.run-link[data-file]');
+      if (runLink) {
+        event.preventDefault();
+        if (runLink.dataset.file !== currentRun) loadRun(runLink.dataset.file);
+        return;
+      }
+
+      const dot = event.target.closest('[data-entry]');
+      if (dot && chartsPane.contains(dot)) selectDot(dot);
+    });
+
+    async function init() {
+      const runs = await loadAvailableRuns();
+      renderRunList(runs);
+      if (!runs.length) {
+        setError('No run views found.');
+        return;
+      }
+      const requested = location.hash ? `${location.hash.slice(1)}.html` : runs[0].file;
+      loadRun(runs.some(run => run.file === requested) ? requested : runs[0].file, false);
+    }
+
+    init();
+  </script>
+</body>
+</html>

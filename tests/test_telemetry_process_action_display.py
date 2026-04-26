@@ -227,6 +227,29 @@ class TestTelemetryProcessActionDisplay(unittest.TestCase):
         self.assertEqual(robot.sent[0][0], "f")
         self.assertEqual(meta.get("cmd_sent"), "f")
 
+    def test_auto_chassis_speed_cap_applies_even_when_step_exempts_cap(self):
+        world = _DummyWorld()
+        robot = _WireAwareDummyRobot()
+
+        meta = telemetry_process.send_robot_command(
+            robot,
+            world,
+            step="ALIGN_BRICK",
+            cmd="f",
+            speed=0.0,
+            speed_score=100,
+            auto_mode=True,
+            score_cap_exempt=True,
+        )
+
+        _power, expected_pwm, expected_score, _duration_ms = telemetry_robot.speed_power_pwm_for_cmd(
+            "f",
+            telemetry_process.AUTO_SPEED_SCORE_HARD_MAX,
+        )
+        self.assertEqual(meta.get("score_model"), expected_score)
+        self.assertEqual(meta.get("pwm"), expected_pwm)
+        self.assertLess(int(meta.get("pwm")), 255)
+
     def test_send_robot_command_uses_returned_wire_text_for_single_send(self):
         world = _DummyWorld()
         robot = _WireAwareDummyRobot()

@@ -268,11 +268,13 @@ class HelperXyzCoordsTests(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertAlmostEqual(float(match.group(1)), float(expected_x), places=1)
 
-    def test_bird_distance_track_ratio_clamps_90mm_to_near_side(self):
-        self.assertEqual(helper_xyz_coords._bird_distance_track_ratio(90.0), 0.0)
-        self.assertEqual(helper_xyz_coords._bird_distance_track_ratio(80.0), 0.0)
-        self.assertEqual(helper_xyz_coords._bird_distance_track_ratio(150.0), 1.0)
-        self.assertGreater(helper_xyz_coords._bird_distance_track_ratio(120.0), 0.0)
+    def test_bird_distance_track_ratio_uses_success_distance_plus_minus_60mm(self):
+        near = helper_xyz_coords.BIRD_DIST_TARGET_MM - helper_xyz_coords.BIRD_DIST_TRACK_HALF_RANGE_MM
+        far = helper_xyz_coords.BIRD_DIST_TARGET_MM + helper_xyz_coords.BIRD_DIST_TRACK_HALF_RANGE_MM
+        self.assertEqual(helper_xyz_coords._bird_distance_track_ratio(near), 0.0)
+        self.assertEqual(helper_xyz_coords._bird_distance_track_ratio(near - 10.0), 0.0)
+        self.assertEqual(helper_xyz_coords._bird_distance_track_ratio(far), 1.0)
+        self.assertAlmostEqual(helper_xyz_coords._bird_distance_track_ratio(helper_xyz_coords.BIRD_DIST_TARGET_MM), 0.5)
 
     def test_autoscaled_axis_extent_stays_at_default_through_10mm_and_expands_after(self):
         self.assertEqual(
@@ -313,8 +315,8 @@ class HelperXyzCoordsTests(unittest.TestCase):
         world = _DummyWorld()
         svg = helper_xyz_coords.render_workspace_svg(helper_xyz_coords.sync_from_world(world, render=False))
 
-        self.assertIn(">134mm</text>", svg)
-        self.assertIn(">164mm</text>", svg)
+        self.assertIn(">89mm</text>", svg)
+        self.assertIn(">209mm</text>", svg)
         self.assertIn("dist 149.3 ±5.0", svg)
         self.assertIn("x 6.0", svg)
         self.assertIn(">±5.0</text>", svg)
