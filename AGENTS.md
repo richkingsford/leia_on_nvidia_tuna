@@ -1,6 +1,6 @@
 # AGENTS.md
 
-## Architecture and Clean Code Rules (Leia).
+## Architecture and Clean Code Rules (Leia)...
 - Leia lays bricks using world model JSON files and demo logs in `demos/`.
 - Robot motion must use the movements defined in `world_model_robot.json` only (no overrides or conflicts).
 - Hard rule: Full success gate confirmation (consecutive/majority gatecheck tracker/logs) must not start for any step until the lite gate precheck has passed and the current effective success-gate sample is passing; before that, remain in lite gate mode only.
