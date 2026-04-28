@@ -47,6 +47,33 @@ class TestHelperBrickDetectorYoloCrownShape(unittest.TestCase):
             cv2.fillPoly(frame, [cutout_draw], (0, 0, 0))
         return vision, frame
 
+    def _synthetic_pair_indicator_frame(self, *, right_y_shift=0.0):
+        vision = self._build_detector_stub()
+        frame = np.zeros((140, 220, 3), dtype=np.uint8)
+        cyan_bgr = (177, 157, 31)
+        cv2.rectangle(frame, (20, 15), (200, 125), cyan_bgr, thickness=cv2.FILLED)
+
+        cutout_items = detector.BrickDetector._sorted_face_cutout_models(vision)
+        model_pair_center = (
+            cutout_items[0]["centroid"] + cutout_items[1]["centroid"]
+        ) * 0.5
+        for idx, item in enumerate(cutout_items[:2]):
+            cutout_proj = detector.BrickDetector._transform_model_points_similarity(
+                vision,
+                item["polygon"],
+                model_origin=model_pair_center,
+                image_origin=np.asarray([110.0, 70.0], dtype=np.float32),
+                scale=2.2,
+                cos_theta=1.0,
+                sin_theta=0.0,
+            )
+            if idx == 1 and float(right_y_shift) != 0.0:
+                cutout_proj = cutout_proj.copy()
+                cutout_proj[:, 1] += float(right_y_shift)
+            cutout_draw = np.round(cutout_proj).astype(np.int32).reshape(-1, 1, 2)
+            cv2.fillPoly(frame, [cutout_draw], (0, 0, 0))
+        return vision, frame
+
     def test_world_model_shape_loads_cutouts_and_full_profile(self):
         vision = self._build_detector_stub()
 
@@ -55,7 +82,7 @@ class TestHelperBrickDetectorYoloCrownShape(unittest.TestCase):
         self.assertIn("full", vision._face_shape_templates)
         self.assertEqual(vision._face_shape_gate_mode, "negative_cutouts")
         self.assertEqual(float(vision._negative_cutout_pair_x_axis_max_angle_deg), 15.0)
-        self.assertEqual(float(vision._negative_cutout_focus_y_min_ratio), 0.50)
+        self.assertEqual(float(vision._negative_cutout_focus_y_min_ratio), 0.35)
         self.assertEqual(float(vision._negative_cutout_focus_y_max_ratio), 0.68)
         self.assertEqual(float(vision._negative_cutout_focus_weight), 1.25)
 
@@ -160,7 +187,7 @@ class TestHelperBrickDetectorYoloCrownShape(unittest.TestCase):
         self.assertIsInstance(bricks[0].get("selection_anchor_y"), float)
 
     def test_hsv_segment_can_recover_from_cutout_pair_only_indicator(self):
-        vision, frame = self._synthetic_negative_cutout_frame()
+        vision, frame = self._synthetic_pair_indicator_frame()
         vision._match_negative_cutout_pair = lambda *_args, **_kwargs: (False, None)
 
         bricks = detector.BrickDetector._segment_bricks_hsv(
@@ -175,10 +202,10 @@ class TestHelperBrickDetectorYoloCrownShape(unittest.TestCase):
         self.assertEqual(len(bricks), 1)
         self.assertEqual(bricks[0].get("shape_profile"), "full")
         self.assertIsInstance(bricks[0].get("shape_match_score"), float)
-        self.assertAlmostEqual(float(bricks[0].get("selection_anchor_x")), 100.0, delta=8.0)
+        self.assertAlmostEqual(float(bricks[0].get("selection_anchor_x")), 110.0, delta=8.0)
 
     def test_hsv_segment_pair_only_recovery_rejects_misaligned_triangles(self):
-        vision, frame = self._synthetic_negative_cutout_frame(right_y_shift=18.0)
+        vision, frame = self._synthetic_pair_indicator_frame(right_y_shift=18.0)
         vision._match_negative_cutout_pair = lambda *_args, **_kwargs: (False, None)
 
         bricks = detector.BrickDetector._segment_bricks_hsv(
@@ -205,6 +232,26 @@ class TestHelperBrickDetectorYoloCrownShape(unittest.TestCase):
         )
 
         self.assertEqual(bricks, [])
+
+    def test_shape_only_detector_highlights_one_side_by_side_cutout_pair(self):
+        vision, frame = self._synthetic_pair_indicator_frame()
+
+        primary, candidates = detector.detect_single_negative_cutout_brick(
+            vision,
+            frame,
+        )
+
+        self.assertIsNotNone(primary)
+        self.assertEqual(len(candidates), 1)
+        self.assertAlmostEqual(float(primary["selection_anchor_x"]), 110.0, delta=4.0)
+
+        highlighted = frame.copy()
+        detector.draw_single_negative_cutout_brick_highlight(
+            vision,
+            highlighted,
+            primary,
+        )
+        self.assertGreater(int(np.count_nonzero(cv2.absdiff(frame, highlighted))), 0)
 
 
 if __name__ == "__main__":

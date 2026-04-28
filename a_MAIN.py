@@ -3684,6 +3684,11 @@ def cyan_stream_debug_lines(app_state, vision):
     model_path = getattr(vision, "model_path", None)
     if model_path:
         model_name = Path(str(model_path)).name or str(model_path)
+    backend_text = str(getattr(vision, "inference_backend", "") or "").strip()
+    if not backend_text:
+        backend_text = "-"
+    trust_boxes = bool(getattr(vision, "_trust_detector_boxes", False))
+    trust_text = "model" if trust_boxes else "shape-gate"
 
     status = str(getattr(vision, "last_status", "searching")).strip() or "searching"
     raw_count = getattr(vision, "last_raw_prediction_count", None)
@@ -3719,7 +3724,7 @@ def cyan_stream_debug_lines(app_state, vision):
     input_text = f"{int(input_size)}" if isinstance(input_size, (int, float)) else "-"
 
     lines = [
-        f"[ML] PROFILE: {profile_text} | MODEL: {model_name}",
+        f"[ML] PROFILE: {profile_text} | BACKEND: {backend_text} | TRUST: {trust_text} | MODEL: {model_name}",
         f"[ML] SEARCH: {status} | RAW:{raw_text} >THR:{candidate_text} NMS:{nms_text}",
         f"[ML] TOP CONF: {top_conf_text} | MAX RAW: {raw_max_conf_text} | MIN CONF: {threshold_text} | SMOOTH: {smooth_text} | INPUT: {input_text}px",
     ]

@@ -23,11 +23,8 @@ class ArucoApp:
         self.current_frame = None
         self.running = True
 
-        self.cap = cv2.VideoCapture(0)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        
         self.vision.init_camera(640, 480)
+        self.cap = self.vision.cap
 
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
@@ -42,6 +39,9 @@ class ArucoApp:
 
     def _loop(self):
         while self.running:
+            if self.cap is None or not self.cap.isOpened():
+                time.sleep(0.1)
+                continue
             ret, frame = self.cap.read()
             if not ret:
                 time.sleep(0.1)
@@ -79,7 +79,8 @@ class ArucoApp:
         except: pass
         self.running = False
         self.server.stop()
-        self.cap.release()
+        if self.cap is not None:
+            self.cap.release()
 
 if __name__ == "__main__":
     ArucoApp().run()

@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 from typing import Optional, Tuple, List
 
-from helper_camera_sources import CameraSource, candidate_camera_sources, existing_camera_nodes
+from helper_camera_sources import CameraSource, candidate_camera_sources, existing_camera_nodes, open_opencv_camera_source
 
 
 @dataclass
@@ -65,7 +65,7 @@ class LeiaVision:
                 self.cap = None
 
             tried_sources: List[CameraSource] = []
-            for source in self._candidate_camera_sources(camera_index):
+            for source in self._candidate_camera_sources(camera_index, width, height):
                 tried_sources.append(source)
                 cap = self._open_camera(source, width, height)
                 if cap is not None and cap.isOpened():
@@ -88,26 +88,16 @@ class LeiaVision:
         )
         self.dist_coeffs = np.zeros((4,1))
 
-    def _candidate_camera_sources(self, preferred_index: Optional[int]) -> List[CameraSource]:
-        return list(candidate_camera_sources(preferred_index))
+    def _candidate_camera_sources(
+        self,
+        preferred_index: Optional[int],
+        width: int,
+        height: int,
+    ) -> List[CameraSource]:
+        return list(candidate_camera_sources(preferred_index, width=width, height=height))
 
     def _open_camera(self, source: CameraSource, width: int, height: int):
-        backends = []
-        if hasattr(cv2, "CAP_V4L2"):
-            backends.append(cv2.CAP_V4L2)
-        if hasattr(cv2, "CAP_GSTREAMER"):
-            backends.append(cv2.CAP_GSTREAMER)
-        backends.append(cv2.CAP_ANY)
-        for backend in backends:
-            cap = cv2.VideoCapture(source, backend)
-            if cap is not None and cap.isOpened():
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-                return cap
-            if cap is not None:
-                cap.release()
-        return None
+        return open_opencv_camera_source(source, cv2, width=width, height=height)
 
     def _log_camera_open_failure(self, tried_sources: List[CameraSource]):
         print(f"[VISION] Unable to open camera. Tried sources: {tried_sources}", flush=True)

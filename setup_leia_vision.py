@@ -20,13 +20,8 @@ class LeiaApp:
         self.current_frame = None
         self.running = True
 
-        # Camera Setup
-        self.cap = cv2.VideoCapture(0)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        
-        # Init Vision Camera Matrix
         self.vision.init_camera(640, 480)
+        self.cap = self.vision.cap
 
         # Start Thread
         self.thread = threading.Thread(target=self._loop, daemon=True)
@@ -43,6 +38,9 @@ class LeiaApp:
 
     def _loop(self):
         while self.running:
+            if self.cap is None or not self.cap.isOpened():
+                time.sleep(0.1)
+                continue
             ret, frame = self.cap.read()
             if not ret:
                 time.sleep(0.1)
@@ -89,7 +87,8 @@ class LeiaApp:
             
         self.running = False
         self.server.stop()
-        self.cap.release()
+        if self.cap is not None:
+            self.cap.release()
 
     def draw_model_overlay(self, frame):
         # Draw 64x48mm brick model in bottom left

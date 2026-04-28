@@ -1,0 +1,11 @@
+This solution has a ton of custom code for our robot, named Leia, which auto-stacks bricks using ~15 steps.  The current solutions are total garbage.  We must replace as many of these garbage solutions with native nvidia solutions. This repo is in a safe sandbox I copied from the old solution - so we can safely hard delete anything here. Let's do this one small step at a time - until we can confidently stack bricks with Leia. 
+
+
+
+
+
+
+
+Can you highlight a single brick on http://192.168.1.39:5000?
+
+Remember the most distinguishing feature of our bricks is the 2 not-cyan triangles side by side (not above and below).  The triangles are surrounded in the cyan color. 

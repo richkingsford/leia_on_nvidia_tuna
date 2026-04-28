@@ -33,7 +33,7 @@ import time
 import colorsys
 from pathlib import Path
 
-from helper_camera_sources import candidate_camera_sources, existing_camera_nodes
+from helper_camera_sources import candidate_camera_sources, existing_camera_nodes, open_opencv_camera_source
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -58,6 +58,7 @@ FOCAL_REF_WIDTH = 640.0
 
 # YOLO model path (relative to this file) — scenario-2 runtime uses v4 only
 MODEL_PATH = Path(__file__).resolve().parent / "brick_yolo_v4.onnx"
+TENSORRT_ENGINE_PATH = Path(__file__).resolve().parent / "brick_yolo_v4_fast.plan"
 BRICK_MODEL_PATH = Path(__file__).resolve().parent / "world_model_brick.json"
 
 # Detection confidence threshold
@@ -254,17 +255,22 @@ class BrickDetector:
         if self.save_folder and not os.path.exists(self.save_folder):
             os.makedirs(self.save_folder, exist_ok=True)
 
-        # Load ONNX model via OpenCV DNN
+        # Load the detector forward-pass backend.  Prefer the Jetson-native
+        # TensorRT engine when present, with OpenCV DNN kept as the fallback.
         mpath = Path(model_path) if model_path else MODEL_PATH
         if not mpath.exists():
             raise FileNotFoundError(
                 f"YOLO ONNX model not found at {mpath}. "
                 f"Place brick_yolo_v4.onnx next to this script."
             )
-        self.net = cv2.dnn.readNetFromONNX(str(mpath))
-        self.log.info("Loaded YOLO ONNX model from %s", mpath)
-        self.model_path = str(mpath)
-        self.model_name = mpath.name
+        self.net = None
+        self._trt_engine = None
+        self.inference_backend = "opencv_dnn"
+        self._init_inference_backend(mpath, model_path=model_path)
+        self._trust_detector_boxes = self._env_flag(
+            "LEIA_BRICK_YOLO_TRUST_BOXES",
+            default=(self.inference_backend == "tensorrt"),
+        )
         self.conf_threshold = float(CONF_THRESHOLD)
         self.nms_threshold = float(NMS_THRESHOLD)
         self.input_size = int(YOLO_INPUT_SIZE)
@@ -282,21 +288,27 @@ class BrickDetector:
         self.debug_show_all_candidates = False
         self.debug_max_boxes = 1
 
-        # Camera setup — probe explicit overrides and real /dev/video* nodes first.
+        # Camera setup: prefer Jetson-native GStreamer/NVIDIA conversion pipelines.
         self.cap = None
         self.camera_source = None
         tried_sources = []
-        for source in candidate_camera_sources():
+        for source in candidate_camera_sources(width=DEFAULT_FRAME_W, height=DEFAULT_FRAME_H):
             tried_sources.append(source)
             self.log.info("Attempting camera %s...", source)
-            temp = cv2.VideoCapture(source)
-            if temp.isOpened():
+            temp = open_opencv_camera_source(
+                source,
+                cv2,
+                width=DEFAULT_FRAME_W,
+                height=DEFAULT_FRAME_H,
+            )
+            if temp is not None and temp.isOpened():
                 self.log.info("Connected to camera %s (%s)", source,
                               temp.getBackendName())
                 self.cap = temp
                 self.camera_source = source
                 break
-            temp.release()
+            if temp is not None:
+                temp.release()
 
         if self.cap is None:
             existing_nodes = existing_camera_nodes()
@@ -306,7 +318,14 @@ class BrickDetector:
                 existing_nodes,
             )
             dummy_source = existing_nodes[0] if existing_nodes else 0
-            self.cap = cv2.VideoCapture(dummy_source)
+            self.cap = open_opencv_camera_source(
+                dummy_source,
+                cv2,
+                width=DEFAULT_FRAME_W,
+                height=DEFAULT_FRAME_H,
+            )
+            if self.cap is None:
+                self.cap = cv2.VideoCapture(dummy_source)
 
         # Frame dimensions
         self.frame_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or DEFAULT_FRAME_W
@@ -620,8 +639,56 @@ class BrickDetector:
         }
 
     # ------------------------------------------------------------------
-    # ONNX inference helpers
+    # YOLO inference helpers
     # ------------------------------------------------------------------
+
+    def _env_flag(self, name, default=False):
+        raw = os.environ.get(str(name), "")
+        if not str(raw).strip():
+            return bool(default)
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _init_inference_backend(self, onnx_path, model_path=None):
+        backend_pref = os.environ.get("LEIA_BRICK_YOLO_BACKEND", "auto").strip().lower()
+        if backend_pref not in {"auto", "tensorrt", "trt", "opencv", "opencv_dnn"}:
+            backend_pref = "auto"
+
+        engine_env = os.environ.get("LEIA_BRICK_YOLO_ENGINE", "").strip()
+        engine_path = Path(engine_env) if engine_env else TENSORRT_ENGINE_PATH
+        using_default_model = Path(onnx_path).resolve() == MODEL_PATH.resolve()
+        can_try_tensorrt = (
+            backend_pref in {"auto", "tensorrt", "trt"}
+            and (using_default_model or bool(engine_env))
+            and engine_path.exists()
+        )
+
+        if can_try_tensorrt:
+            try:
+                from helper_tensorrt_yolo import TensorRTYoloEngine
+
+                self._trt_engine = TensorRTYoloEngine(engine_path)
+                self.inference_backend = "tensorrt"
+                self.model_path = str(engine_path)
+                self.model_name = engine_path.name
+                self.log.info("Loaded TensorRT YOLO engine from %s", engine_path)
+                return
+            except Exception as exc:
+                self.log.warning(
+                    "TensorRT YOLO unavailable (%s); falling back to OpenCV DNN",
+                    exc,
+                )
+
+        self.net = cv2.dnn.readNetFromONNX(str(onnx_path))
+        self.inference_backend = "opencv_dnn"
+        self.model_path = str(onnx_path)
+        self.model_name = Path(onnx_path).name
+        self.log.info("Loaded YOLO ONNX model from %s", onnx_path)
+
+    def _forward_yolo(self, blob):
+        if self._trt_engine is not None:
+            return self._trt_engine.infer(blob)
+        self.net.setInput(blob)
+        return self.net.forward()
 
     def _letterbox(self, frame):
         """Resize frame to YOLO_INPUT_SIZE maintaining aspect ratio with padding."""
@@ -660,9 +727,8 @@ class BrickDetector:
             swapRB=True, crop=False
         )
 
-        # Forward pass
-        self.net.setInput(blob)
-        output = self.net.forward()  # shape: (1, 5, 8400)
+        # Forward pass.  TensorRT and OpenCV DNN both return (1, 5, 8400).
+        output = self._forward_yolo(blob)
 
         # Transpose to (8400, 5) — each row: [cx, cy, w, h, conf]
         output = output[0].T
@@ -1714,7 +1780,7 @@ class BrickDetector:
             dot_found, dot_cx, dot_cy = self._detect_pink_dot_in_brick(frame, primary)
             # When YOLO found nothing at all (top conf = 0), the only signal that
             # distinguishes a real brick from a background false positive is the pink dot.
-            if self.last_max_confidence == 0.0 and not dot_found:
+            if float(getattr(self, "last_max_confidence", 1.0)) == 0.0 and not dot_found:
                 self.last_status = "low confidence"
                 self.last_primary_confidence = 0.0
                 return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
@@ -1801,8 +1867,16 @@ class BrickDetector:
             return (True, angle, dist, offset_x, conf_pct, cam_height,
                     brick_above, brick_below)
 
-        # Fallback path: require the active face gate to match.
-        shape_gate_enabled = bool(getattr(self, "_face_shape_templates", None)) or self._uses_negative_cutout_gate()
+        # Fallback path: legacy OpenCV/ONNX mode keeps the active face gate.
+        # TensorRT mode can trust the model box and skip the old hand gate.
+        trust_detector_boxes = bool(getattr(self, "_trust_detector_boxes", False))
+        shape_gate_enabled = (
+            not trust_detector_boxes
+            and (
+                bool(getattr(self, "_face_shape_templates", None))
+                or self._uses_negative_cutout_gate()
+            )
+        )
         matched_boxes = []
         matched_partials = []
         if shape_gate_enabled:
@@ -3641,6 +3715,26 @@ class BrickDetector:
             if not isinstance(cutout_polygons, list) or not cutout_polygons:
                 if isinstance(rect_points, np.ndarray) and rect_points.shape == (4, 2):
                     cutout_polygons = self._project_negative_cutout_polygons(rect_points)
+
+            if contour_arr is not None and contour_arr.shape[0] >= 3:
+                cv2.polylines(
+                    frame,
+                    [contour_arr],
+                    True,
+                    outline_color,
+                    outline_thickness,
+                    cv2.LINE_AA,
+                )
+            elif isinstance(rect_points, np.ndarray) and rect_points.shape == (4, 2):
+                rect_draw = np.round(rect_points).astype(np.int32).reshape(-1, 1, 2)
+                cv2.polylines(
+                    frame,
+                    [rect_draw],
+                    True,
+                    outline_color,
+                    outline_thickness,
+                    cv2.LINE_AA,
+                )
             if isinstance(cutout_polygons, list) and cutout_polygons:
                 for poly in cutout_polygons:
                     poly_arr = np.asarray(poly, dtype=np.float32)
@@ -3915,6 +4009,10 @@ class BrickDetector:
         """Release camera resources."""
         if getattr(self, "cap", None):
             self.cap.release()
+        trt_engine = getattr(self, "_trt_engine", None)
+        if trt_engine is not None:
+            trt_engine.close()
+            self._trt_engine = None
 
     def close(self):
         """Release camera resources."""
@@ -3922,3 +4020,119 @@ class BrickDetector:
 
     def __del__(self):
         self.release()
+
+
+def build_negative_cutout_shape_detector(
+    *,
+    hsv_lower=None,
+    hsv_upper=None,
+    hsv_erode_iterations=0,
+    center_lock_enabled=True,
+):
+    """Build a camera-free detector for the cyan face + dark-triangle shape gate."""
+    detector = BrickDetector.__new__(BrickDetector)
+    detector.debug = False
+    detector.log = logging.getLogger("BrickVisionShapeOnly")
+    detector.current_frame = None
+    detector.raw_frame = None
+    detector.frame_w = DEFAULT_FRAME_W
+    detector.frame_h = DEFAULT_FRAME_H
+    detector.camera_center_offset_px = 0.0
+    detector._hsv_lower = np.array(
+        hsv_lower if hsv_lower is not None else CYAN_HSV_WIDE_LOWER,
+        dtype=np.uint8,
+    )
+    detector._hsv_upper = np.array(
+        hsv_upper if hsv_upper is not None else CYAN_HSV_WIDE_UPPER,
+        dtype=np.uint8,
+    )
+    detector._hsv_enabled = True
+    detector._hsv_erode_iterations = max(0, int(hsv_erode_iterations or 0))
+    detector._face_polygon_model = None
+    detector._face_cutouts_model = []
+    detector._face_lines_model = []
+    detector._face_shape_templates = {}
+    detector._load_face_shape_model()
+    detector._init_shape_match_templates()
+    detector._center_lock_enabled = bool(center_lock_enabled)
+    detector._center_lock_radius_px = None
+    detector._center_switch_margin_px = float(CENTER_SWITCH_MARGIN_PX)
+    detector._center_partial_penalty = float(CENTER_PARTIAL_PENALTY)
+    detector._center_axis_weight_x = float(CENTER_AXIS_WEIGHT_X)
+    detector._center_axis_weight_y = float(CENTER_AXIS_WEIGHT_Y)
+    detector._center_lock_prev_center = None
+    detector._stack_center_y_row_filter_enabled = STACK_CENTER_Y_ROW_FILTER_ENABLED
+    detector._stack_center_y_row_min_candidates = STACK_CENTER_Y_ROW_MIN_CANDIDATES
+    detector._stack_center_y_row_tolerance_px = STACK_CENTER_Y_ROW_TOLERANCE_PX
+    detector.last_status = "idle"
+    detector.last_primary_confidence = 0.0
+    detector.last_max_confidence = 0.0
+    return detector
+
+
+def detect_single_negative_cutout_brick(detector, frame):
+    """Return the one selected crown-brick candidate and the full candidate list."""
+    if detector is None or frame is None or getattr(frame, "size", 0) == 0:
+        return None, []
+
+    frame_h, frame_w = frame.shape[:2]
+    detector.frame_w = int(frame_w)
+    detector.frame_h = int(frame_h)
+
+    feature_mask, _contour_mask = detector._build_hsv_masks(frame)
+    candidates = detector._build_negative_cutout_pair_candidates(
+        feature_mask,
+        crop_x=0,
+        crop_y=0,
+        crop_w=frame_w,
+        crop_h=frame_h,
+    )
+    if not candidates:
+        detector._center_lock_prev_center = None
+        detector.last_status = "inner triangles mismatch"
+        detector.last_primary_confidence = 0.0
+        return None, []
+
+    filtered = detector._filter_candidates_to_center_y_row(candidates, frame_w, frame_h)
+    if filtered:
+        candidates = filtered
+    primary = detector._select_center_brick(candidates, frame_w, frame_h)
+    if primary is None:
+        detector.last_status = "inner triangles mismatch"
+        detector.last_primary_confidence = 0.0
+        return None, candidates
+
+    detector.last_status = "target locked (shape)"
+    detector.last_primary_confidence = 1.0
+    return primary, candidates
+
+
+def draw_single_negative_cutout_brick_highlight(detector, frame, candidate):
+    """Draw one selected brick outline plus its two confirmed dark triangles."""
+    if detector is None or frame is None or not isinstance(candidate, dict):
+        return frame
+
+    bbox = candidate.get("bbox")
+    if isinstance(bbox, tuple) and len(bbox) >= 4:
+        x, y, w, h = [int(round(float(v))) for v in bbox[:4]]
+        if w > 0 and h > 0:
+            cv2.rectangle(
+                frame,
+                (max(0, x), max(0, y)),
+                (max(0, x + w), max(0, y + h)),
+                (0, 255, 255),
+                3,
+                cv2.LINE_AA,
+            )
+    detector._draw_primary_face_outline(frame, candidate)
+    anchor_x, anchor_y = detector._candidate_selection_point(candidate)
+    cv2.drawMarker(
+        frame,
+        (int(round(anchor_x)), int(round(anchor_y))),
+        (0, 255, 0),
+        cv2.MARKER_CROSS,
+        18,
+        2,
+        cv2.LINE_AA,
+    )
+    return frame
