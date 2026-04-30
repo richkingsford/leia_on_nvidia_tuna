@@ -190,6 +190,7 @@ BRICK_FACE_MATCH_MAX_PARTIAL = 0.55
 FALLBACK_SHAPE_MIN_AREA_RATIO = 0.06
 BRICK_FACE_GATE_MODE_DEFAULT = "negative_cutouts"
 BRICK_FACE_GATE_MODE_NEGATIVE_CUTOUTS = "negative_cutouts"
+BRICK_FACE_GATE_MODE_SHAPE_MATCH = "shape_match"
 NEGATIVE_CUTOUT_CYAN_FILL_MAX = 0.20
 NEGATIVE_CUTOUT_RING_CYAN_MIN = 0.52
 NEGATIVE_CUTOUT_RING_DILATE_PX = 4
@@ -471,6 +472,7 @@ class BrickDetector:
             if mode_text in {
                 BRICK_FACE_GATE_MODE_DEFAULT,
                 BRICK_FACE_GATE_MODE_NEGATIVE_CUTOUTS,
+                BRICK_FACE_GATE_MODE_SHAPE_MATCH,
             }:
                 self._face_shape_gate_mode = mode_text
         if negative_cutout_cyan_fill_max is not None:
@@ -2179,8 +2181,9 @@ class BrickDetector:
         self._face_polygon_model = None
         self._face_cutouts_model = []
         self._face_lines_model = []
-        self._pink_dot_model_xy = (0.0, 13.0)
         self._face_shape_gate_mode = BRICK_FACE_GATE_MODE_DEFAULT
+        self._shape_match_gap_bridge_px = 0
+        self._shape_match_score_max = float(BRICK_FACE_MATCH_MAX_FULL)
         self._negative_cutout_cyan_fill_max = float(NEGATIVE_CUTOUT_CYAN_FILL_MAX)
         self._negative_cutout_ring_cyan_min = float(NEGATIVE_CUTOUT_RING_CYAN_MIN)
         self._negative_cutout_ring_dilate_px = int(NEGATIVE_CUTOUT_RING_DILATE_PX)
@@ -2271,8 +2274,21 @@ class BrickDetector:
             if mode_text in {
                 BRICK_FACE_GATE_MODE_DEFAULT,
                 BRICK_FACE_GATE_MODE_NEGATIVE_CUTOUTS,
+                BRICK_FACE_GATE_MODE_SHAPE_MATCH,
             }:
                 self._face_shape_gate_mode = mode_text
+            try:
+                self._shape_match_gap_bridge_px = max(
+                    0, int(shape_gate.get("shape_match_gap_bridge_px"))
+                )
+            except (TypeError, ValueError):
+                pass
+            try:
+                self._shape_match_score_max = max(
+                    0.05, float(shape_gate.get("shape_match_score_max"))
+                )
+            except (TypeError, ValueError):
+                pass
             try:
                 self._negative_cutout_cyan_fill_max = float(
                     shape_gate.get("cutout_cyan_fill_max")
@@ -2514,6 +2530,12 @@ class BrickDetector:
     def _uses_negative_cutout_gate(self):
         face_cutouts_model = getattr(self, "_face_cutouts_model", None)
         return isinstance(face_cutouts_model, list) and len(face_cutouts_model) >= 2
+
+    def _uses_shape_match_gate(self):
+        return (
+            str(getattr(self, "_face_shape_gate_mode", "")) == BRICK_FACE_GATE_MODE_SHAPE_MATCH
+            or not self._uses_negative_cutout_gate()
+        )
 
     def _shape_gate_mismatch_status(self):
         if self._uses_negative_cutout_gate():
@@ -2870,6 +2892,116 @@ class BrickDetector:
         metrics["max_angle_deg"] = float(max_angle)
         metrics["passed"] = bool(passed)
         return bool(passed), metrics
+
+    def _build_shape_match_candidates(
+        self,
+        feature_mask,
+        *,
+        crop_x=0,
+        crop_y=0,
+        crop_w=None,
+        crop_h=None,
+    ):
+        """Find brick candidates by matching HSV blobs against the face polygon via matchShapes."""
+        if feature_mask is None:
+            return []
+        mask_arr = np.asarray(feature_mask, dtype=np.uint8)
+        if mask_arr.ndim != 2 or mask_arr.size == 0:
+            return []
+
+        h_mask, w_mask = mask_arr.shape[:2]
+        ex, ey = int(crop_x), int(crop_y)
+        ew = int(crop_w) if crop_w is not None else w_mask - ex
+        eh = int(crop_h) if crop_h is not None else h_mask - ey
+        roi = mask_arr[ey:ey + eh, ex:ex + ew]
+
+        bridge_px = max(0, int(getattr(self, "_shape_match_gap_bridge_px", 0)))
+        if bridge_px > 0:
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, bridge_px))
+            roi = cv2.dilate(roi, kernel, iterations=1)
+
+        contours, _ = cv2.findContours(roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return []
+
+        min_area = max(1000.0, float(ew * eh) * 0.02)
+        score_max = float(getattr(self, "_shape_match_score_max", BRICK_FACE_MATCH_MAX_FULL))
+        templates = getattr(self, "_face_shape_templates", None)
+        candidates = []
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < min_area:
+                continue
+
+            bx, by, bw, bh = cv2.boundingRect(cnt)
+            if bw <= 0 or bh <= 0:
+                continue
+            fill_ratio = float(area) / float(max(1, bw * bh))
+            if fill_ratio < BRICK_SHAPE_FILL_RATIO_MIN:
+                continue
+
+            rect = cv2.minAreaRect(cnt)
+            rw, rh = rect[1]
+            if rw <= 0.0 or rh <= 0.0:
+                continue
+            aspect = float(max(rw, rh) / max(1e-6, min(rw, rh)))
+            expected_aspects = (
+                float(BRICK_WIDTH_MM / BRICK_HEIGHT_MM),
+                float(BRICK_WIDTH_MM / BRICK_DEPTH_MM),
+                float(BRICK_HEIGHT_MM / BRICK_DEPTH_MM),
+            )
+            rel_err = min(abs(aspect - exp) / max(1e-6, exp) for exp in expected_aspects)
+            if rel_err > BRICK_SHAPE_REL_ERROR_MAX:
+                continue
+
+            shape_profile = "full"
+            shape_match_score = 0.0
+            if isinstance(templates, dict) and templates:
+                candidate_shape = self._shape_match_contour(cnt)
+                if candidate_shape is None:
+                    continue
+                best_score = None
+                best_profile = "full"
+                for prof, templ in templates.items():
+                    try:
+                        s = float(cv2.matchShapes(candidate_shape, templ, cv2.CONTOURS_MATCH_I1, 0.0))
+                        if best_score is None or s < best_score:
+                            best_score = s
+                            best_profile = prof
+                    except Exception:
+                        pass
+                if best_score is None or best_score > score_max:
+                    continue
+                shape_profile = best_profile
+                shape_match_score = best_score
+
+            M = cv2.moments(cnt)
+            if M["m00"] == 0:
+                continue
+            cx_frame = float(M["m10"] / M["m00"]) + float(ex)
+            cy_frame = float(M["m01"] / M["m00"]) + float(ey)
+
+            candidates.append({
+                "contour": cnt,
+                "center_x": int(round(cx_frame)),
+                "center_y": int(round(cy_frame)),
+                "rect": rect,
+                "bbox": (bx + ex, by + ey, bw, bh),
+                "area": float(area),
+                "partial": False,
+                "partial_kind": None,
+                "partial_label": None,
+                "partial_edges": {},
+                "shape_profile": shape_profile,
+                "shape_match_score": float(shape_match_score) if isinstance(shape_match_score, (int, float)) else 0.0,
+                "negative_cutout_polygons": [],
+                "selection_anchor_x": cx_frame,
+                "selection_anchor_y": cy_frame,
+                "negative_cutout_pair_x_axis_metrics": None,
+            })
+
+        candidates.sort(key=lambda c: float(c.get("shape_match_score") or 999.0))
+        return candidates
 
     def _build_negative_cutout_pair_candidates(
         self,
@@ -4071,7 +4203,7 @@ def build_negative_cutout_shape_detector(
 
 
 def detect_single_negative_cutout_brick(detector, frame):
-    """Return the one selected crown-brick candidate and the full candidate list."""
+    """Return the one selected brick candidate and the full candidate list."""
     if detector is None or frame is None or getattr(frame, "size", 0) == 0:
         return None, []
 
@@ -4080,16 +4212,29 @@ def detect_single_negative_cutout_brick(detector, frame):
     detector.frame_h = int(frame_h)
 
     feature_mask, _contour_mask = detector._build_hsv_masks(frame)
-    candidates = detector._build_negative_cutout_pair_candidates(
-        feature_mask,
-        crop_x=0,
-        crop_y=0,
-        crop_w=frame_w,
-        crop_h=frame_h,
-    )
+
+    if detector._uses_shape_match_gate():
+        candidates = detector._build_shape_match_candidates(
+            feature_mask,
+            crop_x=0,
+            crop_y=0,
+            crop_w=frame_w,
+            crop_h=frame_h,
+        )
+        no_match_status = "shape mismatch"
+    else:
+        candidates = detector._build_negative_cutout_pair_candidates(
+            feature_mask,
+            crop_x=0,
+            crop_y=0,
+            crop_w=frame_w,
+            crop_h=frame_h,
+        )
+        no_match_status = "inner triangles mismatch"
+
     if not candidates:
         detector._center_lock_prev_center = None
-        detector.last_status = "inner triangles mismatch"
+        detector.last_status = no_match_status
         detector.last_primary_confidence = 0.0
         return None, []
 
@@ -4098,7 +4243,7 @@ def detect_single_negative_cutout_brick(detector, frame):
         candidates = filtered
     primary = detector._select_center_brick(candidates, frame_w, frame_h)
     if primary is None:
-        detector.last_status = "inner triangles mismatch"
+        detector.last_status = no_match_status
         detector.last_primary_confidence = 0.0
         return None, candidates
 

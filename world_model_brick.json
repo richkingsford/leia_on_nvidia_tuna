@@ -51,49 +51,23 @@
         },
         "facePolygon": [
             {"x": -26.5, "y": 0.0},
-            {"x": -26.5, "y": 35.4},
-            {"x": 26.5,  "y": 35.4},
+            {"x": -26.5, "y": 18.0},
+            {"x": 26.5,  "y": 18.0},
             {"x": 26.5,  "y": 0.0}
         ],
         "faceCutouts": [
             [
-                {
-                    "x": -26.5,
-                    "y": 9.0
-                },
-                {
-                    "x": -3.5,
-                    "y": 9.0
-                },
-                {
-                    "x": -15.4,
-                    "y": 28.7
-                }
-            ],
-            [
-                {
-                    "x": 3.5,
-                    "y": 9.0
-                },
-                {
-                    "x": 26.5,
-                    "y": 9.0
-                },
-                {
-                    "x": 15.4,
-                    "y": 28.7
-                }
+                {"x": -26.5, "y": 7.5},
+                {"x":  26.5, "y": 7.5},
+                {"x":  23.5, "y": 10.5},
+                {"x": -23.5, "y": 10.5}
             ]
         ],
-        "pinkDot": {
-            "x": 0.0,
-            "y": 5.0,
-            "radius_mm": 2.5,
-            "hex_colors": ["B8304C", "BE2646", "B8244C"]
-        },
         "faceLines": [],
         "shapeGate": {
-            "mode": "negative_cutouts",
+            "mode": "shape_match",
+            "shape_match_gap_bridge_px": 24,
+            "shape_match_score_max": 0.65,
             "cutout_cyan_fill_max": 0.42,
             "cutout_ring_cyan_min": 0.32,
             "cutout_ring_dilate_px": 5,
