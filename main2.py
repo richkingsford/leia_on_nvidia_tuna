@@ -15,7 +15,7 @@ import cv2
 from helper_brick_detector_yolo import (
     build_negative_cutout_shape_detector,
     detect_single_negative_cutout_brick,
-    draw_single_negative_cutout_brick_highlight,
+    draw_brick_with_id,
 )
 from helper_camera_sources import (
     build_nvidia_v4l2_gstreamer_pipeline,
@@ -139,7 +139,7 @@ class NvidiaCameraLivestream:
     def _highlight_single_brick(self, frame):
         display = frame.copy()
         try:
-            primary, candidates = detect_single_negative_cutout_brick(
+            _primary, candidates = detect_single_negative_cutout_brick(
                 self._brick_shape_detector,
                 display,
             )
@@ -150,13 +150,12 @@ class NvidiaCameraLivestream:
             return display
 
         self._brick_candidate_count = len(candidates)
-        self._brick_highlight_locked = primary is not None
-        if primary is not None:
-            draw_single_negative_cutout_brick_highlight(
-                self._brick_shape_detector,
-                display,
-                primary,
-            )
+        self._brick_highlight_locked = bool(candidates)
+
+        # Sort top-to-bottom by vertical center: ID 0 = topmost brick
+        sorted_bricks = sorted(candidates, key=lambda c: c.get("center_y", 0))
+        for brick_id, candidate in enumerate(sorted_bricks):
+            draw_brick_with_id(self._brick_shape_detector, display, candidate, brick_id)
         return display
 
     def _update_fps(self) -> None:
@@ -183,9 +182,8 @@ class NvidiaCameraLivestream:
             f"Frames: {self._frame_count}",
             f"FPS: {self._fps:.1f}",
             (
-                f"Brick highlight: {'locked' if self._brick_highlight_locked else 'searching'} "
-                f"({self._brick_candidate_count} candidate"
-                f"{'' if self._brick_candidate_count == 1 else 's'})"
+                f"Bricks detected: {self._brick_candidate_count} "
+                f"({'locked' if self._brick_highlight_locked else 'searching'})"
             ),
         ]
         if self._last_error:

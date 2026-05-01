@@ -2531,10 +2531,14 @@ class BrickDetector:
         face_cutouts_model = getattr(self, "_face_cutouts_model", None)
         return isinstance(face_cutouts_model, list) and len(face_cutouts_model) >= 2
 
+    def _uses_trapezoid_gate(self):
+        face_cutouts_model = getattr(self, "_face_cutouts_model", None)
+        return isinstance(face_cutouts_model, list) and len(face_cutouts_model) == 1
+
     def _uses_shape_match_gate(self):
         return (
             str(getattr(self, "_face_shape_gate_mode", "")) == BRICK_FACE_GATE_MODE_SHAPE_MATCH
-            or not self._uses_negative_cutout_gate()
+            or (not self._uses_negative_cutout_gate() and not self._uses_trapezoid_gate())
         )
 
     def _shape_gate_mismatch_status(self):
@@ -3001,6 +3005,143 @@ class BrickDetector:
             })
 
         candidates.sort(key=lambda c: float(c.get("shape_match_score") or 999.0))
+        return candidates
+
+    def _build_trapezoid_brick_candidates(
+        self,
+        feature_mask,
+        *,
+        crop_x=0,
+        crop_y=0,
+        crop_w=None,
+        crop_h=None,
+    ):
+        """Find bricks by detecting dark horizontal slot inner contours inside cyan blobs.
+
+        Each physical brick has one wide dark slot. We identify each slot as a dark inner
+        contour (hole) within a cyan outer region, then infer the brick bbox from the
+        slot's position and the model's slot-to-face size ratios. This lets two vertically
+        stacked bricks produce two separate candidates even when their cyan regions merge.
+        """
+        if feature_mask is None:
+            return []
+        mask_arr = np.asarray(feature_mask, dtype=np.uint8)
+        if mask_arr.ndim != 2 or mask_arr.size == 0:
+            return []
+
+        face_cutouts_model = getattr(self, "_face_cutouts_model", None)
+        if not isinstance(face_cutouts_model, list) or len(face_cutouts_model) < 1:
+            return []
+
+        # Compute model geometry ratios for bbox estimation from a detected slot.
+        cutout_pts = face_cutouts_model[0]  # shape (N, 2) in mm
+        slot_ys = cutout_pts[:, 1]
+        slot_y_min_mm = float(np.min(slot_ys))
+        slot_y_max_mm = float(np.max(slot_ys))
+        slot_h_mm = max(1e-3, slot_y_max_mm - slot_y_min_mm)
+
+        face_poly = getattr(self, "_face_polygon_model", None)
+        if face_poly is not None and isinstance(face_poly, np.ndarray) and face_poly.shape[0] >= 3:
+            face_y_min_mm = float(np.min(face_poly[:, 1]))
+            face_y_max_mm = float(np.max(face_poly[:, 1]))
+            face_h_mm = max(1e-3, face_y_max_mm - face_y_min_mm)
+            face_w_mm = max(1e-3, float(np.max(face_poly[:, 0])) - float(np.min(face_poly[:, 0])))
+        else:
+            face_h_mm = BRICK_HEIGHT_MM
+            face_w_mm = BRICK_WIDTH_MM
+
+        # Ratio of face height to slot height (used to scale bbox from detected slot size)
+        face_to_slot_h = face_h_mm / slot_h_mm
+        # Fraction of face height above the slot top
+        slot_top_ratio = (slot_y_min_mm - (face_y_min_mm if face_poly is not None else 0.0)) / face_h_mm
+
+        h_mask, w_mask = mask_arr.shape[:2]
+        ex, ey = int(crop_x), int(crop_y)
+        ew = int(crop_w) if crop_w is not None else w_mask - ex
+        eh = int(crop_h) if crop_h is not None else h_mask - ey
+        roi = mask_arr[ey:ey + eh, ex:ex + ew]
+
+        # Horizontal close fills within-brick pixel gaps without merging separate bricks vertically.
+        close_w = max(3, min(15, ew // 40))
+        kern_close = cv2.getStructuringElement(cv2.MORPH_RECT, (close_w, 3))
+        roi_closed = cv2.morphologyEx(roi, cv2.MORPH_CLOSE, kern_close)
+
+        contours, hierarchy = cv2.findContours(roi_closed, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours or hierarchy is None:
+            return []
+        hierarchy_arr = np.asarray(hierarchy)
+        if hierarchy_arr.ndim != 3 or hierarchy_arr.shape[0] < 1:
+            return []
+
+        # Minimum slot area: must be big enough to be a real slot, not noise.
+        min_slot_area = max(50.0, float(getattr(self, "_negative_cutout_min_area_px", NEGATIVE_CUTOUT_MIN_AREA_PX)) * 5.0)
+
+        candidates = []
+        for idx, cnt in enumerate(contours):
+            # Only inner contours (dark holes inside a cyan blob).
+            parent_idx = int(hierarchy_arr[0, idx, 3])
+            if parent_idx < 0:
+                continue
+
+            area = float(cv2.contourArea(cnt))
+            if area < min_slot_area:
+                continue
+
+            bx, by, bw, bh = cv2.boundingRect(cnt)
+            if bw <= 0 or bh <= 0:
+                continue
+
+            # The slot must be horizontally elongated (wide and thin).
+            slot_aspect = float(bw) / float(bh)
+            if slot_aspect < 2.0 or slot_aspect > 25.0:
+                continue
+
+            # The slot must not dominate the parent (avoids huge false-positive holes).
+            parent_cnt = contours[parent_idx]
+            parent_area = float(cv2.contourArea(parent_cnt))
+            if parent_area > 0 and area / parent_area > 0.70:
+                continue
+
+            # The slot must be within the middle 80% of the parent's y-extent.
+            pbx, pby, pbw, pbh = cv2.boundingRect(parent_cnt)
+            if pbh > 0:
+                slot_rel_y = float(by - pby) / float(pbh)
+                if slot_rel_y < 0.05 or slot_rel_y > 0.90:
+                    continue
+
+            # Estimate the brick bbox from slot position + model ratios.
+            # Scale: slot_h_px / slot_h_mm gives px-per-mm; then face_h_px = scale * face_h_mm
+            scale_px_per_mm = float(bh) / slot_h_mm
+            face_h_px = int(round(face_h_mm * scale_px_per_mm))
+            face_w_px = int(round(face_w_mm * scale_px_per_mm))
+            # Slot top is slot_top_ratio down from the face top.
+            face_top_px = (by + ey) - int(round(slot_top_ratio * face_h_px))
+            face_left_px = (bx + ex) + bw // 2 - face_w_px // 2
+
+            # Centroid from slot position (center of slot = good per-brick anchor)
+            cx_frame = float(bx + bw / 2.0) + float(ex)
+            cy_frame = float(by + bh / 2.0) + float(ey)
+
+            candidates.append({
+                "contour": parent_cnt,
+                "center_x": int(round(cx_frame)),
+                "center_y": int(round(cy_frame)),
+                "rect": cv2.minAreaRect(cnt),
+                "bbox": (face_left_px, face_top_px, face_w_px, face_h_px),
+                "area": area,
+                "partial": False,
+                "partial_kind": None,
+                "partial_label": None,
+                "partial_edges": {},
+                "shape_profile": "full",
+                "shape_match_score": 0.0,
+                "negative_cutout_polygons": [],
+                "selection_anchor_x": cx_frame,
+                "selection_anchor_y": cy_frame,
+                "negative_cutout_pair_x_axis_metrics": None,
+            })
+
+        candidates.sort(key=lambda c: float(c.get("center_y", 0)))
         return candidates
 
     def _build_negative_cutout_pair_candidates(
@@ -4213,7 +4354,22 @@ def detect_single_negative_cutout_brick(detector, frame):
 
     feature_mask, _contour_mask = detector._build_hsv_masks(frame)
 
-    if detector._uses_shape_match_gate():
+    if detector._uses_trapezoid_gate():
+        candidates = detector._build_trapezoid_brick_candidates(
+            feature_mask,
+            crop_x=0,
+            crop_y=0,
+            crop_w=frame_w,
+            crop_h=frame_h,
+        )
+        no_match_status = "trapezoid mismatch"
+        if not candidates:
+            detector._center_lock_prev_center = None
+            detector.last_status = no_match_status
+            detector.last_primary_confidence = 0.0
+            return None, []
+        primary = detector._select_center_brick(candidates, frame_w, frame_h)
+    elif detector._uses_shape_match_gate():
         candidates = detector._build_shape_match_candidates(
             feature_mask,
             crop_x=0,
@@ -4222,6 +4378,15 @@ def detect_single_negative_cutout_brick(detector, frame):
             crop_h=frame_h,
         )
         no_match_status = "shape mismatch"
+        if not candidates:
+            detector._center_lock_prev_center = None
+            detector.last_status = no_match_status
+            detector.last_primary_confidence = 0.0
+            return None, []
+        filtered = detector._filter_candidates_to_center_y_row(candidates, frame_w, frame_h)
+        if filtered:
+            candidates = filtered
+        primary = detector._select_center_brick(candidates, frame_w, frame_h)
     else:
         candidates = detector._build_negative_cutout_pair_candidates(
             feature_mask,
@@ -4231,17 +4396,15 @@ def detect_single_negative_cutout_brick(detector, frame):
             crop_h=frame_h,
         )
         no_match_status = "inner triangles mismatch"
-
-    if not candidates:
-        detector._center_lock_prev_center = None
-        detector.last_status = no_match_status
-        detector.last_primary_confidence = 0.0
-        return None, []
-
-    filtered = detector._filter_candidates_to_center_y_row(candidates, frame_w, frame_h)
-    if filtered:
-        candidates = filtered
-    primary = detector._select_center_brick(candidates, frame_w, frame_h)
+        if not candidates:
+            detector._center_lock_prev_center = None
+            detector.last_status = no_match_status
+            detector.last_primary_confidence = 0.0
+            return None, []
+        filtered = detector._filter_candidates_to_center_y_row(candidates, frame_w, frame_h)
+        if filtered:
+            candidates = filtered
+        primary = detector._select_center_brick(candidates, frame_w, frame_h)
     if primary is None:
         detector.last_status = no_match_status
         detector.last_primary_confidence = 0.0
@@ -4253,7 +4416,7 @@ def detect_single_negative_cutout_brick(detector, frame):
 
 
 def draw_single_negative_cutout_brick_highlight(detector, frame, candidate):
-    """Draw one selected brick outline plus its two confirmed dark triangles."""
+    """Draw one selected brick outline."""
     if detector is None or frame is None or not isinstance(candidate, dict):
         return frame
 
@@ -4280,4 +4443,20 @@ def draw_single_negative_cutout_brick_highlight(detector, frame, candidate):
         2,
         cv2.LINE_AA,
     )
+    return frame
+
+
+def draw_brick_with_id(detector, frame, candidate, brick_id):
+    """Stamp the numeric ID (0 = topmost) onto each detected brick."""
+    cx = candidate.get("center_x", 0)
+    cy = candidate.get("center_y", 0)
+    label = str(brick_id)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 1.0
+    thickness = 2
+    (tw, th), _ = cv2.getTextSize(label, font, scale, thickness)
+    lx = max(0, int(cx) - tw // 2)
+    ly = max(th + 4, int(cy) + th // 2)
+    cv2.putText(frame, label, (lx, ly), font, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
+    cv2.putText(frame, label, (lx, ly), font, scale, (0, 255, 255), thickness, cv2.LINE_AA)
     return frame
