@@ -48,6 +48,9 @@ BIRD_SUPPLY_RENDER_SHIFT_X_PX = -36.0
 BIRD_HISTORY_MAX_POINTS = 18
 BIRD_HISTORY_COLOR_OLDER = "#63d7ff"
 BIRD_HISTORY_COLOR_NEWEST = "#0b3d91"
+CURRENT_POSITION_COLOR = "#2563eb"
+CURRENT_POSITION_HALO_COLOR = "#60a5fa"
+CURRENT_POSITION_LABEL_COLOR = "#0b3d91"
 STEP_HISTORY_COLOR_CLOSER = "#2f9e44"
 STEP_HISTORY_COLOR_FURTHER = "#d94841"
 STEP_HISTORY_COLOR_NEUTRAL = "#c59d2a"
@@ -366,6 +369,129 @@ def workspace_snapshot(world) -> dict | None:
     if not isinstance(state, dict):
         return None
     return _deepcopy(state)
+
+
+def build_live_position_workspace(
+    previous_state: dict | None = None,
+    *,
+    dist_mm=None,
+    x_axis_mm=None,
+    y_axis_mm=None,
+    confidence=None,
+    visible: bool | None = None,
+    target_name: str = "brick_supply",
+    step_name: str = "LIVE_CAMERA",
+    camera_height_mm=None,
+    lift_mm=None,
+    history_min_interval_s: float = 0.25,
+    history_maxlen: int = 60,
+) -> dict:
+    """Build/update a workspace snapshot from live camera position metrics."""
+    previous = previous_state if isinstance(previous_state, dict) else None
+    state = (
+        _normalized_render_snapshot(previous)
+        if previous is not None
+        else _default_workspace_state(render_enabled=False)
+    )
+    now = time.time()
+
+    target_key = str(target_name or "").strip().lower()
+    if target_key not in {"wall", "brick_supply"}:
+        target_key = "brick_supply"
+    step_key = _normalize_step_key(step_name) or "LIVE_CAMERA"
+    step_seq = int(_coerce_int(state.get("history_step_seq"), 0) or 0)
+    previous_step = _normalize_step_key(state.get("history_step_name"))
+    if step_seq <= 0 or previous_step != step_key:
+        step_seq = max(1, step_seq + 1)
+    state["history_step_name"] = step_key
+    state["history_step_seq"] = int(step_seq)
+
+    active = state.setdefault("active_target", {})
+    active["step_name"] = step_key
+    active["step_number"] = None
+    active["object_name"] = target_key
+    active["label"] = _target_label(target_key)
+    active["history_step_seq"] = int(step_seq)
+
+    dist_val = _coerce_float(dist_mm, None)
+    x_val = _coerce_float(x_axis_mm, None)
+    y_val = _coerce_float(y_axis_mm, None)
+    confidence_val = _coerce_float(confidence, None)
+    visible_val = bool(visible) if visible is not None else dist_val is not None
+
+    robot = state.setdefault("robot", {})
+    robot["lift_mm"] = float(_coerce_float(lift_mm, robot.get("lift_mm", 0.0)) or 0.0)
+    robot["z_mm"] = 0.0
+    obj = (state.get("objects") or {}).get(target_key)
+    if isinstance(obj, dict):
+        origin_robot = {"x_mm": 0.0, "y_mm": 0.0, "theta_deg": 0.0}
+        robot["theta_deg"] = _norm_deg(_heading_toward_object_deg(origin_robot, obj))
+        if visible_val and dist_val is not None:
+            _reconcile_robot_pose_from_fixed_object(
+                state,
+                target_key,
+                distance_mm=float(dist_val),
+                bearing_deg=_observation_bearing_deg(
+                    {"dist_mm": dist_val, "x_axis_mm": x_val if x_val is not None else 0.0}
+                ),
+            )
+            obj["visible"] = True
+            obj["last_seen_ts"] = now
+
+    leia = state.setdefault("leia", {})
+    leia["x_mm"] = float(_coerce_float(robot.get("x_mm"), 0.0) or 0.0)
+    leia["y_mm"] = float(_coerce_float(robot.get("y_mm"), 0.0) or 0.0)
+    leia["theta_deg"] = float(_coerce_float(robot.get("theta_deg"), 0.0) or 0.0)
+    if camera_height_mm is None:
+        camera_height_val = float(DEFAULT_CAMERA_Z_MM) + float(
+            _coerce_float(robot.get("lift_mm"), 0.0) or 0.0
+        )
+    else:
+        camera_height_val = float(
+            _coerce_float(camera_height_mm, DEFAULT_CAMERA_Z_MM) or DEFAULT_CAMERA_Z_MM
+        )
+    leia["z_mm"] = float(camera_height_val)
+
+    state["last_visible_brick"] = {
+        "visible": bool(visible_val),
+        "dist_mm": dist_val,
+        "x_axis_mm": x_val,
+        "y_axis_mm": y_val,
+        "confidence": confidence_val,
+        "angle_deg": None,
+    }
+    state["updated_at"] = now
+
+    last_history_ts = _coerce_float((previous or {}).get("_live_position_last_history_ts"), None)
+    interval_s = max(0.0, float(_coerce_float(history_min_interval_s, 0.25) or 0.0))
+    should_append = (
+        bool(visible_val)
+        and dist_val is not None
+        and x_val is not None
+        and (last_history_ts is None or (now - float(last_history_ts)) >= interval_s)
+    )
+    if should_append:
+        entry = {
+            "type": "observation",
+            "reason": "live_position",
+            "ts": now,
+            "step_name": step_key,
+            "step_seq": int(step_seq),
+            "target_name": target_key,
+            "target_visible": True,
+            "dist_mm": float(dist_val),
+            "target_range_mm": float(dist_val),
+            "x_axis_mm": float(x_val),
+            "y_axis_mm": None if y_val is None else float(y_val),
+            "camera_height_mm": float(camera_height_val),
+            "current_lift_mm": float(_coerce_float(robot.get("lift_mm"), 0.0) or 0.0),
+        }
+        _append_history(state, entry, maxlen=max(1, int(history_maxlen)))
+        state["_live_position_last_history_ts"] = now
+    else:
+        state["_live_position_last_history_ts"] = last_history_ts
+
+    return state
 
 
 def _append_history(state: dict, entry: dict, *, maxlen: int = 60) -> None:
@@ -1748,6 +1874,40 @@ def render_workspace_svg(state: dict | None) -> str:
                 'stroke-linejoin="round" opacity="0.82" />',
             )
 
+    current_visible = snapshot.get("last_visible_brick") or {}
+    current_dist_mm = _coerce_float(current_visible.get("dist_mm"), None)
+    current_x_axis_mm = _coerce_float(current_visible.get("x_axis_mm"), None)
+    if bool(current_visible.get("visible", False)) and current_dist_mm is not None and current_x_axis_mm is not None:
+        current_entry = {
+            "dist_mm": float(current_dist_mm),
+            "target_range_mm": float(current_dist_mm),
+            "x_axis_mm": float(current_x_axis_mm),
+            "y_axis_mm": _coerce_float(current_visible.get("y_axis_mm"), None),
+            "target_name": active_name,
+        }
+        current_x, current_y = _bird_history_screen_point(current_entry)
+        current_data = html.escape(json.dumps({
+            "view": "bird",
+            "idx": "current",
+            "dist": round(float(current_dist_mm), 1),
+            "x": round(float(current_x_axis_mm), 2),
+            "y": (
+                None
+                if current_entry.get("y_axis_mm") is None
+                else round(float(current_entry["y_axis_mm"]), 2)
+            ),
+        }), quote=True)
+        label_y = float(current_y) - 15.0
+        if label_y < 62.0:
+            label_y = float(current_y) + 25.0
+        svg_parts.append(
+            '<g class="current-position" data-view="bird">'
+            f'<circle class="current-position-halo" data-view="bird" cx="{current_x:.1f}" cy="{current_y:.1f}" r="18.0" fill="{CURRENT_POSITION_HALO_COLOR}" fill-opacity="0.28" />'
+            f'<circle class="current-position-dot" data-view="bird" data-entry="{current_data}" cx="{current_x:.1f}" cy="{current_y:.1f}" r="9.0" fill="{CURRENT_POSITION_COLOR}" stroke="#f9f6ef" stroke-width="3.0" />'
+            f'<text class="current-position-label" data-view="bird" x="{current_x:.1f}" y="{label_y:.1f}" text-anchor="middle" font-size="11" font-weight="900" fill="{CURRENT_POSITION_LABEL_COLOR}" stroke="#f9f6ef" stroke-width="2.8" paint-order="stroke">now {current_dist_mm:.0f}mm x {current_x_axis_mm:+.0f}</text>'
+            "</g>"
+        )
+
     # Add distance displays
     robot_x = float(robot.get("x_mm", 0.0))
     robot_y = float(robot.get("y_mm", 0.0))
@@ -1963,12 +2123,34 @@ def render_mast_svg(state: dict | None) -> str:
             )
         svg_parts.append("</g>")
 
-    # Remove current camera dot as well (no dots, only lines)
-    # If you want to keep the y label, uncomment below:
-    # if current_y_axis_mm is not None:
-    #     svg_parts.append(
-    #         f'<text x="{current_camera_x:.1f}" y="{current_camera_y - 14.0:.1f}" text-anchor="middle" font-size="14" font-weight="600" fill="#233843">y={float(current_y_axis_mm):+.0f}mm</text>'
-    #     )
+    current_y_axis_mm = _coerce_float(last_visible.get("y_axis_mm"), None)
+    if bool(last_visible.get("visible", False)) and current_y_axis_mm is not None:
+        current_x = float(history_left_x)
+        current_y = float(project_y_axis_to_y(current_y_axis_mm))
+        current_dist_mm = _coerce_float(last_visible.get("dist_mm"), None)
+        current_x_axis_mm = _coerce_float(last_visible.get("x_axis_mm"), None)
+        current_data = html.escape(json.dumps({
+            "view": "mast",
+            "idx": "current",
+            "dist": None if current_dist_mm is None else round(float(current_dist_mm), 1),
+            "x": None if current_x_axis_mm is None else round(float(current_x_axis_mm), 2),
+            "y": round(float(current_y_axis_mm), 2),
+            "lift": round(
+                float(_coerce_float((snapshot.get("robot") or {}).get("lift_mm"), 0.0) or 0.0),
+                1,
+            ),
+        }), quote=True)
+        label_y = float(current_y) - 14.0
+        if label_y < 76.0:
+            label_y = float(current_y) + 25.0
+        svg_parts.append(
+            '<g class="current-position" data-view="mast">'
+            f'<line class="current-position-lead" data-view="mast" x1="{stack_right_x + 2.0:.1f}" y1="{current_y:.1f}" x2="{current_x:.1f}" y2="{current_y:.1f}" stroke="{CURRENT_POSITION_COLOR}" stroke-width="2.2" stroke-linecap="round" opacity="0.9" />'
+            f'<circle class="current-position-halo" data-view="mast" cx="{current_x:.1f}" cy="{current_y:.1f}" r="18.0" fill="{CURRENT_POSITION_HALO_COLOR}" fill-opacity="0.28" />'
+            f'<circle class="current-position-dot" data-view="mast" data-entry="{current_data}" cx="{current_x:.1f}" cy="{current_y:.1f}" r="9.0" fill="{CURRENT_POSITION_COLOR}" stroke="#f9f6ef" stroke-width="3.0" />'
+            f'<text class="current-position-label" data-view="mast" x="{current_x:.1f}" y="{label_y:.1f}" text-anchor="middle" font-size="11" font-weight="900" fill="{CURRENT_POSITION_LABEL_COLOR}" stroke="#f9f6ef" stroke-width="2.8" paint-order="stroke">now y {current_y_axis_mm:+.0f}mm</text>'
+            "</g>"
+        )
     svg_parts.append("</svg>")
     return "\n".join(svg_parts)
 

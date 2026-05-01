@@ -3139,6 +3139,7 @@ class BrickDetector:
                 "selection_anchor_x": cx_frame,
                 "selection_anchor_y": cy_frame,
                 "negative_cutout_pair_x_axis_metrics": None,
+                "scale_px_per_mm": scale_px_per_mm,
             })
 
         candidates.sort(key=lambda c: float(c.get("center_y", 0)))

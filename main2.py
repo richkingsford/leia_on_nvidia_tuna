@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import math
 import signal
 import socket
 import subprocess
 import threading
 import time
+from copy import deepcopy
 from typing import Sequence
 
 import cv2
 
 from helper_brick_detector_yolo import (
+    BRICK_HEIGHT_MM,
+    BRICK_WIDTH_MM,
+    FOCAL_PX_REF,
+    FOCAL_REF_WIDTH,
     build_negative_cutout_shape_detector,
     detect_single_negative_cutout_brick,
     draw_brick_with_id,
@@ -22,6 +28,7 @@ from helper_camera_sources import (
     open_opencv_camera_source,
 )
 from helper_streaming import start_stream_server
+from helper_xyz_coords import build_live_position_workspace
 
 
 DEFAULT_DEVICE = "/dev/video0"
@@ -32,6 +39,181 @@ DEFAULT_PORT = 5000
 DEFAULT_STREAM_FPS = 10
 DEFAULT_JPEG_QUALITY = 85
 DEFAULT_IMG_WIDTH = 1600
+METRIC_LABEL_FONT = cv2.FONT_HERSHEY_SIMPLEX
+METRIC_LABEL_SCALE = 0.46
+METRIC_LABEL_THICKNESS = 1
+METRIC_LABEL_LINE_GAP_PX = 5
+METRIC_LABEL_PAD_X_PX = 7
+METRIC_LABEL_PAD_Y_PX = 6
+METRIC_LABEL_BLUE_BGR = (255, 96, 0)
+METRIC_LABEL_BG_BGR = (8, 16, 28)
+METRIC_LABEL_TEXT_BGR = (255, 255, 255)
+
+
+def _coerce_finite_float(value) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return float(number)
+
+
+def _coerce_positive_float(value) -> float | None:
+    number = _coerce_finite_float(value)
+    if number is None:
+        return None
+    if number <= 0.0:
+        return None
+    return float(number)
+
+
+def _candidate_bbox(candidate: dict) -> tuple[float, float, float, float] | None:
+    if not isinstance(candidate, dict):
+        return None
+    bbox = candidate.get("bbox")
+    if not isinstance(bbox, (list, tuple)) or len(bbox) < 4:
+        return None
+    try:
+        x, y, w, h = [float(v) for v in bbox[:4]]
+    except (TypeError, ValueError):
+        return None
+    if w <= 0.0 or h <= 0.0:
+        return None
+    return float(x), float(y), float(w), float(h)
+
+
+def _candidate_center(candidate: dict) -> tuple[float, float] | None:
+    if not isinstance(candidate, dict):
+        return None
+    cx = _coerce_finite_float(candidate.get("center_x"))
+    cy = _coerce_finite_float(candidate.get("center_y"))
+    if cx is not None and cy is not None:
+        return float(cx), float(cy)
+    bbox = _candidate_bbox(candidate)
+    if bbox is None:
+        return None
+    x, y, w, h = bbox
+    return float(x + (w * 0.5)), float(y + (h * 0.5))
+
+
+def _candidate_scale_px_per_mm(candidate: dict) -> float | None:
+    scale = _coerce_positive_float((candidate or {}).get("scale_px_per_mm"))
+    if scale is not None:
+        return float(scale)
+
+    bbox = _candidate_bbox(candidate)
+    if bbox is None:
+        return None
+    _x, _y, w, h = bbox
+    scale_candidates = [
+        float(w) / float(BRICK_WIDTH_MM),
+        float(h) / float(BRICK_HEIGHT_MM),
+    ]
+    scale_candidates = [value for value in scale_candidates if value > 0.0]
+    if not scale_candidates:
+        return None
+    return sum(scale_candidates) / float(len(scale_candidates))
+
+
+def _candidate_metrics(
+    candidate: dict,
+    *,
+    frame_w: int,
+    frame_h: int,
+    focal_px: float,
+) -> dict | None:
+    center = _candidate_center(candidate)
+    scale = _candidate_scale_px_per_mm(candidate)
+    if center is None or scale is None or scale <= 0.0:
+        return None
+    cx_center = float(frame_w) / 2.0
+    cy_center = float(frame_h) / 2.0
+    center_x, center_y = center
+    return {
+        "dist_mm": float(focal_px) / float(scale),
+        "x_mm": (float(center_x) - cx_center) / float(scale),
+        "y_mm": (float(center_y) - cy_center) / float(scale),
+        "center_x": float(center_x),
+        "center_y": float(center_y),
+        "scale_px_per_mm": float(scale),
+    }
+
+
+def _format_metric_lines(metrics: dict) -> list[str]:
+    return [
+        f"x {float(metrics['x_mm']):+.0f} mm",
+        f"y {float(metrics['y_mm']):+.0f} mm",
+        f"dist {float(metrics['dist_mm']):.0f} mm",
+    ]
+
+
+def _draw_brick_metric_label(frame, candidate: dict, metrics: dict) -> None:
+    if frame is None or not isinstance(metrics, dict):
+        return
+    frame_h, frame_w = frame.shape[:2]
+    lines = _format_metric_lines(metrics)
+    text_sizes = [
+        cv2.getTextSize(line, METRIC_LABEL_FONT, METRIC_LABEL_SCALE, METRIC_LABEL_THICKNESS)[0]
+        for line in lines
+    ]
+    line_height = max(1, max(height for _width, height in text_sizes))
+    text_width = max(1, max(width for width, _height in text_sizes))
+    box_w = int(text_width + (METRIC_LABEL_PAD_X_PX * 2))
+    box_h = int((line_height * len(lines)) + (METRIC_LABEL_LINE_GAP_PX * (len(lines) - 1)) + (METRIC_LABEL_PAD_Y_PX * 2))
+
+    bbox = _candidate_bbox(candidate)
+    if bbox is not None:
+        x, y, w, _h = bbox
+        box_x = int(round(x + w + 8.0))
+        box_y = int(round(y))
+    else:
+        center = _candidate_center(candidate)
+        if center is None:
+            return
+        center_x, center_y = center
+        box_x = int(round(center_x + 14.0))
+        box_y = int(round(center_y - (box_h * 0.5)))
+
+    if box_x + box_w > frame_w - 2:
+        if bbox is not None:
+            x, _y, _w, _h = bbox
+            box_x = int(round(x - box_w - 8.0))
+        else:
+            box_x = frame_w - box_w - 2
+    box_x = max(2, min(frame_w - box_w - 2, box_x))
+    box_y = max(2, min(frame_h - box_h - 2, box_y))
+
+    top_left = (int(box_x), int(box_y))
+    bottom_right = (int(box_x + box_w), int(box_y + box_h))
+    cv2.rectangle(frame, top_left, bottom_right, METRIC_LABEL_BG_BGR, cv2.FILLED)
+    cv2.rectangle(frame, top_left, bottom_right, METRIC_LABEL_BLUE_BGR, 1)
+
+    y_cursor = int(box_y + METRIC_LABEL_PAD_Y_PX + line_height)
+    x_text = int(box_x + METRIC_LABEL_PAD_X_PX)
+    for line in lines:
+        cv2.putText(
+            frame,
+            line,
+            (x_text, y_cursor),
+            METRIC_LABEL_FONT,
+            METRIC_LABEL_SCALE,
+            (0, 0, 0),
+            METRIC_LABEL_THICKNESS + 2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            line,
+            (x_text, y_cursor),
+            METRIC_LABEL_FONT,
+            METRIC_LABEL_SCALE,
+            METRIC_LABEL_TEXT_BGR,
+            METRIC_LABEL_THICKNESS,
+            cv2.LINE_AA,
+        )
+        y_cursor += int(line_height + METRIC_LABEL_LINE_GAP_PX)
 
 
 class NvidiaCameraLivestream:
@@ -58,8 +240,9 @@ class NvidiaCameraLivestream:
             "step_success_seq": 0,
             "step_success_step": None,
             "step_success_at": 0.0,
-            "xyz_workspace": None,
+            "xyz_workspace": build_live_position_workspace(),
         }
+        self._bricks_telemetry: list[dict] = []
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._cap = None
@@ -133,11 +316,22 @@ class NvidiaCameraLivestream:
             self._update_fps()
             frame = self._highlight_single_brick(frame)
             with self.state["lock"]:
+                self._update_xyz_workspace_locked()
                 self.state["frame"] = frame
                 self.state["text_lines"] = self._text_lines_locked()
 
+    def xyz_workspace_snapshot(self) -> dict | None:
+        with self.state["lock"]:
+            workspace = self.state.get("xyz_workspace")
+            return deepcopy(workspace) if isinstance(workspace, dict) else None
+
     def _highlight_single_brick(self, frame):
         display = frame.copy()
+        frame_h, frame_w = frame.shape[:2]
+        focal_px = FOCAL_PX_REF * (frame_w / FOCAL_REF_WIDTH)
+        cx_center = frame_w / 2.0
+        cy_center = frame_h / 2.0
+
         try:
             _primary, candidates = detect_single_negative_cutout_brick(
                 self._brick_shape_detector,
@@ -146,6 +340,7 @@ class NvidiaCameraLivestream:
         except Exception as exc:
             self._brick_highlight_locked = False
             self._brick_candidate_count = 0
+            self._bricks_telemetry = []
             self._last_error = f"brick highlight error: {exc}"
             return display
 
@@ -154,9 +349,59 @@ class NvidiaCameraLivestream:
 
         # Sort top-to-bottom by vertical center: ID 0 = topmost brick
         sorted_bricks = sorted(candidates, key=lambda c: c.get("center_y", 0))
+        brick_metrics: list[tuple[dict, dict]] = []
         for brick_id, candidate in enumerate(sorted_bricks):
             draw_brick_with_id(self._brick_shape_detector, display, candidate, brick_id)
+            metrics = _candidate_metrics(
+                candidate,
+                frame_w=frame_w,
+                frame_h=frame_h,
+                focal_px=focal_px,
+            )
+            if metrics is not None:
+                brick_metrics.append((candidate, metrics))
+                _draw_brick_metric_label(display, candidate, metrics)
+
+        # Telemetry: brick closest to camera center
+        def _dist_to_center(row):
+            _candidate, metrics = row
+            cand_x = float(metrics["center_x"])
+            cand_y = float(metrics["center_y"])
+            return (cand_x - cx_center) ** 2 + (cand_y - cy_center) ** 2
+
+        closest = min(brick_metrics, key=_dist_to_center) if brick_metrics else None
+        if closest is not None:
+            _candidate, closest_metrics = closest
+            self._bricks_telemetry = [{
+                "dist_mm": float(closest_metrics["dist_mm"]),
+                "x_mm": float(closest_metrics["x_mm"]),
+                "y_mm": float(closest_metrics["y_mm"]),
+            }]
+        else:
+            self._bricks_telemetry = []
         return display
+
+    def _update_xyz_workspace_locked(self) -> None:
+        telemetry = self._bricks_telemetry[0] if self._bricks_telemetry else None
+        previous = self.state.get("xyz_workspace")
+        if isinstance(telemetry, dict):
+            self.state["xyz_workspace"] = build_live_position_workspace(
+                previous,
+                dist_mm=telemetry.get("dist_mm"),
+                x_axis_mm=telemetry.get("x_mm"),
+                y_axis_mm=telemetry.get("y_mm"),
+                confidence=1.0,
+                visible=True,
+            )
+            return
+        self.state["xyz_workspace"] = build_live_position_workspace(
+            previous,
+            dist_mm=None,
+            x_axis_mm=None,
+            y_axis_mm=None,
+            confidence=None,
+            visible=False,
+        )
 
     def _update_fps(self) -> None:
         now = time.monotonic()
@@ -173,21 +418,30 @@ class NvidiaCameraLivestream:
             self.state["text_lines"] = self._text_lines_locked()
 
     def _text_lines_locked(self) -> list[str]:
-        lines = [
-            "Leia camera livestream",
-            "Camera path: NVIDIA V4L2/GStreamer",
-            f"Device: {self.device}",
-            f"Resolution: {self.width}x{self.height}",
-            f"OpenCV backend: {self._backend or 'GSTREAMER'}",
-            f"Frames: {self._frame_count}",
+        if self._bricks_telemetry:
+            t = self._bricks_telemetry[0]
+            x_sign = "+" if t["x_mm"] >= 0 else ""
+            y_sign = "+" if t["y_mm"] >= 0 else ""
+            lines = [
+                f"x   {x_sign}{t['x_mm']:.0f} mm",
+                f"y   {y_sign}{t['y_mm']:.0f} mm",
+                f"dist   {t['dist_mm']:.0f} mm",
+            ]
+        else:
+            lines = [
+                "x   --",
+                "y   --",
+                "dist   --",
+            ]
+        lines += [
             f"FPS: {self._fps:.1f}",
             (
-                f"Bricks detected: {self._brick_candidate_count} "
+                f"Bricks: {self._brick_candidate_count} "
                 f"({'locked' if self._brick_highlight_locked else 'searching'})"
             ),
         ]
         if self._last_error:
-            lines.append(f"Camera error: {self._last_error}")
+            lines.append(f"Error: {self._last_error}")
         return lines
 
 
@@ -258,7 +512,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         sharpen=not bool(args.no_sharpen),
         port_tries=10,
         ready_timeout_s=3.0,
-        xyz_workspace_getter=lambda: None,
+        xyz_workspace_getter=camera.xyz_workspace_snapshot,
     )
 
     stop_event = threading.Event()

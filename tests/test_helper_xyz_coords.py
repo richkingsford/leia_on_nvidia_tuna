@@ -348,6 +348,37 @@ class HelperXyzCoordsTests(unittest.TestCase):
 
         self.assertNotIn('class="camera-dot"', svg)
 
+    def test_live_position_workspace_renders_current_bird_and_mast_markers(self):
+        state = helper_xyz_coords.build_live_position_workspace(
+            dist_mm=150.0,
+            x_axis_mm=8.0,
+            y_axis_mm=4.0,
+            confidence=1.0,
+        )
+
+        bird_svg = helper_xyz_coords.render_workspace_svg(state)
+        mast_svg = helper_xyz_coords.render_mast_svg(state)
+
+        self.assertIn('class="current-position-dot" data-view="bird"', bird_svg)
+        self.assertIn("now 150mm x +8", bird_svg)
+        self.assertIn(f'fill="{helper_xyz_coords.CURRENT_POSITION_COLOR}"', bird_svg)
+        self.assertNotIn("ffd43b", bird_svg.lower())
+        self.assertIn('class="current-position-dot" data-view="mast"', mast_svg)
+        self.assertIn("now y +4mm", mast_svg)
+        self.assertIn(f'stroke="{helper_xyz_coords.CURRENT_POSITION_COLOR}"', mast_svg)
+        self.assertNotIn("ffd43b", mast_svg.lower())
+
+    def test_live_position_workspace_hides_current_markers_when_not_visible(self):
+        state = helper_xyz_coords.build_live_position_workspace(
+            dist_mm=None,
+            x_axis_mm=None,
+            y_axis_mm=None,
+            visible=False,
+        )
+
+        self.assertNotIn("current-position-dot", helper_xyz_coords.render_workspace_svg(state))
+        self.assertNotIn("current-position-dot", helper_xyz_coords.render_mast_svg(state))
+
     def test_render_mast_svg_shows_y_axis_history_and_current_camera(self):
         world = _DummyWorld()
         world.wall_height_bricks = 1
