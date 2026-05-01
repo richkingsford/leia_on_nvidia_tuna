@@ -190,6 +190,43 @@ class TestHelperRobotControlWireMap(unittest.TestCase):
         self.assertIs(robot.ser, serial_device)
         self.assertEqual(serial_device.reset_calls, 1)
 
+    def test_connect_prefers_constructor_serial_override_when_present(self):
+        serial_device = _DummySerial()
+        with patch.dict("os.environ", {"LEIA_SERIAL_PORT": "/dev/env-port"}, clear=False):
+            with patch.object(helper_robot_control.serial.tools.list_ports, "comports", return_value=[]):
+                with patch.object(helper_robot_control.glob, "glob", return_value=[]):
+                    with patch.object(helper_robot_control.serial, "Serial", return_value=serial_device) as serial_ctor:
+                        with patch.object(helper_robot_control.time, "sleep", return_value=None):
+                            robot = helper_robot_control.Robot(serial_port="/dev/explicit-port")
+
+        serial_ctor.assert_called_once_with("/dev/explicit-port", robot.BAUD_RATE, timeout=1)
+        self.assertEqual(robot.SERIAL_PORT, "/dev/explicit-port")
+        self.assertIs(robot.ser, serial_device)
+        self.assertEqual(serial_device.reset_calls, 1)
+
+    def test_connect_retries_after_permission_repair(self):
+        serial_device = _DummySerial()
+
+        with patch.dict("os.environ", {}, clear=False):
+            with patch.object(helper_robot_control.serial.tools.list_ports, "comports", return_value=[]):
+                with patch.object(helper_robot_control.glob, "glob", return_value=[]):
+                    with patch.object(
+                        helper_robot_control.serial,
+                        "Serial",
+                        side_effect=[PermissionError("permission denied"), serial_device],
+                    ) as serial_ctor:
+                        with patch.object(helper_robot_control.Robot, "_try_relax_serial_permissions", return_value=True):
+                            with patch.object(helper_robot_control.time, "sleep", return_value=None):
+                                robot = helper_robot_control.Robot(
+                                    exit_on_failure=False,
+                                    serial_port="/dev/ttyCH341USB0",
+                                )
+
+        self.assertEqual(serial_ctor.call_count, 2)
+        self.assertEqual(robot.SERIAL_PORT, "/dev/ttyCH341USB0")
+        self.assertIs(robot.ser, serial_device)
+        self.assertEqual(serial_device.reset_calls, 1)
+
     def test_connect_falls_back_to_detected_port_when_default_path_is_missing(self):
         serial_device = _DummySerial()
         detected_port = SimpleNamespace(
@@ -209,9 +246,10 @@ class TestHelperRobotControlWireMap(unittest.TestCase):
         with patch.dict("os.environ", {}, clear=False):
             with patch.object(helper_robot_control.serial.tools.list_ports, "comports", return_value=[detected_port]):
                 with patch.object(helper_robot_control.glob, "glob", return_value=[]):
-                    with patch.object(helper_robot_control.serial, "Serial", side_effect=serial_side_effect) as serial_ctor:
-                        with patch.object(helper_robot_control.time, "sleep", return_value=None):
-                            robot = helper_robot_control.Robot()
+                    with patch.object(helper_robot_control.os.path, "exists", return_value=False):
+                        with patch.object(helper_robot_control.serial, "Serial", side_effect=serial_side_effect) as serial_ctor:
+                            with patch.object(helper_robot_control.time, "sleep", return_value=None):
+                                robot = helper_robot_control.Robot()
 
         self.assertEqual(serial_ctor.call_args_list[0].args[0], helper_robot_control.DEFAULT_SERIAL_PORT)
         self.assertEqual(serial_ctor.call_args_list[1].args[0], "/dev/ttyUSB0")

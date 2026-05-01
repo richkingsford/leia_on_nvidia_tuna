@@ -15,6 +15,16 @@ class _ConnectedRobot:
 
 
 class TestMain2RobotStartup(unittest.TestCase):
+    def test_robot_connection_is_enabled_by_default(self):
+        args = main2.parse_args([])
+
+        self.assertTrue(args.robot)
+
+    def test_no_robot_flag_disables_robot_connection(self):
+        args = main2.parse_args(["--no-robot"])
+
+        self.assertFalse(args.robot)
+
     def test_robot_startup_uses_nonfatal_serial_mode(self):
         robot, status = main2._open_robot_or_none(
             enabled=True,

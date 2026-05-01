@@ -11,6 +11,8 @@ import math
 import os
 import serial
 import serial.tools.list_ports
+import stat
+import subprocess
 import time
 import sys
 from telemetry_robot import (
@@ -28,6 +30,7 @@ from telemetry_robot import (
 
 VALID_MOTION_COMMANDS = frozenset({"f", "b", "l", "r", "u", "d"})
 UNO_MAX_PERCENT = 100
+LEIA_UNO_SERIAL_PORT = "/dev/leia-uno"
 DEFAULT_SERIAL_PORT = "/dev/ttyCH341USB0"
 SERIAL_PORT_ENV_VARS = (
     "LEIA_SERIAL_PORT",
@@ -36,6 +39,7 @@ SERIAL_PORT_ENV_VARS = (
     "SERIAL_PORT",
 )
 SERIAL_PORT_GLOB_PATTERNS = (
+    "/dev/leia-uno",
     "/dev/ttyCH341USB*",
     "/dev/ttyUSB*",
     "/dev/ttyACM*",
@@ -63,10 +67,12 @@ UNO_STOP_TARGETS = {
 
 
 class Robot:
-    def __init__(self):
-        self.SERIAL_PORT = DEFAULT_SERIAL_PORT
+    def __init__(self, *, exit_on_failure=True, serial_port=None):
+        self.SERIAL_PORT = str(serial_port or DEFAULT_SERIAL_PORT)
         self.BAUD_RATE = 115200
         self.ser = None
+        self._exit_on_failure = bool(exit_on_failure)
+        self._serial_port_override = str(serial_port or "").strip() or None
         self._last_turn_cmd = None
         # Timed serial commands are fire-and-forget; this transport does not queue
         # multiple timed pulses for guaranteed sequential execution.
@@ -81,6 +87,8 @@ class Robot:
         self.connect()
 
     def _serial_env_override(self):
+        if self._serial_port_override:
+            return self._serial_port_override
         for key in SERIAL_PORT_ENV_VARS:
             value = str(os.environ.get(key, "")).strip()
             if value:
@@ -128,6 +136,8 @@ class Robot:
             candidates.append(port_name)
 
         add_candidate(self._serial_env_override())
+        if os.path.exists(LEIA_UNO_SERIAL_PORT):
+            add_candidate(LEIA_UNO_SERIAL_PORT)
         add_candidate(DEFAULT_SERIAL_PORT)
 
         for port_info in self._available_serial_ports():
@@ -138,6 +148,63 @@ class Robot:
                 add_candidate(port_name)
 
         return candidates
+
+    def _is_permission_error(self, exc):
+        if isinstance(exc, PermissionError):
+            return True
+        errno_val = getattr(exc, "errno", None)
+        if errno_val == 13:
+            return True
+        text = str(exc).lower()
+        return "permission denied" in text or "errno 13" in text
+
+    def _try_relax_serial_permissions(self, port_name):
+        port = str(port_name or "").strip()
+        if not port or os.name != "posix" or not os.path.exists(port):
+            return False
+        if os.access(port, os.R_OK | os.W_OK):
+            return True
+
+        try:
+            current_mode = stat.S_IMODE(os.stat(port).st_mode)
+            relaxed_mode = (
+                current_mode
+                | stat.S_IRUSR
+                | stat.S_IWUSR
+                | stat.S_IRGRP
+                | stat.S_IWGRP
+                | stat.S_IROTH
+                | stat.S_IWOTH
+            )
+            os.chmod(port, relaxed_mode)
+            if os.access(port, os.R_OK | os.W_OK):
+                print(f"[ROBOT] Updated serial permissions for {port}.")
+                return True
+        except Exception:
+            pass
+
+        try:
+            result = subprocess.run(
+                ["sudo", "-n", "chmod", "a+rw", port],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2.0,
+            )
+            if result.returncode == 0 and os.access(port, os.R_OK | os.W_OK):
+                print(f"[ROBOT] Updated serial permissions for {port} with sudo.")
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _serial_permission_hint(self, port_name):
+        port = str(port_name or DEFAULT_SERIAL_PORT)
+        return (
+            f"Permission denied opening {port}. One-time persistent fix: "
+            f"sudo bash setup_ch341.sh; immediate fix: "
+            f"sudo chmod a+rw {port}"
+        )
 
     def _print_available_serial_ports(self):
         port_infos = self._available_serial_ports()
@@ -159,6 +226,7 @@ class Robot:
     def connect(self):
         candidates = self._serial_port_candidates()
         last_error = None
+        permission_hint = None
 
         for port_name in candidates:
             try:
@@ -170,18 +238,37 @@ class Robot:
                 return
             except Exception as exc:
                 last_error = exc
+                if self._is_permission_error(exc):
+                    permission_hint = self._serial_permission_hint(port_name)
+                    if self._try_relax_serial_permissions(port_name):
+                        try:
+                            print(f"[ROBOT] Retrying Arduino on {port_name} after permission update...")
+                            self.ser = serial.Serial(port_name, self.BAUD_RATE, timeout=1)
+                            self.SERIAL_PORT = port_name
+                            time.sleep(2)
+                            self.ser.reset_input_buffer()
+                            return
+                        except Exception as retry_exc:
+                            last_error = retry_exc
                 self.ser = None
 
         attempted = ", ".join(candidates) if candidates else "none"
         self._print_available_serial_ports()
-        print(
-            "[ROBOT] Set LEIA_SERIAL_PORT (or ROBOT_SERIAL_PORT) to force a known device path."
-        )
-        print(
+        message = (
             f"[ROBOT] ERROR: Could not open any candidate serial port ({attempted}). "
             f"Last error: {last_error}"
         )
-        sys.exit(1)
+        if permission_hint:
+            message = f"{message}\n[ROBOT] {permission_hint}"
+        else:
+            message = (
+                f"{message}\n[ROBOT] Set LEIA_SERIAL_PORT (or ROBOT_SERIAL_PORT) "
+                "to force a known device path."
+            )
+        if self._exit_on_failure:
+            print(message)
+            sys.exit(1)
+        raise RuntimeError(message)
 
     def _send(self, command_str):
         """Internal helper to write the string to Serial"""

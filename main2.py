@@ -25,6 +25,7 @@ from helper_brick_detector_yolo import (
 )
 from helper_camera_sources import (
     build_nvidia_v4l2_gstreamer_pipeline,
+    candidate_camera_sources,
     open_opencv_camera_source,
 )
 from helper_streaming import start_stream_server
@@ -223,6 +224,7 @@ class NvidiaCameraLivestream:
         device: str = DEFAULT_DEVICE,
         width: int = DEFAULT_WIDTH,
         height: int = DEFAULT_HEIGHT,
+        robot=None,
     ):
         self.device = str(device or DEFAULT_DEVICE)
         self.width = max(1, int(width))
@@ -255,6 +257,22 @@ class NvidiaCameraLivestream:
         self._brick_shape_detector = build_negative_cutout_shape_detector()
         self._brick_highlight_locked = False
         self._brick_candidate_count = 0
+        self._robot = robot
+        self._bt_tree = None
+        self._bt_writer = None
+        self._bt_status: str = ""
+        if robot is not None:
+            import py_trees
+            from helper_bt_align import build_x_align_tree, _BB_NAMESPACE, _BB_KEY, ALIGN_TURN_DURATION_MS
+            self._bt_tree = build_x_align_tree(robot)
+            self._bt_writer = py_trees.blackboard.Client(
+                name="leia_camera", namespace=_BB_NAMESPACE
+            )
+            self._bt_writer.register_key(_BB_KEY, access=py_trees.common.Access.WRITE)
+            self._bt_tick_interval = ALIGN_TURN_DURATION_MS / 1000.0
+        else:
+            self._bt_tick_interval = 0.0
+        self._bt_last_tick_at = 0.0
 
     def start(self) -> None:
         self._cap = self._open_camera()
@@ -273,24 +291,40 @@ class NvidiaCameraLivestream:
             self._cap = None
 
     def _open_camera(self):
-        cap = open_opencv_camera_source(
-            self.pipeline,
-            cv2,
-            width=self.width,
-            height=self.height,
-        )
-        if cap is None or not cap.isOpened():
+        candidates = []
+
+        def add_candidate(source) -> None:
+            if source is None:
+                return
+            if source not in candidates:
+                candidates.append(source)
+
+        add_candidate(self.pipeline)
+        add_candidate(self.device)
+        for source in candidate_camera_sources(width=self.width, height=self.height):
+            add_candidate(source)
+
+        attempted = []
+        for source in candidates:
+            attempted.append(str(source))
+            cap = open_opencv_camera_source(
+                source,
+                cv2,
+                width=self.width,
+                height=self.height,
+            )
+            if cap is not None and cap.isOpened():
+                try:
+                    self._backend = str(cap.getBackendName())
+                except Exception:
+                    self._backend = "unknown"
+                return cap
             if cap is not None:
                 cap.release()
-            raise RuntimeError(
-                "Unable to open Leia camera with NVIDIA V4L2/GStreamer pipeline: "
-                f"{self.pipeline}"
-            )
-        try:
-            self._backend = str(cap.getBackendName())
-        except Exception:
-            self._backend = "GSTREAMER"
-        return cap
+        raise RuntimeError(
+            "Unable to open Leia camera. Tried sources: "
+            + "; ".join(attempted)
+        )
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -315,10 +349,24 @@ class NvidiaCameraLivestream:
             self._frame_count += 1
             self._update_fps()
             frame = self._highlight_single_brick(frame)
+            self._tick_bt()
             with self.state["lock"]:
                 self._update_xyz_workspace_locked()
                 self.state["frame"] = frame
                 self.state["text_lines"] = self._text_lines_locked()
+
+    def _tick_bt(self) -> None:
+        """Tick the alignment BT at most once per turn-duration interval."""
+        if self._bt_tree is None or self._bt_writer is None:
+            return
+        now = time.monotonic()
+        if now - self._bt_last_tick_at < self._bt_tick_interval:
+            return  # previous command still executing
+        x_mm = self._bricks_telemetry[0]["x_mm"] if self._bricks_telemetry else None
+        self._bt_writer.x_mm = x_mm
+        self._bt_tree.tick()
+        self._bt_status = self._bt_tree.root.status.name
+        self._bt_last_tick_at = now
 
     def xyz_workspace_snapshot(self) -> dict | None:
         with self.state["lock"]:
@@ -440,9 +488,44 @@ class NvidiaCameraLivestream:
                 f"({'locked' if self._brick_highlight_locked else 'searching'})"
             ),
         ]
+        if self._bt_tree is not None:
+            lines.append(f"Nav: {self._bt_status or 'idle'}")
         if self._last_error:
             lines.append(f"Error: {self._last_error}")
         return lines
+
+
+def _open_robot_or_none(
+    *,
+    enabled: bool,
+    require_robot: bool,
+    serial_port: str | None = None,
+    robot_factory=None,
+):
+    """Try to open the robot serial connection.
+
+    Returns (robot, status_message).  On failure, returns (None, message)
+    unless require_robot=True, in which case raises RuntimeError.
+
+    When robot_factory is None the real Robot class is used in nonfatal mode,
+    so a missing Uno does not kill the camera stream.
+    """
+    if not enabled:
+        return None, "Robot disabled"
+    if robot_factory is None:
+        from helper_robot_control import Robot as _RobotCls
+        _real = _RobotCls
+        def robot_factory(*, exit_on_failure=True, serial_port=None):  # noqa: E306
+            return _real(exit_on_failure=exit_on_failure, serial_port=serial_port)
+    try:
+        robot = robot_factory(exit_on_failure=False, serial_port=serial_port)
+        port = getattr(robot, "SERIAL_PORT", serial_port or "unknown")
+        return robot, f"Robot connected on {port}"
+    except (Exception, SystemExit) as exc:
+        msg = str(exc) if not isinstance(exc, SystemExit) else "serial port not found (see logs above)"
+        if require_robot:
+            raise RuntimeError(f"Robot required but unavailable: {msg}") from exc
+        return None, f"Robot unavailable ({msg}), continuing camera-only"
 
 
 def parse_args(argv: Sequence[str] | None = None):
@@ -458,6 +541,20 @@ def parse_args(argv: Sequence[str] | None = None):
     parser.add_argument("--jpeg-quality", type=int, default=DEFAULT_JPEG_QUALITY, help="MJPEG JPEG quality.")
     parser.add_argument("--img-width", type=int, default=DEFAULT_IMG_WIDTH, help="Displayed camera pane width.")
     parser.add_argument("--no-sharpen", action="store_true", help="Disable stream sharpening.")
+    parser.add_argument(
+        "--robot",
+        dest="robot",
+        action="store_true",
+        default=True,
+        help="Connect to robot for x-axis BT alignment (default).",
+    )
+    parser.add_argument(
+        "--no-robot",
+        dest="robot",
+        action="store_false",
+        help="Skip the robot connection and run camera-only.",
+    )
+    parser.add_argument("--serial-port", default=None, help="Override robot serial port (e.g. /dev/ttyCH341USB0).")
     return parser.parse_args(argv)
 
 
@@ -496,7 +593,15 @@ def _lan_urls(port: int) -> list[str]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    camera = NvidiaCameraLivestream(device=args.device, width=args.width, height=args.height)
+    robot, robot_status = _open_robot_or_none(
+        enabled=bool(args.robot),
+        require_robot=False,
+        serial_port=args.serial_port or None,
+    )
+    print(f"[LEIA] {robot_status}", flush=True)
+    camera = NvidiaCameraLivestream(
+        device=args.device, width=args.width, height=args.height, robot=robot
+    )
     camera.start()
 
     server, url = start_stream_server(
