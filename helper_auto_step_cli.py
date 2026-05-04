@@ -80,7 +80,7 @@ def run_single_auto_step(*, step_token: str, vision_mode: str | None):
         mode_norm = normalize_vision_mode(mode_raw)
         app_state = AppState(vision_mode=mode_norm)
     app_state.robot = Robot()
-    app_state.vision = build_vision(mode_norm, yolo_model_path=getattr(app_state, "yolo_model_path", None))
+    app_state.vision = build_vision(mode_norm)
     if normalize_vision_mode(mode_norm) == VISION_MODE_CYAN and app_state.vision is not None:
         active_cyan_profile = _stream_state_cyan_profile(app_state, _DEFAULT_CYAN_PROFILE)
         active_cyan_visibility = _stream_state_cyan_visibility(app_state, _DEFAULT_CYAN_VISIBILITY)

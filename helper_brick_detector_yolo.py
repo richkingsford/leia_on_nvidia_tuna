@@ -1,27 +1,23 @@
 """
-YOLO-Based Brick Detector - Drop-in replacement for helper_brick_vision.py
-==========================================================================
+TensorRT Crown-Brick Detector
+=============================
 
 Uses a YOLOv8-nano model trained on real brick footage from Leia's OV2710 camera.
 Works WITHOUT ArUco markers, handles cluttered backgrounds, and runs at 5-15 fps
-on Jetson Orin Nano.
+on Jetson Orin Nano via the blessed TensorRT engine.
 
 Same interface as the original BrickDetector:
     read() -> (found, angle, dist, offset_x, confidence, cam_height,
                brick_above, brick_below)
 
 Usage:
-    # In your runtime script, replace:
-    #   from helper_brick_vision import BrickDetector
-    # with:
-    #   from helper_brick_detector_yolo import BrickDetector
+    from helper_brick_detector_yolo import BrickDetector
 
 Dependencies:
     pip install opencv-contrib-python numpy
 
-    Note: ultralytics + PyTorch are only needed for training/export,
-    not for runtime inference. This module uses OpenCV DNN with an
-    ONNX-exported model, so no heavy ML frameworks are required.
+    Runtime inference uses brick_yolo_v4_fast.plan. Training/export artifacts
+    do not belong in this runtime path.
 """
 
 import cv2
@@ -56,8 +52,7 @@ DEFAULT_FRAME_H = 480
 FOCAL_PX_REF = 580.0
 FOCAL_REF_WIDTH = 640.0
 
-# YOLO model path (relative to this file) — scenario-2 runtime uses v4 only
-MODEL_PATH = Path(__file__).resolve().parent / "brick_yolo_v4.onnx"
+# One permanent brick model: the current TensorRT plan.
 TENSORRT_ENGINE_PATH = Path(__file__).resolve().parent / "brick_yolo_v4_fast.plan"
 BRICK_MODEL_PATH = Path(__file__).resolve().parent / "world_model_brick.json"
 
@@ -227,14 +222,13 @@ NEGATIVE_TRIANGLE_COLOR_BGR = (0, 255, 0)
 
 class BrickDetector:
     """
-    YOLO-based brick detector. Drop-in replacement for the original
-    BrickDetector in helper_brick_vision.py.
+    TensorRT-backed crown-brick detector.
 
     Provides the same read() interface expected by telemetry_brick.py
     and runtime training/orchestration scripts.
 
-    Uses OpenCV DNN with an ONNX-exported YOLOv8-nano model — no
-    PyTorch or ultralytics required at runtime.
+    Uses the committed brick_yolo_v4_fast.plan TensorRT engine. There is no
+    operator-facing model override in the runtime path.
     """
 
     def __init__(self, debug=True, save_folder=None, speed_optimize=False,
@@ -256,22 +250,17 @@ class BrickDetector:
         if self.save_folder and not os.path.exists(self.save_folder):
             os.makedirs(self.save_folder, exist_ok=True)
 
-        # Load the detector forward-pass backend.  Prefer the Jetson-native
-        # TensorRT engine when present, with OpenCV DNN kept as the fallback.
-        mpath = Path(model_path) if model_path else MODEL_PATH
-        if not mpath.exists():
-            raise FileNotFoundError(
-                f"YOLO ONNX model not found at {mpath}. "
-                f"Place brick_yolo_v4.onnx next to this script."
+        if model_path:
+            self.log.warning(
+                "Ignoring brick model override %s; using required TensorRT engine %s",
+                model_path,
+                TENSORRT_ENGINE_PATH,
             )
         self.net = None
         self._trt_engine = None
-        self.inference_backend = "opencv_dnn"
-        self._init_inference_backend(mpath, model_path=model_path)
-        self._trust_detector_boxes = self._env_flag(
-            "LEIA_BRICK_YOLO_TRUST_BOXES",
-            default=(self.inference_backend == "tensorrt"),
-        )
+        self.inference_backend = "tensorrt"
+        self._init_inference_backend()
+        self._trust_detector_boxes = True
         self.conf_threshold = float(CONF_THRESHOLD)
         self.nms_threshold = float(NMS_THRESHOLD)
         self.input_size = int(YOLO_INPUT_SIZE)
@@ -644,53 +633,29 @@ class BrickDetector:
     # YOLO inference helpers
     # ------------------------------------------------------------------
 
-    def _env_flag(self, name, default=False):
-        raw = os.environ.get(str(name), "")
-        if not str(raw).strip():
-            return bool(default)
-        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+    def _init_inference_backend(self):
+        engine_path = TENSORRT_ENGINE_PATH
+        if not engine_path.exists():
+            raise FileNotFoundError(
+                f"Required TensorRT brick model not found at {engine_path}."
+            )
+        try:
+            from helper_tensorrt_yolo import TensorRTYoloEngine
 
-    def _init_inference_backend(self, onnx_path, model_path=None):
-        backend_pref = os.environ.get("LEIA_BRICK_YOLO_BACKEND", "auto").strip().lower()
-        if backend_pref not in {"auto", "tensorrt", "trt", "opencv", "opencv_dnn"}:
-            backend_pref = "auto"
-
-        engine_env = os.environ.get("LEIA_BRICK_YOLO_ENGINE", "").strip()
-        engine_path = Path(engine_env) if engine_env else TENSORRT_ENGINE_PATH
-        using_default_model = Path(onnx_path).resolve() == MODEL_PATH.resolve()
-        can_try_tensorrt = (
-            backend_pref in {"auto", "tensorrt", "trt"}
-            and (using_default_model or bool(engine_env))
-            and engine_path.exists()
-        )
-
-        if can_try_tensorrt:
-            try:
-                from helper_tensorrt_yolo import TensorRTYoloEngine
-
-                self._trt_engine = TensorRTYoloEngine(engine_path)
-                self.inference_backend = "tensorrt"
-                self.model_path = str(engine_path)
-                self.model_name = engine_path.name
-                self.log.info("Loaded TensorRT YOLO engine from %s", engine_path)
-                return
-            except Exception as exc:
-                self.log.warning(
-                    "TensorRT YOLO unavailable (%s); falling back to OpenCV DNN",
-                    exc,
-                )
-
-        self.net = cv2.dnn.readNetFromONNX(str(onnx_path))
-        self.inference_backend = "opencv_dnn"
-        self.model_path = str(onnx_path)
-        self.model_name = Path(onnx_path).name
-        self.log.info("Loaded YOLO ONNX model from %s", onnx_path)
+            self._trt_engine = TensorRTYoloEngine(engine_path)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Required TensorRT brick model failed to load from {engine_path}: {exc}"
+            ) from exc
+        self.inference_backend = "tensorrt"
+        self.model_path = str(engine_path)
+        self.model_name = engine_path.name
+        self.log.info("Loaded TensorRT YOLO engine from %s", engine_path)
 
     def _forward_yolo(self, blob):
         if self._trt_engine is not None:
             return self._trt_engine.infer(blob)
-        self.net.setInput(blob)
-        return self.net.forward()
+        raise RuntimeError("TensorRT brick model is not initialized.")
 
     def _letterbox(self, frame):
         """Resize frame to YOLO_INPUT_SIZE maintaining aspect ratio with padding."""
@@ -712,7 +677,7 @@ class BrickDetector:
 
     def _detect(self, frame):
         """
-        Run YOLO ONNX inference on a frame.
+        Run YOLO TensorRT inference on a frame.
 
         Returns:
             list of (x1, y1, x2, y2, confidence) tuples in original
@@ -729,7 +694,7 @@ class BrickDetector:
             swapRB=True, crop=False
         )
 
-        # Forward pass.  TensorRT and OpenCV DNN both return (1, 5, 8400).
+        # Forward pass returns (1, 5, 8400).
         output = self._forward_yolo(blob)
 
         # Transpose to (8400, 5) — each row: [cx, cy, w, h, conf]
@@ -1074,7 +1039,7 @@ class BrickDetector:
         color filtering.
 
         Returns a list of brick dicts, or empty list if no cyan found
-        (triggers fallback to current YOLO-only pipeline).
+        (uses the detector box path).
         """
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
@@ -1089,6 +1054,20 @@ class BrickDetector:
         cyan_pixels = cv2.countNonZero(feature_mask)
         if cyan_pixels < bbox_area * HSV_CYAN_COVERAGE_MIN:
             return []
+
+        if self._uses_trapezoid_gate():
+            candidates = self._build_trapezoid_brick_candidates(
+                feature_mask,
+                crop_x=0,
+                crop_y=0,
+                crop_w=crop.shape[1],
+                crop_h=crop.shape[0],
+            )
+            if candidates:
+                return [
+                    self._offset_candidate_to_frame(candidate, x1, y1)
+                    for candidate in candidates
+                ]
 
         contours, _ = cv2.findContours(
             mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -1366,6 +1345,70 @@ class BrickDetector:
                     bricks[matched_idx] = pair_candidate
 
         return bricks
+
+    def _offset_candidate_to_frame(self, candidate, offset_x, offset_y):
+        """Convert a crop-local candidate dict into frame coordinates."""
+        if not isinstance(candidate, dict):
+            return candidate
+        shifted = dict(candidate)
+        dx = float(offset_x)
+        dy = float(offset_y)
+
+        for key, delta in (("center_x", dx), ("selection_anchor_x", dx)):
+            value = shifted.get(key)
+            if isinstance(value, (int, float)):
+                shifted[key] = float(value) + delta
+        for key, delta in (("center_y", dy), ("selection_anchor_y", dy)):
+            value = shifted.get(key)
+            if isinstance(value, (int, float)):
+                shifted[key] = float(value) + delta
+
+        bbox = shifted.get("bbox")
+        if isinstance(bbox, tuple) and len(bbox) >= 4:
+            bx, by, bw, bh = bbox[:4]
+            shifted["bbox"] = (
+                int(round(float(bx) + dx)),
+                int(round(float(by) + dy)),
+                int(round(float(bw))),
+                int(round(float(bh))),
+            )
+
+        rect = shifted.get("rect")
+        if isinstance(rect, tuple) and len(rect) >= 3:
+            center, size, angle = rect[:3]
+            try:
+                shifted["rect"] = (
+                    (float(center[0]) + dx, float(center[1]) + dy),
+                    size,
+                    angle,
+                )
+            except Exception:
+                pass
+
+        contour = shifted.get("contour")
+        if isinstance(contour, np.ndarray):
+            contour_shifted = contour.copy()
+            try:
+                contour_shifted[:, :, 0] += dx
+                contour_shifted[:, :, 1] += dy
+                shifted["contour"] = contour_shifted
+            except Exception:
+                pass
+
+        cutout_polygons = shifted.get("negative_cutout_polygons")
+        if isinstance(cutout_polygons, list):
+            shifted_polygons = []
+            for poly in cutout_polygons:
+                poly_arr = np.asarray(poly, dtype=np.float32)
+                if poly_arr.ndim != 2 or poly_arr.shape[0] < 3:
+                    continue
+                poly_arr = poly_arr.copy()
+                poly_arr[:, 0] += dx
+                poly_arr[:, 1] += dy
+                shifted_polygons.append(poly_arr)
+            shifted["negative_cutout_polygons"] = shifted_polygons
+
+        return shifted
 
     def _estimate_angle_from_rect(self, rect):
         """
@@ -1754,15 +1797,17 @@ class BrickDetector:
                 hsv_used = True
 
         if hsv_used:
+            detected_hsv_bricks = list(all_hsv_bricks)
+            selectable_hsv_bricks = list(all_hsv_bricks)
             filtered_hsv_bricks = self._filter_candidates_to_center_y_row(
                 all_hsv_bricks,
                 w_frame,
                 h_frame,
             )
             if filtered_hsv_bricks:
-                all_hsv_bricks = filtered_hsv_bricks
+                selectable_hsv_bricks = filtered_hsv_bricks
             # HSV path: center-most brick, contour-based angle, individual distance
-            primary = self._select_center_brick(all_hsv_bricks, w_frame, h_frame)
+            primary = self._select_center_brick(selectable_hsv_bricks, w_frame, h_frame)
             self.last_status = "target locked (HSV)"
 
             # Use YOLO confidence from the box that contained this brick
@@ -1844,14 +1889,14 @@ class BrickDetector:
 
             # Stack flags from individual positions
             brick_above, brick_below = self._stack_flags_from_individuals(
-                primary, all_hsv_bricks
+                primary, detected_hsv_bricks
             )
             partial_bricks = [
                 {
                     "partial": bool(b.get("partial")),
                     "label": b.get("partial_label"),
                 }
-                for b in all_hsv_bricks
+                for b in selectable_hsv_bricks
                 if isinstance(b, dict) and bool(b.get("partial"))
             ]
             self._set_partial_state(
@@ -1862,15 +1907,14 @@ class BrickDetector:
 
             if self.debug:
                 self._draw_debug_hsv(
-                    frame, bricks, all_hsv_bricks, primary,
+                    frame, bricks, detected_hsv_bricks, primary,
                     angle, dist, offset_x, yolo_conf
                 )
 
             return (True, angle, dist, offset_x, conf_pct, cam_height,
                     brick_above, brick_below)
 
-        # Fallback path: legacy OpenCV/ONNX mode keeps the active face gate.
-        # TensorRT mode can trust the model box and skip the old hand gate.
+        # Detector-box path used when HSV does not split a confident face.
         trust_detector_boxes = bool(getattr(self, "_trust_detector_boxes", False))
         shape_gate_enabled = (
             not trust_detector_boxes
@@ -4152,6 +4196,11 @@ class BrickDetector:
     def _draw_debug_hsv(self, frame, yolo_bricks, hsv_bricks, primary,
                         angle, dist, offset_x, conf):
         """Draw enhanced debug visualization for HSV-segmented bricks."""
+        self._draw_brick_id_labels(frame, hsv_bricks)
+        if isinstance(hsv_bricks, list) and len(hsv_bricks) > 1:
+            self.current_frame = frame
+            return
+
         # Only highlight the selected brick nearest the crosshairs.
         if primary:
             refined_outline = self._refine_primary_contour(frame, primary)
@@ -4160,7 +4209,8 @@ class BrickDetector:
                 primary["debug_outline_contour"] = refined_outline
             self._draw_primary_face_outline(frame, primary)
             self._draw_pink_dot_on_brick(frame, primary)
-            pcx, pcy = primary["center_x"], primary["center_y"]
+            pcx = int(round(float(primary["center_x"])))
+            pcy = int(round(float(primary["center_y"])))
             primary_color = PARTIAL_COLOR_BGR if bool(primary.get("partial")) else (0, 255, 0)
             cv2.drawMarker(frame, (pcx, pcy), primary_color,
                            cv2.MARKER_CROSS, 15, 2)
@@ -4188,6 +4238,34 @@ class BrickDetector:
             cv2.line(frame, (pcx, pcy), (ex, ey), (0, 0, 255), 2)
 
         self.current_frame = frame
+
+    def _draw_brick_id_labels(self, frame, candidates):
+        if frame is None or not isinstance(candidates, list) or len(candidates) <= 1:
+            return
+        def _label_center(candidate):
+            bbox = candidate.get("bbox") if isinstance(candidate, dict) else None
+            if isinstance(bbox, tuple) and len(bbox) >= 4:
+                try:
+                    bx, by, bw, bh = [float(v) for v in bbox[:4]]
+                    if bw > 0.0 and bh > 0.0:
+                        return bx + (bw * 0.5), by + (bh * 0.5)
+                except Exception:
+                    pass
+            return (
+                float(candidate.get("center_x", 0.0)),
+                float(candidate.get("center_y", 0.0)),
+            )
+
+        ordered = sorted(
+            [candidate for candidate in candidates if isinstance(candidate, dict)],
+            key=lambda candidate: (
+                _label_center(candidate)[1],
+                _label_center(candidate)[0],
+            ),
+        )
+        for brick_id, candidate in enumerate(ordered):
+            label_x, label_y = _label_center(candidate)
+            draw_brick_with_id(self, frame, candidate, brick_id, center=(label_x, label_y))
 
     def _project_negative_cutout_polygons(self, rect_points):
         if not isinstance(rect_points, np.ndarray) or rect_points.shape != (4, 2):
@@ -4447,17 +4525,20 @@ def draw_single_negative_cutout_brick_highlight(detector, frame, candidate):
     return frame
 
 
-def draw_brick_with_id(detector, frame, candidate, brick_id):
+def draw_brick_with_id(detector, frame, candidate, brick_id, *, center=None):
     """Stamp the numeric ID (0 = topmost) onto each detected brick."""
-    cx = candidate.get("center_x", 0)
-    cy = candidate.get("center_y", 0)
+    if center is not None:
+        cx, cy = center
+    else:
+        cx = candidate.get("center_x", 0)
+        cy = candidate.get("center_y", 0)
     label = str(brick_id)
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale = 1.0
     thickness = 2
     (tw, th), _ = cv2.getTextSize(label, font, scale, thickness)
-    lx = max(0, int(cx) - tw // 2)
-    ly = max(th + 4, int(cy) + th // 2)
+    lx = max(0, int(round(float(cx))) - tw // 2)
+    ly = max(th + 4, int(round(float(cy))) + th // 2)
     cv2.putText(frame, label, (lx, ly), font, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
     cv2.putText(frame, label, (lx, ly), font, scale, (0, 255, 255), thickness, cv2.LINE_AA)
     return frame

@@ -4,8 +4,4 @@ This solution has a ton of custom code for our robot, named Leia, which auto-sta
 
 
 
-
-
-Can you highlight a single brick on http://192.168.1.39:5000?
-
-Remember the most distinguishing feature of our bricks is the 2 not-cyan triangles side by side (not above and below).  The triangles are surrounded in the cyan color. 
+Leia's next step decisions are made through ROS2 Humble's official Jetson builds.

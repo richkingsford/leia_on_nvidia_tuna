@@ -2,7 +2,7 @@
 
 The movement mapping comes from ``world_model_robot.json`` via
 ``telemetry_robot.HOTKEY_SPEED_SCORES``. This helper owns keyboard input and
-manual pulse dispatch so runners such as ``main2.py`` can stay thin.
+manual pulse dispatch so runtime scripts can stay thin.
 """
 
 from __future__ import annotations

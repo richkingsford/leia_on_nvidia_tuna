@@ -22,8 +22,7 @@ _MODE_ALIASES = {
 DEFAULT_VISION_MODEL = {
     "active_mode": VISION_MODE_CYAN,
     "demos_by_mode": {
-        VISION_MODE_ARUCO: "demos - aruco",
-        VISION_MODE_CYAN: "Crown demos",
+        VISION_MODE_CYAN: "demos - cyan",
     },
 }
 
@@ -79,7 +78,7 @@ def demos_dir_for_mode(mode=None, *, path=VISION_MODEL_FILE):
     if isinstance(demos_map, dict):
         demo_path_raw = demos_map.get(mode_norm)
     if not demo_path_raw:
-        demo_path_raw = DEFAULT_VISION_MODEL["demos_by_mode"][VISION_MODE_ARUCO]
+        demo_path_raw = DEFAULT_VISION_MODEL["demos_by_mode"][VISION_MODE_CYAN]
     demos_dir = Path(demo_path_raw)
     if not demos_dir.is_absolute():
         demos_dir = Path(__file__).resolve().parent / demos_dir

@@ -264,7 +264,6 @@ VISION_MODE_CYAN = _VISION_MODE_CYAN_GLOBAL
 # Backward-compatible alias.
 VISION_MODE_MARKERLESS = VISION_MODE_CYAN
 STREAM_VISION_MODE_OPTIONS = [
-    (VISION_MODE_ARUCO, "AruCo Markers"),
     (VISION_MODE_CYAN, "Crown Bricks"),
 ]
 
@@ -501,7 +500,6 @@ _CYAN_VISIBILITY_ALIASES = {
     "cyan": CYAN_VISIBILITY_CYAN,
 }
 _VISION_MODE_ALIASES = {
-    "aruco": VISION_MODE_ARUCO,
     "crown": VISION_MODE_CYAN,
     "cyan": VISION_MODE_CYAN,
     "yolo": VISION_MODE_CYAN,
@@ -4437,7 +4435,6 @@ class AppState:
         self.stream_requested = True
         self.stream_server = None
         self.pending_stream_started_url = None
-        self.yolo_model_path = None
         self.active_vision_mode = vision_mode_norm
         # Allow telemetry_process helpers to push frames directly during auto-run pauses.
         self.world._stream_state = self.stream_state
@@ -4474,7 +4471,7 @@ def _start_manual_stream_server(app_state, *, open_browser=False):
     try:
         stream_server, url = start_stream_server(
             app_state.stream_state,
-            title="Keyboard Training Livestream",
+            title="Crown Brick Vision Livestream",
             header="",
             footer=stream_footer_html(),
             host=STREAM_HOST,
@@ -4628,7 +4625,7 @@ def _resume_manual_runtime_after_calibration(app_state, borrowed_runtime: dict |
         app_state.robot = None
 
     try:
-        vision = build_vision(vision_mode, yolo_model_path=getattr(app_state, "yolo_model_path", None))
+        vision = build_vision(vision_mode)
     except Exception as exc:
         app_state.vision = None
         log_line(f"[CALIBRATE] Failed to reopen {_vision_mode_label(vision_mode)} vision: {exc}")
@@ -5841,10 +5838,10 @@ def stream_refresh_loop(app_state):
             time.sleep(dt - elapsed)
 
 
-def build_vision(vision_mode, yolo_model_path=None):
+def build_vision(vision_mode):
     mode = normalize_vision_mode(vision_mode)
     if mode == VISION_MODE_CYAN:
-        return YoloBrickDetector(debug=True, model_path=yolo_model_path)
+        return YoloBrickDetector(debug=True)
     return ArucoBrickVision(debug=True, debug_rejected_candidates=True)
 
 
@@ -6208,7 +6205,7 @@ def _vision_mode_label(mode):
     return "AruCo Markers"
 
 
-def control_loop(app_state, vision_mode="aruco", yolo_model_path=None, show_startup_help=False):
+def control_loop(app_state, vision_mode="cyan", show_startup_help=False):
     app_state.robot = Robot()
     active_vision_mode = normalize_vision_mode(vision_mode)
     active_cyan_profile = _stream_state_cyan_profile(app_state, _DEFAULT_CYAN_PROFILE)
@@ -6222,7 +6219,7 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None, show_star
     if _set_active_demos_dir_for_mode(app_state, active_vision_mode):
         refresh_world_model_from_demos(app_state, force=True, min_interval_s=0.0)
     # speed_optimize=False so we get the debug markers drawn on the frame
-    app_state.vision = build_vision(active_vision_mode, yolo_model_path=yolo_model_path)
+    app_state.vision = build_vision(active_vision_mode)
     profile_key, profile_settings, profile_applied = _apply_cyan_profile(
         app_state,
         app_state.vision,
@@ -6342,11 +6339,11 @@ def control_loop(app_state, vision_mode="aruco", yolo_model_path=None, show_star
             except Exception:
                 pass
             try:
-                new_vision = build_vision(requested_vision_mode, yolo_model_path=yolo_model_path)
+                new_vision = build_vision(requested_vision_mode)
             except Exception as exc:
                 restored_vision = None
                 try:
-                    restored_vision = build_vision(active_vision_mode, yolo_model_path=yolo_model_path)
+                    restored_vision = build_vision(active_vision_mode)
                     _, restored_profile_runtime, restored_profile_applied = _apply_cyan_profile(
                         app_state,
                         restored_vision,
@@ -6751,12 +6748,7 @@ def main(argv=None) -> int:
         "--vision",
         dest="brick_vision",
         default=_DEFAULT_VISION_MODE,
-        help="Brick vision model to use (aruco/crown)",
-    )
-    parser.add_argument(
-        "--yolo-model",
-        default=None,
-        help="Path to YOLO ONNX model (used with --brick-vision crown)",
+        help="Brick vision model to use (crown/cyan)",
     )
     parser.add_argument(
         "--cyan-profile",
@@ -6775,7 +6767,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     brick_vision_raw = str(args.brick_vision or "").strip().lower()
     if brick_vision_raw and brick_vision_raw not in _VISION_MODE_ALIASES:
-        parser.error("--brick-vision must be one of: aruco, crown")
+        parser.error("--brick-vision must be one of: crown, cyan")
     vision_mode = normalize_vision_mode(brick_vision_raw, fallback=_DEFAULT_VISION_MODE)
     cyan_profile_raw = str(args.cyan_profile or "").strip().lower()
     if cyan_profile_raw and cyan_profile_raw not in CYAN_PROFILE_PRESETS and cyan_profile_raw not in _CYAN_PROFILE_ALIASES:
@@ -6795,7 +6787,6 @@ def main(argv=None) -> int:
         )
 
     state = AppState(vision_mode=vision_mode)
-    state.yolo_model_path = args.yolo_model
     state.stream_requested = bool(args.stream)
     state.active_vision_mode = vision_mode
 
@@ -6833,7 +6824,6 @@ def main(argv=None) -> int:
         control_loop(
             state,
             vision_mode=vision_mode,
-            yolo_model_path=args.yolo_model,
             show_startup_help=True,
         )
     except KeyboardInterrupt:

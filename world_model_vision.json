@@ -1,7 +1,6 @@
 {
     "active_mode": "cyan",
     "demos_by_mode": {
-        "aruco": "demos - aruco",
-        "cyan": "Crown demos"
+        "cyan": "demos - cyan"
     }
 }

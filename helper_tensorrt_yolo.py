@@ -1,8 +1,7 @@
-"""Small TensorRT runtime wrapper for Leia's exported brick YOLO model.
+"""Small TensorRT runtime wrapper for Leia's current brick YOLO model.
 
-The repo's brick detector still owns pre/post-processing.  This helper only
-replaces the ONNX forward pass with a Jetson-native TensorRT engine when one is
-available.
+The repo's brick detector still owns pre/post-processing. This helper runs the
+required Jetson-native TensorRT engine.
 """
 
 from __future__ import annotations

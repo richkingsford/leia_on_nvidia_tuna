@@ -95,7 +95,7 @@ class StreamServer:
         self.vision_mode_setter = vision_mode_setter
         self.vision_mode_options = self._normalize_options(vision_mode_options)
         if (self.vision_mode_getter is not None or self.vision_mode_setter is not None) and not self.vision_mode_options:
-            self.vision_mode_options = [("cyan", "Crown Bricks"), ("aruco", "AruCo Markers")]
+            self.vision_mode_options = [("cyan", "Crown Bricks")]
         self._vision_mode_allowed = {value for value, _label in self.vision_mode_options}
         if cyan_profile_getter is None:
             cyan_profile_getter = markerless_profile_getter
@@ -131,6 +131,13 @@ class StreamServer:
         self.app = Flask(__name__)
         logging.getLogger("werkzeug").setLevel(logging.ERROR)
         self.app.logger.disabled = True
+
+        @self.app.after_request
+        def _disable_dynamic_response_cache(response):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+            return response
 
         @self.app.route("/")
         def index():

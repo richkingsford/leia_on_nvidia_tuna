@@ -277,7 +277,6 @@ def _run_trial_manifest_file(path: Path) -> int:
             world=world,
             vision=vision,
             vision_mode=vision_mode,
-            yolo_model_path=None,
             score=int(curve_cfg.get("score_pct") or helper_random_back_turn_experiment.DEFAULT_SCORE),
             trials=int(
                 len(helper_random_back_turn_experiment._trial_manifest_trials_list(manifest))

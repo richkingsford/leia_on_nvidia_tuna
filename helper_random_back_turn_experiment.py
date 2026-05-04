@@ -3946,7 +3946,7 @@ def _summarize_single_goal_trials(trials: list[dict]) -> tuple[dict, dict]:
         }
     return analysis, suggestion
 
-def _build_experiment_vision(*, mode=None, yolo_model_path=None):
+def _build_experiment_vision(*, mode=None):
     mode_used = normalize_vision_mode(mode, fallback=active_vision_mode())
     try:
         from a_MAIN import (
@@ -3962,7 +3962,7 @@ def _build_experiment_vision(*, mode=None, yolo_model_path=None):
             "experiment vision must use the shared livestream vision builder"
         ) from exc
 
-    vision = build_vision(mode_used, yolo_model_path=yolo_model_path)
+    vision = build_vision(mode_used)
     if mode_used == VISION_MODE_CYAN:
         app_state_stub = SimpleNamespace(stream_state={})
         profile_key, profile_settings, profile_applied = _apply_cyan_profile(
@@ -4679,7 +4679,6 @@ def run_x_axis_lock_experiment(
     world,
     vision=None,
     vision_mode: str | None = None,
-    yolo_model_path: str | None = None,
     max_cycles: int = DEFAULT_TRACK_MAX_CYCLES,
     observe_samples: int = DEFAULT_OBSERVE_SAMPLES,
     initial_observe_timeout_s: float = DEFAULT_OBSERVE_TIMEOUT_S,
@@ -4702,10 +4701,7 @@ def run_x_axis_lock_experiment(
     world.step_state = EXPERIMENT_STEP
     created_vision = False
     if vision is None:
-        vision, vision_mode_used = _build_experiment_vision(
-            mode=vision_mode,
-            yolo_model_path=yolo_model_path,
-        )
+        vision, vision_mode_used = _build_experiment_vision(mode=vision_mode)
         created_vision = True
     else:
         if vision_mode is None:
@@ -5091,7 +5087,6 @@ def run_single_goal_right_turn_experiment(
     world,
     vision=None,
     vision_mode: str | None = None,
-    yolo_model_path: str | None = None,
     trials: int = DEFAULT_X_ZERO_TRIALS,
     sample_hz: float = DEFAULT_X_ZERO_SAMPLE_HZ,
     reset_timeout_s: float = DEFAULT_X_ZERO_RESET_TIMEOUT_S,
@@ -5108,10 +5103,7 @@ def run_single_goal_right_turn_experiment(
     world.step_state = EXPERIMENT_STEP
     created_vision = False
     if vision is None:
-        vision, vision_mode_used = _build_experiment_vision(
-            mode=vision_mode,
-            yolo_model_path=yolo_model_path,
-        )
+        vision, vision_mode_used = _build_experiment_vision(mode=vision_mode)
         created_vision = True
     else:
         if vision_mode is None:
@@ -5335,7 +5327,6 @@ def run_random_back_turn_experiment(
     world,
     vision=None,
     vision_mode: str | None = None,
-    yolo_model_path: str | None = None,
     score: int = DEFAULT_SCORE,
     rng: random.Random | None = None,
     seed: int | None = None,
@@ -5365,10 +5356,7 @@ def run_random_back_turn_experiment(
     settle_used_s = max(0.0, float(settle_s))
     created_vision = False
     if vision is None:
-        vision, vision_mode_used = _build_experiment_vision(
-            mode=vision_mode,
-            yolo_model_path=yolo_model_path,
-        )
+        vision, vision_mode_used = _build_experiment_vision(mode=vision_mode)
         created_vision = True
     else:
         if vision_mode is None:
@@ -5497,7 +5485,6 @@ def run_close_dist_x_axis_one_act_experiment(
     world,
     vision=None,
     vision_mode: str | None = None,
-    yolo_model_path: str | None = None,
     score: int = DEFAULT_SCORE,
     trials: int = DEFAULT_CLOSE_DIST_X_AXIS_ONE_ACT_TRIALS,
     phase_duration_ms: int = DEFAULT_CLOSE_DIST_X_AXIS_ONE_ACT_DURATION_MS,
@@ -5663,10 +5650,7 @@ def run_close_dist_x_axis_one_act_experiment(
 
     created_vision = False
     if vision is None:
-        vision, vision_mode_used = _build_experiment_vision(
-            mode=vision_mode,
-            yolo_model_path=yolo_model_path,
-        )
+        vision, vision_mode_used = _build_experiment_vision(mode=vision_mode)
         created_vision = True
     else:
         if vision_mode is None:
@@ -6493,7 +6477,6 @@ def run_alternating_turn_drive_experiment(
     world,
     vision=None,
     vision_mode: str | None = None,
-    yolo_model_path: str | None = None,
     score: int = DEFAULT_SCORE,
     cycles: int = DEFAULT_ALTERNATING_TURN_DRIVE_CYCLES,
     phase_duration_ms: int = DEFAULT_ALTERNATING_TURN_DRIVE_PHASE_DURATION_MS,
@@ -6581,10 +6564,7 @@ def run_alternating_turn_drive_experiment(
 
     created_vision = False
     if vision is None:
-        vision, vision_mode_used = _build_experiment_vision(
-            mode=vision_mode,
-            yolo_model_path=yolo_model_path,
-        )
+        vision, vision_mode_used = _build_experiment_vision(mode=vision_mode)
         created_vision = True
     else:
         if vision_mode is None:
@@ -6918,7 +6898,6 @@ def run_observe_while_moving_experiment(
     world,
     vision=None,
     vision_mode: str | None = None,
-    yolo_model_path: str | None = None,
     score: int = DEFAULT_SCORE,
     phase_duration_ms: int = DEFAULT_MOVING_OBSERVE_DURATION_MS,
     sample_hz: float = DEFAULT_MOVING_OBSERVE_SAMPLE_HZ,
@@ -6938,10 +6917,7 @@ def run_observe_while_moving_experiment(
     world.step_state = EXPERIMENT_STEP
     created_vision = False
     if vision is None:
-        vision, vision_mode_used = _build_experiment_vision(
-            mode=vision_mode,
-            yolo_model_path=yolo_model_path,
-        )
+        vision, vision_mode_used = _build_experiment_vision(mode=vision_mode)
         created_vision = True
     else:
         if vision_mode is None:
@@ -7271,13 +7247,7 @@ def main() -> int:
     parser.add_argument("--back-max-ms", type=int, default=DEFAULT_BACK_RANGE_MS[1])
     parser.add_argument("--turn-min-ms", type=int, default=DEFAULT_TURN_RANGE_MS[0])
     parser.add_argument("--turn-max-ms", type=int, default=DEFAULT_TURN_RANGE_MS[1])
-    parser.add_argument("--vision", type=str, default=None, help="Optional vision backend override (aruco/cyan).")
-    parser.add_argument(
-        "--yolo-model",
-        type=str,
-        default=None,
-        help="Optional model path passed through to the shared livestream vision builder.",
-    )
+    parser.add_argument("--vision", type=str, default=None, help="Optional crown-brick vision alias (cyan/crown).")
     parser.add_argument("--seed", type=int, default=None, help="Optional RNG seed for reproducible plans.")
     parser.add_argument("--max-cycles", type=int, default=DEFAULT_TRACK_MAX_CYCLES)
     parser.add_argument("--max-turn-intensity", type=float, default=DEFAULT_MAX_TURN_INTENSITY_PCT)
@@ -7418,7 +7388,6 @@ def main() -> int:
                 robot=robot,
                 world=world,
                 vision_mode=args.vision,
-                yolo_model_path=args.yolo_model,
                 score=int(args.score),
                 trials=int(args.one_act_trials),
                 phase_duration_ms=int(args.one_act_duration_ms),
@@ -7454,7 +7423,6 @@ def main() -> int:
                 robot=robot,
                 world=world,
                 vision_mode=args.vision,
-                yolo_model_path=args.yolo_model,
                 score=int(args.score),
                 cycles=int(args.alternating_cycles),
                 phase_duration_ms=int(args.alternating_duration_ms),
@@ -7479,7 +7447,6 @@ def main() -> int:
                 robot=robot,
                 world=world,
                 vision_mode=args.vision,
-                yolo_model_path=args.yolo_model,
                 score=int(args.score),
                 phase_duration_ms=int(args.moving_duration_ms),
                 sample_hz=float(args.moving_sample_hz),
@@ -7509,7 +7476,6 @@ def main() -> int:
                 robot=robot,
                 world=world,
                 vision_mode=args.vision,
-                yolo_model_path=args.yolo_model,
                 score=int(args.score),
                 rng=rng,
                 seed=args.seed,
@@ -7534,7 +7500,6 @@ def main() -> int:
                 robot=robot,
                 world=world,
                 vision_mode=args.vision,
-                yolo_model_path=args.yolo_model,
                 max_cycles=int(args.max_cycles),
                 track_observe_timeout_s=float(observe_timeout_s),
                 track_relaxed_timeout_s=float(relaxed_timeout_s),
@@ -7548,7 +7513,6 @@ def main() -> int:
                 robot=robot,
                 world=world,
                 vision_mode=args.vision,
-                yolo_model_path=args.yolo_model,
                 trials=int(args.x_zero_trials),
                 sample_hz=float(args.x_zero_sample_hz),
                 reset_timeout_s=float(args.x_zero_reset_timeout_s),

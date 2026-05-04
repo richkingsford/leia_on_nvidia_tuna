@@ -408,7 +408,7 @@ class TestSetupManualTrainingCyanProfiles(unittest.TestCase):
         app.stream_state["vision_mode"] = setup_manual_training.VISION_MODE_CYAN
 
         class _Vision:
-            model_path = "/tmp/brick_yolo_v4.onnx"
+            model_path = "/tmp/brick_yolo_v4_fast.plan"
             last_status = "target locked (HSV)"
             last_raw_prediction_count = 8
             last_candidate_count = 3

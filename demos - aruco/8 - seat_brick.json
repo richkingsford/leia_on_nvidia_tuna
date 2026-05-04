@@ -1,6 +1,0 @@
-[
-{"type": "keyframe", "timestamp": 1772058323.555, "marker": "SUCCESS_START", "step": "SEAT_BRICK"},
-{"type": "action", "timestamp": 1772058325.269, "command": "forward", "speedScore": 50},
-{"type": "state", "timestamp": 1772058353.519, "run_id": "run_20260225_150725", "attempt_id": 1, "robot_pose": {"x": 172.5, "y": 1.55, "theta": 0.548, "height_mm": 0.0}, "wall": {"origin": {"x": 151.17, "y": 7.54, "theta": 0.0}, "angle_deg": 0.0, "valid": false}, "brick": {"visible": true, "dist": 48, "angle": -3.006, "x_axis": -3.5, "y_axis": 3.65, "held": false, "brickAbove": false, "brickBelow": false}, "lift_height": 3.18},
-{"type": "keyframe", "timestamp": 1772058354.249, "marker": "SUCCESS_END", "step": "SEAT_BRICK"}
-]
