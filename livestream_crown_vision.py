@@ -22,6 +22,11 @@ from helper_streaming import start_stream_server
 import helper_xyz_coords
 
 
+# Frames to hold the last good detection before declaring invisible.
+# At 15 Hz camera this is ~0.5 s — enough to bridge YOLO misses without
+# masking real disappearances.
+HOLD_FRAMES = 8
+
 CROWN_PROFILE_KEY = "config9"
 CROWN_PROFILE_LABEL = "Config 9"
 CROWN_PROFILE_TUNING = {
@@ -31,11 +36,7 @@ CROWN_PROFILE_TUNING = {
     "hsv_erode_iterations": 0,
     "hsv_lower": list(CYAN_HSV_WIDE_LOWER),
     "hsv_upper": list(CYAN_HSV_WIDE_UPPER),
-    "shape_gate_mode": "negative_cutouts",
-    "negative_cutout_cyan_fill_max": 0.90,
-    "negative_cutout_ring_cyan_min": 0.02,
-    "negative_cutout_ring_dilate_px": 9,
-    "negative_cutout_min_area_px": 18.0,
+    "shape_gate_mode": "shape_match",
 }
 
 
@@ -97,6 +98,9 @@ class CrownVisionLivestream:
             ),
         }
         self.thread = None
+        self._held_result = None
+        self._held_frame = None
+        self._miss_count = 0
 
     def start(self) -> str:
         self.vision = BrickDetector(debug=True)
@@ -172,6 +176,17 @@ class CrownVisionLivestream:
                 frame = getattr(self.vision, "raw_frame", None)
         if frame is not None:
             frame = frame.copy()
+
+        found = isinstance(result, tuple) and len(result) >= 1 and bool(result[0])
+        if found:
+            self._held_result = result
+            self._held_frame = frame
+            self._miss_count = 0
+        else:
+            self._miss_count += 1
+            if self._miss_count <= HOLD_FRAMES and self._held_result is not None:
+                result = self._held_result
+                frame = self._held_frame
 
         with self.state["lock"]:
             show_center_line = bool(self.state.get("show_center_line", True))

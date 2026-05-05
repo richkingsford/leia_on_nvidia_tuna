@@ -3187,6 +3187,51 @@ class BrickDetector:
             })
 
         candidates.sort(key=lambda c: float(c.get("center_y", 0)))
+        if candidates:
+            return candidates
+
+        # Fallback: no dark inner holes found (transparent slot shows cyan background).
+        # Divide any outer blob that is suspiciously tall into N equal-height bricks
+        # using the known face aspect ratio.
+        face_aspect = face_h_mm / max(1e-3, face_w_mm)  # expected h/w ratio of one brick
+        outer_contours, _ = cv2.findContours(roi_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for cnt in (outer_contours or []):
+            bx, by, bw, bh = cv2.boundingRect(cnt)
+            if bw <= 0 or bh <= 0:
+                continue
+            # How many bricks tall is this blob?
+            n_bricks = max(1, int(round(float(bh) / max(1, float(bw)) / face_aspect)))
+            if n_bricks < 2:
+                continue
+            # Split the blob into n_bricks equal horizontal slices.
+            slice_h = float(bh) / n_bricks
+            for i in range(n_bricks):
+                sy = float(by) + i * slice_h
+                cx_frame = float(bx + bw / 2.0) + float(ex)
+                cy_frame = sy + slice_h / 2.0 + float(ey)
+                face_h_px = int(round(slice_h))
+                face_w_px = int(round(float(bw)))
+                candidates.append({
+                    "contour": cnt,
+                    "center_x": int(round(cx_frame)),
+                    "center_y": int(round(cy_frame)),
+                    "rect": ((cx_frame, cy_frame), (float(bw), slice_h), 0.0),
+                    "bbox": (int(bx + ex), int(round(sy + ey)), face_w_px, face_h_px),
+                    "area": float(bw) * slice_h,
+                    "partial": False,
+                    "partial_kind": None,
+                    "partial_label": None,
+                    "partial_edges": {},
+                    "shape_profile": "full",
+                    "shape_match_score": 0.0,
+                    "negative_cutout_polygons": [],
+                    "selection_anchor_x": cx_frame,
+                    "selection_anchor_y": cy_frame,
+                    "negative_cutout_pair_x_axis_metrics": None,
+                    "scale_px_per_mm": float(face_h_px) / max(1e-3, slot_h_mm),
+                })
+
+        candidates.sort(key=lambda c: float(c.get("center_y", 0)))
         return candidates
 
     def _build_negative_cutout_pair_candidates(
