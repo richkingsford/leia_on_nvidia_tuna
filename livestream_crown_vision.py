@@ -15,6 +15,7 @@ from helper_brick_detector_yolo import (
     BrickDetector,
     CYAN_HSV_WIDE_LOWER,
     CYAN_HSV_WIDE_UPPER,
+    CYAN_SHADE_HEXES,
 )
 from helper_manual_config import load_manual_training_config
 from helper_stream_server import format_stream_url
@@ -59,6 +60,33 @@ def _int_text(value) -> str:
         return str(int(value))
     except (TypeError, ValueError):
         return "-"
+
+
+def _build_footer_html() -> str:
+    swatch_items = "".join(
+        f"<div style='display:inline-flex;flex-direction:column;align-items:center;gap:2px;margin-right:2px;'>"
+        f"<div style='background:#{h};width:28px;height:22px;border-radius:3px;border:1px solid #444;'></div>"
+        f"<div style='font-size:9px;color:#9cc;font-family:monospace;'>#{h}</div>"
+        f"</div>"
+        for h in CYAN_SHADE_HEXES
+    )
+    lower = list(CYAN_HSV_WIDE_LOWER)
+    upper = list(CYAN_HSV_WIDE_UPPER)
+    hsv_label = f"H {lower[0]}–{upper[0]} · S {lower[1]}–{upper[1]} · V {lower[2]}–{upper[2]}"
+    return (
+        "<div class='footer-sections'>"
+        "<div class='footer-section'>"
+        "<div class='footer-title'>Crown Brick Vision</div>"
+        f"<div>TensorRT · trapezoid slot gate · HOLD_FRAMES={HOLD_FRAMES}</div>"
+        "</div>"
+        "<div class='footer-section'>"
+        "<div class='footer-title'>Cyan Calibration Palette</div>"
+        f"<div style='display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;'>{swatch_items}</div>"
+        f"<div style='margin-top:5px;font-size:10px;color:#9cc;font-family:monospace;'>{hsv_label}</div>"
+        "<div style='margin-top:2px;font-size:10px;color:#777;'>WIDE range active</div>"
+        "</div>"
+        "</div>"
+    )
 
 
 def _draw_center_guides(frame) -> None:
@@ -110,14 +138,7 @@ class CrownVisionLivestream:
             self.state,
             title="Crown Brick Vision Livestream",
             header="",
-            footer=(
-                "<div class='footer-sections'>"
-                "<div class='footer-section'>"
-                "<div class='footer-title'>Crown Brick Vision</div>"
-                "<div>YOLO/TensorRT crown detector with cyan face and dark cutout shape gate.</div>"
-                "</div>"
-                "</div>"
-            ),
+            footer=_build_footer_html(),
             host=str(self.args.stream_host),
             port=int(self.args.stream_port),
             fps=max(1, int(self.args.stream_fps)),

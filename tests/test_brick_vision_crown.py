@@ -231,6 +231,83 @@ class TestHeightRatioFallback(unittest.TestCase):
         self.assertLess(ys[0], ys[1])
 
 
+class TestSingleBrickFallback(unittest.TestCase):
+    """Single brick with no inner holes (transparent slot) still produces a candidate."""
+
+    def _single_brick_frame(self) -> np.ndarray:
+        """Solid cyan blob sized like exactly one brick face — no inner holes."""
+        face_h_mm = 35.4
+        face_w_mm = 53.0
+        face_aspect = face_h_mm / face_w_mm
+        blob_w = 156
+        blob_h = int(round(blob_w * face_aspect * 0.95))  # ~1 brick tall
+        frame = np.zeros((blob_h + 40, blob_w + 60, 3), dtype=np.uint8)
+        cyan_bgr = (177, 157, 31)
+        cv2.rectangle(frame, (30, 20), (30 + blob_w, 20 + blob_h), cyan_bgr, thickness=cv2.FILLED)
+        return frame
+
+    def test_single_brick_no_slots_produces_candidate(self):
+        d = _make_stub()
+        frame = self._single_brick_frame()
+        candidates = det.BrickDetector._segment_bricks_hsv(
+            d, frame, 0, 0, frame.shape[1], frame.shape[0]
+        )
+        self.assertGreaterEqual(
+            len(candidates), 1,
+            "Single brick with transparent slot must still produce at least one candidate",
+        )
+
+    def test_fallback_scale_uses_face_height(self):
+        """scale_px_per_mm in fallback candidates is anchored to face height, not slot height."""
+        d = _make_stub()
+        face_h_mm = float(np.max(d._face_polygon_model[:, 1]) - np.min(d._face_polygon_model[:, 1]))
+        frame = self._single_brick_frame()
+        candidates = det.BrickDetector._segment_bricks_hsv(
+            d, frame, 0, 0, frame.shape[1], frame.shape[0]
+        )
+        self.assertGreaterEqual(len(candidates), 1)
+        scale = float(candidates[0]["scale_px_per_mm"])
+        # scale should be bbox_h / face_h_mm; face_h_mm ≈ 18mm
+        # For a ~1-brick blob (blob_h ≈ face_aspect * blob_w), scale ≈ blob_h/18
+        # Sanity: scale must be >> 0 and not wildly wrong vs slot_h_mm (4.05mm)
+        self.assertGreater(scale, 0.0)
+        # If scale were using slot_h_mm (4.05), it would be ~4.4x too large
+        # Using face_h_mm (18) gives the correct ~1x ratio
+        blob_h = float(candidates[0]["bbox"][3])
+        expected_scale = blob_h / face_h_mm
+        self.assertAlmostEqual(scale, expected_scale, delta=1.0)
+
+
+class TestShapeMatchThreshold(unittest.TestCase):
+    """_classify_contour_shape must use self._shape_match_score_max (from world model JSON)."""
+
+    def test_loaded_threshold_from_world_model(self):
+        d = _make_stub()
+        # world_model_brick.json sets shape_match_score_max = 0.65
+        self.assertAlmostEqual(d._shape_match_score_max, 0.65, delta=0.01)
+
+    def test_classify_uses_instance_threshold_not_constant(self):
+        """A contour that scores between 0.40 and 0.65 should pass with the JSON value."""
+        d = _make_stub()
+        # Force a permissive threshold so we can detect the difference
+        d._shape_match_score_max = 0.65
+        # Create a roughly brick-shaped contour (wide rectangle)
+        contour = np.array(
+            [[10, 5], [90, 5], [90, 25], [10, 25]], dtype=np.float32
+        ).reshape(-1, 1, 2)
+        profile_loose, score_loose = det.BrickDetector._classify_contour_shape(d, contour)
+        # Now tighten the threshold below the score
+        if score_loose is not None and score_loose > 0:
+            d._shape_match_score_max = max(0.05, score_loose - 0.01)
+            profile_tight, _ = det.BrickDetector._classify_contour_shape(d, contour)
+            # Tight threshold should reject what loose accepted (or both None if score is very low)
+            if profile_loose is not None:
+                self.assertIsNone(
+                    profile_tight,
+                    "Tightening _shape_match_score_max must cause previously-passing contour to fail",
+                )
+
+
 class TestDrawBrickIdLabels(unittest.TestCase):
     """_draw_brick_id_labels: draws yellow IDs for 2+ candidates; silent for <=1."""
 

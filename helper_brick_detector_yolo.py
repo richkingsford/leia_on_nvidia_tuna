@@ -2562,11 +2562,8 @@ class BrickDetector:
         if best_profile is None or best_score is None:
             return None, None
 
-        threshold = (
-            float(BRICK_FACE_MATCH_MAX_FULL)
-            if best_profile == "full"
-            else float(BRICK_FACE_MATCH_MAX_PARTIAL)
-        )
+        full_max = float(getattr(self, "_shape_match_score_max", BRICK_FACE_MATCH_MAX_FULL))
+        threshold = full_max if best_profile == "full" else float(BRICK_FACE_MATCH_MAX_PARTIAL)
         if float(best_score) > threshold:
             return None, float(best_score)
         return best_profile, float(best_score)
@@ -3191,19 +3188,15 @@ class BrickDetector:
             return candidates
 
         # Fallback: no dark inner holes found (transparent slot shows cyan background).
-        # Divide any outer blob that is suspiciously tall into N equal-height bricks
-        # using the known face aspect ratio.
+        # Divide outer blobs by height/width aspect ratio. n_bricks=1 handles the
+        # single-brick transparent-slot case; n_bricks>=2 handles merged stacks.
         face_aspect = face_h_mm / max(1e-3, face_w_mm)  # expected h/w ratio of one brick
         outer_contours, _ = cv2.findContours(roi_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for cnt in (outer_contours or []):
             bx, by, bw, bh = cv2.boundingRect(cnt)
             if bw <= 0 or bh <= 0:
                 continue
-            # How many bricks tall is this blob?
             n_bricks = max(1, int(round(float(bh) / max(1, float(bw)) / face_aspect)))
-            if n_bricks < 2:
-                continue
-            # Split the blob into n_bricks equal horizontal slices.
             slice_h = float(bh) / n_bricks
             for i in range(n_bricks):
                 sy = float(by) + i * slice_h
@@ -3228,7 +3221,7 @@ class BrickDetector:
                     "selection_anchor_x": cx_frame,
                     "selection_anchor_y": cy_frame,
                     "negative_cutout_pair_x_axis_metrics": None,
-                    "scale_px_per_mm": float(face_h_px) / max(1e-3, slot_h_mm),
+                    "scale_px_per_mm": float(face_h_px) / max(1e-3, face_h_mm),
                 })
 
         candidates.sort(key=lambda c: float(c.get("center_y", 0)))

@@ -1,22 +1,22 @@
 {
-  "updated_at": 1777597238.1082318,
+  "updated_at": 1777940992.9690032,
   "robot": {
-    "x_mm": 1.2717989753712084e-15,
-    "y_mm": -20.77005347593583,
+    "x_mm": 0.0,
+    "y_mm": 0.0,
     "z_mm": 0.0,
     "theta_deg": -90.0,
     "lift_mm": 0.0
   },
   "raw_robot": {
-    "x_mm": 20.77005347593583,
+    "x_mm": 0.0,
     "y_mm": 0.0,
     "z_mm": 0.0,
     "theta_deg": 0.0,
     "lift_mm": 0.0
   },
   "leia": {
-    "x_mm": 1.2717989753712084e-15,
-    "y_mm": -20.77005347593583,
+    "x_mm": 0.0,
+    "y_mm": 0.0,
     "z_mm": 145.0,
     "theta_deg": -90.0,
     "label": "Leia"
@@ -71,15 +71,13 @@
   },
   "wall_reverse_plan": {
     "ok": true,
-    "reason": "planned",
-    "wall_behind_mm": 20.770053475935818,
-    "target_wall_distance_mm": 45.0,
-    "reverse_gap_mm": 0.0,
+    "reason": "wall_not_behind",
+    "wall_behind_mm": 0.0,
     "reverse_acts": 0,
     "actions": [
       {
         "cmd": "l",
-        "reason": "begin_turn_after_reverse"
+        "reason": "turn_now"
       }
     ]
   },

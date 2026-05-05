@@ -4,4 +4,5 @@ This solution has a ton of custom code for our robot, named Leia, which auto-sta
 
 
 
-Leia's next step decisions are made through ROS2 Humble's official Jetson builds.
+ros2_control DiffDriveController — replaces raw Arduino PWM with proper velocity control, which makes the gap-closing math much simpler and more reliable
+A PID node (from control_toolbox) — replaces the 5-band speed-score lookup tables with a real closed-loop controller
