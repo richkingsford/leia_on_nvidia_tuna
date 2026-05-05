@@ -74,6 +74,14 @@ CYAN_SHADE_HEXES = (
     "028991",
     "0F949B",
     "018C96",
+    "36BAC6",
+    "007C81",
+    "00888C",
+    "068A90",
+    "007378",
+    "39B7C1",
+    "2AB0BA",
+    "31B0BB",
 )
 
 
@@ -1537,6 +1545,20 @@ class BrickDetector:
 
         return accepted
 
+    def _cap_candidates_to_nearest(self, candidates, frame_w, frame_h, max_count=2):
+        """Keep only the max_count HSV candidates nearest to the frame crosshair."""
+        if len(candidates) <= max_count:
+            return list(candidates)
+        frame_cx = float(frame_w) / 2.0 + float(getattr(self, "camera_center_offset_px", 0.0) or 0.0)
+        frame_cy = float(frame_h) / 2.0
+        return sorted(
+            candidates,
+            key=lambda c: math.hypot(
+                float(c.get("center_x", 0)) - frame_cx,
+                float(c.get("center_y", 0)) - frame_cy,
+            ),
+        )[:max_count]
+
     def _select_center_brick(self, individual_bricks, frame_w, frame_h):
         """
         Pick the brick closest to frame center. Partial bricks get 2x
@@ -1838,6 +1860,7 @@ class BrickDetector:
                         bricks = [(0, 0, w_frame, h_frame, 1.0)]
             if all_hsv_bricks:
                 all_hsv_bricks = self._dedup_hsv_candidates(all_hsv_bricks)
+                all_hsv_bricks = self._cap_candidates_to_nearest(all_hsv_bricks, w_frame, h_frame, max_count=1)
                 hsv_used = True
 
         if hsv_used:
@@ -1871,12 +1894,20 @@ class BrickDetector:
             dot_found, dot_cx, dot_cy = self._detect_pink_dot_in_brick(frame, primary)
             # When YOLO found nothing at all (top conf = 0), the only signal that
             # distinguishes a real brick from a background false positive is the pink dot.
-            if float(getattr(self, "last_max_confidence", 1.0)) == 0.0 and not dot_found:
+            # Exception: closeup HSV fallback already implies no YOLO signal; trust HSV.
+            if (float(getattr(self, "last_max_confidence", 1.0)) == 0.0
+                    and not dot_found
+                    and not closeup_hsv_fallback_used):
                 self.last_status = "low confidence"
                 self.last_primary_confidence = 0.0
                 return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+            # When the trapezoid slot was directly detected, that's strong HSV evidence —
+            # treat it like a pink dot and lift conf_pct past the gate threshold.
+            conf_gate_pct = float(getattr(self, "_conf_gate_pct", CONF_GATE_PCT))
+            if bool(primary.get("from_slot_detection", False)):
+                conf_pct = max(conf_pct, conf_gate_pct + 15.0)
             combined_conf = conf_pct + (PINK_DOT_CONF_BONUS if dot_found else 0.0)
-            if combined_conf < float(getattr(self, "_conf_gate_pct", CONF_GATE_PCT)):
+            if combined_conf < conf_gate_pct:
                 self.last_status = "low confidence"
                 self.last_primary_confidence = 0.0
                 return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
@@ -1993,6 +2024,19 @@ class BrickDetector:
             matched_boxes = list(bricks)
             matched_partials = [self._partial_from_shape_profile("full") for _ in matched_boxes]
 
+        if len(matched_boxes) > 1:
+            frame_cx = float(w_frame) / 2.0 + float(getattr(self, "camera_center_offset_px", 0.0) or 0.0)
+            frame_cy = float(h_frame) / 2.0
+            keep = sorted(
+                range(len(matched_boxes)),
+                key=lambda i: math.hypot(
+                    (matched_boxes[i][0] + matched_boxes[i][2]) / 2.0 - frame_cx,
+                    (matched_boxes[i][1] + matched_boxes[i][3]) / 2.0 - frame_cy,
+                ),
+            )[:1]
+            matched_boxes = [matched_boxes[i] for i in keep]
+            matched_partials = [matched_partials[i] for i in keep]
+
         if not matched_boxes:
             self._prev_angle = None
             self._prev_dist = None
@@ -2099,15 +2143,7 @@ class BrickDetector:
         if not ret or frame is None:
             self._camera_read_fail_count += 1
             now_s = time.monotonic()
-            if (
-                self._camera_read_fail_count == 1
-                or (now_s - self._last_camera_read_fail_log_at) >= self._camera_read_fail_log_interval_s
-            ):
-                self.log.warning(
-                    "Frame capture failed (consecutive=%d)",
-                    self._camera_read_fail_count,
-                )
-                self._last_camera_read_fail_log_at = now_s
+            self._last_camera_read_fail_log_at = now_s
             self.last_status = "camera read failed"
             self.last_primary_confidence = 0.0
             self._clear_partial_state()
@@ -3225,6 +3261,7 @@ class BrickDetector:
                 "selection_anchor_y": cy_frame,
                 "negative_cutout_pair_x_axis_metrics": None,
                 "scale_px_per_mm": scale_px_per_mm,
+                "from_slot_detection": True,
             })
 
         candidates.sort(key=lambda c: float(c.get("center_y", 0)))
@@ -3266,6 +3303,7 @@ class BrickDetector:
                     "selection_anchor_y": cy_frame,
                     "negative_cutout_pair_x_axis_metrics": None,
                     "scale_px_per_mm": float(face_h_px) / max(1e-3, face_h_mm),
+                    "from_slot_detection": False,
                 })
 
         candidates.sort(key=lambda c: float(c.get("center_y", 0)))

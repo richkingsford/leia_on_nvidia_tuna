@@ -1,7 +1,0 @@
-[
-{"type": "keyframe", "timestamp": 1777158438.297, "marker": "NOMINAL_START", "step": "ALIGN_BRICK"},
-{"type": "state", "timestamp": 1777158438.534, "run_id": "run_20260425_170715", "attempt_id": 1, "robot_pose": {"x": 0.0, "y": 0.0, "theta": 0.0, "height_mm": 0.0}, "brick": {"visible": true, "dist": 148.44, "angle": 0.0, "x_axis": 1.81, "y_axis": 5.0, "inCrosshairs": true, "held": false, "brickAbove": false, "brickBelow": false, "raw_dist": 133.73315312322006, "brick_above_raw": false, "brick_below_raw": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1777158438.849, "run_id": "run_20260425_170715", "attempt_id": 1, "robot_pose": {"x": 0.0, "y": 0.0, "theta": 0.0, "height_mm": 0.0}, "brick": {"visible": true, "dist": 148.43, "angle": 0.0, "x_axis": 1.82, "y_axis": 5.0, "inCrosshairs": true, "held": false, "brickAbove": false, "brickBelow": false, "raw_dist": 133.72100624169354, "brick_above_raw": false, "brick_below_raw": false}, "lift_height": 0.0},
-{"type": "state", "timestamp": 1777158439.183, "run_id": "run_20260425_170715", "attempt_id": 1, "robot_pose": {"x": 0.0, "y": 0.0, "theta": 0.0, "height_mm": 0.0}, "brick": {"visible": true, "dist": 148.46, "angle": 0.0, "x_axis": 1.82, "y_axis": 5.0, "inCrosshairs": true, "held": false, "brickAbove": false, "brickBelow": false, "raw_dist": 133.75445393843745, "brick_above_raw": false, "brick_below_raw": false}, "lift_height": 0.0},
-{"type": "keyframe", "timestamp": 1777158439.192, "marker": "NOMINAL_END", "step": "ALIGN_BRICK"}
-]
