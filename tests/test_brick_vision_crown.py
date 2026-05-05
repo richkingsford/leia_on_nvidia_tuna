@@ -6,7 +6,7 @@ Covers the complete current pipeline:
   - Trapezoid gate is active because world model has exactly 1 cutout polygon
   - Two dark inner slots → two separate candidates (inner-hole split path)
   - Transparent/missing slots → height-ratio fallback still produces 2+ candidates
-  - _draw_brick_id_labels draws for 2+ candidates, silent for <=1
+  - _draw_brick_id_labels draws yellow IDs for the nearest 1-2 candidates
   - CrownVisionLivestream holds the last good detection for HOLD_FRAMES missed frames
 """
 import argparse
@@ -309,7 +309,7 @@ class TestShapeMatchThreshold(unittest.TestCase):
 
 
 class TestDrawBrickIdLabels(unittest.TestCase):
-    """_draw_brick_id_labels: draws yellow IDs for 2+ candidates; silent for <=1."""
+    """_draw_brick_id_labels draws yellow IDs for the nearest 1-2 candidates."""
 
     @staticmethod
     def _yellow_px(frame: np.ndarray) -> int:
@@ -325,18 +325,37 @@ class TestDrawBrickIdLabels(unittest.TestCase):
         det.BrickDetector._draw_brick_id_labels(d, frame, [c1, c2])
         self.assertGreater(self._yellow_px(frame), 0)
 
-    def test_labels_not_drawn_for_single_candidate(self):
+    def test_label_drawn_for_single_candidate(self):
         d = _make_stub()
         c1 = _make_candidate(cx=60, cy=40, bbox=(20, 15, 80, 40))
         frame = np.zeros((160, 200, 3), dtype=np.uint8)
         det.BrickDetector._draw_brick_id_labels(d, frame, [c1])
-        self.assertEqual(self._yellow_px(frame), 0, "Single candidate must not get a label")
+        self.assertGreater(self._yellow_px(frame), 0, "Single visible candidate must get a label")
 
     def test_labels_not_drawn_for_empty_list(self):
         d = _make_stub()
         frame = np.zeros((160, 200, 3), dtype=np.uint8)
         det.BrickDetector._draw_brick_id_labels(d, frame, [])
         self.assertEqual(self._yellow_px(frame), 0)
+
+    def test_labels_limited_to_two_nearest_center_candidates(self):
+        d = _make_stub()
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        near_1 = _make_candidate(cx=320, cy=240, bbox=(280, 220, 80, 40))
+        near_2 = _make_candidate(cx=430, cy=240, bbox=(390, 220, 80, 40))
+        far = _make_candidate(cx=55, cy=55, bbox=(15, 35, 80, 40))
+
+        det.BrickDetector._draw_brick_id_labels(d, frame, [far, near_1, near_2])
+
+        self.assertGreater(self._yellow_px(frame), 0)
+        near_2_label_area = frame[230:285, 390:470]
+        self.assertGreater(self._yellow_px(near_2_label_area), 0)
+        far_label_area = frame[40:95, 10:105]
+        self.assertEqual(
+            self._yellow_px(far_label_area),
+            0,
+            "Only the two candidates nearest the camera crosshair should be labeled",
+        )
 
     def test_labels_ordered_top_id_zero(self):
         """The topmost (smallest cy) candidate gets ID 0."""
@@ -347,6 +366,54 @@ class TestDrawBrickIdLabels(unittest.TestCase):
         det.BrickDetector._draw_brick_id_labels(d, frame, [bottom, top])  # reversed order
         # Frame must have been modified (labels drawn)
         self.assertGreater(self._yellow_px(frame), 0)
+
+
+class TestProcessHsvCandidateHighlights(unittest.TestCase):
+    """The HSV pipeline keeps up to two centered candidates for the debug overlay."""
+
+    def test_process_bricks_labels_two_nearest_hsv_candidates(self):
+        d = _make_stub()
+        d.frame_w = 640
+        d.frame_h = 480
+        d.focal_px = 100.0
+        d.camera_center_offset_px = 0.0
+        d._smooth_alpha = 1.0
+        d._prev_angle = None
+        d._prev_dist = None
+        d._prev_offset = None
+        d._prev_offset_y = None
+        d.debug = True
+        d.last_status = "idle"
+        d.last_max_confidence = 1.0
+        d.last_primary_confidence = 0.0
+        d.last_partial_count = 0
+        d.last_partial_labels = []
+        d.last_primary_partial_kind = None
+        d.last_primary_partial_label = None
+        d.log = type(
+            "_LogStub",
+            (),
+            {"exception": staticmethod(lambda *_args, **_kwargs: None)},
+        )()
+
+        near_1 = _make_candidate(cx=320, cy=240, bbox=(300, 230, 40, 24))
+        near_2 = _make_candidate(cx=430, cy=240, bbox=(410, 230, 40, 24))
+        far = _make_candidate(cx=70, cy=60, bbox=(50, 50, 40, 24))
+        d._segment_bricks_hsv = lambda *_args, **_kwargs: [far, near_1, near_2]
+        d._detect_pink_dot_in_brick = lambda *_args, **_kwargs: (False, None, None)
+        d._refine_angle_for_primary = lambda *_args, **_kwargs: 0.0
+        d._dist_from_triangle_span = lambda *_args, **_kwargs: None
+
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        result = det.BrickDetector._process_bricks(d, frame, [(0, 0, 640, 480, 1.0)])
+
+        self.assertTrue(result[0])
+        self.assertIsNotNone(d.current_frame)
+        self.assertGreater(TestDrawBrickIdLabels._yellow_px(d.current_frame), 0)
+        near_2_label_area = d.current_frame[230:285, 400:465]
+        self.assertGreater(TestDrawBrickIdLabels._yellow_px(near_2_label_area), 0)
+        far_label_area = d.current_frame[45:100, 35:120]
+        self.assertEqual(TestDrawBrickIdLabels._yellow_px(far_label_area), 0)
 
 
 class TestVisibilityHold(unittest.TestCase):

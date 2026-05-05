@@ -1443,7 +1443,7 @@ class TestHelperRandomBackTurnExperiment(unittest.TestCase):
         self.assertNotIn("turn_intensity", send_calls[0])
         self.assertNotIn("turn_intensity", send_calls[1])
 
-    def test_x_zero_turn_stage_uses_modeled_score_duration_with_888ms_ceiling(self):
+    def test_x_zero_turn_stage_uses_command_budget_with_888ms_ceiling(self):
         world = experiment.WorldModel()
         world.step_state = experiment.StepState.ALIGN_BRICK
 
@@ -1528,9 +1528,257 @@ class TestHelperRandomBackTurnExperiment(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertGreaterEqual(len(send_calls), 3)
-        self.assertTrue(all(int(ms) <= 130 for ms in send_calls))
-        self.assertIn(130, send_calls)
+        self.assertTrue(all(int(ms) <= experiment.DEFAULT_X_ZERO_MAX_ACT_DURATION_MS for ms in send_calls))
+        self.assertLessEqual(sum(int(ms) for ms in send_calls), 2200)
+        self.assertIn(experiment.DEFAULT_X_ZERO_MIN_ACT_DURATION_MS, send_calls)
+        self.assertEqual(result.get("command_budget_ms"), 2200)
+        self.assertLessEqual(result.get("commanded_duration_ms"), result.get("command_budget_ms"))
         self.assertEqual(len(result.get("send_results") or []), len(send_calls))
+
+    def test_x_zero_turn_stage_can_use_turn_drive_profile(self):
+        world = experiment.WorldModel()
+        world.step_state = experiment.StepState.ALIGN_BRICK
+
+        class FakeClock:
+            def __init__(self):
+                self.now = 0.0
+                self.epoch = 9000.0
+
+            def monotonic(self):
+                self.now += 0.05
+                return self.now
+
+            def time(self):
+                self.epoch += 0.05
+                return self.epoch
+
+            def sleep(self, seconds):
+                self.now += max(0.0, float(seconds))
+                self.epoch += max(0.0, float(seconds))
+
+        class FakeRobot:
+            def __init__(self):
+                self.custom_calls = []
+
+            def send_custom_actions_pwm(self, cmd, actions, duration_ms=None):
+                self.custom_calls.append(
+                    {
+                        "cmd": str(cmd),
+                        "actions": [dict(action) for action in actions],
+                        "duration_ms": int(duration_ms or 0),
+                    }
+                )
+                return {
+                    "cmd_sent": str(cmd),
+                    "duration_ms": int(duration_ms or 0),
+                    "actions": [dict(action) for action in actions],
+                    "pwm": max(int(action.get("pwm") or 0) for action in actions),
+                }
+
+            def stop(self):
+                return None
+
+        fake_clock = FakeClock()
+        robot = FakeRobot()
+
+        def _fake_update_world_from_vision(world_obj, _vision_obj, log=False):
+            world_obj.brick = {
+                "visible": False,
+                "offset_x": 0.0,
+                "x_axis": 0.0,
+                "offset_y": 0.0,
+                "y_axis": 0.0,
+                "dist": 0.0,
+                "angle": 0.0,
+                "confidence": 0.0,
+                "pose_source": "brick_state",
+            }
+            world_obj._vision_backend = experiment.VISION_MODE_CYAN
+            world_obj._camera_fps = 20.0
+
+        with patch.object(experiment, "update_world_from_vision", side_effect=_fake_update_world_from_vision), patch.object(
+            experiment,
+            "send_robot_command",
+            side_effect=AssertionError("direct turn command should not be used"),
+        ), patch.object(
+            experiment.time,
+            "monotonic",
+            side_effect=fake_clock.monotonic,
+        ), patch.object(
+            experiment.time,
+            "time",
+            side_effect=fake_clock.time,
+        ), patch.object(
+            experiment.time,
+            "sleep",
+            side_effect=fake_clock.sleep,
+        ):
+            result = experiment._run_turn_stage(
+                robot=robot,
+                world=world,
+                vision=object(),
+                trial_index=1,
+                stage="reset_left_to_edge",
+                cmd="l",
+                turn_intensity_pct=50.0,
+                timeout_s=0.6,
+                sample_hz=5.0,
+                run_started_monotonic=0.0,
+                turn_drive_profile_name="forward_pivot",
+                stop_evaluator=None,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result.get("turn_drive_profile_name"), "forward_pivot")
+        self.assertGreaterEqual(len(robot.custom_calls), 1)
+        first_actions = robot.custom_calls[0]["actions"]
+        self.assertEqual(first_actions[0]["target"], "l")
+        self.assertEqual(first_actions[0]["pwm"], 0)
+        self.assertEqual(first_actions[1]["target"], "r")
+        self.assertGreater(first_actions[1]["pwm"], 0)
+
+    def test_practice_step3_uses_configured_alignment_segment(self):
+        world = experiment.WorldModel()
+        world.process_rules[experiment.DEFAULT_PRACTICE_ALIGN_STEP] = {
+            "controller": "align",
+            "success_gates": {
+                "visible": {"min": True},
+                "xAxis_offset_abs": {"target": 6.03, "tol": 5.0},
+                "dist": {"target": 149.26, "tol": 5.0},
+            },
+        }
+        calls = []
+
+        def _fake_update_world_from_vision(world_obj, _vision_obj, log=False):
+            world_obj.brick = {
+                "visible": True,
+                "offset_x": 7.0,
+                "x_axis": 7.0,
+                "offset_y": 22.0,
+                "y_axis": 22.0,
+                "dist": 151.0,
+                "angle": 0.0,
+                "confidence": 84.0,
+                "pose_source": "brick_state",
+            }
+
+        def _fake_run_alignment_segment(segment, step, robot, vision, world_obj, steps, raw_steps, **kwargs):
+            calls.append(
+                {
+                    "segment": segment,
+                    "step": step,
+                    "steps": steps,
+                    "raw_steps": raw_steps,
+                    "align_silent": kwargs.get("align_silent"),
+                }
+            )
+            world_obj.brick["dist"] = 149.2
+            return True, "success gate"
+
+        with patch.object(experiment, "update_world_from_vision", side_effect=_fake_update_world_from_vision), patch.object(
+            experiment,
+            "run_alignment_segment",
+            side_effect=_fake_run_alignment_segment,
+        ):
+            result = experiment._run_practice_align_step3(
+                robot=object(),
+                world=world,
+                vision=object(),
+                log_fn=lambda *_args, **_kwargs: None,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["step"], experiment.DEFAULT_PRACTICE_ALIGN_STEP)
+        self.assertEqual(world.step_state, experiment.DEFAULT_PRACTICE_ALIGN_STEP)
+        self.assertEqual(calls[0]["step"], experiment.DEFAULT_PRACTICE_ALIGN_STEP)
+        self.assertEqual(calls[0]["segment"], {})
+        self.assertEqual(calls[0]["steps"], [])
+        self.assertEqual(calls[0]["raw_steps"], [])
+
+    def test_single_goal_practice_loop_runs_step3_after_reacquire(self):
+        world = experiment.WorldModel()
+        world.step_state = experiment.StepState.ALIGN_BRICK
+
+        def _fake_update_world_from_vision(world_obj, _vision_obj, log=False):
+            world_obj.brick = {
+                "visible": True,
+                "offset_x": -8.0,
+                "x_axis": -8.0,
+                "offset_y": 4.0,
+                "y_axis": 4.0,
+                "dist": 152.0,
+                "angle": 0.0,
+                "confidence": 82.0,
+                "pose_source": "brick_state",
+            }
+
+        def _fake_run_turn_stage(**kwargs):
+            stage = str(kwargs.get("stage") or "")
+            if stage == "reset_left_to_edge":
+                return {
+                    "ok": True,
+                    "stop_reason": "lost_visibility",
+                    "seconds": 0.2,
+                    "send_result": {"cmd_sent": "l", "duration_ms": 200},
+                    "send_results": [{"cmd_sent": "l", "duration_ms": 200}],
+                    "samples": [],
+                    "sample_summary": experiment._summarize_x_zero_samples([]),
+                    "end_pose": None,
+                    "end_visible": False,
+                }
+            return {
+                "ok": True,
+                "stop_reason": "visibility_reacquired",
+                "seconds": 0.2,
+                "send_result": {"cmd_sent": "r", "duration_ms": 200},
+                "send_results": [{"cmd_sent": "r", "duration_ms": 200}],
+                "samples": [],
+                "sample_summary": experiment._summarize_x_zero_samples([]),
+                "state": {
+                    "first_visible_pose": {"offset_x": -8.0, "dist": 152.0},
+                    "best_visible_pose": {"offset_x": -8.0, "dist": 152.0},
+                    "best_visible_abs_x_mm": 8.0,
+                    "first_visible_x_mm": -8.0,
+                    "success_type": "visibility_reacquired",
+                },
+                "end_pose": {"offset_x": -8.0, "dist": 152.0},
+                "end_visible": True,
+            }
+
+        step3_result = {
+            "ok": True,
+            "step": experiment.DEFAULT_PRACTICE_ALIGN_STEP,
+            "status": "success",
+            "reason": "success gate",
+        }
+
+        with patch.object(experiment, "update_world_from_vision", side_effect=_fake_update_world_from_vision), patch.object(
+            experiment,
+            "_run_turn_stage",
+            side_effect=_fake_run_turn_stage,
+        ), patch.object(
+            experiment,
+            "_run_practice_align_step3",
+            return_value=step3_result,
+        ) as step3_mock:
+            result = experiment.run_single_goal_right_turn_experiment(
+                robot=object(),
+                world=world,
+                vision=object(),
+                vision_mode=experiment.VISION_MODE_CYAN,
+                trials=1,
+                stop_on_reacquire=True,
+                practice_step3_align=True,
+                log_path=None,
+                log_fn=lambda *_args, **_kwargs: None,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["success_count"], 1)
+        self.assertEqual(result["practice_step3_success_count"], 1)
+        self.assertTrue(result["trials"][0]["step3_alignment"]["ok"])
+        step3_mock.assert_called_once()
+        self.assertEqual(step3_mock.call_args.kwargs["step"], experiment.DEFAULT_PRACTICE_ALIGN_STEP)
 
 
 if __name__ == "__main__":

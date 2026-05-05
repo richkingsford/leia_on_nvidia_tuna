@@ -104,6 +104,7 @@ class TestBrickDetectorYoloCenterLock(unittest.TestCase):
     def test_fallback_path_selects_center_box_not_highest_confidence(self):
         det = self._detector_stub()
         det._hsv_enabled = False
+        det._conf_gate_pct = 0.0
         det._estimate_angle = lambda *_args, **_kwargs: 0.0
         det._estimate_distance_from_box = lambda _bbox_w, _bbox_h, _partial_kind=None: 200.0
 

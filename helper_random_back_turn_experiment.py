@@ -32,6 +32,7 @@ from telemetry_process import (
     _average_smoothed_frames,
     _latest_unique_smoothed_frames,
     lite_gate_unique_frames,
+    run_alignment_segment,
     send_robot_command,
     send_robot_command_pwm,
     update_world_from_vision,
@@ -54,6 +55,7 @@ DEFAULT_RELAXED_TIMEOUT_S = 2.8
 DEFAULT_REOBSERVE_ROUNDS = 2
 DEFAULT_OBSERVE_SLEEP_S = 0.05
 EXPERIMENT_STEP = StepState.ALIGN_BRICK
+DEFAULT_PRACTICE_ALIGN_STEP = "PRACTICE_ALIGN_BRICK_X_DIST"
 DEFAULT_TRACK_MAX_CYCLES = 8
 DEFAULT_TRACK_OBSERVE_TIMEOUT_S = 0.8
 DEFAULT_TRACK_RELAXED_TIMEOUT_S = 1.2
@@ -145,6 +147,7 @@ DEFAULT_X_ZERO_RESET_TURN_INTENSITY_PCT = 1.0
 DEFAULT_X_ZERO_BAND_MM = 0.5
 DEFAULT_X_ZERO_STAGE_SETTLE_S = 0.05
 DEFAULT_X_ZERO_MAX_ACT_DURATION_MS = 888
+DEFAULT_X_ZERO_MIN_ACT_DURATION_MS = 500
 DEFAULT_X_ZERO_RESET_EDGE_X_MM = -35.0
 DEFAULT_X_ZERO_RESET_PLATEAU_SAMPLES = 5
 DEFAULT_X_ZERO_RESET_PLATEAU_SPAN_MM = 0.2
@@ -3608,14 +3611,16 @@ def _run_turn_stage(
     timeout_s: float,
     sample_hz: float,
     run_started_monotonic: float,
+    turn_drive_profile_name: str | None = None,
     stop_evaluator=None,
 ):
     samples = []
     state = {}
-    command_duration_ms = max(1, int(round(max(0.01, float(timeout_s)) * 1000.0)))
+    command_budget_ms = max(1, int(round(max(0.01, float(timeout_s)) * 1000.0)))
     max_act_duration_ms = max(1, int(DEFAULT_X_ZERO_MAX_ACT_DURATION_MS))
+    min_act_duration_ms = max(1, min(int(max_act_duration_ms), int(DEFAULT_X_ZERO_MIN_ACT_DURATION_MS)))
     turn_speed_score = None
-    segment_base_duration_ms = int(max_act_duration_ms)
+    segment_base_duration_ms = int(min_act_duration_ms)
     try:
         turn_setting = float(turn_intensity_pct)
         turn_setting_rounded = int(round(turn_setting))
@@ -3626,6 +3631,7 @@ def _run_turn_stage(
             )
     except (TypeError, ValueError):
         turn_speed_score = None
+    turn_drive_profile_used = str(turn_drive_profile_name or "").strip() or None
     if turn_speed_score is not None:
         try:
             _power, _pwm, _score_used, modeled_duration_ms = telemetry_robot_module.speed_power_pwm_for_cmd(
@@ -3636,9 +3642,15 @@ def _run_turn_stage(
         except (TypeError, ValueError):
             modeled_duration_ms = 0
         if modeled_duration_ms > 0:
-            segment_base_duration_ms = max(1, min(int(max_act_duration_ms), int(modeled_duration_ms)))
+            segment_base_duration_ms = max(
+                int(min_act_duration_ms),
+                min(int(max_act_duration_ms), int(modeled_duration_ms)),
+            )
     stage_started = time.monotonic()
-    stage_deadline = float(stage_started) + max(0.01, float(command_duration_ms) / 1000.0)
+    # The operator safety cap is cumulative commanded turn time, not elapsed
+    # wall-clock time. Vision reads can block long enough that a 3s wall clock
+    # only sends a few tiny pulses, so keep a separate broad wall watchdog.
+    wall_watchdog_deadline = float(stage_started) + max(10.0, float(command_budget_ms) / 1000.0 * 8.0)
     sample_period_s = 1.0 / max(1.0, float(sample_hz))
     next_sample_time = float(stage_started)
     stop_reason = "duration_complete"
@@ -3646,8 +3658,42 @@ def _run_turn_stage(
     send_result = None
     pwm_override_active = None
     power_override_active = None
+    commanded_duration_ms = 0
 
     def _send_segment(duration_ms: int):
+        if turn_drive_profile_used:
+            score_for_plan = (
+                int(turn_speed_score)
+                if turn_speed_score is not None
+                else telemetry_robot_module.normalize_speed_score(
+                    _coerce_float(turn_intensity_pct, DEFAULT_X_ZERO_TURN_INTENSITY_PCT),
+                    default=telemetry_robot_module.SPEED_SCORE_MIN,
+                )
+            )
+            plan = build_turn_drive_motion_plan(
+                cmd=str(cmd),
+                score=int(score_for_plan),
+                hold_duration_ms=int(duration_ms),
+                profile_name=str(turn_drive_profile_used),
+            )
+            if not isinstance(plan, dict):
+                return None
+            if robot is None or not hasattr(robot, "send_custom_actions_pwm"):
+                return None
+            send_payload = robot.send_custom_actions_pwm(
+                str(cmd),
+                plan.get("actions") or [],
+                duration_ms=int(plan.get("duration_ms") or duration_ms),
+            )
+            if isinstance(send_payload, dict):
+                send_payload = dict(send_payload)
+                send_payload["score_model"] = int(score_for_plan)
+                send_payload["score_effective"] = int(score_for_plan)
+                send_payload["turn_drive_profile_name"] = str(plan.get("profile_name") or turn_drive_profile_used)
+                send_payload["turn_drive_plan"] = _turn_drive_plan_snapshot(plan)
+                if plan.get("action_note") and not send_payload.get("action_note"):
+                    send_payload["action_note"] = str(plan.get("action_note") or "")
+            return send_payload
         if pwm_override_active is not None and power_override_active is not None:
             return send_robot_command_pwm(
                 robot,
@@ -3685,8 +3731,11 @@ def _run_turn_stage(
     try:
         while True:
             now = time.monotonic()
+            if now >= float(wall_watchdog_deadline):
+                stop_reason = "wall_watchdog_timeout"
+                break
             if not send_results or now >= float(segment_deadline):
-                remaining_ms = int(round(max(0.0, float(stage_deadline) - float(now)) * 1000.0))
+                remaining_ms = int(command_budget_ms) - int(commanded_duration_ms)
                 if remaining_ms <= 0:
                     break
                 segment_duration_ms = max(1, min(int(segment_base_duration_ms), int(remaining_ms)))
@@ -3711,6 +3760,7 @@ def _run_turn_stage(
                 if send_result is None:
                     send_result = dict(segment_row)
                 effective_segment_ms = int(segment_row.get("duration_ms") or segment_duration_ms)
+                commanded_duration_ms += max(0, int(effective_segment_ms))
                 segment_deadline = float(now) + max(0.01, float(effective_segment_ms) / 1000.0)
             if now >= float(next_sample_time) or not samples:
                 update_world_from_vision(world, vision, log=False)
@@ -3759,9 +3809,9 @@ def _run_turn_stage(
                                 }
                         state["visibility_reacquired"] = False
                 next_sample_time += float(sample_period_s)
-            if now >= float(stage_deadline):
+            if int(commanded_duration_ms) >= int(command_budget_ms) and now >= float(segment_deadline):
                 break
-            sleep_until = min(float(next_sample_time), float(segment_deadline), float(stage_deadline))
+            sleep_until = min(float(next_sample_time), float(segment_deadline), float(wall_watchdog_deadline))
             delay_s = max(0.0, float(sleep_until) - float(time.monotonic()))
             if delay_s > 0.0:
                 time.sleep(delay_s)
@@ -3777,6 +3827,9 @@ def _run_turn_stage(
         "ok": True,
         "stop_reason": str(stop_reason),
         "seconds": _round_triplet(max(0.0, time.monotonic() - float(stage_started))),
+        "command_budget_ms": int(command_budget_ms),
+        "commanded_duration_ms": int(commanded_duration_ms),
+        "turn_drive_profile_name": str(turn_drive_profile_used or ""),
         "send_result": dict(send_result or {}),
         "send_results": list(send_results),
         "samples": samples,
@@ -3821,8 +3874,9 @@ def _reset_until_left_edge_evaluator(
     return None
 
 
-def _right_turn_to_zero_evaluator(*, zero_band_mm: float):
+def _right_turn_to_zero_evaluator(*, zero_band_mm: float, stop_on_reacquire: bool = False):
     zero_band_used = max(0.0, float(_coerce_float(zero_band_mm, DEFAULT_X_ZERO_BAND_MM) or DEFAULT_X_ZERO_BAND_MM))
+    stop_on_reacquire_used = bool(stop_on_reacquire)
 
     def _evaluate(sample, state, _samples):
         visible = bool((sample or {}).get("visible"))
@@ -3838,11 +3892,13 @@ def _right_turn_to_zero_evaluator(*, zero_band_mm: float):
         state["invisible_streak_after_reacquire"] = 0
 
         abs_x = abs(float(x_axis_mm))
+        first_visible_now = False
         if state.get("first_visible_pose") is None:
             state["first_visible_pose"] = _sample_pose_snapshot(sample)
             state["first_visible_sample_index"] = int((sample or {}).get("sample_index") or 0)
             state["first_visible_x_mm"] = _round_triplet(x_axis_mm)
             state["visibility_reacquired"] = True
+            first_visible_now = True
         best_abs_x = _coerce_float(state.get("best_visible_abs_x_mm"), None)
         if best_abs_x is None or float(abs_x) < float(best_abs_x):
             state["best_visible_abs_x_mm"] = float(abs_x)
@@ -3852,6 +3908,9 @@ def _right_turn_to_zero_evaluator(*, zero_band_mm: float):
         state["last_visible_x_mm"] = float(x_axis_mm)
         state["ever_visible"] = True
 
+        if bool(first_visible_now) and bool(stop_on_reacquire_used):
+            state["success_type"] = "visibility_reacquired"
+            return {"stop": True, "reason": "visibility_reacquired"}
         if float(abs_x) <= float(zero_band_used):
             state["success_type"] = "zero_band"
             return {"stop": True, "reason": "x_axis_zero_band"}
@@ -3880,7 +3939,7 @@ def _summarize_single_goal_trials(trials: list[dict]) -> tuple[dict, dict]:
     successes = [
         row
         for row in started
-        if str(row.get("status") or "") in {"x_axis_zero_band", "x_axis_zero_cross"}
+        if str(row.get("status") or "") in {"x_axis_zero_band", "x_axis_zero_cross", "visibility_reacquired"}
     ]
     best_vals = [
         float(row["best_visible_abs_x_mm"])
@@ -3917,12 +3976,20 @@ def _summarize_single_goal_trials(trials: list[dict]) -> tuple[dict, dict]:
         "status_counts": status_counts,
     }
     if success_count > 0:
-        suggestion = {
-            "action": "keep_right_turn_stop_on_zero_cross",
-            "reason": "at_least_one_trial_crossed_x_zero",
-            "highlight_metric": "offset_x",
-            "closest_visible_abs_x_mm": analysis.get("best_visible_abs_x_mm"),
-        }
+        if int(status_counts.get("visibility_reacquired", 0)) > 0:
+            suggestion = {
+                "action": "keep_visibility_reacquire_stop",
+                "reason": "at_least_one_trial_reacquired_visibility",
+                "highlight_metric": "visible",
+                "closest_visible_abs_x_mm": analysis.get("best_visible_abs_x_mm"),
+            }
+        else:
+            suggestion = {
+                "action": "keep_right_turn_stop_on_zero_cross",
+                "reason": "at_least_one_trial_crossed_x_zero",
+                "highlight_metric": "offset_x",
+                "closest_visible_abs_x_mm": analysis.get("best_visible_abs_x_mm"),
+            }
     elif int(status_counts.get("first_visible_positive_overshoot", 0)) > 0:
         suggestion = {
             "action": "increase_sampling_or_reduce_reset_depth",
@@ -3945,6 +4012,80 @@ def _summarize_single_goal_trials(trials: list[dict]) -> tuple[dict, dict]:
             "closest_visible_abs_x_mm": analysis.get("best_visible_abs_x_mm"),
         }
     return analysis, suggestion
+
+
+def _practice_step3_not_started(reason: str, *, step: str = DEFAULT_PRACTICE_ALIGN_STEP) -> dict:
+    return {
+        "ok": False,
+        "step": str(step or DEFAULT_PRACTICE_ALIGN_STEP),
+        "status": "not_started",
+        "reason": str(reason or "not_started"),
+        "before_pose": None,
+        "after_pose": None,
+    }
+
+
+def _run_practice_align_step3(
+    *,
+    robot,
+    world,
+    vision,
+    step: str = DEFAULT_PRACTICE_ALIGN_STEP,
+    log_fn=None,
+    align_silent: bool = False,
+) -> dict:
+    logger = log_fn if callable(log_fn) else print
+    step_key = str(step or DEFAULT_PRACTICE_ALIGN_STEP).strip().upper()
+    started = time.time()
+    result = {
+        "ok": False,
+        "step": str(step_key),
+        "status": "not_started",
+        "reason": "",
+        "before_pose": None,
+        "after_pose": None,
+        "seconds": 0.0,
+    }
+    if not step_key:
+        result["status"] = "missing_step"
+        result["reason"] = "missing practice alignment step"
+        result["seconds"] = float(max(0.0, time.time() - started))
+        return result
+    step_cfg = (getattr(world, "process_rules", None) or {}).get(step_key)
+    if not isinstance(step_cfg, dict):
+        result["status"] = "missing_process_rules"
+        result["reason"] = f"missing process rules for {step_key}"
+        result["seconds"] = float(max(0.0, time.time() - started))
+        return result
+
+    world.step_state = step_key
+    update_world_from_vision(world, vision, log=False)
+    result["before_pose"] = _pose_snapshot(_current_world_pose(world, obs_ts=time.time()))
+    logger(
+        "[PRACTICE LOOP] Step 3: using existing alignment microadjust runner "
+        f"with process step {step_key}."
+    )
+    ok, reason = run_alignment_segment(
+        {},
+        step_key,
+        robot,
+        vision,
+        world,
+        [],
+        [],
+        observer=None,
+        analysis_pause_s=0.0,
+        confirm_callback=None,
+        align_silent=bool(align_silent),
+    )
+    update_world_from_vision(world, vision, log=False)
+    result["after_pose"] = _pose_snapshot(_current_world_pose(world, obs_ts=time.time()))
+    result["ok"] = bool(ok)
+    result["status"] = "success" if bool(ok) else "failed"
+    result["reason"] = str(reason or ("success" if bool(ok) else "alignment failed"))
+    result["seconds"] = float(max(0.0, time.time() - started))
+    return result
+
 
 def _build_experiment_vision(*, mode=None):
     mode_used = normalize_vision_mode(mode, fallback=active_vision_mode())
@@ -5093,6 +5234,10 @@ def run_single_goal_right_turn_experiment(
     attempt_timeout_s: float = DEFAULT_X_ZERO_ATTEMPT_TIMEOUT_S,
     reset_turn_intensity_pct: float = DEFAULT_X_ZERO_RESET_TURN_INTENSITY_PCT,
     turn_intensity_pct: float = DEFAULT_X_ZERO_TURN_INTENSITY_PCT,
+    turn_drive_profile_name: str | None = None,
+    stop_on_reacquire: bool = False,
+    practice_step3_align: bool = False,
+    practice_step3_step: str = DEFAULT_PRACTICE_ALIGN_STEP,
     zero_band_mm: float = DEFAULT_X_ZERO_BAND_MM,
     log_path: Path | None = RUN_LOG_FILE_DEFAULT,
     log_fn=None,
@@ -5125,20 +5270,37 @@ def run_single_goal_right_turn_experiment(
         float(DEFAULT_MIN_TURN_INTENSITY_PCT),
         float(_coerce_float(turn_intensity_pct, DEFAULT_X_ZERO_TURN_INTENSITY_PCT) or DEFAULT_X_ZERO_TURN_INTENSITY_PCT),
     )
+    turn_drive_profile_used = str(turn_drive_profile_name or "").strip()
+    stop_on_reacquire_used = bool(stop_on_reacquire)
+    practice_step3_align_used = bool(practice_step3_align)
+    practice_step3_step_used = str(practice_step3_step or DEFAULT_PRACTICE_ALIGN_STEP).strip().upper()
     zero_band_used_mm = max(0.0, float(_coerce_float(zero_band_mm, DEFAULT_X_ZERO_BAND_MM) or DEFAULT_X_ZERO_BAND_MM))
 
-    logger("[X-ZERO EXPERIMENT] Strategy: reset left until the brick is hidden or plateaued at the left edge, then continuous right turn until x-axis crosses zero.")
+    strategy_target = "visibility is reacquired" if bool(stop_on_reacquire_used) else "x-axis crosses zero"
+    logger(
+        "[X-ZERO EXPERIMENT] Strategy: reset left until the brick is hidden or plateaued at the left edge, "
+        f"then continuous right turn until {strategy_target}."
+    )
     logger(
         f"[X-ZERO EXPERIMENT] Vision backend: {str(vision_mode_used)}. "
         f"Trials={int(trial_count)} sample_hz={float(sample_hz_used):.1f} "
         f"reset_turn={float(reset_turn_intensity_used):.2f}% right_turn={float(turn_intensity_used):.2f}% "
-        f"zero_band={float(zero_band_used_mm):.2f}mm."
+        f"zero_band={float(zero_band_used_mm):.2f}mm"
+        f"{' turn_profile=' + turn_drive_profile_used if turn_drive_profile_used else ''}."
     )
+    if bool(stop_on_reacquire_used):
+        logger("[X-ZERO EXPERIMENT] Right-turn stop target: first confident visibility reacquire.")
+    if bool(practice_step3_align_used):
+        logger(
+            "[PRACTICE LOOP] Step 3 enabled: run configured alignment microadjust "
+            f"step {practice_step3_step_used} after reacquire."
+        )
 
     trials_out = []
     pulses = []
     stop_reason = "completed"
     success_count = 0
+    practice_step3_success_count = 0
 
     try:
         for trial_index in range(1, int(trial_count) + 1):
@@ -5175,6 +5337,7 @@ def run_single_goal_right_turn_experiment(
                     timeout_s=float(reset_timeout_used_s),
                     sample_hz=float(sample_hz_used),
                     run_started_monotonic=float(run_started_monotonic),
+                    turn_drive_profile_name=turn_drive_profile_used,
                     stop_evaluator=lambda sample, state, samples: _reset_until_left_edge_evaluator(
                         sample,
                         state,
@@ -5200,6 +5363,7 @@ def run_single_goal_right_turn_experiment(
                             "stage": "reset_left_to_edge",
                             "cmd": "l",
                             "turn_intensity_pct": _round_triplet(reset_turn_intensity_used),
+                            "turn_drive_profile_name": str(turn_drive_profile_used),
                             "send_result": dict(reset_stage["send_result"]),
                             "send_results": list(reset_stage.get("send_results") or []),
                         }
@@ -5226,12 +5390,18 @@ def run_single_goal_right_turn_experiment(
                     "end_pose": None,
                     "end_visible": bool((reset_result or {}).get("end_visible")),
                 }
+                if bool(practice_step3_align_used):
+                    trial_row["step3_alignment"] = _practice_step3_not_started(
+                        "reset_failed",
+                        step=practice_step3_step_used,
+                    )
                 trials_out.append(trial_row)
                 continue
 
             logger(
                 "[X-ZERO EXPERIMENT] Trial "
-                f"{int(trial_index)}: continuous right turn at {float(turn_intensity_used):.2f}% until x-axis reaches zero."
+                f"{int(trial_index)}: continuous right turn at {float(turn_intensity_used):.2f}% until "
+                f"{'visibility is reacquired' if bool(stop_on_reacquire_used) else 'x-axis reaches zero'}."
             )
             attempt_stage = _run_turn_stage(
                 robot=robot,
@@ -5244,7 +5414,11 @@ def run_single_goal_right_turn_experiment(
                 timeout_s=float(attempt_timeout_used_s),
                 sample_hz=float(sample_hz_used),
                 run_started_monotonic=float(run_started_monotonic),
-                stop_evaluator=_right_turn_to_zero_evaluator(zero_band_mm=float(zero_band_used_mm)),
+                turn_drive_profile_name=turn_drive_profile_used,
+                stop_evaluator=_right_turn_to_zero_evaluator(
+                    zero_band_mm=float(zero_band_used_mm),
+                    stop_on_reacquire=bool(stop_on_reacquire_used),
+                ),
             )
             attempt_status = str(attempt_stage.get("stop_reason") or "")
             if attempt_status == "duration_complete":
@@ -5253,7 +5427,7 @@ def run_single_goal_right_turn_experiment(
                     attempt_status = "never_reacquired"
                 else:
                     attempt_status = "attempt_timeout_before_zero"
-            success = attempt_status in {"x_axis_zero_band", "x_axis_zero_cross"}
+            success = attempt_status in {"x_axis_zero_band", "x_axis_zero_cross", "visibility_reacquired"}
             if success:
                 success_count += 1
             attempt_result = {
@@ -5274,6 +5448,7 @@ def run_single_goal_right_turn_experiment(
                         "stage": "right_turn_to_x_zero",
                         "cmd": "r",
                         "turn_intensity_pct": _round_triplet(turn_intensity_used),
+                        "turn_drive_profile_name": str(turn_drive_profile_used),
                         "send_result": dict(attempt_stage["send_result"]),
                         "send_results": list(attempt_stage.get("send_results") or []),
                     }
@@ -5284,18 +5459,59 @@ def run_single_goal_right_turn_experiment(
                 f"(best |x|={attempt_result.get('best_visible_abs_x_mm')}mm)."
             )
             trial_row["attempt"] = attempt_result
+            if bool(practice_step3_align_used):
+                if bool(success):
+                    step3_result = _run_practice_align_step3(
+                        robot=robot,
+                        world=world,
+                        vision=vision,
+                        step=practice_step3_step_used,
+                        log_fn=logger,
+                    )
+                    trial_row["step3_alignment"] = dict(step3_result)
+                    if bool(step3_result.get("ok")):
+                        practice_step3_success_count += 1
+                    else:
+                        stop_reason = f"step3_align_failed_trial_{int(trial_index)}"
+                else:
+                    trial_row["step3_alignment"] = _practice_step3_not_started(
+                        "reacquire_or_x_zero_failed",
+                        step=practice_step3_step_used,
+                    )
             trials_out.append(trial_row)
+            if str(stop_reason).startswith("step3_align_failed"):
+                break
 
         analysis, suggestion = _summarize_single_goal_trials(trials_out)
+        objective_target = (
+            "until brick visibility is reacquired"
+            if bool(stop_on_reacquire_used)
+            else "until x-axis reaches zero"
+        )
+        profile_clause = (
+            f" using {turn_drive_profile_used} turn-drive profile"
+            if turn_drive_profile_used
+            else ""
+        )
+        completed_ok = bool(len(trials_out) == int(trial_count))
+        if bool(practice_step3_align_used):
+            completed_ok = bool(
+                completed_ok
+                and int(success_count) >= int(trial_count)
+                and int(practice_step3_success_count) >= int(trial_count)
+            )
         result = {
-            "ok": bool(len(trials_out) == int(trial_count)),
+            "ok": bool(completed_ok),
             "experiment_type": "single_goal_right_turn_x_zero",
-            "objective": "from a left-edge reset, turn right continuously at 1% until x-axis reaches zero",
+            "objective": f"from a left-edge visibility reset, turn right continuously {objective_target}{profile_clause}",
             "seconds": float(max(0.0, time.time() - started)),
             "vision_mode": str(vision_mode_used),
             "trials_requested": int(trial_count),
             "trials_completed": int(len(trials_out)),
             "success_count": int(success_count),
+            "practice_step3_align": bool(practice_step3_align_used),
+            "practice_step3_step": str(practice_step3_step_used),
+            "practice_step3_success_count": int(practice_step3_success_count),
             "stop_reason": str(stop_reason),
             "sample_hz": _round_triplet(sample_hz_used),
             "reset_timeout_s": _round_triplet(reset_timeout_used_s),
@@ -5303,6 +5519,8 @@ def run_single_goal_right_turn_experiment(
             "max_act_duration_ms": int(DEFAULT_X_ZERO_MAX_ACT_DURATION_MS),
             "reset_turn_intensity_pct": _round_triplet(reset_turn_intensity_used),
             "turn_intensity_pct": _round_triplet(turn_intensity_used),
+            "turn_drive_profile_name": str(turn_drive_profile_used),
+            "stop_on_reacquire": bool(stop_on_reacquire_used),
             "zero_band_mm": _round_triplet(zero_band_used_mm),
             "pulses": pulses,
             "trials": trials_out,
@@ -7266,6 +7484,40 @@ def main() -> int:
     parser.add_argument("--x-zero-attempt-timeout-s", type=float, default=DEFAULT_X_ZERO_ATTEMPT_TIMEOUT_S)
     parser.add_argument("--x-zero-band-mm", type=float, default=DEFAULT_X_ZERO_BAND_MM)
     parser.add_argument(
+        "--x-zero-reset-turn-intensity-pct",
+        type=float,
+        default=DEFAULT_X_ZERO_RESET_TURN_INTENSITY_PCT,
+        help="Left-reset turn speed score/intensity for x-zero mode. Default: 1.",
+    )
+    parser.add_argument(
+        "--x-zero-turn-intensity-pct",
+        type=float,
+        default=DEFAULT_X_ZERO_TURN_INTENSITY_PCT,
+        help="Right-reacquire turn speed score/intensity for x-zero mode. Default: 1.",
+    )
+    parser.add_argument(
+        "--x-zero-turn-drive-profile",
+        type=str,
+        default="",
+        help="Optional world-model turn_drive_motion_assist profile for x-zero L/R stages, e.g. forward_pivot.",
+    )
+    parser.add_argument(
+        "--x-zero-stop-on-reacquire",
+        action="store_true",
+        help="During the right-turn stage, stop on the first confident brick visibility reacquire instead of waiting for x-axis zero.",
+    )
+    parser.add_argument(
+        "--x-zero-align-step3",
+        action="store_true",
+        help="After a successful x-zero/reacquire trial, run configured practice alignment step 3.",
+    )
+    parser.add_argument(
+        "--x-zero-align-step3-step",
+        type=str,
+        default=DEFAULT_PRACTICE_ALIGN_STEP,
+        help=f"Process-model step to use for practice alignment step 3. Default: {DEFAULT_PRACTICE_ALIGN_STEP}.",
+    )
+    parser.add_argument(
         "--alternating-turn-drive",
         action="store_true",
         help="Run repeated backward-left then forward-right turn+drive cycles and summarize consistency.",
@@ -7517,8 +7769,12 @@ def main() -> int:
                 sample_hz=float(args.x_zero_sample_hz),
                 reset_timeout_s=float(args.x_zero_reset_timeout_s),
                 attempt_timeout_s=float(args.x_zero_attempt_timeout_s),
-                reset_turn_intensity_pct=float(DEFAULT_X_ZERO_RESET_TURN_INTENSITY_PCT),
-                turn_intensity_pct=float(DEFAULT_X_ZERO_TURN_INTENSITY_PCT),
+                reset_turn_intensity_pct=float(args.x_zero_reset_turn_intensity_pct),
+                turn_intensity_pct=float(args.x_zero_turn_intensity_pct),
+                turn_drive_profile_name=str(args.x_zero_turn_drive_profile or ""),
+                stop_on_reacquire=bool(args.x_zero_stop_on_reacquire),
+                practice_step3_align=bool(args.x_zero_align_step3),
+                practice_step3_step=str(args.x_zero_align_step3_step or DEFAULT_PRACTICE_ALIGN_STEP),
                 zero_band_mm=float(args.x_zero_band_mm),
                 log_path=Path(args.log),
             )

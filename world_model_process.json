@@ -48,11 +48,13 @@
         },
         "EXIT_WALL": {
             "prefer_demo_speed": false,
+            "auto_step_act_limit": 50,
             "visible_only_speed_tiers": {
                 "enabled": true,
                 "normal": 2,
                 "standard": 6,
-                "fast": 25
+                "fast": 25,
+                "duration_override_ms": 3000
             },
             "success_gates": {
                 "visible": {
@@ -390,6 +392,116 @@
                 "yAxis_offset_abs": {
                     "target": 4.13,
                     "tol": 2.3
+                },
+                "dist": {
+                    "target": 149.26,
+                    "tol": 5.0
+                }
+            },
+            "lock_success_gates": true
+        },
+        "PRACTICE_ALIGN_BRICK_X_DIST": {
+            "controller": "align",
+            "alignment_metrics": [
+                "visible",
+                "xAxis_offset_abs",
+                "dist"
+            ],
+            "success_metrics": [
+                "visible",
+                "xAxis_offset_abs",
+                "dist"
+            ],
+            "align_policy": {
+                "hold_when_not_visible": true,
+                "x_axis_tol_far_scale": 6.0,
+                "focus_prioritization_enabled": true,
+                "focus_x_first_dist_gap_gt_mm": 50.0,
+                "focus_x_first_x_gap_gt_mm": 2.0,
+                "focus_dist_first_dist_gap_gt_mm": 150.0,
+                "focus_dist_first_x_gap_lt_mm": 5.0,
+                "dist_score_mode": "dist_error_bands",
+                "dist_error_score_bands": [
+                    {
+                        "upper_mm": 8.0,
+                        "score": 1.0
+                    },
+                    {
+                        "upper_mm": 20.0,
+                        "score": 20.0
+                    },
+                    {
+                        "upper_mm": 40.0,
+                        "score": 20.0
+                    },
+                    {
+                        "upper_mm": 120.0,
+                        "score": 50.0
+                    },
+                    {
+                        "upper_mm": 1000.0,
+                        "score": 100.0
+                    }
+                ],
+                "turn_score_mode": "x_axis_one_shot_curve",
+                "slow_fast_mm_scale": 1.0,
+                "auto_speed_hard_cap_exempt": true,
+                "x_axis_turn_drive_assist": {
+                    "enabled": true,
+                    "require_dist_outside_gate": true,
+                    "min_dist_outside_mm": 3.0,
+                    "forward_profile": "forward_pivot",
+                    "backward_profile": "backward_pivot"
+                },
+                "forward_while_turning_assist": {
+                    "enabled": true,
+                    "prefer_forward_for_x_axis": true,
+                    "prefer_curve_for_x_axis": true,
+                    "curve_score_mode": "requested",
+                    "forward_setup_duration_mode": "max_turn_drive",
+                    "prefer_forward_min_x_err_mm": 0.3,
+                    "require_visible": true,
+                    "x_deadband_mm": 0.0,
+                    "use_x_tol_as_deadband": true,
+                    "min_reduction_ratio": 0.03,
+                    "max_reduction_ratio": 0.18,
+                    "max_x_err_mm_for_full_reduction": 20.0,
+                    "min_inner_ratio": 0.76,
+                    "min_pwm_delta": 1,
+                    "action_note": "FWD+TURN-BIAS"
+                },
+                "target_lock_enabled": true,
+                "target_lock_center_prefer_enabled": true,
+                "target_lock_stack_signature_guard_enabled": false,
+                "target_lock_confirm_frames": 2,
+                "target_lock_hold_bad_frames": 2,
+                "target_lock_acquire_timeout_s": 0.35,
+                "target_lock_center_x_worse_margin_mm": 1.5,
+                "target_lock_center_y_worse_margin_mm": 2.0,
+                "in_crosshairs_continuity_guard_enabled": true,
+                "in_crosshairs_continuity_guard_confirm_frames": 1,
+                "in_crosshairs_continuity_guard_reverse_max_acts": 3,
+                "gap_rotation_enabled": true,
+                "gap_rotation_chunk_min_mm": 3.0,
+                "gap_rotation_chunk_max_mm": 6.0,
+                "gap_rotation_y_priority_penalty": 1.25,
+                "gap_rotation_y_hold_last_mm": 3.0,
+                "gap_rotation_force_recovery_switch": true,
+                "gap_rotation_tech_debt_logging": true,
+                "max_auto_acts": 15
+            },
+            "start_gates": {
+                "visible": {
+                    "min": true
+                }
+            },
+            "success_gates": {
+                "visible": {
+                    "min": true
+                },
+                "xAxis_offset_abs": {
+                    "target": 6.03,
+                    "tol": 5.0
                 },
                 "dist": {
                     "target": 149.26,

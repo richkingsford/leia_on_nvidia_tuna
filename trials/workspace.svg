@@ -2,18 +2,21 @@
 <rect width="100%" height="100%" fill="#f4efe4" />
 <rect x="22" y="12" width="936" height="204" rx="18" fill="#f9f6ef" stroke="#d7d1c4" stroke-width="1.5" />
 <text x="490.0" y="42.0" text-anchor="middle" font-size="28" font-weight="900" fill="#233843">Bird View</text>
-<rect x="122.5" y="28.7" width="178.6" height="178.6" fill="#1f4b8f" stroke="#122d57" stroke-width="3" rx="12.0" />
-<text x="211.8" y="14.7" text-anchor="middle" font-size="28" font-weight="600" fill="#1d2830">Supply</text>
-<text x="211.8" y="134.0" text-anchor="middle" font-size="36.0" font-weight="700" fill="#ffffff">5</text>
-<line x1="317.2" y1="118.0" x2="938.0" y2="118.0" stroke="#b7aea0" stroke-width="1.6" stroke-dasharray="4 4" opacity="0.7" />
-<text x="317.2" y="108.0" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">89mm</text>
+<rect x="179.7" y="102.1" width="31.7" height="31.7" fill="#1f4b8f" stroke="#122d57" stroke-width="3" rx="12.0" />
+<text x="195.5" y="88.1" text-anchor="middle" font-size="28" font-weight="600" fill="#1d2830">Supply</text>
+<line x1="227.4" y1="118.0" x2="938.0" y2="118.0" stroke="#b7aea0" stroke-width="1.6" stroke-dasharray="4 4" opacity="0.7" />
+<text x="227.4" y="108.0" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">89mm</text>
 <text x="938.0" y="108.0" text-anchor="middle" font-size="12" font-weight="600" fill="#5d676e">209mm</text>
-<text x="303.2" y="122.0" text-anchor="end" font-size="12" font-weight="700" fill="#5d676e">x=6</text>
-<rect x="601.7" y="100.0" width="51.7" height="36.0" fill="#2aae6c" fill-opacity="0.13" stroke="#2aae6c" stroke-width="1.8" stroke-dasharray="5 3" rx="3" />
-<line x1="627.6" y1="90.0" x2="627.6" y2="146.0" stroke="#1f8f58" stroke-width="1.8" stroke-linecap="round" />
-<line x1="591.7" y1="118.0" x2="663.4" y2="118.0" stroke="#1f8f58" stroke-width="1.8" stroke-linecap="round" />
-<text x="627.6" y="84.0" text-anchor="middle" font-size="11" font-weight="800" fill="#1f8f58">dist 149.3 ±5.0</text>
-<text x="589.7" y="113.0" text-anchor="end" font-size="11" font-weight="800" fill="#1f8f58">x 6.0</text>
-<text x="665.4" y="132.0" text-anchor="start" font-size="11" font-weight="700" fill="#1f8f58">±5.0</text>
-<text x="357.9" y="106.0" text-anchor="middle" font-size="16" font-weight="600" fill="#233843" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">134</text>
+<text x="213.4" y="122.0" text-anchor="end" font-size="12" font-weight="700" fill="#5d676e">x=6</text>
+<rect x="553.1" y="100.0" width="59.2" height="36.0" fill="#2aae6c" fill-opacity="0.13" stroke="#2aae6c" stroke-width="1.8" stroke-dasharray="5 3" rx="3" />
+<line x1="582.7" y1="90.0" x2="582.7" y2="146.0" stroke="#1f8f58" stroke-width="1.8" stroke-linecap="round" />
+<line x1="543.1" y1="118.0" x2="622.3" y2="118.0" stroke="#1f8f58" stroke-width="1.8" stroke-linecap="round" />
+<text x="582.7" y="84.0" text-anchor="middle" font-size="11" font-weight="800" fill="#1f8f58">dist 149.3 ±5.0</text>
+<text x="541.1" y="113.0" text-anchor="end" font-size="11" font-weight="800" fill="#1f8f58">x 6.0</text>
+<text x="624.3" y="132.0" text-anchor="start" font-size="11" font-weight="700" fill="#1f8f58">±5.0</text>
+<polyline class="step-history-path" points="933.5,172.0 942.5,172.0" fill="none" stroke="#7a95bb" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.82" />
+<circle class="step-history-dot" data-trend="unknown" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 0, &quot;dist&quot;: 831.7, &quot;x&quot;: -309.8, &quot;y&quot;: 1.31, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null, &quot;trend&quot;: &quot;unknown&quot;}" cx="933.5" cy="172.0" r="6.0" fill="#63d7ff" fill-opacity="0.4" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<circle class="step-history-dot" data-trend="closer" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: 1, &quot;dist&quot;: 824.7, &quot;x&quot;: -298.87, &quot;y&quot;: 1.38, &quot;act&quot;: null, &quot;score&quot;: null, &quot;note&quot;: null, &quot;trend&quot;: &quot;closer&quot;}" cx="942.5" cy="172.0" r="6.0" fill="#0b3d91" fill-opacity="0.4" stroke="#f9f6ef" stroke-width="2" style="cursor:pointer" />
+<g class="current-position" data-view="bird"><circle class="current-position-halo" data-view="bird" cx="938.0" cy="172.0" r="18.0" fill="#60a5fa" fill-opacity="0.28" /><circle class="current-position-dot" data-view="bird" data-entry="{&quot;view&quot;: &quot;bird&quot;, &quot;idx&quot;: &quot;current&quot;, &quot;dist&quot;: 824.7, &quot;x&quot;: -298.87, &quot;y&quot;: 1.38}" cx="938.0" cy="172.0" r="9.0" fill="#2563eb" stroke="#f9f6ef" stroke-width="3.0" /><text class="current-position-label" data-view="bird" x="938.0" y="157.0" text-anchor="middle" font-size="11" font-weight="900" fill="#0b3d91" stroke="#f9f6ef" stroke-width="2.8" paint-order="stroke">now 825mm x -299</text></g>
+<text x="350.1" y="139.0" text-anchor="middle" font-size="16" font-weight="600" fill="#233843" stroke="#f9f6ef" stroke-width="2" paint-order="stroke">825</text>
 </svg>

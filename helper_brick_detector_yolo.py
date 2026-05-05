@@ -214,6 +214,7 @@ CENTER_SWITCH_MARGIN_PX = 18.0
 CENTER_PARTIAL_PENALTY = 2.0
 CENTER_AXIS_WEIGHT_X = 1.0
 CENTER_AXIS_WEIGHT_Y = 1.0
+MAX_HIGHLIGHTED_BRICKS = 2
 STACK_CENTER_Y_ROW_FILTER_ENABLED = True
 STACK_CENTER_Y_ROW_MIN_CANDIDATES = 2
 STACK_CENTER_Y_ROW_TOLERANCE_PX = 12.0
@@ -1547,17 +1548,24 @@ class BrickDetector:
 
     def _cap_candidates_to_nearest(self, candidates, frame_w, frame_h, max_count=2):
         """Keep only the max_count HSV candidates nearest to the frame crosshair."""
-        if len(candidates) <= max_count:
-            return list(candidates)
+        candidate_list = [candidate for candidate in candidates if isinstance(candidate, dict)]
+        max_count_used = max(0, int(max_count or 0))
+        if max_count_used <= 0:
+            return []
+        if len(candidate_list) <= max_count_used:
+            return list(candidate_list)
         frame_cx = float(frame_w) / 2.0 + float(getattr(self, "camera_center_offset_px", 0.0) or 0.0)
         frame_cy = float(frame_h) / 2.0
-        return sorted(
-            candidates,
-            key=lambda c: math.hypot(
-                float(c.get("center_x", 0)) - frame_cx,
-                float(c.get("center_y", 0)) - frame_cy,
-            ),
-        )[:max_count]
+
+        def _rank(candidate):
+            sel_x, sel_y = self._candidate_selection_point(candidate)
+            return (
+                self._candidate_center_score(candidate, frame_w, frame_h),
+                abs(float(sel_y) - frame_cy),
+                abs(float(sel_x) - frame_cx),
+            )
+
+        return sorted(candidate_list, key=_rank)[:max_count_used]
 
     def _select_center_brick(self, individual_bricks, frame_w, frame_h):
         """
@@ -1860,7 +1868,12 @@ class BrickDetector:
                         bricks = [(0, 0, w_frame, h_frame, 1.0)]
             if all_hsv_bricks:
                 all_hsv_bricks = self._dedup_hsv_candidates(all_hsv_bricks)
-                all_hsv_bricks = self._cap_candidates_to_nearest(all_hsv_bricks, w_frame, h_frame, max_count=1)
+                all_hsv_bricks = self._cap_candidates_to_nearest(
+                    all_hsv_bricks,
+                    w_frame,
+                    h_frame,
+                    max_count=MAX_HIGHLIGHTED_BRICKS,
+                )
                 hsv_used = True
 
         if hsv_used:
@@ -4360,8 +4373,18 @@ class BrickDetector:
         self.current_frame = frame
 
     def _draw_brick_id_labels(self, frame, candidates):
-        if frame is None or not isinstance(candidates, list) or len(candidates) <= 1:
+        if frame is None or not isinstance(candidates, list):
             return
+        frame_h, frame_w = frame.shape[:2]
+        highlight_candidates = self._cap_candidates_to_nearest(
+            candidates,
+            frame_w,
+            frame_h,
+            max_count=MAX_HIGHLIGHTED_BRICKS,
+        )
+        if not highlight_candidates:
+            return
+
         def _label_center(candidate):
             bbox = candidate.get("bbox") if isinstance(candidate, dict) else None
             if isinstance(bbox, tuple) and len(bbox) >= 4:
@@ -4377,7 +4400,7 @@ class BrickDetector:
             )
 
         ordered = sorted(
-            [candidate for candidate in candidates if isinstance(candidate, dict)],
+            [candidate for candidate in highlight_candidates if isinstance(candidate, dict)],
             key=lambda candidate: (
                 _label_center(candidate)[1],
                 _label_center(candidate)[0],

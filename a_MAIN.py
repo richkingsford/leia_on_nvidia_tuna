@@ -2797,8 +2797,15 @@ def run_auto_step(app_state, obj_enum):
         return False
     prior_auto_step_act_limit = getattr(app_state, "auto_step_act_limit", None)
     prior_world_auto_step_act_limit = getattr(app_state.world, "_auto_step_act_limit", None)
-    app_state.auto_step_act_limit = int(AUTO_STEP_ACT_LIMIT)
-    app_state.world._auto_step_act_limit = int(AUTO_STEP_ACT_LIMIT)
+    _step_act_limit = AUTO_STEP_ACT_LIMIT
+    try:
+        _step_act_limit_raw = cfg.get("auto_step_act_limit") if isinstance(cfg, dict) else None
+        if _step_act_limit_raw is not None:
+            _step_act_limit = max(1, int(_step_act_limit_raw))
+    except (TypeError, ValueError):
+        pass
+    app_state.auto_step_act_limit = int(_step_act_limit)
+    app_state.world._auto_step_act_limit = int(_step_act_limit)
     _begin_auto_demo_logging(app_state, obj_enum)
     auto_demo_logging_started = True
 

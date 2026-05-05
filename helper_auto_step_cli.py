@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one auto-step from the command line."""
+"""Run one or more auto-steps from the command line, optionally looping N trials."""
 
 from __future__ import annotations
 
@@ -64,14 +64,7 @@ def _prime_vision(
     return pose
 
 
-def run_single_auto_step(*, step_token: str, vision_mode: str | None):
-    step_obj = resolve_step_argument(step_token)
-    if step_obj is None:
-        return {
-            "ok": False,
-            "error": f"unknown_step:{step_token}",
-        }
-
+def _build_app_state(vision_mode: str | None):
     mode_raw = None if vision_mode is None else str(vision_mode).strip().lower()
     if mode_raw in (None, "", "auto"):
         app_state = AppState()
@@ -84,16 +77,41 @@ def run_single_auto_step(*, step_token: str, vision_mode: str | None):
     if normalize_vision_mode(mode_norm) == VISION_MODE_CYAN and app_state.vision is not None:
         active_cyan_profile = _stream_state_cyan_profile(app_state, _DEFAULT_CYAN_PROFILE)
         active_cyan_visibility = _stream_state_cyan_visibility(app_state, _DEFAULT_CYAN_VISIBILITY)
-        _apply_cyan_profile(
-            app_state,
-            app_state.vision,
-            active_cyan_profile,
-        )
-        _apply_cyan_visibility(
-            app_state,
-            app_state.vision,
-            active_cyan_visibility,
-        )
+        _apply_cyan_profile(app_state, app_state.vision, active_cyan_profile)
+        _apply_cyan_visibility(app_state, app_state.vision, active_cyan_visibility)
+    return app_state, mode_norm
+
+
+def _teardown_app_state(app_state):
+    try:
+        close_log(app_state, marker=None)
+    except Exception:
+        pass
+    try:
+        import helper_xyz_coords as _xyz
+        log_path = getattr(app_state, "log_path", None)
+        if log_path:
+            _xyz.write_run_view_from_log(log_path)
+        else:
+            _xyz.write_run_view_from_log()
+    except Exception:
+        pass
+    try:
+        app_state.vision.close()
+    except Exception:
+        pass
+    try:
+        app_state.robot.close()
+    except Exception:
+        pass
+
+
+def run_single_auto_step(*, step_token: str, vision_mode: str | None):
+    step_obj = resolve_step_argument(step_token)
+    if step_obj is None:
+        return {"ok": False, "error": f"unknown_step:{step_token}"}
+
+    app_state, mode_norm = _build_app_state(vision_mode)
     try:
         pose_before = _prime_vision(app_state)
         print(
@@ -117,45 +135,133 @@ def run_single_auto_step(*, step_token: str, vision_mode: str | None):
             "run_log_path": None if getattr(app_state, "log_path", None) is None else str(app_state.log_path),
         }
     finally:
-        try:
-            close_log(app_state, marker=None)
-        except Exception:
-            pass
-        try:
-            import helper_xyz_coords as _xyz
-            log_path = getattr(app_state, "log_path", None)
-            if log_path:
-                _xyz.write_run_view_from_log(log_path)
-            else:
-                _xyz.write_run_view_from_log()
-        except Exception:
-            pass
-        try:
-            app_state.vision.close()
-        except Exception:
-            pass
-        try:
-            app_state.robot.close()
-        except Exception:
-            pass
+        _teardown_app_state(app_state)
+
+
+def run_step_sequence(
+    *,
+    steps: list[str],
+    trials: int,
+    vision_mode: str | None,
+    pause_between_trials_s: float = 1.0,
+):
+    """Run a sequence of steps N times, reusing a single robot+vision session."""
+    step_objs = []
+    for token in steps:
+        obj = resolve_step_argument(token)
+        if obj is None:
+            return {"ok": False, "error": f"unknown_step:{token}"}
+        step_objs.append(obj)
+
+    app_state, mode_norm = _build_app_state(vision_mode)
+    step_names = ", ".join(o.value for o in step_objs)
+    print(f"[AUTO STEP CLI] Starting {trials}-trial loop: {step_names} ({mode_norm} vision)")
+
+    trial_results = []
+    try:
+        for trial_num in range(1, int(trials) + 1):
+            print(f"\n[AUTO STEP CLI] --- Trial {trial_num}/{trials} ---")
+            step_results = []
+            trial_ok = True
+            for step_obj in step_objs:
+                pose_before = _prime_vision(app_state)
+                print(
+                    f"[AUTO STEP CLI] {step_obj.value} "
+                    f"(visible={pose_before.get('visible')}, dist={pose_before.get('dist_mm')})"
+                )
+                ok = bool(run_auto_step(app_state, step_obj))
+                step_key = str(getattr(step_obj, "value", step_obj))
+                action_history = list(
+                    ((getattr(app_state, "session_step_actions_by_step", {}) or {}).get(step_key) or [])
+                )
+                actions_required = int(action_history[-1]) if action_history else 0
+                step_results.append({
+                    "step": step_obj.value,
+                    "ok": ok,
+                    "actions_required": actions_required,
+                })
+                if not ok:
+                    trial_ok = False
+                    print(f"[AUTO STEP CLI] {step_obj.value} FAILED — continuing to next trial.")
+                    break
+
+            trial_results.append({"trial": trial_num, "ok": trial_ok, "steps": step_results})
+            successes_so_far = sum(1 for r in trial_results if r["ok"])
+            print(
+                f"[AUTO STEP CLI] Trial {trial_num} {'OK' if trial_ok else 'FAILED'} "
+                f"— {successes_so_far}/{trial_num} succeeded so far."
+            )
+
+            if trial_num < trials and pause_between_trials_s > 0:
+                time.sleep(pause_between_trials_s)
+
+    finally:
+        _teardown_app_state(app_state)
+
+    ok_count = sum(1 for r in trial_results if r["ok"])
+    return {
+        "ok": ok_count == len(trial_results),
+        "trials": len(trial_results),
+        "successes": ok_count,
+        "failures": len(trial_results) - ok_count,
+        "steps": step_names,
+        "vision_mode": mode_norm,
+        "results": trial_results,
+    }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run one auto-step from the CLI.")
-    parser.add_argument("--step", type=str, default="7", help="Step number or name. Default: 7")
+    parser = argparse.ArgumentParser(description="Run one or more auto-steps from the CLI.")
+    parser.add_argument(
+        "--step",
+        type=str,
+        default=None,
+        help="Single step number or name (e.g. 7, align_brick). Default: 7",
+    )
+    parser.add_argument(
+        "--steps",
+        type=str,
+        default=None,
+        help="Comma-separated step numbers/names to run in sequence (e.g. 1,2).",
+    )
+    parser.add_argument(
+        "--trials",
+        type=int,
+        default=1,
+        help="Number of times to repeat the step sequence. Default: 1",
+    )
+    parser.add_argument(
+        "--pause-s",
+        type=float,
+        default=1.0,
+        help="Pause between trials in seconds. Default: 1.0",
+    )
     parser.add_argument(
         "--vision",
         type=str,
         choices=("auto", "cyan", "yolo", "leia", "aruco"),
         default="auto",
-        help="Vision mode for the auto-step run. Default: auto (match app/world-model active mode).",
+        help="Vision mode. Default: auto",
     )
     args = parser.parse_args()
 
-    result = run_single_auto_step(
-        step_token=str(args.step),
-        vision_mode=(None if str(args.vision).strip().lower() == "auto" else str(args.vision)),
-    )
+    vision_mode = None if str(args.vision).strip().lower() == "auto" else str(args.vision)
+
+    if args.steps or (args.trials and args.trials > 1):
+        steps_raw = args.steps or args.step or "7"
+        steps = [s.strip() for s in steps_raw.split(",") if s.strip()]
+        result = run_step_sequence(
+            steps=steps,
+            trials=max(1, int(args.trials or 1)),
+            vision_mode=vision_mode,
+            pause_between_trials_s=max(0.0, float(args.pause_s)),
+        )
+    else:
+        result = run_single_auto_step(
+            step_token=str(args.step or "7"),
+            vision_mode=vision_mode,
+        )
+
     print(json.dumps(result, indent=2))
     return 0 if bool(result.get("ok")) else 1
 
