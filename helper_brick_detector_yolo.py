@@ -397,7 +397,7 @@ class BrickDetector:
                            nms_threshold=None, focal_px=None,
                            hsv_lower=None, hsv_upper=None,
                            hsv_enabled=None, hsv_erode_iterations=None,
-                           shape_gate_mode=None,
+                           shape_gate_mode=None, conf_gate_pct=None,
                            negative_cutout_cyan_fill_max=None,
                            negative_cutout_ring_cyan_min=None,
                            negative_cutout_ring_dilate_px=None,
@@ -464,6 +464,11 @@ class BrickDetector:
                 BRICK_FACE_GATE_MODE_SHAPE_MATCH,
             }:
                 self._face_shape_gate_mode = mode_text
+        if conf_gate_pct is not None:
+            try:
+                self._conf_gate_pct = max(0.0, min(100.0, float(conf_gate_pct)))
+            except (TypeError, ValueError):
+                pass
         if negative_cutout_cyan_fill_max is not None:
             try:
                 value = float(negative_cutout_cyan_fill_max)
@@ -1494,6 +1499,44 @@ class BrickDetector:
         cnt_frame[:, :, 1] += ry1
         return cnt_frame
 
+    def _dedup_hsv_candidates(self, candidates):
+        """Remove duplicate candidates for the same physical brick.
+
+        When multiple YOLO boxes overlap the same brick region,
+        _segment_bricks_hsv produces nearly-identical candidates for each box.
+        This step keeps only one per physical brick by greedily accepting
+        candidates in score order and rejecting any whose center falls within
+        35% of the accepted candidate's smaller bbox dimension.
+        """
+        if len(candidates) <= 1:
+            return list(candidates)
+
+        def _score(c):
+            s = c.get("shape_match_score")
+            return float(s) if isinstance(s, (int, float)) else 0.0
+
+        sorted_cands = sorted(candidates, key=_score)
+        accepted = []
+        for candidate in sorted_cands:
+            cx = float(candidate.get("center_x", 0))
+            cy = float(candidate.get("center_y", 0))
+            bbox = candidate.get("bbox")
+            if isinstance(bbox, tuple) and len(bbox) >= 4:
+                _, _, bw, bh = bbox[:4]
+                threshold = max(10.0, float(min(bw, bh)) * 0.35)
+            else:
+                threshold = 20.0
+
+            too_close = any(
+                math.hypot(cx - float(e.get("center_x", 0)),
+                           cy - float(e.get("center_y", 0))) < threshold
+                for e in accepted
+            )
+            if not too_close:
+                accepted.append(candidate)
+
+        return accepted
+
     def _select_center_brick(self, individual_bricks, frame_w, frame_h):
         """
         Pick the brick closest to frame center. Partial bricks get 2x
@@ -1794,6 +1837,7 @@ class BrickDetector:
                     if not bricks:
                         bricks = [(0, 0, w_frame, h_frame, 1.0)]
             if all_hsv_bricks:
+                all_hsv_bricks = self._dedup_hsv_candidates(all_hsv_bricks)
                 hsv_used = True
 
         if hsv_used:
@@ -1832,7 +1876,7 @@ class BrickDetector:
                 self.last_primary_confidence = 0.0
                 return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
             combined_conf = conf_pct + (PINK_DOT_CONF_BONUS if dot_found else 0.0)
-            if combined_conf < CONF_GATE_PCT:
+            if combined_conf < float(getattr(self, "_conf_gate_pct", CONF_GATE_PCT)):
                 self.last_status = "low confidence"
                 self.last_primary_confidence = 0.0
                 return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
@@ -1976,7 +2020,7 @@ class BrickDetector:
         fallback_primary_bbox = {"bbox": (x1, y1, x2 - x1, y2 - y1)}
         dot_found_fb, _, _ = self._detect_pink_dot_in_brick(frame, fallback_primary_bbox)
         combined_conf_fb = conf_pct + (PINK_DOT_CONF_BONUS if dot_found_fb else 0.0)
-        if combined_conf_fb < CONF_GATE_PCT:
+        if combined_conf_fb < float(getattr(self, "_conf_gate_pct", CONF_GATE_PCT)):
             self.last_status = "low confidence"
             self.last_primary_confidence = 0.0
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)

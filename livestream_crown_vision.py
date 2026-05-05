@@ -24,9 +24,9 @@ import helper_xyz_coords
 
 
 # Frames to hold the last good detection before declaring invisible.
-# At 15 Hz camera this is ~0.5 s — enough to bridge YOLO misses without
+# At 15 Hz camera this is ~1 s — enough to bridge YOLO misses without
 # masking real disappearances.
-HOLD_FRAMES = 8
+HOLD_FRAMES = 15
 
 CROWN_PROFILE_KEY = "config9"
 CROWN_PROFILE_LABEL = "Config 9"
@@ -38,6 +38,7 @@ CROWN_PROFILE_TUNING = {
     "hsv_lower": list(CYAN_HSV_WIDE_LOWER),
     "hsv_upper": list(CYAN_HSV_WIDE_UPPER),
     "shape_gate_mode": "shape_match",
+    "conf_gate_pct": 40.0,
 }
 
 
