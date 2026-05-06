@@ -1512,19 +1512,6 @@ def _duration_used_ms_for_cmd(
             duration_used_ms = max(1, int(round(duration_used_ms * eff_scale)))
             if last_turn_cmd != cmd:
                 duration_used_ms = max(1, int(round(duration_used_ms * 0.4)))
-            # Never allow autonomous micro-turns to be shorter than the configured
-            # minimum movement (1% score). Short bursts can be too weak to overcome
-            # static friction and appear much slower than the manual hotkeys.
-            try:
-                _, _, _, floor_ms = telemetry_robot_module.speed_power_pwm_for_cmd(
-                    cmd,
-                    getattr(telemetry_robot_module, "SPEED_SCORE_MIN", 1),
-                )
-                floor_ms = int(round(float(floor_ms)))
-            except Exception:
-                floor_ms = None
-            if floor_ms is not None and floor_ms > 0:
-                duration_used_ms = max(int(floor_ms), int(duration_used_ms))
         else:
             # Manual hotkeys: first turn pulse should be half the sequential pulse.
             if bool(half_first_turn_pulse) and last_turn_cmd != cmd:
@@ -2990,6 +2977,21 @@ def send_robot_command_pwm(
                         "threshold_score": ease_profile.get("threshold_score"),
                     },
                 }
+
+    # All turns use arc-assist (outer tread full, inner tread stopped) regardless
+    # of caller path. Bilateral motor map for turns requires ~2× the torque to
+    # break away from static friction and consistently fails at low speeds.
+    if cmd in ("l", "r") and not custom_actions and pwm_val > 0:
+        if cmd == "r":
+            custom_actions = [
+                {"target": "l", "action": "b", "pwm": int(pwm_val)},
+                {"target": "r", "action": "f", "pwm": 0},
+            ]
+        else:
+            custom_actions = [
+                {"target": "r", "action": "f", "pwm": int(pwm_val)},
+                {"target": "l", "action": "b", "pwm": 0},
+            ]
 
     send_result = None
     if custom_actions and hasattr(robot, "send_custom_actions_pwm"):

@@ -4386,6 +4386,20 @@ class BrickDetector:
             return
 
         def _label_center(candidate):
+            # Prefer the rotated-rect center — it matches the face outline drawn
+            # by _draw_primary_face_outline. Fall back to centroid then bbox center.
+            if isinstance(candidate, dict):
+                rect = candidate.get("rect")
+                if rect is not None:
+                    try:
+                        rcx, rcy = rect[0]
+                        return float(rcx), float(rcy)
+                    except Exception:
+                        pass
+                cx = candidate.get("center_x")
+                cy = candidate.get("center_y")
+                if cx is not None and cy is not None:
+                    return float(cx), float(cy)
             bbox = candidate.get("bbox") if isinstance(candidate, dict) else None
             if isinstance(bbox, tuple) and len(bbox) >= 4:
                 try:
@@ -4394,10 +4408,7 @@ class BrickDetector:
                         return bx + (bw * 0.5), by + (bh * 0.5)
                 except Exception:
                     pass
-            return (
-                float(candidate.get("center_x", 0.0)),
-                float(candidate.get("center_y", 0.0)),
-            )
+            return 0.0, 0.0
 
         ordered = sorted(
             [candidate for candidate in highlight_candidates if isinstance(candidate, dict)],

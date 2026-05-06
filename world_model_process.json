@@ -48,13 +48,13 @@
         },
         "EXIT_WALL": {
             "prefer_demo_speed": false,
-            "auto_step_act_limit": 50,
+            "auto_step_act_limit": 200,
             "visible_only_speed_tiers": {
                 "enabled": true,
                 "normal": 2,
                 "standard": 6,
                 "fast": 25,
-                "duration_override_ms": 3000
+                "duration_override_ms": 1500
             },
             "success_gates": {
                 "visible": {
@@ -407,11 +407,6 @@
                 "xAxis_offset_abs",
                 "dist"
             ],
-            "success_metrics": [
-                "visible",
-                "xAxis_offset_abs",
-                "dist"
-            ],
             "align_policy": {
                 "hold_when_not_visible": true,
                 "x_axis_tol_far_scale": 6.0,
@@ -489,11 +484,6 @@
                 "gap_rotation_force_recovery_switch": true,
                 "gap_rotation_tech_debt_logging": true,
                 "max_auto_acts": 15
-            },
-            "start_gates": {
-                "visible": {
-                    "min": true
-                }
             },
             "success_gates": {
                 "visible": {
@@ -956,6 +946,11 @@
                     "tol": 12.3
                 }
             }
+        }
+    },
+    "ALIGN_BRICK": {
+        "align_policy": {
+            "max_auto_acts": 15
         }
     }
 }

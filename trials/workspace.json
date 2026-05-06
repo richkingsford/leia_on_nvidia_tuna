@@ -1,10 +1,10 @@
 {
-  "updated_at": 1778006898.275321,
+  "updated_at": 1778109793.7870262,
   "robot": {
-    "x_mm": 280.98852406993456,
-    "y_mm": 595.3522746106809,
+    "x_mm": 0.0,
+    "y_mm": 0.0,
     "z_mm": 0.0,
-    "theta_deg": -90.0,
+    "theta_deg": 0.0,
     "lift_mm": 0.0
   },
   "raw_robot": {
@@ -15,10 +15,10 @@
     "lift_mm": 0.0
   },
   "leia": {
-    "x_mm": 280.98852406993456,
-    "y_mm": 595.3522746106809,
-    "z_mm": 0.0,
-    "theta_deg": -90.0,
+    "x_mm": 0.0,
+    "y_mm": 0.0,
+    "z_mm": 145.0,
+    "theta_deg": 0.0,
     "label": "Leia"
   },
   "objects": {
@@ -32,11 +32,11 @@
       "count": null,
       "height_mm": null,
       "confidence": null,
-      "visible": true,
+      "visible": false,
       "fixed": true,
       "render_footprint_mm": 54.0,
       "source": "default_layout_seed",
-      "last_seen_ts": 1778006898.2752502
+      "last_seen_ts": null
     },
     "wall": {
       "name": "wall",
@@ -49,22 +49,16 @@
       "render_footprint_mm": 54.0,
       "height_mm": null,
       "confidence": null,
-      "visible": true,
-      "valid": true,
+      "visible": false,
+      "valid": false,
       "fixed": true,
-      "source": "ALIGN_BRICK",
-      "last_seen_ts": 1778006898.274835,
-      "observed_world_x_mm": 5.049814780313933e-14,
-      "observed_world_y_mm": 824.6973386661053,
-      "observed_world_theta_deg": 180.0
+      "source": "default_layout_seed",
+      "last_seen_ts": null
     }
   },
   "active_target": {
     "step_name": "ALIGN_BRICK",
-    "step_number": 7,
-    "object_name": "brick_supply",
-    "label": "Brick Supply",
-    "history_step_seq": 2
+    "history_step_seq": 1
   },
   "held_brick": {
     "held": false,
@@ -85,11 +79,14 @@
     ]
   },
   "last_visible_brick": {
-    "visible": true,
-    "dist_mm": 824.6973386661053,
-    "x_axis_mm": -298.87123,
-    "y_axis_mm": 1.3808595175502605,
-    "confidence": 83.47707986831665,
-    "angle_deg": 90.0
-  }
+    "visible": false,
+    "dist_mm": null,
+    "x_axis_mm": null,
+    "y_axis_mm": null,
+    "confidence": null,
+    "angle_deg": null
+  },
+  "run_replay": true,
+  "run_log_path": "/home/richkingsford/cub-queso/Runs - cyan/May 6 522pm.json",
+  "history": []
 }
