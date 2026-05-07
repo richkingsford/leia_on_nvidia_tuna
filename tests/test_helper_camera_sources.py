@@ -2,10 +2,21 @@ import os
 import unittest
 from unittest.mock import patch
 
+import numpy as np
+
 import helper_camera_sources
 
 
 class HelperCameraSourcesTests(unittest.TestCase):
+    def setUp(self):
+        self.depthai_available = patch.object(
+            helper_camera_sources,
+            "depthai_camera_available",
+            return_value=False,
+        )
+        self.mock_depthai_available = self.depthai_available.start()
+        self.addCleanup(self.depthai_available.stop)
+
     def test_existing_camera_nodes_sorted_numerically(self):
         with patch.object(
             helper_camera_sources.glob,
@@ -101,6 +112,50 @@ class HelperCameraSourcesTests(unittest.TestCase):
                 helper_camera_sources.candidate_camera_sources(include_nvidia_pipelines=False),
                 ["/dev/video0", 0, "/dev/video1", 1],
             )
+
+    def test_candidate_camera_sources_prefers_depthai_when_available(self):
+        pipe0 = helper_camera_sources.build_nvidia_v4l2_gstreamer_pipeline("/dev/video0")
+        self.mock_depthai_available.return_value = True
+        with patch.object(
+            helper_camera_sources,
+            "existing_camera_nodes",
+            return_value=["/dev/video0"],
+        ), patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                helper_camera_sources.candidate_camera_sources(),
+                ["depthai", pipe0, "/dev/video0", 0],
+            )
+
+    def test_candidate_camera_sources_can_force_depthai_from_env(self):
+        with patch.object(
+            helper_camera_sources,
+            "existing_camera_nodes",
+            return_value=[],
+        ), patch.dict(os.environ, {"LEIA_CAMERA_SOURCE": "depthai"}, clear=True):
+            sources = helper_camera_sources.candidate_camera_sources()
+            self.assertEqual(sources[0], "depthai")
+            self.assertEqual(sources.count("depthai"), 1)
+
+    def test_depthai_capture_depth_at_region_uses_valid_median(self):
+        cap = helper_camera_sources.DepthAICapture.__new__(
+            helper_camera_sources.DepthAICapture
+        )
+        cap._latest_depth_frame = np.array(
+            [
+                [0, 0, 0, 0, 0],
+                [0, 100, 120, 0, 0],
+                [0, 140, 160, 180, 0],
+                [0, 0, 200, 0, 0],
+                [0, 0, 0, 0, 0],
+            ],
+            dtype=np.uint16,
+        )
+        cap._latest_depth_stats = {}
+
+        depth = cap.depth_at_region(2, 2, radius_px=1)
+
+        self.assertEqual(depth, 150.0)
+        self.assertEqual(cap.latest_depth_stats["valid_px"], 6)
 
 
 if __name__ == "__main__":

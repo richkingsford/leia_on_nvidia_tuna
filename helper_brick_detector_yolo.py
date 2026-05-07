@@ -270,6 +270,9 @@ class BrickDetector:
         self.inference_backend = "tensorrt"
         self._init_inference_backend()
         self._trust_detector_boxes = True
+        self.last_geometry_source = "pinhole_size"
+        self._depth_source_mode = "auto"
+        self._stereo_config_mode = "standard"
         self.conf_threshold = float(CONF_THRESHOLD)
         self.nms_threshold = float(NMS_THRESHOLD)
         self.input_size = int(YOLO_INPUT_SIZE)
@@ -330,9 +333,28 @@ class BrickDetector:
         self.frame_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or DEFAULT_FRAME_W
         self.frame_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or DEFAULT_FRAME_H
 
-        # Camera parameters — scale focal length with resolution
+        # Camera parameters — prefer calibrated camera intrinsics when the
+        # capture backend exposes them, otherwise scale the historical focal.
+        self._camera_fx_px = None
+        self._camera_fy_px = None
+        self._camera_cx_px = None
+        self._camera_cy_px = None
+        capture_intrinsics = getattr(self.cap, "camera_intrinsics", None)
         if focal_px is not None:
             self.focal_px = float(focal_px)
+        elif isinstance(capture_intrinsics, dict):
+            try:
+                fx = max(1.0, float(capture_intrinsics.get("fx")))
+                fy = max(1.0, float(capture_intrinsics.get("fy")))
+                cx = float(capture_intrinsics.get("cx"))
+                cy = float(capture_intrinsics.get("cy"))
+                self._camera_fx_px = fx
+                self._camera_fy_px = fy
+                self._camera_cx_px = cx
+                self._camera_cy_px = cy
+                self.focal_px = fx
+            except (TypeError, ValueError):
+                self.focal_px = FOCAL_PX_REF * (self.frame_w / FOCAL_REF_WIDTH)
         else:
             self.focal_px = FOCAL_PX_REF * (self.frame_w / FOCAL_REF_WIDTH)
         self.camera_center_offset_px = 0.0
@@ -345,6 +367,9 @@ class BrickDetector:
         self._hsv_upper = CYAN_HSV_UPPER.copy()
         self._hsv_enabled = True
         self._hsv_erode_iterations = HSV_ERODE_ITERATIONS
+        self._hsv_cyan_coverage_min = float(HSV_CYAN_COVERAGE_MIN)
+        self._hsv_min_area_ratio = float(HSV_MIN_AREA_RATIO)
+        self._require_cyan_shape = False
 
         # Center-target lock for cyan mode: prefer center-most candidate while
         # avoiding frame-to-frame jitter between nearly equivalent bricks.
@@ -420,11 +445,17 @@ class BrickDetector:
                            negative_cutout_focus_y_min_ratio=None,
                            negative_cutout_focus_y_max_ratio=None,
                            negative_cutout_focus_weight=None,
+                           hsv_cyan_coverage_min=None,
+                           hsv_min_area_ratio=None,
+                           trust_detector_boxes=None,
+                           require_cyan_shape=None,
                            center_lock_enabled=None,
                            center_lock_radius_px=None,
                            center_switch_margin_px=None,
                            center_axis_weight_x=None,
-                           center_axis_weight_y=None):
+                           center_axis_weight_y=None,
+                           depth_source_mode=None,
+                           stereo_config_mode=None):
         if confidence is not None:
             try:
                 conf_val = float(confidence)
@@ -578,6 +609,26 @@ class BrickDetector:
                 )
             except (TypeError, ValueError):
                 pass
+        if hsv_cyan_coverage_min is not None:
+            try:
+                self._hsv_cyan_coverage_min = max(
+                    0.0,
+                    min(1.0, float(hsv_cyan_coverage_min)),
+                )
+            except (TypeError, ValueError):
+                pass
+        if hsv_min_area_ratio is not None:
+            try:
+                self._hsv_min_area_ratio = max(
+                    0.0,
+                    min(1.0, float(hsv_min_area_ratio)),
+                )
+            except (TypeError, ValueError):
+                pass
+        if trust_detector_boxes is not None:
+            self._trust_detector_boxes = bool(trust_detector_boxes)
+        if require_cyan_shape is not None:
+            self._require_cyan_shape = bool(require_cyan_shape)
         if center_lock_enabled is not None:
             self._center_lock_enabled = bool(center_lock_enabled)
         if center_lock_radius_px is not None:
@@ -604,6 +655,18 @@ class BrickDetector:
                 self._center_axis_weight_y = max(0.01, weight_y)
             except (TypeError, ValueError):
                 pass
+        if depth_source_mode is not None:
+            candidate = str(depth_source_mode or "").strip().lower()
+            if candidate in ("auto", "stereo", "pinhole"):
+                self._depth_source_mode = candidate
+        if stereo_config_mode is not None:
+            candidate = str(stereo_config_mode or "").strip().lower()
+            cap = getattr(self, "cap", None)
+            set_stereo = getattr(cap, "set_stereo_config", None)
+            if callable(set_stereo):
+                set_stereo(candidate)
+            else:
+                self._stereo_config_mode = candidate
         return {
             "conf_threshold": float(self.conf_threshold),
             "smooth_alpha": float(self._smooth_alpha),
@@ -632,6 +695,14 @@ class BrickDetector:
                 else float(self._negative_cutout_focus_y_max_ratio)
             ),
             "negative_cutout_focus_weight": float(self._negative_cutout_focus_weight),
+            "hsv_cyan_coverage_min": float(
+                getattr(self, "_hsv_cyan_coverage_min", HSV_CYAN_COVERAGE_MIN)
+            ),
+            "hsv_min_area_ratio": float(
+                getattr(self, "_hsv_min_area_ratio", HSV_MIN_AREA_RATIO)
+            ),
+            "trust_detector_boxes": bool(getattr(self, "_trust_detector_boxes", True)),
+            "require_cyan_shape": bool(getattr(self, "_require_cyan_shape", False)),
             "center_lock_enabled": bool(self._center_lock_enabled),
             "center_lock_radius_px": (
                 None
@@ -641,6 +712,11 @@ class BrickDetector:
             "center_switch_margin_px": float(self._center_switch_margin_px),
             "center_axis_weight_x": float(self._center_axis_weight_x),
             "center_axis_weight_y": float(self._center_axis_weight_y),
+            "depth_source_mode": str(getattr(self, "_depth_source_mode", "auto")),
+            "stereo_config_mode": str(
+                getattr(getattr(self, "cap", None), "_stereo_config_mode", None)
+                or getattr(self, "_stereo_config_mode", "standard")
+            ),
         }
 
     # ------------------------------------------------------------------
@@ -826,10 +902,15 @@ class BrickDetector:
 
         Positive means the brick center is to the right in the image.
         """
-        frame_center_x = float(self.frame_w) / 2.0 + float(self.camera_center_offset_px)
+        frame_center_x = getattr(self, "_camera_cx_px", None)
+        if frame_center_x is None:
+            frame_center_x = float(self.frame_w) / 2.0 + float(self.camera_center_offset_px)
         offset_px = float(center_x_px) - frame_center_x
         try:
-            focal_px = max(1e-6, float(self.focal_px))
+            focal_px = max(
+                1e-6,
+                float(getattr(self, "_camera_fx_px", None) or self.focal_px),
+            )
             dist_signal = float(dist_mm)
         except (TypeError, ValueError):
             return 0.0
@@ -913,14 +994,54 @@ class BrickDetector:
         """
         Estimate camera-space vertical offset from image-space Y center.
 
-        Returns raw pixel offset (not converted to mm):
-        - 0 px at image vertical center
+        Without calibrated intrinsics this keeps the historical pixel offset
+        fallback. With DepthAI/OAK intrinsics, it returns millimeters:
+        - 0 at image vertical center/principal point
         - positive when brick center is below image center
         - negative when brick center is above image center
         """
-        frame_center_y = float(self.frame_h) / 2.0
+        frame_center_y = getattr(self, "_camera_cy_px", None)
+        if frame_center_y is None:
+            frame_center_y = float(self.frame_h) / 2.0
         offset_y_px = float(center_y_px) - frame_center_y
+        focal_y_px = getattr(self, "_camera_fy_px", None)
+        if focal_y_px is not None:
+            try:
+                return (offset_y_px * float(dist_signal)) / max(1e-6, float(focal_y_px))
+            except (TypeError, ValueError):
+                pass
         return offset_y_px
+
+    def _depth_distance_mm(self, center_x_px, center_y_px, bbox=None):
+        depth_at_region = getattr(getattr(self, "cap", None), "depth_at_region", None)
+        if not callable(depth_at_region):
+            return None
+        try:
+            depth_mm = depth_at_region(center_x_px, center_y_px, bbox=bbox)
+        except Exception:
+            return None
+        try:
+            depth_val = float(depth_mm)
+        except (TypeError, ValueError):
+            return None
+        if not (30.0 <= depth_val <= 5000.0):
+            return None
+        return depth_val
+
+    def _prefer_depth_distance(self, fallback_dist_mm, center_x_px, center_y_px, bbox=None):
+        mode = str(getattr(self, "_depth_source_mode", "auto") or "auto").strip().lower()
+        if mode == "pinhole":
+            self.last_geometry_source = "pinhole_size"
+            return fallback_dist_mm
+        depth_mm = self._depth_distance_mm(center_x_px, center_y_px, bbox=bbox)
+        if depth_mm is not None:
+            self.last_geometry_source = "depthai_stereo"
+            return depth_mm
+        if mode == "stereo":
+            self.last_geometry_source = "stereo_unavailable"
+            return fallback_dist_mm
+        self.last_geometry_source = "pinhole_size"
+        return fallback_dist_mm
 
     def _clear_partial_state(self):
         self.last_partial_count = 0
@@ -1066,7 +1187,10 @@ class BrickDetector:
         # Check cyan coverage — if too little, not a cyan brick
         bbox_area = crop.shape[0] * crop.shape[1]
         cyan_pixels = cv2.countNonZero(feature_mask)
-        if cyan_pixels < bbox_area * HSV_CYAN_COVERAGE_MIN:
+        cyan_coverage_min = float(
+            getattr(self, "_hsv_cyan_coverage_min", HSV_CYAN_COVERAGE_MIN)
+        )
+        if cyan_pixels < bbox_area * cyan_coverage_min:
             return []
 
         if self._uses_trapezoid_gate():
@@ -1089,7 +1213,9 @@ class BrickDetector:
         if contours is None:
             contours = []
 
-        min_area = bbox_area * HSV_MIN_AREA_RATIO
+        min_area = bbox_area * float(
+            getattr(self, "_hsv_min_area_ratio", HSV_MIN_AREA_RATIO)
+        )
         bricks = []
         for cnt in contours:
             area = cv2.contourArea(cnt)
@@ -1934,22 +2060,8 @@ class BrickDetector:
             angle = self._smooth_angle(raw_angle, self._prev_angle)
             self._prev_angle = angle
 
-            # Distance from apparent brick size.
-            # When both triangles are confirmed use their pixel span: the outer
-            # left edge to outer right edge spans BRICK_WIDTH_MM in world model,
-            # giving a much more stable signal than the YOLO bounding box.
-            _, _, ind_bw, ind_bh = primary["bbox"]
-            raw_dist = self._estimate_distance_from_box(ind_bw, ind_bh, primary.get("partial_kind"))
-            tri_span_dist = self._dist_from_triangle_span(
-                primary.get("negative_cutout_polygons")
-            )
-            if tri_span_dist is not None:
-                raw_dist = tri_span_dist
-            dist = self._smooth(raw_dist, self._prev_dist)
-            self._prev_dist = dist
-
-            # Horizontal and vertical offsets anchored to triangles + dot centroid
-            # when all markers are detected; otherwise falls back to contour centroid.
+            # Geometry anchor: use triangles + dot centroid when all markers
+            # are detected; otherwise fall back to contour centroid.
             anchor_cx = float(primary["center_x"])
             anchor_cy = float(primary["center_y"])
             if dot_found and dot_cx is not None:
@@ -1966,6 +2078,27 @@ class BrickDetector:
                     all_cy = tri_cy_list + [float(dot_cy)]
                     anchor_cx = sum(all_cx) / len(all_cx)
                     anchor_cy = sum(all_cy) / len(all_cy)
+
+            # Distance from the OAK stereo depth map when available, otherwise
+            # use apparent brick size.
+            # When both triangles are confirmed use their pixel span: the outer
+            # left edge to outer right edge spans BRICK_WIDTH_MM in world model,
+            # giving a much more stable signal than the YOLO bounding box.
+            _, _, ind_bw, ind_bh = primary["bbox"]
+            raw_dist = self._estimate_distance_from_box(ind_bw, ind_bh, primary.get("partial_kind"))
+            tri_span_dist = self._dist_from_triangle_span(
+                primary.get("negative_cutout_polygons")
+            )
+            if tri_span_dist is not None:
+                raw_dist = tri_span_dist
+            raw_dist = self._prefer_depth_distance(
+                raw_dist,
+                anchor_cx,
+                anchor_cy,
+                bbox=primary.get("bbox"),
+            )
+            dist = self._smooth(raw_dist, self._prev_dist)
+            self._prev_dist = dist
 
             raw_offset_x = self._estimate_offset_x_mm(anchor_cx, dist)
             offset_x = self._smooth(raw_offset_x, self._prev_offset)
@@ -2001,6 +2134,17 @@ class BrickDetector:
 
             return (True, angle, dist, offset_x, conf_pct, cam_height,
                     brick_above, brick_below)
+
+        if bool(getattr(self, "_require_cyan_shape", False)):
+            self._prev_angle = None
+            self._prev_dist = None
+            self._prev_offset = None
+            self._prev_offset_y = None
+            self._center_lock_prev_center = None
+            self.last_status = "cyan+shape required"
+            self.last_primary_confidence = 0.0
+            self._clear_partial_state()
+            return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
         # Detector-box path used when HSV does not split a confident face.
         trust_detector_boxes = bool(getattr(self, "_trust_detector_boxes", False))
@@ -2096,16 +2240,21 @@ class BrickDetector:
         bbox_w = x2 - x1
         bbox_h = y2 - y1
         raw_dist = self._estimate_distance_from_box(bbox_w, bbox_h, primary_partial_info.get("kind"))
+        brick_center_x = (x1 + x2) / 2.0
+        brick_center_y = (y1 + y2) / 2.0
+        raw_dist = self._prefer_depth_distance(
+            raw_dist,
+            brick_center_x,
+            brick_center_y,
+            bbox=(x1, y1, bbox_w, bbox_h),
+        )
         dist = self._smooth(raw_dist, self._prev_dist)
         self._prev_dist = dist
 
-        brick_center_x = (x1 + x2) / 2.0
-        frame_center_x = w_frame / 2.0 + self.camera_center_offset_px
         raw_offset_x = self._estimate_offset_x_mm(brick_center_x, dist)
         offset_x = self._smooth(raw_offset_x, self._prev_offset)
         self._prev_offset = offset_x
 
-        brick_center_y = (y1 + y2) / 2.0
         raw_cam_height = self._estimate_cam_height(brick_center_y, dist)
         cam_height = self._smooth(raw_cam_height, self._prev_offset_y)
         self._prev_offset_y = cam_height

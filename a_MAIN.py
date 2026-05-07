@@ -267,6 +267,20 @@ STREAM_VISION_MODE_OPTIONS = [
     (VISION_MODE_CYAN, "Crown Bricks"),
 ]
 
+DEPTH_SOURCE_OPTIONS = [
+    ("auto", "Auto (stereo → pinhole)"),
+    ("stereo", "Stereo only"),
+    ("pinhole", "Pinhole only"),
+]
+
+STEREO_CONFIG_OPTIONS = [
+    ("standard", "Standard"),
+    ("smooth", "Smooth (median 7×7 + temporal)"),
+    ("stable", "Stable (+ speckle filter)"),
+    ("dense", "Dense (no LR-check)"),
+    ("fast", "Fast (no subpixel)"),
+]
+
 
 def _cyan_profile_preset(
     *,
@@ -4490,6 +4504,8 @@ def _start_manual_stream_server(app_state, *, open_browser=False):
             cyan_profile_options=CYAN_PROFILE_OPTIONS,
             cyan_visibility_options=CYAN_VISIBILITY_OPTIONS,
             success_gate_step_options=STREAM_SUCCESS_GATE_STEP_OPTIONS,
+            depth_source_options=DEPTH_SOURCE_OPTIONS,
+            stereo_config_options=STEREO_CONFIG_OPTIONS,
             xyz_workspace_getter=lambda: _stream_state_xyz_workspace(app_state),
         )
     except Exception as exc:
@@ -5998,6 +6014,68 @@ def _set_stream_state_success_gate_step(app_state, step):
         stream_state["success_gate_step"] = step_key
 
 
+def _stream_state_depth_source(app_state, fallback="auto"):
+    stream_state = app_state.stream_state if isinstance(app_state.stream_state, dict) else None
+    if not stream_state:
+        return str(fallback)
+    lock = stream_state.get("lock")
+    if lock is None:
+        value = stream_state.get("depth_source", fallback)
+    else:
+        with lock:
+            value = stream_state.get("depth_source", fallback)
+    candidate = str(value or "").strip().lower()
+    if candidate not in ("auto", "stereo", "pinhole"):
+        return "auto"
+    return candidate
+
+
+def _set_stream_state_depth_source(app_state, mode):
+    stream_state = app_state.stream_state if isinstance(app_state.stream_state, dict) else None
+    if not stream_state:
+        return
+    candidate = str(mode or "").strip().lower()
+    if candidate not in ("auto", "stereo", "pinhole"):
+        candidate = "auto"
+    lock = stream_state.get("lock")
+    if lock is None:
+        stream_state["depth_source"] = candidate
+    else:
+        with lock:
+            stream_state["depth_source"] = candidate
+
+
+def _stream_state_stereo_config(app_state, fallback="standard"):
+    stream_state = app_state.stream_state if isinstance(app_state.stream_state, dict) else None
+    if not stream_state:
+        return str(fallback)
+    lock = stream_state.get("lock")
+    if lock is None:
+        value = stream_state.get("stereo_config", fallback)
+    else:
+        with lock:
+            value = stream_state.get("stereo_config", fallback)
+    candidate = str(value or "").strip().lower()
+    allowed = {v for v, _l in STEREO_CONFIG_OPTIONS}
+    return candidate if candidate in allowed else "standard"
+
+
+def _set_stream_state_stereo_config(app_state, mode):
+    stream_state = app_state.stream_state if isinstance(app_state.stream_state, dict) else None
+    if not stream_state:
+        return
+    allowed = {v for v, _l in STEREO_CONFIG_OPTIONS}
+    candidate = str(mode or "").strip().lower()
+    if candidate not in allowed:
+        candidate = "standard"
+    lock = stream_state.get("lock")
+    if lock is None:
+        stream_state["stereo_config"] = candidate
+    else:
+        with lock:
+            stream_state["stereo_config"] = candidate
+
+
 def _emit_stream_step_success_event(app_state, step):
     stream_state_raw = getattr(app_state, "stream_state", None)
     stream_state = stream_state_raw if isinstance(stream_state_raw, dict) else None
@@ -6220,6 +6298,8 @@ def control_loop(app_state, vision_mode="cyan", show_startup_help=False):
         app_state,
         _DEFAULT_CYAN_VISIBILITY,
     )
+    active_depth_source = _stream_state_depth_source(app_state)
+    active_stereo_config = _stream_state_stereo_config(app_state)
     _set_stream_state_vision_mode(app_state, active_vision_mode)
     _set_stream_state_cyan_profile(app_state, active_cyan_profile)
     _set_stream_state_cyan_visibility(app_state, active_cyan_visibility)
@@ -6337,6 +6417,24 @@ def control_loop(app_state, vision_mode="cyan", show_startup_help=False):
                         "[VISION] Crown visibility: "
                         f"{cyan_visibility_label(active_cyan_visibility)}"
                     )
+        requested_depth_source = _stream_state_depth_source(app_state)
+        if requested_depth_source != active_depth_source:
+            active_depth_source = requested_depth_source
+            if app_state.vision is not None:
+                try:
+                    app_state.vision.set_runtime_tuning(depth_source_mode=active_depth_source)
+                    log_line(f"[VISION] Depth source: {active_depth_source}")
+                except Exception:
+                    pass
+        requested_stereo_config = _stream_state_stereo_config(app_state)
+        if requested_stereo_config != active_stereo_config:
+            active_stereo_config = requested_stereo_config
+            if app_state.vision is not None:
+                try:
+                    app_state.vision.set_runtime_tuning(stereo_config_mode=active_stereo_config)
+                    log_line(f"[VISION] Stereo config: {active_stereo_config}")
+                except Exception:
+                    pass
         requested_vision_mode = _stream_state_vision_mode(app_state, active_vision_mode)
         if requested_vision_mode != active_vision_mode:
             previous_vision = app_state.vision

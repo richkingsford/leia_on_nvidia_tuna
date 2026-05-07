@@ -159,6 +159,10 @@ def start_stream_server(
     markerless_visibility_key="markerless_visibility",
     success_gate_step_options=None,
     success_gate_step_key="success_gate_step",
+    depth_source_options=None,
+    depth_source_key="depth_source",
+    stereo_config_options=None,
+    stereo_config_key="stereo_config",
     xyz_workspace_getter=None,
 ):
     def _port_available(host, port):
@@ -218,6 +222,8 @@ def start_stream_server(
     normalized_cyan_profile_options = _normalize_choice_options(cyan_profile_options)
     normalized_cyan_visibility_options = _normalize_choice_options(cyan_visibility_options)
     normalized_success_gate_step_options = _normalize_choice_options(success_gate_step_options)
+    normalized_depth_source_options = _normalize_choice_options(depth_source_options)
+    normalized_stereo_config_options = _normalize_choice_options(stereo_config_options)
 
     vision_mode_getter = None
     vision_mode_setter = None
@@ -299,6 +305,46 @@ def start_stream_server(
             allowed_steps,
         )
 
+    depth_source_getter = None
+    depth_source_setter = None
+    if normalized_depth_source_options:
+        allowed_depth = [value for value, _label in normalized_depth_source_options]
+        default_depth = allowed_depth[0]
+        current_depth = str(state.get(depth_source_key, default_depth)).strip().lower()
+        if current_depth not in allowed_depth:
+            state[depth_source_key] = default_depth
+        depth_source_getter = build_choice_getter(
+            state,
+            depth_source_key,
+            allowed_depth,
+            default=default_depth,
+        )
+        depth_source_setter = build_choice_setter(
+            state,
+            depth_source_key,
+            allowed_depth,
+        )
+
+    stereo_config_getter = None
+    stereo_config_setter = None
+    if normalized_stereo_config_options:
+        allowed_stereo = [value for value, _label in normalized_stereo_config_options]
+        default_stereo = allowed_stereo[0]
+        current_stereo = str(state.get(stereo_config_key, default_stereo)).strip().lower()
+        if current_stereo not in allowed_stereo:
+            state[stereo_config_key] = default_stereo
+        stereo_config_getter = build_choice_getter(
+            state,
+            stereo_config_key,
+            allowed_stereo,
+            default=default_stereo,
+        )
+        stereo_config_setter = build_choice_setter(
+            state,
+            stereo_config_key,
+            allowed_stereo,
+        )
+
     try:
         start_port = int(port)
     except (TypeError, ValueError):
@@ -342,6 +388,12 @@ def start_stream_server(
             success_gate_step_getter=success_gate_step_getter,
             success_gate_step_setter=success_gate_step_setter,
             success_gate_step_options=normalized_success_gate_step_options,
+            depth_source_getter=depth_source_getter,
+            depth_source_setter=depth_source_setter,
+            depth_source_options=normalized_depth_source_options,
+            stereo_config_getter=stereo_config_getter,
+            stereo_config_setter=stereo_config_setter,
+            stereo_config_options=normalized_stereo_config_options,
             xyz_workspace_getter=xyz_workspace_getter,
         )
         server.start()

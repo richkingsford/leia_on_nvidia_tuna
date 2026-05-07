@@ -71,6 +71,12 @@ class StreamServer:
         success_gate_step_getter: Optional[Callable[[], str]] = None,
         success_gate_step_setter: Optional[Callable[[str], None]] = None,
         success_gate_step_options: Optional[list] = None,
+        depth_source_getter: Optional[Callable[[], str]] = None,
+        depth_source_setter: Optional[Callable[[str], None]] = None,
+        depth_source_options: Optional[list] = None,
+        stereo_config_getter: Optional[Callable[[], str]] = None,
+        stereo_config_setter: Optional[Callable[[str], None]] = None,
+        stereo_config_options: Optional[list] = None,
         gong_file_path: Optional[str] = None,
         xyz_workspace_getter: Optional[Callable[[], Optional[dict]]] = None,
     ):
@@ -121,6 +127,14 @@ class StreamServer:
         self.success_gate_step_setter = success_gate_step_setter
         self.success_gate_step_options = self._normalize_options(success_gate_step_options)
         self._success_gate_step_allowed = {value for value, _label in self.success_gate_step_options}
+        self.depth_source_getter = depth_source_getter
+        self.depth_source_setter = depth_source_setter
+        self.depth_source_options = self._normalize_options(depth_source_options)
+        self._depth_source_allowed = {value for value, _label in self.depth_source_options}
+        self.stereo_config_getter = stereo_config_getter
+        self.stereo_config_setter = stereo_config_setter
+        self.stereo_config_options = self._normalize_options(stereo_config_options)
+        self._stereo_config_allowed = {value for value, _label in self.stereo_config_options}
         self.gong_file_path = Path(gong_file_path) if gong_file_path is not None else Path(DEFAULT_GONG_FILE)
         self.xyz_workspace_getter = xyz_workspace_getter
         self._stop = threading.Event()
@@ -316,6 +330,20 @@ class StreamServer:
                             self.success_gate_step_setter(step)
                         except Exception:
                             pass
+                if self.depth_source_setter is not None and "depth_source" in payload:
+                    val = self._coerce_depth_source(payload.get("depth_source"))
+                    if val is not None:
+                        try:
+                            self.depth_source_setter(val)
+                        except Exception:
+                            pass
+                if self.stereo_config_setter is not None and "stereo_config" in payload:
+                    val = self._coerce_stereo_config(payload.get("stereo_config"))
+                    if val is not None:
+                        try:
+                            self.stereo_config_setter(val)
+                        except Exception:
+                            pass
 
             show_center_line = True
             if self.show_center_line_getter is not None:
@@ -373,6 +401,30 @@ class StreamServer:
                 {"value": value, "label": label}
                 for value, label in self.success_gate_step_options
             ]
+            depth_source = self.depth_source_options[0][0] if self.depth_source_options else None
+            if self.depth_source_getter is not None:
+                try:
+                    val = self._coerce_depth_source(self.depth_source_getter())
+                    if val is not None:
+                        depth_source = val
+                except Exception:
+                    pass
+            depth_source_options_payload = [
+                {"value": value, "label": label}
+                for value, label in self.depth_source_options
+            ]
+            stereo_config = self.stereo_config_options[0][0] if self.stereo_config_options else None
+            if self.stereo_config_getter is not None:
+                try:
+                    val = self._coerce_stereo_config(self.stereo_config_getter())
+                    if val is not None:
+                        stereo_config = val
+                except Exception:
+                    pass
+            stereo_config_options_payload = [
+                {"value": value, "label": label}
+                for value, label in self.stereo_config_options
+            ]
             return jsonify(
                 {
                     "show_center_line": bool(show_center_line),
@@ -390,6 +442,12 @@ class StreamServer:
                     "success_gate_step": success_gate_step,
                     "success_gate_step_editable": self.success_gate_step_setter is not None,
                     "success_gate_step_options": success_gate_step_options_payload,
+                    "depth_source": depth_source,
+                    "depth_source_editable": self.depth_source_setter is not None,
+                    "depth_source_options": depth_source_options_payload,
+                    "stereo_config": stereo_config,
+                    "stereo_config_editable": self.stereo_config_setter is not None,
+                    "stereo_config_options": stereo_config_options_payload,
                     # Backward-compatible payload keys for old UI clients.
                     "markerless_profile": cyan_profile,
                     "markerless_profile_editable": self.cyan_profile_setter is not None,
@@ -517,11 +575,19 @@ class StreamServer:
         has_success_gate_step_control = bool(self.success_gate_step_options) and (
             self.success_gate_step_getter is not None or self.success_gate_step_setter is not None
         )
+        has_depth_source_control = bool(self.depth_source_options) and (
+            self.depth_source_getter is not None or self.depth_source_setter is not None
+        )
+        has_stereo_config_control = bool(self.stereo_config_options) and (
+            self.stereo_config_getter is not None or self.stereo_config_setter is not None
+        )
         has_top_controls = (
             has_center_line_control
             or has_vision_mode_control
             or has_cyan_profile_control
             or has_cyan_visibility_control
+            or has_depth_source_control
+            or has_stereo_config_control
         )
         body_controls_class = " class='with-bottom-controls'" if has_top_controls else ""
         if has_top_controls or has_success_gate_step_control:
@@ -571,6 +637,34 @@ class StreamServer:
                     + "</select>"
                     "</label>"
                 )
+            if has_depth_source_control:
+                option_parts = []
+                for value, label in self.depth_source_options:
+                    value_escaped = html.escape(str(value), quote=True)
+                    label_escaped = html.escape(str(label))
+                    option_parts.append(f"<option value='{value_escaped}'>{label_escaped}</option>")
+                controls_parts.append(
+                    "<label class='control-item'>"
+                    "Depth Source: "
+                    "<select id='depthSource' class='control-select'>"
+                    + "".join(option_parts)
+                    + "</select>"
+                    "</label>"
+                )
+            if has_stereo_config_control:
+                option_parts = []
+                for value, label in self.stereo_config_options:
+                    value_escaped = html.escape(str(value), quote=True)
+                    label_escaped = html.escape(str(label))
+                    option_parts.append(f"<option value='{value_escaped}'>{label_escaped}</option>")
+                controls_parts.append(
+                    "<label class='control-item'>"
+                    "Stereo Config: "
+                    "<select id='stereoConfig' class='control-select'>"
+                    + "".join(option_parts)
+                    + "</select>"
+                    "</label>"
+                )
             if has_top_controls:
                 controls_parts.append("</div>")
                 controls_html = "".join(controls_parts)
@@ -581,6 +675,8 @@ class StreamServer:
                 "const visionModeInputs = Array.from(document.querySelectorAll(\"input[name='visionMode']\"));"
                 "const cyanProfileSelect = document.getElementById('cyanProfile');"
                 "const cyanVisibilitySelect = document.getElementById('cyanVisibility');"
+                "const depthSourceSelect = document.getElementById('depthSource');"
+                "const stereoConfigSelect = document.getElementById('stereoConfig');"
                 "const telemetryHostEl = document.getElementById('telemetry');"
                 "let successGateStep = null;"
                 "let successGateStepEditable = false;"
@@ -611,6 +707,20 @@ class StreamServer:
                 "cyanVisibilitySelect.value = String(mode);"
                 "}"
                 "cyanVisibilitySelect.disabled = !editable;"
+                "};"
+                "const setDepthSource = (val, editable) => {"
+                "if (!depthSourceSelect) return;"
+                "if (val !== null && val !== undefined) {"
+                "depthSourceSelect.value = String(val);"
+                "}"
+                "depthSourceSelect.disabled = !editable;"
+                "};"
+                "const setStereoConfig = (val, editable) => {"
+                "if (!stereoConfigSelect) return;"
+                "if (val !== null && val !== undefined) {"
+                "stereoConfigSelect.value = String(val);"
+                "}"
+                "stereoConfigSelect.disabled = !editable;"
                 "};"
                 "const setSuccessGateStepState = (step, editable, options) => {"
                 "if (Array.isArray(options)) {"
@@ -704,6 +814,12 @@ class StreamServer:
                 "if (cyanVisibilitySelect) {"
                 "setCyanVisibility(data.cyan_visibility, !!data.cyan_visibility_editable);"
                 "}"
+                "if (depthSourceSelect) {"
+                "setDepthSource(data.depth_source, !!data.depth_source_editable);"
+                "}"
+                "if (stereoConfigSelect) {"
+                "setStereoConfig(data.stereo_config, !!data.stereo_config_editable);"
+                "}"
                 "setSuccessGateStepState("
                 "data.success_gate_step,"
                 "!!data.success_gate_step_editable,"
@@ -734,6 +850,18 @@ class StreamServer:
                 "if (cyanVisibilitySelect) {"
                 "cyanVisibilitySelect.addEventListener('change', async () => {"
                 "await postPrefs({cyan_visibility:cyanVisibilitySelect.value});"
+                "syncPrefs();"
+                "});"
+                "}"
+                "if (depthSourceSelect) {"
+                "depthSourceSelect.addEventListener('change', async () => {"
+                "await postPrefs({depth_source:depthSourceSelect.value});"
+                "syncPrefs();"
+                "});"
+                "}"
+                "if (stereoConfigSelect) {"
+                "stereoConfigSelect.addEventListener('change', async () => {"
+                "await postPrefs({stereo_config:stereoConfigSelect.value});"
                 "syncPrefs();"
                 "});"
                 "}"
@@ -1185,6 +1313,26 @@ class StreamServer:
             return None
         candidate = str(value).strip().lower()
         if candidate in self._success_gate_step_allowed:
+            return candidate
+        return None
+
+    def _coerce_depth_source(self, value):
+        if not self._depth_source_allowed:
+            return None
+        if value is None:
+            return None
+        candidate = str(value).strip().lower()
+        if candidate in self._depth_source_allowed:
+            return candidate
+        return None
+
+    def _coerce_stereo_config(self, value):
+        if not self._stereo_config_allowed:
+            return None
+        if value is None:
+            return None
+        candidate = str(value).strip().lower()
+        if candidate in self._stereo_config_allowed:
             return candidate
         return None
 

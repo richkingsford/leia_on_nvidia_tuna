@@ -2,7 +2,7 @@
 Crown brick vision regression tests.
 
 Covers the complete current pipeline:
-  - Crown profile uses shape_match gate (not negative_cutouts)
+  - Crown profile uses negative_cutouts gate
   - Trapezoid gate is active because world model has exactly 1 cutout polygon
   - Two dark inner slots → two separate candidates (inner-hole split path)
   - Transparent/missing slots → height-ratio fallback still produces 2+ candidates
@@ -155,22 +155,19 @@ def _make_stream_stub() -> CrownVisionLivestream:
 # ─── tests ───────────────────────────────────────────────────────────────────
 
 class TestCrownProfileTuning(unittest.TestCase):
-    """Crown profile must use shape_match and contain no negative_cutout keys."""
+    """Crown profile must use negative_cutouts gate."""
 
-    def test_shape_gate_mode_is_shape_match(self):
-        self.assertEqual(CROWN_PROFILE_TUNING["shape_gate_mode"], "shape_match")
+    def test_shape_gate_mode_is_negative_cutouts(self):
+        self.assertEqual(CROWN_PROFILE_TUNING["shape_gate_mode"], "negative_cutouts")
 
-    def test_no_negative_cutout_keys_in_profile(self):
-        for key in CROWN_PROFILE_TUNING:
-            self.assertFalse(
-                key.startswith("negative_cutout"),
-                f"Crown profile must not include negative_cutout gates; found: {key!r}",
-            )
+    def test_profile_has_negative_cutout_keys(self):
+        keys = [k for k in CROWN_PROFILE_TUNING if k.startswith("negative_cutout")]
+        self.assertTrue(len(keys) > 0, "Crown profile must include negative_cutout gate keys")
 
-    def test_profile_applied_sets_shape_match_mode(self):
+    def test_profile_applied_sets_negative_cutouts_mode(self):
         d = _make_stub()
         d.set_runtime_tuning(**dict(CROWN_PROFILE_TUNING))
-        self.assertEqual(d._face_shape_gate_mode, det.BRICK_FACE_GATE_MODE_SHAPE_MATCH)
+        self.assertEqual(d._face_shape_gate_mode, det.BRICK_FACE_GATE_MODE_NEGATIVE_CUTOUTS)
 
 
 class TestTrapezoidGate(unittest.TestCase):
@@ -283,8 +280,8 @@ class TestShapeMatchThreshold(unittest.TestCase):
 
     def test_loaded_threshold_from_world_model(self):
         d = _make_stub()
-        # world_model_brick.json sets shape_match_score_max = 0.65
-        self.assertAlmostEqual(d._shape_match_score_max, 0.65, delta=0.01)
+        # world_model_brick.json sets shape_match_score_max = 0.45
+        self.assertAlmostEqual(d._shape_match_score_max, 0.45, delta=0.01)
 
     def test_classify_uses_instance_threshold_not_constant(self):
         """A contour that scores between 0.40 and 0.65 should pass with the JSON value."""

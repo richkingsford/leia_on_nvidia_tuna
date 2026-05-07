@@ -53,6 +53,15 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         self.assertAlmostEqual(below, 60.0, places=6)
         self.assertAlmostEqual(above, -60.0, places=6)
 
+    def test_estimate_cam_height_uses_intrinsics_when_available(self):
+        det = self._detector_stub()
+        det._camera_cy_px = 240.0
+        det._camera_fy_px = 500.0
+
+        below = BrickDetector._estimate_cam_height(det, center_y_px=300.0, dist_signal=200.0)
+
+        self.assertAlmostEqual(below, 24.0, places=6)
+
     def test_estimate_offset_x_mm_matches_camera_center_geometry(self):
         det = self._detector_stub()
         det.focal_px = 580.0
@@ -104,6 +113,19 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         self.assertAlmostEqual(result[3], 0.0, places=6)
         self.assertAlmostEqual(result[5], 60.0, places=6)
 
+    def test_process_bricks_can_require_cyan_shape_evidence(self):
+        det = self._detector_stub()
+        det._require_cyan_shape = True
+        det._hsv_enabled = False
+
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        bricks = [(300, 280, 340, 320, 0.95)]
+
+        result = BrickDetector._process_bricks(det, frame, bricks)
+
+        self.assertFalse(result[0])
+        self.assertEqual(det.last_status, "cyan+shape required")
+
     def test_process_bricks_fallback_returns_horizontal_offset_in_mm(self):
         det = self._detector_stub()
         det.focal_px = 580.0
@@ -117,6 +139,35 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
 
         self.assertTrue(result[0])
         self.assertAlmostEqual(result[3], 10.0, places=6)
+
+    def test_process_bricks_prefers_depthai_depth_for_geometry(self):
+        det = self._detector_stub()
+        det._camera_fx_px = 500.0
+        det._camera_fy_px = 500.0
+        det._camera_cx_px = 320.0
+        det._camera_cy_px = 240.0
+        det._estimate_angle = lambda *_args, **_kwargs: 0.0
+        det._estimate_distance_from_box = lambda _bbox_w, _bbox_h, _partial_kind=None: 999.0
+
+        class _DepthCap:
+            def depth_at_region(self, center_x, center_y, bbox=None):
+                self.last = (center_x, center_y, bbox)
+                return 150.0
+
+            def release(self):
+                pass
+
+        det.cap = _DepthCap()
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        bricks = [(400, 280, 440, 320, 0.95)]
+
+        result = BrickDetector._process_bricks(det, frame, bricks)
+
+        self.assertTrue(result[0])
+        self.assertAlmostEqual(result[2], 150.0, places=6)
+        self.assertAlmostEqual(result[3], 30.0, places=6)
+        self.assertAlmostEqual(result[5], 18.0, places=6)
+        self.assertEqual(det.last_geometry_source, "depthai_stereo")
 
     def test_process_bricks_hsv_path_uses_primary_center_y(self):
         det = self._detector_stub()

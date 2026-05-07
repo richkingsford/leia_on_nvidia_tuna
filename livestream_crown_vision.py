@@ -13,8 +13,8 @@ import cv2
 
 from helper_brick_detector_yolo import (
     BrickDetector,
-    CYAN_HSV_WIDE_LOWER,
-    CYAN_HSV_WIDE_UPPER,
+    CYAN_HSV_BALANCED_LOWER,
+    CYAN_HSV_BALANCED_UPPER,
     CYAN_SHADE_HEXES,
 )
 from helper_manual_config import load_manual_training_config
@@ -30,15 +30,41 @@ HOLD_FRAMES = 15
 
 CROWN_PROFILE_KEY = "config9"
 CROWN_PROFILE_LABEL = "Config 9"
+
+DEPTH_SOURCE_OPTIONS = [
+    ("auto", "Auto (stereo → pinhole)"),
+    ("stereo", "Stereo only"),
+    ("pinhole", "Pinhole only"),
+]
+
+STEREO_CONFIG_OPTIONS = [
+    ("standard", "Standard"),
+    ("smooth", "Smooth (median 7×7 + temporal)"),
+    ("stable", "Stable (+ speckle filter)"),
+    ("dense", "Dense (no LR-check)"),
+    ("fast", "Fast (no subpixel)"),
+]
 CROWN_PROFILE_TUNING = {
-    "confidence": 0.15,
+    "confidence": 0.25,
     "smoothing_alpha": 0.15,
     "hsv_enabled": True,
-    "hsv_erode_iterations": 0,
-    "hsv_lower": list(CYAN_HSV_WIDE_LOWER),
-    "hsv_upper": list(CYAN_HSV_WIDE_UPPER),
-    "shape_gate_mode": "shape_match",
-    "conf_gate_pct": 50.0,
+    "hsv_erode_iterations": 1,
+    "hsv_lower": list(CYAN_HSV_BALANCED_LOWER),
+    "hsv_upper": list(CYAN_HSV_BALANCED_UPPER),
+    "hsv_cyan_coverage_min": 0.12,
+    "hsv_min_area_ratio": 0.07,
+    "shape_gate_mode": "negative_cutouts",
+    "negative_cutout_cyan_fill_max": 0.20,
+    "negative_cutout_ring_cyan_min": 0.58,
+    "negative_cutout_ring_dilate_px": 4,
+    "negative_cutout_min_area_px": 24.0,
+    "negative_cutout_triangle_side_ratio_max": 1.75,
+    "negative_cutout_triangle_angle_spread_max_deg": 60.0,
+    "negative_cutout_triangle_overlap_min": 0.75,
+    "negative_cutout_pair_x_axis_max_angle_deg": 10.0,
+    "conf_gate_pct": 75.0,
+    "trust_detector_boxes": False,
+    "require_cyan_shape": True,
 }
 
 
@@ -71,8 +97,8 @@ def _build_footer_html() -> str:
         f"</div>"
         for h in CYAN_SHADE_HEXES
     )
-    lower = list(CYAN_HSV_WIDE_LOWER)
-    upper = list(CYAN_HSV_WIDE_UPPER)
+    lower = list(CROWN_PROFILE_TUNING["hsv_lower"])
+    upper = list(CROWN_PROFILE_TUNING["hsv_upper"])
     hsv_label = f"H {lower[0]}–{upper[0]} · S {lower[1]}–{upper[1]} · V {lower[2]}–{upper[2]}"
     return (
         "<div class='footer-sections'>"
@@ -84,7 +110,7 @@ def _build_footer_html() -> str:
         "<div class='footer-title'>Cyan Calibration Palette</div>"
         f"<div style='display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;'>{swatch_items}</div>"
         f"<div style='margin-top:5px;font-size:10px;color:#9cc;font-family:monospace;'>{hsv_label}</div>"
-        "<div style='margin-top:2px;font-size:10px;color:#777;'>WIDE range active</div>"
+        "<div style='margin-top:2px;font-size:10px;color:#777;'>BALANCED range active · cyan + shape required</div>"
         "</div>"
         "</div>"
     )
@@ -119,6 +145,8 @@ class CrownVisionLivestream:
             "show_center_line": True,
             "vision_mode": "cyan",
             "cyan_profile": CROWN_PROFILE_KEY,
+            "depth_source": "auto",
+            "stereo_config": "standard",
             "xyz_workspace": helper_xyz_coords.build_live_position_workspace(
                 None,
                 visible=False,
@@ -149,6 +177,8 @@ class CrownVisionLivestream:
             port_tries=max(1, int(self.args.port_tries)),
             vision_mode_options=[("cyan", "Crown Bricks")],
             cyan_profile_options=[(CROWN_PROFILE_KEY, CROWN_PROFILE_LABEL)],
+            depth_source_options=DEPTH_SOURCE_OPTIONS,
+            stereo_config_options=STEREO_CONFIG_OPTIONS,
             xyz_workspace_getter=self._get_xyz_workspace,
         )
         self.thread = threading.Thread(target=self._camera_loop, daemon=True)
@@ -178,8 +208,25 @@ class CrownVisionLivestream:
 
     def _camera_loop(self) -> None:
         interval_s = 1.0 / max(1, int(self.args.camera_fps))
+        active_depth_source = "auto"
+        active_stereo_config = "standard"
         while self.running.is_set():
             started = time.monotonic()
+            with self.state["lock"]:
+                requested_depth_source = str(self.state.get("depth_source", "auto") or "auto")
+                requested_stereo_config = str(self.state.get("stereo_config", "standard") or "standard")
+            if requested_depth_source != active_depth_source:
+                active_depth_source = requested_depth_source
+                try:
+                    self.vision.set_runtime_tuning(depth_source_mode=active_depth_source)
+                except Exception:
+                    pass
+            if requested_stereo_config != active_stereo_config:
+                active_stereo_config = requested_stereo_config
+                try:
+                    self.vision.set_runtime_tuning(stereo_config_mode=active_stereo_config)
+                except Exception:
+                    pass
             result = None
             try:
                 result = self.vision.read()
@@ -266,6 +313,7 @@ class CrownVisionLivestream:
         threshold = getattr(vision, "conf_threshold", None)
         smooth = getattr(vision, "_smooth_alpha", None)
         input_size = getattr(vision, "input_size", None)
+        geometry_source = str(getattr(vision, "last_geometry_source", "") or "-")
 
         lines = [
             {
@@ -285,6 +333,10 @@ class CrownVisionLivestream:
                     f"| MIN CONF: {_pct_precise(threshold)} | SMOOTH: {float(smooth):.2f} "
                     f"| INPUT: {_int_text(input_size)}px"
                 ),
+                "color": "#ffffff",
+            },
+            {
+                "text": f"[ML] GEOMETRY: {geometry_source}",
                 "color": "#ffffff",
             },
             {
