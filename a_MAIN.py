@@ -395,7 +395,7 @@ _CYAN_PROFILE_SPECS = (
         "config9",
         "Config 9",
         dict(
-            confidence=0.10,
+            confidence=0.15,
             smoothing_alpha=0.15,
             hsv_lower=CYAN_HSV_WIDE_LOWER,
             hsv_upper=CYAN_HSV_WIDE_UPPER,

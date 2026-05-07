@@ -31,14 +31,14 @@ HOLD_FRAMES = 15
 CROWN_PROFILE_KEY = "config9"
 CROWN_PROFILE_LABEL = "Config 9"
 CROWN_PROFILE_TUNING = {
-    "confidence": 0.10,
+    "confidence": 0.15,
     "smoothing_alpha": 0.15,
     "hsv_enabled": True,
     "hsv_erode_iterations": 0,
     "hsv_lower": list(CYAN_HSV_WIDE_LOWER),
     "hsv_upper": list(CYAN_HSV_WIDE_UPPER),
     "shape_gate_mode": "shape_match",
-    "conf_gate_pct": 40.0,
+    "conf_gate_pct": 50.0,
 }
 
 

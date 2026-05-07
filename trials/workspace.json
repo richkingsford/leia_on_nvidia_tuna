@@ -1,5 +1,5 @@
 {
-  "updated_at": 1778109793.7870262,
+  "updated_at": 1778120123.692671,
   "robot": {
     "x_mm": 0.0,
     "y_mm": 0.0,
@@ -87,6 +87,6 @@
     "angle_deg": null
   },
   "run_replay": true,
-  "run_log_path": "/home/richkingsford/cub-queso/Runs - cyan/May 6 522pm.json",
+  "run_log_path": "/home/richkingsford/cub-queso/Runs - cyan/May 6 815pm.json",
   "history": []
 }
