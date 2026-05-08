@@ -181,6 +181,7 @@ _ALIGN_BRICK_LOOP_S           = 0.05   # 20 Hz control loop
 _ALIGN_BRICK_CURVE_INNER_RATIO = 0.7   # inner-wheel ratio: both wheels forward, differential
 _ALIGN_BRICK_INVIS_HOLD       = 2      # coast on last reading for this many missed frames
 _ALIGN_BRICK_INVIS_STOP       = 3      # stop motors after this many consecutive misses
+_ALIGN_BRICK_INVIS_WAIT       = 10     # frames to wait (stationary) for vision to recover after stop
 
 
 def resolve_step_argument(token: str):
@@ -373,11 +374,15 @@ def _execute_arc_turn(robot, cmd: str, score: int, hold_duration_ms: int, *, dri
 
 
 def _execute_back_then_arc_turn(robot, cmd: str, score: int, hold_duration_ms: int):
-    """Back up briefly (both treads), then forward arc turn. For sweep scans."""
+    """Back up briefly (both treads), then backward arc turn. For sweep scans.
+
+    Backward arc keeps the robot moving away from the stack while scanning —
+    a forward arc would close the gap and risk collision.
+    """
     _, back_pwm, _, _ = _telemetry_robot.speed_power_pwm_for_cmd("b", score)
     robot.send_command_pwm("b", int(back_pwm), duration_ms=_BACK_BEFORE_SWEEP_MS)
     time.sleep(_BACK_BEFORE_SWEEP_MS / 1000.0 + 0.05)
-    return _execute_arc_turn(robot, cmd, score, hold_duration_ms, drive_mode="forward")
+    return _execute_arc_turn(robot, cmd, score, hold_duration_ms, drive_mode="backward")
 
 
 def _run_exit_wall_with_arc_turns(app_state) -> bool:
@@ -403,9 +408,19 @@ def _run_exit_wall_with_arc_turns(app_state) -> bool:
 
     poll_ms = int(_ARC_SCAN_POLL_S * 1000)
     budget_ms = _EXIT_WALL_MAX_TURN_MS
-    print(f"[EXIT_WALL ARC] Right turn — polling every {poll_ms}ms, budget {budget_ms}ms.")
+    print(f"[EXIT_WALL ARC] Right forward-curve turn — polling every {poll_ms}ms, budget {budget_ms}ms.")
 
-    result = _execute_arc_turn(app_state.robot, cmd="r", score=1, hold_duration_ms=budget_ms, drive_mode="forward")
+    plan = build_turn_drive_motion_plan(
+        cmd="r",
+        score=1,
+        hold_duration_ms=budget_ms,
+        profile_override={"drive_mode": "forward", "inner_ratio": 0.7, "outer_ratio": 1.0},
+    )
+    result = app_state.robot.send_custom_actions_pwm(
+        str(plan.get("cmd") or "r") if isinstance(plan, dict) else "r",
+        plan.get("actions") or [] if isinstance(plan, dict) else [],
+        duration_ms=int(plan.get("duration_ms") or budget_ms) if isinstance(plan, dict) else budget_ms,
+    ) if isinstance(plan, dict) else None
     wire = result.get("wire_text", "?") if isinstance(result, dict) else "?"
     print(f"[EXIT_WALL ARC]   wire: {wire}")
 
@@ -772,15 +787,33 @@ def _run_align_brick_practice(app_state) -> bool:
             if miss_count <= _ALIGN_BRICK_INVIS_HOLD and last_dist is not None:
                 dist_val, x_val = last_dist, last_x   # coast on last good reading
             elif miss_count == _ALIGN_BRICK_INVIS_STOP:
-                print(f"[ALIGN_BRICK PRACTICE] Act {act_num}: not visible x{miss_count} — stopping motors.")
                 try:
                     app_state.robot.stop()
                 except Exception:
                     pass
-                elapsed = time.monotonic() - loop_start
-                if (rem := _ALIGN_BRICK_LOOP_S - elapsed) > 0:
-                    time.sleep(rem)
-                continue
+                print(f"[ALIGN_BRICK PRACTICE] Act {act_num}: not visible x{miss_count} — pausing, waiting up to {_ALIGN_BRICK_INVIS_WAIT} frames for recovery...")
+                recovered = False
+                for _wi in range(_ALIGN_BRICK_INVIS_WAIT):
+                    time.sleep(_ALIGN_BRICK_LOOP_S)
+                    refresh_brick_telemetry(app_state, read_vision=True)
+                    _rb = getattr(app_state.world, "brick", {}) or {}
+                    _vis = bool(_rb.get("visible"))
+                    _d = _rb.get("dist")
+                    if _vis and _d is not None and float(_d) <= _PRACTICE_MAX_DETECT_DIST_MM:
+                        dist_val = float(_d)
+                        x_val = float(_rb.get("x_axis", _rb.get("x")) or 0.0)
+                        last_dist, last_x = dist_val, x_val
+                        miss_count = 0
+                        recovered = True
+                        print(f"[ALIGN_BRICK PRACTICE] Act {act_num}: vision recovered (wait {_wi+1}) — dist={dist_val:.0f}mm x={x_val:+.0f}mm")
+                        break
+                if not recovered:
+                    print(f"[ALIGN_BRICK PRACTICE] Act {act_num}: not recovered after {_ALIGN_BRICK_INVIS_WAIT} waits.")
+                    elapsed = time.monotonic() - loop_start
+                    if (rem := _ALIGN_BRICK_LOOP_S - elapsed) > 0:
+                        time.sleep(rem)
+                    continue
+                # recovered — fall through to decision logic with fresh reading
             else:
                 elapsed = time.monotonic() - loop_start
                 if (rem := _ALIGN_BRICK_LOOP_S - elapsed) > 0:
@@ -1008,20 +1041,16 @@ def main() -> int:
 
     vision_mode = None if str(args.vision).strip().lower() == "auto" else str(args.vision)
 
-    if args.steps or (args.trials and args.trials > 1):
-        steps_raw = args.steps or args.step or "7"
-        steps = [s.strip() for s in steps_raw.split(",") if s.strip()]
-        result = run_step_sequence(
-            steps=steps,
-            trials=max(1, int(args.trials or 1)),
-            vision_mode=vision_mode,
-            pause_between_trials_s=max(0.0, float(args.pause_s)),
-        )
-    else:
-        result = run_single_auto_step(
-            step_token=str(args.step or "7"),
-            vision_mode=vision_mode,
-        )
+    # Always route through run_step_sequence so practice implementations
+    # (_run_align_brick_practice, etc.) are used even for single-trial runs.
+    steps_raw = args.steps or args.step or "7"
+    steps = [s.strip() for s in steps_raw.split(",") if s.strip()]
+    result = run_step_sequence(
+        steps=steps,
+        trials=max(1, int(args.trials or 1)),
+        vision_mode=vision_mode,
+        pause_between_trials_s=max(0.0, float(args.pause_s)),
+    )
 
     print(json.dumps(result, indent=2))
     return 0 if bool(result.get("ok")) else 1

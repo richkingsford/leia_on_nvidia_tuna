@@ -27,6 +27,7 @@ import os
 import logging
 import time
 import colorsys
+import json
 from pathlib import Path
 
 from helper_camera_sources import candidate_camera_sources, existing_camera_nodes, open_opencv_camera_source
@@ -35,10 +36,24 @@ from helper_camera_sources import candidate_camera_sources, existing_camera_node
 # Configuration
 # ---------------------------------------------------------------------------
 
-# Known brick dimensions (mm) — from world_model_brick.json
-BRICK_WIDTH_MM = 53.0
-BRICK_HEIGHT_MM = 35.4
-BRICK_DEPTH_MM = 20.0
+# One permanent brick model: the current TensorRT plan.
+TENSORRT_ENGINE_PATH = Path(__file__).resolve().parent / "brick_yolo_v4_fast.plan"
+BRICK_MODEL_PATH = Path(__file__).resolve().parent / "world_model_brick.json"
+
+
+def _brick_dimension_mm(name: str, default: float) -> float:
+    try:
+        data = json.loads(BRICK_MODEL_PATH.read_text())
+        value = data["brick"]["dimensions"][name]
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+# Known brick dimensions (mm) — source of truth is world_model_brick.json.
+BRICK_WIDTH_MM = _brick_dimension_mm("width", 53.0)
+BRICK_HEIGHT_MM = _brick_dimension_mm("height", 35.4)
+BRICK_DEPTH_MM = _brick_dimension_mm("depth", 20.0)
 
 # Camera defaults (overridden at runtime from actual frame size)
 DEFAULT_FRAME_W = 640
@@ -51,10 +66,6 @@ DEFAULT_FRAME_H = 480
 # Calibrated against ArUco gate targets (dist≈98-102mm at scoop position).
 FOCAL_PX_REF = 580.0
 FOCAL_REF_WIDTH = 640.0
-
-# One permanent brick model: the current TensorRT plan.
-TENSORRT_ENGINE_PATH = Path(__file__).resolve().parent / "brick_yolo_v4_fast.plan"
-BRICK_MODEL_PATH = Path(__file__).resolve().parent / "world_model_brick.json"
 
 # Detection confidence threshold
 CONF_THRESHOLD = 0.15
@@ -82,6 +93,13 @@ CYAN_SHADE_HEXES = (
     "39B7C1",
     "2AB0BA",
     "31B0BB",
+    # darker/shadowed shades observed in-room
+    "2E5356",
+    "27464A",
+    "285258",
+    "43686B",
+    "335760",
+    "325A64",
 )
 
 
@@ -102,6 +120,7 @@ def _cyan_palette_hsv_range(
     sat_margin: int,
     val_margin_lower: int,
     val_ceiling: int = 255,
+    sat_floor: int = 0,
 ) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
     hsv_values = [_hex_to_opencv_hsv(hex_code) for hex_code in CYAN_SHADE_HEXES]
     min_h = min(value[0] for value in hsv_values)
@@ -110,7 +129,7 @@ def _cyan_palette_hsv_range(
     min_v = min(value[2] for value in hsv_values)
     lower = (
         max(0, int(round(float(min_h) - float(hue_margin)))),
-        max(0, int(round(float(min_s) - float(sat_margin)))),
+        max(int(sat_floor), max(0, int(round(float(min_s) - float(sat_margin))))),
         max(0, int(round(float(min_v) - float(val_margin_lower)))),
     )
     upper = (
@@ -126,12 +145,14 @@ CYAN_HSV_TIGHT_LOWER, CYAN_HSV_TIGHT_UPPER = _cyan_palette_hsv_range(
     sat_margin=60,
     val_margin_lower=25,
     val_ceiling=255,
+    sat_floor=70,
 )
 CYAN_HSV_BALANCED_LOWER, CYAN_HSV_BALANCED_UPPER = _cyan_palette_hsv_range(
     hue_margin=6,
     sat_margin=110,
     val_margin_lower=45,
     val_ceiling=255,
+    sat_floor=60,
 )
 CYAN_HSV_WIDE_LOWER, CYAN_HSV_WIDE_UPPER = _cyan_palette_hsv_range(
     hue_margin=10,
@@ -176,6 +197,7 @@ PINK_DOT_HSV_LOWER = np.array(_PINK_DOT_HSV_LOWER_TUPLE, dtype=np.uint8)
 PINK_DOT_HSV_UPPER = np.array(_PINK_DOT_HSV_UPPER_TUPLE, dtype=np.uint8)
 PINK_DOT_COLOR_BGR = (70, 38, 190)   # BE2646 in BGR
 CONF_GATE_PCT = 65.0                 # minimum combined confidence to report a brick
+COLOR_ONLY_CONF_PCT = 85.0           # strong cyan color can carry weak slot geometry
 PINK_DOT_CONF_BONUS = 25.0           # confidence bonus when pink dot is confirmed
 
 HSV_ERODE_KERNEL = 5
@@ -188,9 +210,29 @@ STACK_Y_GAP_RATIO = 0.35        # Vertical gap threshold for above/below
 # brick face/top aspect ratios. Kept broad to allow perspective distortion.
 BRICK_SHAPE_REL_ERROR_MAX = 0.75
 BRICK_SHAPE_FILL_RATIO_MIN = 0.28
+BRICK_COLOR_FALLBACK_COVERAGE_MIN = 0.16
+BRICK_COLOR_FALLBACK_CONTOUR_COVERAGE_MIN = 0.10
+BRICK_COLOR_FALLBACK_FILL_RATIO_MIN = 0.18
+BRICK_COLOR_FALLBACK_ASPECT_MAX = 8.0
 BRICK_FACE_MATCH_MAX_FULL = 0.40
 BRICK_FACE_MATCH_MAX_PARTIAL = 0.55
 FALLBACK_SHAPE_MIN_AREA_RATIO = 0.06
+
+# Empirical distance calibration from live OAK-D Lite observations:
+#   true 350mm at bbox 150x51, f=497px
+#   true 150mm at bbox 243x83, f=497px
+# The plain pinhole height signal is monotonic but overestimates close range,
+# so use a power curve over the height-based pinhole estimate.
+DIST_CAL_HEIGHT_PINHOLE_FAR_MM = BRICK_HEIGHT_MM * 497.0 / 51.0
+DIST_CAL_HEIGHT_PINHOLE_NEAR_MM = BRICK_HEIGHT_MM * 497.0 / 83.0
+DIST_CAL_TRUE_FAR_MM = 350.0
+DIST_CAL_TRUE_NEAR_MM = 150.0
+DIST_CAL_HEIGHT_POWER = math.log(DIST_CAL_TRUE_FAR_MM / DIST_CAL_TRUE_NEAR_MM) / math.log(
+    DIST_CAL_HEIGHT_PINHOLE_FAR_MM / DIST_CAL_HEIGHT_PINHOLE_NEAR_MM
+)
+DIST_CAL_HEIGHT_SCALE = DIST_CAL_TRUE_FAR_MM / (
+    DIST_CAL_HEIGHT_PINHOLE_FAR_MM ** DIST_CAL_HEIGHT_POWER
+)
 BRICK_FACE_GATE_MODE_DEFAULT = "negative_cutouts"
 BRICK_FACE_GATE_MODE_NEGATIVE_CUTOUTS = "negative_cutouts"
 BRICK_FACE_GATE_MODE_SHAPE_MATCH = "shape_match"
@@ -209,8 +251,8 @@ NEGATIVE_CUTOUT_FOCUS_Y_MAX_RATIO = None
 NEGATIVE_CUTOUT_FOCUS_WEIGHT = 0.0
 
 # Cyan-target experiment: stabilize selection around centerpoint.
-CENTER_LOCK_RADIUS_RATIO = 0.18
-CENTER_SWITCH_MARGIN_PX = 18.0
+CENTER_LOCK_RADIUS_RATIO = 0.40
+CENTER_SWITCH_MARGIN_PX = 45.0
 CENTER_PARTIAL_PENALTY = 2.0
 CENTER_AXIS_WEIGHT_X = 1.0
 CENTER_AXIS_WEIGHT_Y = 1.0
@@ -282,6 +324,21 @@ class BrickDetector:
         self.last_primary_confidence = 0.0
         self.last_max_confidence = 0.0
         self.last_status = "idle"
+        self.last_bbox_w_px = None
+        self.last_bbox_h_px = None
+        self.last_bbox_eff_w_px = None
+        self.last_bbox_eff_h_px = None
+        self.last_bbox_width_dist = None
+        self.last_bbox_height_dist = None
+        self.last_bbox_calibrated_height_dist = None
+        self.last_bbox_dist = None
+        self.last_pre_depth_dist = None
+        self.last_depth_dist = None
+        self.last_depth_stats = {}
+        self.last_raw_dist = None
+        self.last_final_dist = None
+        self.last_tri_span_px = None
+        self.last_tri_span_dist = None
         self.last_partial_count = 0
         self.last_partial_labels = []
         self.last_primary_partial_kind = None
@@ -370,6 +427,7 @@ class BrickDetector:
         self._hsv_cyan_coverage_min = float(HSV_CYAN_COVERAGE_MIN)
         self._hsv_min_area_ratio = float(HSV_MIN_AREA_RATIO)
         self._require_cyan_shape = False
+        self._closeup_full_frame_hsv_enabled = True
 
         # Center-target lock for cyan mode: prefer center-most candidate while
         # avoiding frame-to-frame jitter between nearly equivalent bricks.
@@ -454,6 +512,7 @@ class BrickDetector:
                            center_switch_margin_px=None,
                            center_axis_weight_x=None,
                            center_axis_weight_y=None,
+                           closeup_full_frame_hsv_enabled=None,
                            depth_source_mode=None,
                            stereo_config_mode=None):
         if confidence is not None:
@@ -655,6 +714,8 @@ class BrickDetector:
                 self._center_axis_weight_y = max(0.01, weight_y)
             except (TypeError, ValueError):
                 pass
+        if closeup_full_frame_hsv_enabled is not None:
+            self._closeup_full_frame_hsv_enabled = bool(closeup_full_frame_hsv_enabled)
         if depth_source_mode is not None:
             candidate = str(depth_source_mode or "").strip().lower()
             if candidate in ("auto", "stereo", "pinhole"):
@@ -712,6 +773,9 @@ class BrickDetector:
             "center_switch_margin_px": float(self._center_switch_margin_px),
             "center_axis_weight_x": float(self._center_axis_weight_x),
             "center_axis_weight_y": float(self._center_axis_weight_y),
+            "closeup_full_frame_hsv_enabled": bool(
+                getattr(self, "_closeup_full_frame_hsv_enabled", True)
+            ),
             "depth_source_mode": str(getattr(self, "_depth_source_mode", "auto")),
             "stereo_config_mode": str(
                 getattr(getattr(self, "cap", None), "_stereo_config_mode", None)
@@ -895,6 +959,56 @@ class BrickDetector:
             return 999.0
         return (BRICK_WIDTH_MM * self.focal_px) / float(bbox_width_px)
 
+    def _calibrated_distance_from_height_signal(self, height_dist_mm):
+        try:
+            height_signal = float(height_dist_mm)
+        except (TypeError, ValueError):
+            return None
+        if height_signal <= 0.0:
+            return None
+        return float(DIST_CAL_HEIGHT_SCALE * (height_signal ** DIST_CAL_HEIGHT_POWER))
+
+    def _distance_components_from_box(self, bbox_width_px, bbox_height_px, partial_kind=None):
+        eff_w = self._effective_distance_width_px(bbox_width_px, partial_kind)
+        eff_h = self._effective_distance_height_px(bbox_height_px, partial_kind)
+        width_dist = self._estimate_distance_from_width(eff_w) if eff_w > 0 else None
+        height_dist = self._estimate_distance(eff_h) if eff_h > 0 else None
+        calibrated_dist = self._calibrated_distance_from_height_signal(height_dist)
+        if width_dist is None and height_dist is None:
+            bbox_dist = 999.0
+        elif calibrated_dist is not None:
+            bbox_dist = float(calibrated_dist)
+        elif width_dist is None:
+            bbox_dist = float(height_dist)
+        elif height_dist is None:
+            bbox_dist = float(width_dist)
+        else:
+            bbox_dist = float((0.8 * float(width_dist)) + (0.2 * float(height_dist)))
+        return {
+            "bbox_w_px": float(bbox_width_px),
+            "bbox_h_px": float(bbox_height_px),
+            "eff_w_px": float(eff_w),
+            "eff_h_px": float(eff_h),
+            "width_dist_mm": None if width_dist is None else float(width_dist),
+            "height_dist_mm": None if height_dist is None else float(height_dist),
+            "calibrated_height_dist_mm": (
+                None if calibrated_dist is None else float(calibrated_dist)
+            ),
+            "bbox_dist_mm": float(bbox_dist),
+        }
+
+    def _record_bbox_distance_components(self, components):
+        if not isinstance(components, dict):
+            return
+        self.last_bbox_w_px = components.get("bbox_w_px")
+        self.last_bbox_h_px = components.get("bbox_h_px")
+        self.last_bbox_eff_w_px = components.get("eff_w_px")
+        self.last_bbox_eff_h_px = components.get("eff_h_px")
+        self.last_bbox_width_dist = components.get("width_dist_mm")
+        self.last_bbox_height_dist = components.get("height_dist_mm")
+        self.last_bbox_calibrated_height_dist = components.get("calibrated_height_dist_mm")
+        self.last_bbox_dist = components.get("bbox_dist_mm")
+
     def _estimate_offset_x_mm(self, center_x_px, dist_mm):
         """
         Estimate camera-space horizontal offset in mm from the camera X center
@@ -947,17 +1061,13 @@ class BrickDetector:
         Height is retained as a secondary stabilizer so partial detections and
         noisy boxes do not swing as hard.
         """
-        eff_w = self._effective_distance_width_px(bbox_width_px, partial_kind)
-        eff_h = self._effective_distance_height_px(bbox_height_px, partial_kind)
-        width_dist = self._estimate_distance_from_width(eff_w) if eff_w > 0 else None
-        height_dist = self._estimate_distance(eff_h) if eff_h > 0 else None
-        if width_dist is None and height_dist is None:
-            return 999.0
-        if width_dist is None:
-            return float(height_dist)
-        if height_dist is None:
-            return float(width_dist)
-        return float((0.8 * float(width_dist)) + (0.2 * float(height_dist)))
+        return float(
+            self._distance_components_from_box(
+                bbox_width_px,
+                bbox_height_px,
+                partial_kind,
+            )["bbox_dist_mm"]
+        )
 
     def _dist_from_triangle_span(self, cutout_polys):
         """Estimate dist from the pixel span between confirmed triangle outer edges.
@@ -970,6 +1080,8 @@ class BrickDetector:
         Returns None if fewer than two triangle polygons are available or the
         computed span is degenerate.
         """
+        self.last_tri_span_px = None
+        self.last_tri_span_dist = None
         if not isinstance(cutout_polys, list) or len(cutout_polys) < 2:
             return None
         p0 = np.asarray(cutout_polys[0], dtype=np.float32)
@@ -982,7 +1094,10 @@ class BrickDetector:
         span_px = float(np.max(p1[:, 0])) - float(np.min(p0[:, 0]))
         if span_px < 2.0:
             return None
-        return (BRICK_WIDTH_MM * self.focal_px) / span_px
+        dist = (BRICK_WIDTH_MM * self.focal_px) / span_px
+        self.last_tri_span_px = span_px
+        self.last_tri_span_dist = dist
+        return dist
 
     def _smooth(self, new_val, prev_val):
         """Exponential moving average for temporal smoothing."""
@@ -1030,11 +1145,36 @@ class BrickDetector:
 
     def _prefer_depth_distance(self, fallback_dist_mm, center_x_px, center_y_px, bbox=None):
         mode = str(getattr(self, "_depth_source_mode", "auto") or "auto").strip().lower()
+        try:
+            self.last_pre_depth_dist = float(fallback_dist_mm)
+        except (TypeError, ValueError):
+            self.last_pre_depth_dist = None
+        self.last_depth_dist = None
+        self.last_depth_stats = {}
+
+        depth_mm = self._depth_distance_mm(center_x_px, center_y_px, bbox=bbox)
+        depth_stats = getattr(getattr(self, "cap", None), "latest_depth_stats", None)
+        if callable(depth_stats):
+            try:
+                self.last_depth_stats = depth_stats()
+            except Exception:
+                self.last_depth_stats = {}
+        if depth_mm is not None:
+            self.last_depth_dist = float(depth_mm)
+
         if mode == "pinhole":
             self.last_geometry_source = "pinhole_size"
             return fallback_dist_mm
-        depth_mm = self._depth_distance_mm(center_x_px, center_y_px, bbox=bbox)
         if depth_mm is not None:
+            try:
+                fallback_val = float(fallback_dist_mm)
+            except (TypeError, ValueError):
+                fallback_val = None
+            if mode == "auto" and fallback_val is not None and fallback_val > 0.0:
+                ratio = float(depth_mm) / fallback_val
+                if ratio < 0.35 or ratio > 2.75:
+                    self.last_geometry_source = "pinhole_size_depth_rejected"
+                    return fallback_dist_mm
             self.last_geometry_source = "depthai_stereo"
             return depth_mm
         if mode == "stereo":
@@ -1164,6 +1304,44 @@ class BrickDetector:
         # EMA on the clamped value
         return self._smooth_alpha * clamped + (1 - self._smooth_alpha) * prev_angle
 
+    def _strong_cyan_color_shape_pass(
+        self,
+        *,
+        crop_area,
+        cyan_pixels,
+        contour_area,
+        contour_bbox_area,
+        fill_ratio,
+        aspect,
+        rel_err,
+    ) -> bool:
+        try:
+            crop_area_f = max(1.0, float(crop_area))
+            cyan_coverage = float(cyan_pixels) / crop_area_f
+            contour_coverage = float(contour_area) / crop_area_f
+            fill = float(fill_ratio)
+            aspect_val = float(aspect)
+            rel_err_val = float(rel_err)
+            contour_bbox_area_f = max(1.0, float(contour_bbox_area))
+        except (TypeError, ValueError):
+            return False
+
+        coverage_min = max(
+            BRICK_COLOR_FALLBACK_COVERAGE_MIN,
+            float(getattr(self, "_hsv_cyan_coverage_min", HSV_CYAN_COVERAGE_MIN)),
+        )
+        if cyan_coverage < coverage_min and contour_coverage < BRICK_COLOR_FALLBACK_CONTOUR_COVERAGE_MIN:
+            return False
+        if fill < BRICK_COLOR_FALLBACK_FILL_RATIO_MIN:
+            return False
+        if aspect_val > BRICK_COLOR_FALLBACK_ASPECT_MAX:
+            return False
+        # A cyan contour that occupies meaningful area in its own bbox can be
+        # accepted even when the slot/trapezoid is weak or partially washed out.
+        if rel_err_val <= (BRICK_SHAPE_REL_ERROR_MAX * 2.5):
+            return True
+        return (float(contour_area) / contour_bbox_area_f) >= 0.45
+
     # ------------------------------------------------------------------
     # HSV segmentation for individual cyan brick detection
     # ------------------------------------------------------------------
@@ -1235,8 +1413,6 @@ class BrickDetector:
             if bw <= 0 or bh <= 0:
                 continue
             fill_ratio = float(area) / float(max(1, bw * bh))
-            if fill_ratio < BRICK_SHAPE_FILL_RATIO_MIN:
-                continue
             rw, rh = rect[1]
             if rw <= 0.0 or rh <= 0.0:
                 continue
@@ -1247,10 +1423,22 @@ class BrickDetector:
                 float(BRICK_HEIGHT_MM / BRICK_DEPTH_MM),
             )
             rel_err = min(abs(aspect - exp) / max(1e-6, exp) for exp in expected_aspects)
-            if rel_err > BRICK_SHAPE_REL_ERROR_MAX:
+            color_shape_pass = self._strong_cyan_color_shape_pass(
+                crop_area=bbox_area,
+                cyan_pixels=cyan_pixels,
+                contour_area=area,
+                contour_bbox_area=max(1, bw * bh),
+                fill_ratio=fill_ratio,
+                aspect=aspect,
+                rel_err=rel_err,
+            )
+            if fill_ratio < BRICK_SHAPE_FILL_RATIO_MIN and not color_shape_pass:
+                continue
+            if rel_err > BRICK_SHAPE_REL_ERROR_MAX and not color_shape_pass:
                 continue
 
             cutout_polygons = []
+            color_only_shape = False
 
             if self._uses_negative_cutout_gate():
                 gate_rect = rect
@@ -1358,18 +1546,24 @@ class BrickDetector:
                                     else float(split_selection_anchor[1])
                                 ),
                             })
-                    continue
-                shape_profile = "full"
-                shape_match_score = (
-                    cutout_summary.get("score")
-                    if isinstance(cutout_summary, dict)
-                    else None
-                )
-                cutout_polygons = (
-                    list(cutout_summary.get("polygons") or [])
-                    if isinstance(cutout_summary, dict)
-                    else []
-                )
+                    if not color_shape_pass:
+                        continue
+                    shape_profile = "color"
+                    shape_match_score = None
+                    cutout_polygons = []
+                    color_only_shape = True
+                else:
+                    shape_profile = "full"
+                    shape_match_score = (
+                        cutout_summary.get("score")
+                        if isinstance(cutout_summary, dict)
+                        else None
+                    )
+                    cutout_polygons = (
+                        list(cutout_summary.get("polygons") or [])
+                        if isinstance(cutout_summary, dict)
+                        else []
+                    )
                 partial = False
                 partial_kind = None
                 partial_label = None
@@ -1377,7 +1571,11 @@ class BrickDetector:
                 # Canonical shape gate: accept only full/top/bottom profile matches.
                 shape_profile, shape_match_score = self._classify_contour_shape(cnt)
                 if shape_profile is None:
-                    continue
+                    if not color_shape_pass:
+                        continue
+                    shape_profile = "color"
+                    shape_match_score = None
+                    color_only_shape = True
 
                 partial = False
                 partial_kind = None
@@ -1451,6 +1649,8 @@ class BrickDetector:
                     if selection_anchor is None
                     else float(selection_anchor[1])
                 ),
+                "from_color_detection": bool(color_only_shape),
+                "cyan_coverage": float(cyan_pixels) / float(max(1, bbox_area)),
             })
 
         if self._uses_negative_cutout_gate():
@@ -1604,29 +1804,19 @@ class BrickDetector:
         kern = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kern)
 
+        # Close gaps between fragments so the full cyan face merges into one blob.
+        close_kern = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kern)
+
         contours, _ = cv2.findContours(
             mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
         if not contours:
             return primary.get("contour")
 
-        # Pick the contour closest to the primary brick's center (in crop coords)
-        pcx = primary["center_x"] - rx1
-        pcy = primary["center_y"] - ry1
-        best_cnt = None
-        best_dist = float("inf")
-        for cnt in contours:
-            M = cv2.moments(cnt)
-            if M["m00"] == 0:
-                continue
-            cx = int(M["m10"] / M["m00"])
-            cy = int(M["m01"] / M["m00"])
-            d = (cx - pcx) ** 2 + (cy - pcy) ** 2
-            if d < best_dist:
-                best_dist = d
-                best_cnt = cnt
-
-        if best_cnt is None or len(best_cnt) < 3:
+        # Pick the largest contour — covers the most cyan and avoids tiny fragments.
+        best_cnt = max(contours, key=cv2.contourArea)
+        if len(best_cnt) < 3:
             return primary.get("contour")
 
         cnt_frame = best_cnt.copy()
@@ -1699,7 +1889,6 @@ class BrickDetector:
         distance penalty so we prefer fully-visible bricks.
         """
         if not individual_bricks:
-            self._center_lock_prev_center = None
             return None
 
         candidates = []
@@ -1827,7 +2016,6 @@ class BrickDetector:
 
     def _select_center_candidate_index(self, candidates, frame_w, frame_h):
         if not candidates:
-            self._center_lock_prev_center = None
             return None
 
         allowed_indices = self._center_y_row_candidate_indices(
@@ -1981,15 +2169,24 @@ class BrickDetector:
                 for x1, y1, x2, y2, conf in bricks:
                     individuals = self._segment_bricks_hsv(frame, x1, y1, x2, y2)
                     all_hsv_bricks.extend(individuals)
-            if not all_hsv_bricks and self._should_try_full_frame_hsv_fallback(bricks, w_frame, h_frame):
+            should_try_full_frame_hsv = (
+                bool(getattr(self, "_closeup_full_frame_hsv_enabled", True))
+                and self._should_try_full_frame_hsv_fallback(
+                    bricks,
+                    w_frame,
+                    h_frame,
+                )
+            )
+            if should_try_full_frame_hsv:
                 # Very close bricks can fill most of the frame and fail YOLO/NMS.
                 # They can also be clipped by the frame so the YOLO box misses
                 # the full face geometry. Let the cyan shape gate inspect the
                 # full frame directly before declaring failure.
+                had_box_hsv_bricks = bool(all_hsv_bricks)
                 individuals = self._segment_bricks_hsv(frame, 0, 0, w_frame, h_frame)
                 if individuals:
                     all_hsv_bricks.extend(individuals)
-                    closeup_hsv_fallback_used = True
+                    closeup_hsv_fallback_used = not bool(bricks) or not had_box_hsv_bricks
                     if not bricks:
                         bricks = [(0, 0, w_frame, h_frame, 1.0)]
             if all_hsv_bricks:
@@ -2045,6 +2242,8 @@ class BrickDetector:
             conf_gate_pct = float(getattr(self, "_conf_gate_pct", CONF_GATE_PCT))
             if bool(primary.get("from_slot_detection", False)):
                 conf_pct = max(conf_pct, conf_gate_pct + 15.0)
+            elif bool(primary.get("from_color_detection", False)):
+                conf_pct = max(conf_pct, float(COLOR_ONLY_CONF_PCT))
             combined_conf = conf_pct + (PINK_DOT_CONF_BONUS if dot_found else 0.0)
             if combined_conf < conf_gate_pct:
                 self.last_status = "low confidence"
@@ -2085,7 +2284,17 @@ class BrickDetector:
             # left edge to outer right edge spans BRICK_WIDTH_MM in world model,
             # giving a much more stable signal than the YOLO bounding box.
             _, _, ind_bw, ind_bh = primary["bbox"]
-            raw_dist = self._estimate_distance_from_box(ind_bw, ind_bh, primary.get("partial_kind"))
+            bbox_dist_components = self._distance_components_from_box(
+                ind_bw,
+                ind_bh,
+                primary.get("partial_kind"),
+            )
+            self._record_bbox_distance_components(bbox_dist_components)
+            raw_dist = self._estimate_distance_from_box(
+                ind_bw,
+                ind_bh,
+                primary.get("partial_kind"),
+            )
             tri_span_dist = self._dist_from_triangle_span(
                 primary.get("negative_cutout_polygons")
             )
@@ -2097,8 +2306,10 @@ class BrickDetector:
                 anchor_cy,
                 bbox=primary.get("bbox"),
             )
+            self.last_raw_dist = raw_dist
             dist = self._smooth(raw_dist, self._prev_dist)
             self._prev_dist = dist
+            self.last_final_dist = dist
 
             raw_offset_x = self._estimate_offset_x_mm(anchor_cx, dist)
             offset_x = self._smooth(raw_offset_x, self._prev_offset)
@@ -2134,6 +2345,17 @@ class BrickDetector:
 
             return (True, angle, dist, offset_x, conf_pct, cam_height,
                     brick_above, brick_below)
+
+        if not bricks:
+            self._prev_angle = None
+            self._prev_dist = None
+            self._prev_offset = None
+            self._prev_offset_y = None
+            self._center_lock_prev_center = None
+            self.last_status = "searching"
+            self.last_primary_confidence = 0.0
+            self._clear_partial_state()
+            return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
         if bool(getattr(self, "_require_cyan_shape", False)):
             self._prev_angle = None
@@ -2239,7 +2461,18 @@ class BrickDetector:
 
         bbox_w = x2 - x1
         bbox_h = y2 - y1
-        raw_dist = self._estimate_distance_from_box(bbox_w, bbox_h, primary_partial_info.get("kind"))
+        bbox_dist_components = self._distance_components_from_box(
+            bbox_w,
+            bbox_h,
+            primary_partial_info.get("kind"),
+        )
+        self._record_bbox_distance_components(bbox_dist_components)
+        raw_dist = self._estimate_distance_from_box(
+            bbox_w,
+            bbox_h,
+            primary_partial_info.get("kind"),
+        )
+        self._dist_from_triangle_span(None)
         brick_center_x = (x1 + x2) / 2.0
         brick_center_y = (y1 + y2) / 2.0
         raw_dist = self._prefer_depth_distance(
@@ -2248,8 +2481,10 @@ class BrickDetector:
             brick_center_y,
             bbox=(x1, y1, bbox_w, bbox_h),
         )
+        self.last_raw_dist = raw_dist
         dist = self._smooth(raw_dist, self._prev_dist)
         self._prev_dist = dist
+        self.last_final_dist = dist
 
         raw_offset_x = self._estimate_offset_x_mm(brick_center_x, dist)
         offset_x = self._smooth(raw_offset_x, self._prev_offset)
@@ -2327,17 +2562,6 @@ class BrickDetector:
 
         bricks = self._detect(frame)
 
-        if not bricks:
-            self._prev_angle = None
-            self._prev_dist = None
-            self._prev_offset = None
-            self._prev_offset_y = None
-            self._center_lock_prev_center = None
-            self.last_status = "searching"
-            self.last_primary_confidence = 0.0
-            self._clear_partial_state()
-            return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
-
         try:
             return self._process_bricks(frame, bricks)
         except Exception as exc:
@@ -2362,17 +2586,6 @@ class BrickDetector:
         self.frame_h = h_frame
 
         bricks = self._detect(frame)
-
-        if not bricks:
-            self._prev_angle = None
-            self._prev_dist = None
-            self._prev_offset = None
-            self._prev_offset_y = None
-            self._center_lock_prev_center = None
-            self.last_status = "searching"
-            self.last_primary_confidence = 0.0
-            self._clear_partial_state()
-            return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
         # Use a copy so debug drawing doesn't mutate the caller's frame
         try:
@@ -2845,7 +3058,10 @@ class BrickDetector:
         contour_mask = cv2.erode(
             contour_mask,
             kern_erode,
-            iterations=self._hsv_erode_iterations,
+            iterations=max(
+                0,
+                int(getattr(self, "_hsv_erode_iterations", HSV_ERODE_ITERATIONS)),
+            ),
         )
         kern_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         contour_mask = cv2.dilate(contour_mask, kern_dilate, iterations=1)
@@ -4305,36 +4521,20 @@ class BrickDetector:
         outline_thickness = 3 if is_partial else 2
 
         if self._uses_negative_cutout_gate():
-            rect_points = None
-            if rect is not None:
-                try:
-                    rect_points = self._ordered_rect_points(rect)
-                except Exception:
-                    rect_points = None
             cutout_polygons = primary.get("negative_cutout_polygons")
-            if not isinstance(cutout_polygons, list) or not cutout_polygons:
-                if isinstance(rect_points, np.ndarray) and rect_points.shape == (4, 2):
-                    cutout_polygons = self._project_negative_cutout_polygons(rect_points)
 
+            # When pair_candidates found triangles, primary["contour"] is already
+            # the face-shape polygon. Draw it directly.
+            # Fall back to bbox rect so there is always a visible outline.
             if contour_arr is not None and contour_arr.shape[0] >= 3:
-                cv2.polylines(
-                    frame,
-                    [contour_arr],
-                    True,
-                    outline_color,
-                    outline_thickness,
-                    cv2.LINE_AA,
-                )
-            elif isinstance(rect_points, np.ndarray) and rect_points.shape == (4, 2):
-                rect_draw = np.round(rect_points).astype(np.int32).reshape(-1, 1, 2)
-                cv2.polylines(
-                    frame,
-                    [rect_draw],
-                    True,
-                    outline_color,
-                    outline_thickness,
-                    cv2.LINE_AA,
-                )
+                cv2.polylines(frame, [contour_arr], True, outline_color, 2, cv2.LINE_AA)
+            else:
+                bbox = primary.get("bbox")
+                if isinstance(bbox, tuple) and len(bbox) >= 4:
+                    bx, by, bw, bh = [int(round(float(v))) for v in bbox[:4]]
+                    if bw > 0 and bh > 0:
+                        cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), outline_color, 2, cv2.LINE_AA)
+
             if isinstance(cutout_polygons, list) and cutout_polygons:
                 for poly in cutout_polygons:
                     poly_arr = np.asarray(poly, dtype=np.float32)
@@ -4475,21 +4675,127 @@ class BrickDetector:
             except Exception:
                 pass
 
+    def _cyan_outline_contours_for_candidate(self, frame, candidate):
+        """Return frame-space contours tightly following cyan pixels in a candidate bbox."""
+        if frame is None or not isinstance(candidate, dict):
+            return []
+        bbox = candidate.get("bbox")
+        if not isinstance(bbox, tuple) or len(bbox) < 4:
+            return self._fallback_outline_contours_for_candidate(candidate)
+
+        try:
+            bx, by, bw, bh = [int(round(float(v))) for v in bbox[:4]]
+        except (TypeError, ValueError):
+            return self._fallback_outline_contours_for_candidate(candidate)
+        if bw <= 0 or bh <= 0:
+            return self._fallback_outline_contours_for_candidate(candidate)
+
+        frame_h, frame_w = frame.shape[:2]
+        x1 = max(0, bx)
+        y1 = max(0, by)
+        x2 = min(int(frame_w), bx + bw)
+        y2 = min(int(frame_h), by + bh)
+        if x2 <= x1 or y2 <= y1:
+            return self._fallback_outline_contours_for_candidate(candidate)
+
+        crop = frame[y1:y2, x1:x2]
+        if crop.size == 0:
+            return self._fallback_outline_contours_for_candidate(candidate)
+
+        feature_mask, _contour_mask = self._build_hsv_masks(crop)
+        if feature_mask is None:
+            return self._fallback_outline_contours_for_candidate(candidate)
+
+        contours, _ = cv2.findContours(
+            feature_mask,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        if not contours:
+            return self._fallback_outline_contours_for_candidate(candidate)
+
+        min_area = max(8.0, float((x2 - x1) * (y2 - y1)) * 0.01)
+        outline_contours = []
+        for contour in contours:
+            try:
+                area = float(cv2.contourArea(contour))
+            except Exception:
+                continue
+            if area < min_area:
+                continue
+            contour_frame = contour.copy()
+            contour_frame[:, :, 0] += int(x1)
+            contour_frame[:, :, 1] += int(y1)
+            outline_contours.append(contour_frame)
+
+        if outline_contours:
+            outline_contours.sort(key=cv2.contourArea, reverse=True)
+            return outline_contours
+        return self._fallback_outline_contours_for_candidate(candidate)
+
+    def _fallback_outline_contours_for_candidate(self, candidate):
+        if not isinstance(candidate, dict):
+            return []
+        contour = candidate.get("debug_outline_contour")
+        if contour is None:
+            contour = candidate.get("contour")
+        if contour is not None:
+            try:
+                contour_arr = np.asarray(contour, dtype=np.int32).reshape(-1, 1, 2)
+            except Exception:
+                contour_arr = None
+            if contour_arr is not None and contour_arr.shape[0] >= 3:
+                return [contour_arr]
+
+        bbox = candidate.get("bbox")
+        if isinstance(bbox, tuple) and len(bbox) >= 4:
+            try:
+                bx, by, bw, bh = [int(round(float(v))) for v in bbox[:4]]
+            except (TypeError, ValueError):
+                return []
+            if bw > 0 and bh > 0:
+                return [
+                    np.asarray(
+                        [
+                            [[bx, by]],
+                            [[bx + bw, by]],
+                            [[bx + bw, by + bh]],
+                            [[bx, by + bh]],
+                        ],
+                        dtype=np.int32,
+                    )
+                ]
+        return []
+
+    def _draw_cyan_candidate_outlines(self, frame, candidates):
+        if frame is None or not isinstance(candidates, list):
+            return
+        frame_h, frame_w = frame.shape[:2]
+        highlight_candidates = self._cap_candidates_to_nearest(
+            candidates,
+            frame_w,
+            frame_h,
+            max_count=MAX_HIGHLIGHTED_BRICKS,
+        )
+        for candidate in highlight_candidates:
+            for contour in self._cyan_outline_contours_for_candidate(frame, candidate):
+                cv2.polylines(
+                    frame,
+                    [contour],
+                    True,
+                    (0, 255, 0),
+                    2,
+                    cv2.LINE_AA,
+                )
+
     def _draw_debug_hsv(self, frame, yolo_bricks, hsv_bricks, primary,
                         angle, dist, offset_x, conf):
         """Draw enhanced debug visualization for HSV-segmented bricks."""
+        self._draw_cyan_candidate_outlines(frame, hsv_bricks)
         self._draw_brick_id_labels(frame, hsv_bricks)
-        if isinstance(hsv_bricks, list) and len(hsv_bricks) > 1:
-            self.current_frame = frame
-            return
 
-        # Only highlight the selected brick nearest the crosshairs.
+        # Draw primary-only decorations after the per-brick cyan outlines.
         if primary:
-            refined_outline = self._refine_primary_contour(frame, primary)
-            if refined_outline is not None:
-                primary = dict(primary)
-                primary["debug_outline_contour"] = refined_outline
-            self._draw_primary_face_outline(frame, primary)
             self._draw_pink_dot_on_brick(frame, primary)
             pcx = int(round(float(primary["center_x"])))
             pcy = int(round(float(primary["center_y"])))

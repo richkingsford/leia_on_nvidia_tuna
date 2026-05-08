@@ -74,19 +74,41 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         self.assertAlmostEqual(right, 10.0, places=6)
         self.assertAlmostEqual(left, -10.0, places=6)
 
-    def test_estimate_distance_from_box_prefers_width_signal(self):
+    def test_estimate_distance_from_box_uses_live_calibration_samples(self):
+        det = self._detector_stub()
+        det.focal_px = 497.0
+
+        far = BrickDetector._estimate_distance_from_box(det, 150.0, 51.0)
+        near = BrickDetector._estimate_distance_from_box(det, 243.0, 83.0)
+
+        self.assertAlmostEqual(far, 350.0, places=6)
+        self.assertAlmostEqual(near, 150.0, places=6)
+
+    def test_estimate_distance_increases_as_bbox_gets_smaller(self):
         det = self._detector_stub()
         det.focal_px = 580.0
 
-        width_only = BrickDetector._estimate_distance_from_width(det, 290.0)
-        height_only = BrickDetector._estimate_distance(det, 120.0)
-        blended = BrickDetector._estimate_distance_from_box(det, 290.0, 120.0)
+        near = BrickDetector._estimate_distance_from_box(det, 200.0, 120.0)
+        far = BrickDetector._estimate_distance_from_box(det, 100.0, 60.0)
 
-        self.assertAlmostEqual(width_only, 106.0, places=6)
-        self.assertGreater(height_only, width_only)
-        self.assertGreater(blended, width_only)
-        self.assertLess(blended, height_only)
-        self.assertLess(abs(blended - width_only), abs(blended - height_only))
+        self.assertGreater(far, near)
+
+    def test_triangle_span_distance_increases_as_span_gets_smaller(self):
+        det = self._detector_stub()
+        det.focal_px = 580.0
+        large_span = [
+            np.array([[100, 100], [120, 100], [110, 120]], dtype=np.float32),
+            np.array([[180, 100], [200, 100], [190, 120]], dtype=np.float32),
+        ]
+        small_span = [
+            np.array([[100, 100], [110, 100], [105, 115]], dtype=np.float32),
+            np.array([[140, 100], [150, 100], [145, 115]], dtype=np.float32),
+        ]
+
+        near = BrickDetector._dist_from_triangle_span(det, large_span)
+        far = BrickDetector._dist_from_triangle_span(det, small_span)
+
+        self.assertGreater(far, near)
 
     def test_calibrate_focal_blends_width_and_height(self):
         det = self._detector_stub()
@@ -142,6 +164,7 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
 
     def test_process_bricks_prefers_depthai_depth_for_geometry(self):
         det = self._detector_stub()
+        det._depth_source_mode = "stereo"
         det._camera_fx_px = 500.0
         det._camera_fy_px = 500.0
         det._camera_cx_px = 320.0
@@ -168,6 +191,70 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         self.assertAlmostEqual(result[3], 30.0, places=6)
         self.assertAlmostEqual(result[5], 18.0, places=6)
         self.assertEqual(det.last_geometry_source, "depthai_stereo")
+
+    def test_pinhole_mode_records_depth_but_does_not_use_it_for_dist(self):
+        det = self._detector_stub()
+        det._depth_source_mode = "pinhole"
+        det._camera_fx_px = 500.0
+        det._camera_fy_px = 500.0
+        det._camera_cx_px = 320.0
+        det._camera_cy_px = 240.0
+        det._estimate_angle = lambda *_args, **_kwargs: 0.0
+        det._estimate_distance_from_box = lambda _bbox_w, _bbox_h, _partial_kind=None: 400.0
+
+        class _DepthCap:
+            def depth_at_region(self, center_x, center_y, bbox=None):
+                self.last = (center_x, center_y, bbox)
+                return 1200.0
+
+            def latest_depth_stats(self):
+                return {"valid_px": 99, "median_mm": 1200.0}
+
+            def release(self):
+                pass
+
+        det.cap = _DepthCap()
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        bricks = [(400, 280, 440, 320, 0.95)]
+
+        result = BrickDetector._process_bricks(det, frame, bricks)
+
+        self.assertTrue(result[0])
+        self.assertAlmostEqual(result[2], 400.0, places=6)
+        self.assertAlmostEqual(det.last_depth_dist, 1200.0, places=6)
+        self.assertEqual(det.last_depth_stats["valid_px"], 99)
+        self.assertEqual(det.last_geometry_source, "pinhole_size")
+
+    def test_auto_depth_rejects_implausible_disagreement_with_pinhole(self):
+        det = self._detector_stub()
+        det._depth_source_mode = "auto"
+        det._camera_fx_px = 500.0
+        det._camera_fy_px = 500.0
+        det._camera_cx_px = 320.0
+        det._camera_cy_px = 240.0
+        det._estimate_angle = lambda *_args, **_kwargs: 0.0
+        det._estimate_distance_from_box = lambda _bbox_w, _bbox_h, _partial_kind=None: 400.0
+
+        class _DepthCap:
+            def depth_at_region(self, center_x, center_y, bbox=None):
+                return 1200.0
+
+            def latest_depth_stats(self):
+                return {"valid_px": 99, "median_mm": 1200.0}
+
+            def release(self):
+                pass
+
+        det.cap = _DepthCap()
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        bricks = [(400, 280, 440, 320, 0.95)]
+
+        result = BrickDetector._process_bricks(det, frame, bricks)
+
+        self.assertTrue(result[0])
+        self.assertAlmostEqual(result[2], 400.0, places=6)
+        self.assertAlmostEqual(det.last_depth_dist, 1200.0, places=6)
+        self.assertEqual(det.last_geometry_source, "pinhole_size_depth_rejected")
 
     def test_process_bricks_hsv_path_uses_primary_center_y(self):
         det = self._detector_stub()
@@ -330,7 +417,7 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         self.assertEqual(det.last_primary_partial_label, "TOP HALF")
         self.assertFalse(bool(result[7]))
 
-    def test_draw_debug_hsv_colors_partial_primary_orange(self):
+    def test_draw_debug_hsv_outlines_partial_primary_green(self):
         det = self._detector_stub()
         frame = np.zeros((120, 120, 3), dtype=np.uint8)
         primary = {
@@ -357,7 +444,7 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         )
 
         self.assertIsNotNone(det.current_frame)
-        self.assertTrue(np.array_equal(det.current_frame[10, 30], np.array([0, 165, 255], dtype=np.uint8)))
+        self.assertTrue(np.array_equal(det.current_frame[30, 10], np.array([0, 255, 0], dtype=np.uint8)))
 
     def test_draw_primary_face_outline_prefers_actual_contour(self):
         det = self._detector_stub()

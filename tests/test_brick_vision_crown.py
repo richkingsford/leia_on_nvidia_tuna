@@ -22,7 +22,10 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import helper_brick_detector_yolo as det
 from livestream_crown_vision import (
+    CROWN_PROFILE_KEY,
+    CROWN_PROFILE_OPTIONS,
     CROWN_PROFILE_TUNING,
+    CROWN_PROFILE_TUNINGS,
     CrownVisionLivestream,
     HOLD_FRAMES,
 )
@@ -157,6 +160,38 @@ def _make_stream_stub() -> CrownVisionLivestream:
 class TestCrownProfileTuning(unittest.TestCase):
     """Crown profile must use negative_cutouts gate."""
 
+    def test_standalone_dropdown_exposes_distance_sweep_profiles(self):
+        option_keys = [key for key, _label in CROWN_PROFILE_OPTIONS]
+        self.assertGreaterEqual(len(CROWN_PROFILE_OPTIONS), 6)
+        self.assertIn("tight_far_slots", option_keys)
+        self.assertIn("tight_far_conf", option_keys)
+        self.assertIn("tight_far_no_erode", option_keys)
+        self.assertIn("tight_far_dim", option_keys)
+        self.assertIn("balanced_far_guard", option_keys)
+        self.assertIn(CROWN_PROFILE_KEY, dict(CROWN_PROFILE_OPTIONS))
+
+    def test_default_profile_is_known_good_tight_color(self):
+        self.assertEqual(CROWN_PROFILE_KEY, "tight_color")
+        self.assertEqual(CROWN_PROFILE_TUNING["hsv_lower"], list(det.CYAN_HSV_TIGHT_LOWER))
+        self.assertEqual(CROWN_PROFILE_TUNING["hsv_upper"], list(det.CYAN_HSV_TIGHT_UPPER))
+        self.assertAlmostEqual(CROWN_PROFILE_TUNING["confidence"], 0.35)
+        self.assertEqual(CROWN_PROFILE_TUNING["depth_source_mode"], "pinhole")
+
+    def test_far_profiles_relax_distance_gates_from_tight_anchor(self):
+        anchor = CROWN_PROFILE_TUNINGS["tight_color"]
+        slots = CROWN_PROFILE_TUNINGS["tight_far_slots"]
+        conf = CROWN_PROFILE_TUNINGS["tight_far_conf"]
+        no_erode = CROWN_PROFILE_TUNINGS["tight_far_no_erode"]
+        dim = CROWN_PROFILE_TUNINGS["tight_far_dim"]
+        wider = CROWN_PROFILE_TUNINGS["balanced_far_guard"]
+
+        self.assertLess(slots["negative_cutout_min_area_px"], anchor["negative_cutout_min_area_px"])
+        self.assertLess(slots["hsv_min_area_ratio"], anchor["hsv_min_area_ratio"])
+        self.assertLess(conf["confidence"], slots["confidence"])
+        self.assertEqual(no_erode["hsv_erode_iterations"], 0)
+        self.assertLess(dim["hsv_lower"][1], anchor["hsv_lower"][1])
+        self.assertFalse(wider["closeup_full_frame_hsv_enabled"])
+
     def test_shape_gate_mode_is_negative_cutouts(self):
         self.assertEqual(CROWN_PROFILE_TUNING["shape_gate_mode"], "negative_cutouts")
 
@@ -274,6 +309,27 @@ class TestSingleBrickFallback(unittest.TestCase):
         expected_scale = blob_h / face_h_mm
         self.assertAlmostEqual(scale, expected_scale, delta=1.0)
 
+    def test_strong_cyan_color_survives_weak_trapezoid_shape(self):
+        d = _make_stub()
+        d._build_trapezoid_brick_candidates = lambda *_args, **_kwargs: []
+        d._classify_contour_shape = lambda _cnt: (None, 9.0)
+        frame = np.zeros((110, 190, 3), dtype=np.uint8)
+        cyan_bgr = (177, 157, 31)
+        cv2.rectangle(frame, (22, 28), (168, 84), cyan_bgr, thickness=cv2.FILLED)
+
+        candidates = det.BrickDetector._segment_bricks_hsv(
+            d,
+            frame,
+            0,
+            0,
+            frame.shape[1],
+            frame.shape[0],
+        )
+
+        self.assertGreaterEqual(len(candidates), 1)
+        self.assertTrue(any(bool(c.get("from_color_detection")) for c in candidates))
+        self.assertTrue(any(c.get("shape_profile") == "color" for c in candidates))
+
 
 class TestShapeMatchThreshold(unittest.TestCase):
     """_classify_contour_shape must use self._shape_match_score_max (from world model JSON)."""
@@ -363,6 +419,133 @@ class TestDrawBrickIdLabels(unittest.TestCase):
         det.BrickDetector._draw_brick_id_labels(d, frame, [bottom, top])  # reversed order
         # Frame must have been modified (labels drawn)
         self.assertGreater(self._yellow_px(frame), 0)
+
+
+class TestCyanCandidateOutlines(unittest.TestCase):
+    """Detected cyan candidates get tight green outlines around cyan pixels."""
+
+    @staticmethod
+    def _green_px(frame: np.ndarray) -> int:
+        return int(np.count_nonzero(
+            (frame[:, :, 0] == 0) & (frame[:, :, 1] == 255) & (frame[:, :, 2] == 0)
+        ))
+
+    def test_draw_debug_hsv_outlines_each_visible_candidate_green(self):
+        d = _make_stub()
+        frame = np.zeros((140, 180, 3), dtype=np.uint8)
+        cyan_bgr = (177, 157, 31)
+        cv2.rectangle(frame, (30, 20), (90, 52), cyan_bgr, thickness=cv2.FILLED)
+        cv2.rectangle(frame, (30, 78), (90, 110), cyan_bgr, thickness=cv2.FILLED)
+        c1 = _make_candidate(cx=60, cy=36, bbox=(24, 14, 76, 46))
+        c2 = _make_candidate(cx=60, cy=94, bbox=(24, 72, 76, 46))
+
+        det.BrickDetector._draw_debug_hsv(
+            d,
+            frame,
+            [],
+            [c1, c2],
+            c1,
+            angle=0.0,
+            dist=0.0,
+            offset_x=0.0,
+            conf=1.0,
+        )
+
+        self.assertGreater(self._green_px(frame[18:56, 28:94]), 0)
+        self.assertGreater(self._green_px(frame[76:114, 28:94]), 0)
+
+    def test_outline_follows_cyan_pixels_not_loose_candidate_bbox(self):
+        d = _make_stub()
+        frame = np.zeros((100, 140, 3), dtype=np.uint8)
+        cyan_bgr = (177, 157, 31)
+        cv2.rectangle(frame, (46, 32), (92, 58), cyan_bgr, thickness=cv2.FILLED)
+        candidate = _make_candidate(cx=69, cy=45, bbox=(24, 16, 92, 60))
+
+        det.BrickDetector._draw_cyan_candidate_outlines(d, frame, [candidate])
+
+        self.assertGreater(self._green_px(frame[30:61, 44:95]), 0)
+        self.assertEqual(self._green_px(frame[14:19, 22:118]), 0)
+
+
+class TestReadFrameCloseupRecovery(unittest.TestCase):
+    """read_frame must reach the full-frame HSV fallback when YOLO returns no boxes."""
+
+    def test_read_frame_uses_full_frame_hsv_when_yolo_has_no_boxes(self):
+        d = _make_stub()
+        d.frame_w = 640
+        d.frame_h = 480
+        d.focal_px = 100.0
+        d.camera_center_offset_px = 0.0
+        d._smooth_alpha = 1.0
+        d._prev_angle = None
+        d._prev_dist = None
+        d._prev_offset = None
+        d._prev_offset_y = None
+        d.debug = False
+        d.last_status = "idle"
+        d.last_max_confidence = 0.0
+        d.last_primary_confidence = 0.0
+        d.last_partial_count = 0
+        d.last_partial_labels = []
+        d.last_primary_partial_kind = None
+        d.last_primary_partial_label = None
+        d.raw_frame = None
+        d.current_frame = None
+        d._detect = lambda _frame: []
+        d._estimate_distance_from_box = lambda _bbox_w, _bbox_h, _partial_kind=None: 100.0
+        d._refine_angle_for_primary = lambda *_args, **_kwargs: 0.0
+        d._stack_flags_from_individuals = lambda *_args, **_kwargs: (False, False)
+        d._detect_pink_dot_in_brick = lambda *_args, **_kwargs: (False, None, None)
+        d._dist_from_triangle_span = lambda *_args, **_kwargs: None
+
+        primary = _make_candidate(cx=320, cy=240, bbox=(260, 210, 120, 60))
+        segment_calls = []
+
+        def _segment(_frame, x1, y1, x2, y2):
+            segment_calls.append((x1, y1, x2, y2))
+            return [primary] if (x1, y1, x2, y2) == (0, 0, 640, 480) else []
+
+        d._segment_bricks_hsv = _segment
+
+        result = det.BrickDetector.read_frame(d, np.zeros((480, 640, 3), dtype=np.uint8))
+
+        self.assertTrue(result[0])
+        self.assertEqual(segment_calls, [(0, 0, 640, 480)])
+        self.assertEqual(d.last_status, "target locked (HSV)")
+
+    def test_profile_can_disable_full_frame_hsv_recovery(self):
+        d = _make_stub()
+        d.frame_w = 640
+        d.frame_h = 480
+        d.camera_center_offset_px = 0.0
+        d._smooth_alpha = 1.0
+        d._prev_angle = None
+        d._prev_dist = None
+        d._prev_offset = None
+        d._prev_offset_y = None
+        d.debug = False
+        d.last_status = "idle"
+        d.last_primary_confidence = 0.0
+        d.last_partial_count = 0
+        d.last_partial_labels = []
+        d.last_primary_partial_kind = None
+        d.last_primary_partial_label = None
+        d._detect = lambda _frame: []
+        d.set_runtime_tuning(closeup_full_frame_hsv_enabled=False)
+
+        segment_calls = []
+
+        def _segment(_frame, x1, y1, x2, y2):
+            segment_calls.append((x1, y1, x2, y2))
+            return [_make_candidate(cx=320, cy=240, bbox=(260, 210, 120, 60))]
+
+        d._segment_bricks_hsv = _segment
+
+        result = det.BrickDetector.read_frame(d, np.zeros((480, 640, 3), dtype=np.uint8))
+
+        self.assertFalse(result[0])
+        self.assertEqual(segment_calls, [])
+        self.assertEqual(d.last_status, "searching")
 
 
 class TestProcessHsvCandidateHighlights(unittest.TestCase):

@@ -25,6 +25,12 @@ class TestHelperBrickDetectorYoloCyanPalette(unittest.TestCase):
                 "39B7C1",
                 "2AB0BA",
                 "31B0BB",
+                "2E5356",
+                "27464A",
+                "285258",
+                "43686B",
+                "335760",
+                "325A64",
             ),
         )
 

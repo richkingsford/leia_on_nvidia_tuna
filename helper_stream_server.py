@@ -159,10 +159,14 @@ class StreamServer:
 
         @self.app.route("/video_feed")
         def video_feed():
-            return Response(
+            resp = Response(
                 self._generate_frames(),
                 mimetype="multipart/x-mixed-replace; boundary=frame",
             )
+            resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            resp.headers["Pragma"] = "no-cache"
+            resp.headers["Expires"] = "0"
+            return resp
 
         @self.app.route("/text")
         def text_feed():
@@ -930,10 +934,11 @@ class StreamServer:
                 f"{controls_html}"
                 f"<div class='xyz-layout-container' style='margin-top: 12px; display: flex; justify-content: center;'><div class='stream' style='background: white;'><img id='xyzLayout' src='/xyz_workspace_live.svg'{xyz_width_attr}></div></div>"
                 f"<div class='xyz-layout-container' style='margin-top: 12px; display: flex; justify-content: center;'><div class='stream' style='background: white;'><img id='mastLayout' src='/xyz_mast_live.svg'{xyz_width_attr}></div></div>"
-                f"<div class='stream' style='margin-top: 12px;'><img src='/video_feed'{camera_width_attr}></div>"
+                f"<div class='stream' style='margin-top: 12px;'><img id='videoFeed' src='/video_feed'{camera_width_attr}></div>"
                 f"{footer_below_html}"
                 f"{controls_script}"
                 f"<script>"
+                "const _vf=document.getElementById('videoFeed');if(_vf){const _b=_vf.src.split('?')[0];_vf.src=_b+'?t='+Date.now();}"
                 "const _svgRefreshState = { xyz: false, mast: false };"
                 "const refreshSvgImage = (id, path, stateKey) => {"
                 "const el = document.getElementById(id);"
@@ -1041,8 +1046,9 @@ class StreamServer:
             f"{footer_sidebar_html}"
             "</div>"
             "<script>"
-            "const telemetryEl = document.getElementById('telemetry');"
             "const videoFeedEl = document.getElementById('videoFeed');"
+            "if(videoFeedEl){const base=videoFeedEl.src.split('?')[0];videoFeedEl.src=base+'?t='+Date.now();}"
+            "const telemetryEl = document.getElementById('telemetry');"
             "const celebrationFlashEl = document.getElementById('celebrationFlash');"
             "const celebrationFlashLabelEl = document.getElementById('celebrationFlashLabel');"
             "const _svgRefreshState = { xyz: false, mast: false };"
