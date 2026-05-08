@@ -125,6 +125,7 @@ class TestSetupManualTrainingCyanProfiles(unittest.TestCase):
                 "negative_cutout_ring_cyan_min": 0.32,
                 "negative_cutout_ring_dilate_px": 5,
                 "negative_cutout_min_area_px": 18.0,
+                "depth_source_mode": "pinhole",
             },
         )
         self.assertEqual(float(runtime.get("smooth_alpha")), 0.20)
@@ -163,6 +164,7 @@ class TestSetupManualTrainingCyanProfiles(unittest.TestCase):
                 "negative_cutout_ring_cyan_min": 0.00,
                 "negative_cutout_ring_dilate_px": 10,
                 "negative_cutout_min_area_px": 18.0,
+                "depth_source_mode": "pinhole",
             },
         )
         self.assertTrue(bool(runtime.get("hsv_enabled")))
@@ -223,6 +225,7 @@ class TestSetupManualTrainingCyanProfiles(unittest.TestCase):
                 "negative_cutout_ring_cyan_min": 0.24,
                 "negative_cutout_ring_dilate_px": 6,
                 "negative_cutout_min_area_px": 18.0,
+                "depth_source_mode": "pinhole",
             },
         )
         self.assertEqual(float(runtime.get("smooth_alpha")), 0.20)

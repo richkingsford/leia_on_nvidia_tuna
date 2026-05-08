@@ -29,7 +29,10 @@ TARGET_DIST_MM = 149.26  # dist.target
 DIST_TOL_MM    = 5.0     # dist.tol
 X_TOL_MM       = 5.0     # xAxis_offset_abs.tol  (centred at x=0)
 
-SPEED_SCORE    = 1       # minimum motor speed score
+SPEED_SCORE        = 1    # minimum motor speed score
+CURVE_INNER_RATIO  = 0.7  # inner-wheel ratio during a forward curve (0.0 = arc-assist,
+                          # 1.0 = straight); 0.7 means both wheels drive forward but
+                          # the inner one runs at 70% speed, curving toward the brick
 PULSE_MS       = 100     # motor pulse duration — kept short so pulses overlap
                          # and the robot never fully stops between loop ticks
 LOOP_S         = 0.05    # control loop interval (20 Hz)
@@ -56,21 +59,26 @@ CROWN_PROFILE_TUNING = {
     "conf_gate_pct": 75.0,
     "trust_detector_boxes": False,
     "require_cyan_shape": True,
+    "depth_source_mode": "pinhole",  # use apparent brick size, not stereo depth
 }
 # ─────────────────────────────────────────────────────────────────────────────
 
 log = logging.getLogger("follow_the_brick")
 
 
-def _arc_turn(robot: Robot, cmd: str, drive_mode: str = "forward") -> None:
-    """Arc-assist turn: outer tread at full PWM, inner tread stopped (ratio 0.0)."""
+def _curve_forward(robot: Robot, cmd: str) -> None:
+    """Both wheels drive forward; inner wheel at CURVE_INNER_RATIO speed.
+
+    This closes the distance gap and corrects x-axis offset in a single movement —
+    outer tread full speed, inner tread at CURVE_INNER_RATIO, curving toward the brick.
+    """
     plan = build_turn_drive_motion_plan(
         cmd=cmd,
         score=SPEED_SCORE,
         hold_duration_ms=PULSE_MS,
         profile_override={
-            "drive_mode": drive_mode,
-            "inner_ratio": 0.0,
+            "drive_mode": "forward",
+            "inner_ratio": CURVE_INNER_RATIO,
             "outer_ratio": 1.0,
         },
     )
@@ -100,9 +108,15 @@ def _warmup(vision: BrickDetector) -> None:
     log.info("Camera ready.")
 
 
+INVISIBLE_HOLD_FRAMES = 2   # ignore up to this many consecutive not-visible frames
+INVISIBLE_STOP_FRAMES = 3   # stop motors after this many consecutive not-visible frames
+
+
 def _follow_loop(vision: BrickDetector, robot: Robot, duration_s: float = 15.0) -> None:
     last_action = ""
     print_ticker = 0
+    miss_count = 0
+    last_result = None
     deadline = time.monotonic() + duration_s
 
     while time.monotonic() < deadline:
@@ -115,6 +129,29 @@ def _follow_loop(vision: BrickDetector, robot: Robot, duration_s: float = 15.0) 
             log.warning("Vision read error: %s", exc)
 
         found = isinstance(result, tuple) and len(result) >= 1 and bool(result[0])
+
+        if found:
+            miss_count = 0
+            last_result = result
+        else:
+            miss_count += 1
+            if miss_count <= INVISIBLE_HOLD_FRAMES and last_result is not None:
+                result = last_result   # coast on last good reading
+                found = True
+            elif miss_count == INVISIBLE_STOP_FRAMES:
+                print("[FOLLOW] NOT VISIBLE x3 — stopping", flush=True)
+                try:
+                    robot.stop()
+                except Exception:
+                    pass
+            else:
+                if last_action != "NO_VIS":
+                    print("[FOLLOW] NOT VISIBLE", flush=True)
+                last_action = "NO_VIS"
+                elapsed = time.monotonic() - loop_start
+                if (remaining := LOOP_S - elapsed) > 0:
+                    time.sleep(remaining)
+                continue
 
         if found:
             _, _angle, dist_mm, x_mm, conf, _cam_h, _above, _below = result[:8]
@@ -131,16 +168,17 @@ def _follow_loop(vision: BrickDetector, robot: Robot, duration_s: float = 15.0) 
                 action = "HAPPY"
                 # No motor command — last PULSE_MS pulse expires and robot coasts to stop
             elif dist_err < -DIST_TOL_MM:
-                # Brick too close — back up straight regardless of x alignment.
-                # Distance correction takes priority; x will be re-centered once
-                # we have enough room to arc.
+                # Brick too close — back up straight; re-centre x once there's room.
                 action = "BCK"
                 _drive(robot, "b")
             elif not x_ok:
+                # x off-centre (and not too close): curve forward — both wheels drive,
+                # inner at CURVE_INNER_RATIO, simultaneously closing dist + x gaps.
                 cmd    = "r" if x_err > 0 else "l"
-                action = f"ARC_{cmd.upper()}F"
-                _arc_turn(robot, cmd, drive_mode="forward")
+                action = f"CURVE_{cmd.upper()}"
+                _curve_forward(robot, cmd)
             else:
+                # x centred, just too far — drive straight forward.
                 action = "FWD"
                 _drive(robot, "f")
 
@@ -154,11 +192,6 @@ def _follow_loop(vision: BrickDetector, robot: Robot, duration_s: float = 15.0) 
                 )
                 print_ticker = 0
             last_action = action
-        else:
-            if last_action != "NO_VIS":
-                print("[FOLLOW] NOT VISIBLE", flush=True)
-            last_action = "NO_VIS"
-
         elapsed = time.monotonic() - loop_start
         remaining = LOOP_S - elapsed
         if remaining > 0:

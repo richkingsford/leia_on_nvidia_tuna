@@ -295,6 +295,7 @@ def _cyan_profile_preset(
     negative_cutout_ring_cyan_min=0.32,
     negative_cutout_ring_dilate_px=5,
     negative_cutout_min_area_px=18.0,
+    depth_source_mode="pinhole",
 ):
     return {
         "confidence": float(confidence),
@@ -308,6 +309,7 @@ def _cyan_profile_preset(
         "negative_cutout_ring_cyan_min": float(negative_cutout_ring_cyan_min),
         "negative_cutout_ring_dilate_px": int(negative_cutout_ring_dilate_px),
         "negative_cutout_min_area_px": float(negative_cutout_min_area_px),
+        "depth_source_mode": str(depth_source_mode),
     }
 
 

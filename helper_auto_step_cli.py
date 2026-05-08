@@ -171,14 +171,16 @@ def _is_fp_dist(dist_mm: float, ref_mm: float | None) -> bool:
         return dist_mm > _PRACTICE_FP_INIT_MAX_MM
     return dist_mm > ref_mm * _PRACTICE_FP_RATIO
 
-# ALIGN_BRICK (practice): simple custom aligner — no production step machinery.
-_ALIGN_BRICK_MAX_ACTS = 15
-_ALIGN_BRICK_TARGET_DIST_MM = 155.0   # approach target (mm)
-_ALIGN_BRICK_DIST_TOL_MM = 20.0       # acceptable distance window
-_ALIGN_BRICK_X_TOL_MM = 25.0          # acceptable x-axis window
-_ALIGN_BRICK_APPROACH_MS = 800        # forward/back drive pulse (ms)
-_ALIGN_BRICK_TURN_MS = 300            # centering turn pulse (ms)
-_ALIGN_BRICK_RECOVERY_MS = 400        # left-turn pulse when brick not visible (ms)
+# ALIGN_BRICK (practice): follow-the-brick approach — curve forward, short pulses, 20 Hz.
+_ALIGN_BRICK_MAX_ACTS         = 150    # ~7.5 s budget at 20 Hz
+_ALIGN_BRICK_TARGET_DIST_MM   = 149.26 # production success gate (world_model_process.json)
+_ALIGN_BRICK_DIST_TOL_MM      = 5.0    # production success gate
+_ALIGN_BRICK_X_TOL_MM         = 5.0    # production success gate
+_ALIGN_BRICK_PULSE_MS         = 100    # short motor pulse — overlapping keeps motion smooth
+_ALIGN_BRICK_LOOP_S           = 0.05   # 20 Hz control loop
+_ALIGN_BRICK_CURVE_INNER_RATIO = 0.7   # inner-wheel ratio: both wheels forward, differential
+_ALIGN_BRICK_INVIS_HOLD       = 2      # coast on last reading for this many missed frames
+_ALIGN_BRICK_INVIS_STOP       = 3      # stop motors after this many consecutive misses
 
 
 def resolve_step_argument(token: str):
@@ -709,81 +711,116 @@ def _run_find_brick_with_arc_scan(app_state) -> bool:
 
 
 def _run_align_brick_practice(app_state) -> bool:
-    """ALIGN_BRICK (practice): custom aligner outside production step machinery.
+    """ALIGN_BRICK (practice): follow-the-brick approach.
 
-    When the brick is not visible, turns left to re-acquire (since EXIT_WALL
-    turned right). When visible, centers x_axis then closes distance.
-    Hard limit: _ALIGN_BRICK_MAX_ACTS acts total.
+    Runs at 20 Hz using short overlapping motor pulses so motion is smooth and
+    continuous.  Both wheels drive forward with differential speed (curve) to
+    close the x-axis and distance gaps simultaneously — matching the production
+    forward_while_turning_assist behaviour.
+
+    Visibility hold: coasts on last good reading for _ALIGN_BRICK_INVIS_HOLD
+    frames, then stops motors after _ALIGN_BRICK_INVIS_STOP consecutive misses.
     """
     from telemetry_robot import speed_power_pwm_for_cmd as _sppc
 
     _, fwd_pwm, _, _ = _sppc("f", 1)
     _, bwd_pwm, _, _ = _sppc("b", 1)
 
-    print(f"[ALIGN_BRICK PRACTICE] Starting — target {_ALIGN_BRICK_TARGET_DIST_MM:.0f}mm, {_ALIGN_BRICK_MAX_ACTS} acts max.")
+    def _curve_fwd(cmd):
+        plan = build_turn_drive_motion_plan(
+            cmd=cmd,
+            score=1,
+            hold_duration_ms=_ALIGN_BRICK_PULSE_MS,
+            profile_override={
+                "drive_mode": "forward",
+                "inner_ratio": _ALIGN_BRICK_CURVE_INNER_RATIO,
+                "outer_ratio": 1.0,
+            },
+        )
+        if not isinstance(plan, dict):
+            return
+        app_state.robot.send_custom_actions_pwm(
+            str(plan.get("cmd") or cmd),
+            plan.get("actions") or [],
+            duration_ms=int(plan.get("duration_ms") or _ALIGN_BRICK_PULSE_MS),
+        )
 
-    _prev_dist = None  # track last accepted distance to detect detector switching targets
+    print(
+        f"[ALIGN_BRICK PRACTICE] Starting — target {_ALIGN_BRICK_TARGET_DIST_MM:.0f}mm "
+        f"±{_ALIGN_BRICK_DIST_TOL_MM:.0f}mm  x ±{_ALIGN_BRICK_X_TOL_MM:.0f}mm  "
+        f"({_ALIGN_BRICK_MAX_ACTS} acts max)"
+    )
+
+    miss_count = 0
+    last_dist = None
+    last_x = None
 
     for act_num in range(1, _ALIGN_BRICK_MAX_ACTS + 1):
+        loop_start = time.monotonic()
+
         refresh_brick_telemetry(app_state, read_vision=True)
         brick = getattr(app_state.world, "brick", {}) or {}
         visible = bool(brick.get("visible"))
-        dist = brick.get("dist")
+        dist_raw = brick.get("dist")
         x_raw = brick.get("x_axis", brick.get("x"))
 
-        # Distance filter — reject extreme false positives.
-        if visible and dist is not None and float(dist) > _PRACTICE_MAX_DETECT_DIST_MM:
+        if visible and dist_raw is not None and float(dist_raw) > _PRACTICE_MAX_DETECT_DIST_MM:
             visible = False
 
-        # Jump filter — if distance is >50% further than the previous accepted reading,
-        # the detector likely switched to a different (farther) target.
-        if visible and dist is not None and _prev_dist is not None:
-            if float(dist) > float(_prev_dist) * _PRACTICE_FP_RATIO:
-                print(f"[ALIGN_BRICK PRACTICE] Act {act_num}: dist jumped {_prev_dist:.0f}→{float(dist):.0f}mm (>{_PRACTICE_FP_RATIO:.0%} of prev) — false positive, ignoring.")
-                visible = False
-
         if not visible:
-            # Pause briefly and let vision re-acquire — do NOT turn, as turning
-            # rotates the robot sideways and inflates subsequent distance readings.
-            print(f"[ALIGN_BRICK PRACTICE] Act {act_num}: not visible — waiting for re-acquire.")
-            time.sleep(0.3)
-            continue
+            miss_count += 1
+            if miss_count <= _ALIGN_BRICK_INVIS_HOLD and last_dist is not None:
+                dist_val, x_val = last_dist, last_x   # coast on last good reading
+            elif miss_count == _ALIGN_BRICK_INVIS_STOP:
+                print(f"[ALIGN_BRICK PRACTICE] Act {act_num}: not visible x{miss_count} — stopping motors.")
+                try:
+                    app_state.robot.stop()
+                except Exception:
+                    pass
+                elapsed = time.monotonic() - loop_start
+                if (rem := _ALIGN_BRICK_LOOP_S - elapsed) > 0:
+                    time.sleep(rem)
+                continue
+            else:
+                elapsed = time.monotonic() - loop_start
+                if (rem := _ALIGN_BRICK_LOOP_S - elapsed) > 0:
+                    time.sleep(rem)
+                continue
+        else:
+            miss_count = 0
+            dist_val = float(dist_raw)
+            x_val = float(x_raw or 0.0)
+            last_dist = dist_val
+            last_x = x_val
 
-        dist_val = float(dist)
-        x_val = float(x_raw or 0.0)
         dist_err = dist_val - _ALIGN_BRICK_TARGET_DIST_MM
-        _prev_dist = dist_val  # update accepted distance for jump detection
-        print(f"[ALIGN_BRICK PRACTICE] Act {act_num}: dist={dist_val:.0f}mm err={dist_err:+.0f}mm, x={x_val:.0f}mm")
+        x_ok = abs(x_val) <= _ALIGN_BRICK_X_TOL_MM
+        dist_ok = abs(dist_err) <= _ALIGN_BRICK_DIST_TOL_MM
 
-        # Success check.
-        if abs(dist_err) <= _ALIGN_BRICK_DIST_TOL_MM and abs(x_val) <= _ALIGN_BRICK_X_TOL_MM:
-            print(f"[ALIGN_BRICK PRACTICE] Aligned!")
+        if x_ok and dist_ok:
+            print(f"[ALIGN_BRICK PRACTICE] Act {act_num}: ALIGNED  dist_err={dist_err:+.0f}mm  x={x_val:+.0f}mm")
+            try:
+                app_state.robot.stop()
+            except Exception:
+                pass
             return True
 
-        # Center x_axis first before closing distance.
-        if abs(x_val) > _ALIGN_BRICK_X_TOL_MM:
-            hotkey, cmd = ("q", "l") if x_val > 0 else ("e", "r")
-            # Proportional pulse: gain=2.0, cap=500ms — fast on large offsets, no overshoot.
-            align_turn_ms = min(500, max(150, int(abs(x_val) * 2.0)))
-            print(f"[ALIGN_BRICK PRACTICE]   Centering x={x_val:.0f}mm → {hotkey} ({align_turn_ms}ms).")
-            execute_manual_turn_arc_plan(
-                robot=app_state.robot, hotkey=hotkey, cmd=cmd, score=1,
-                hold_duration_ms=align_turn_ms,
-            )
-            time.sleep(align_turn_ms / 1000.0 + 0.1)
-        elif dist_err > 0:
-            print(f"[ALIGN_BRICK PRACTICE]   Approaching — {dist_err:.0f}mm to close.")
-            app_state.robot.send_command_pwm("f", int(fwd_pwm), duration_ms=_ALIGN_BRICK_APPROACH_MS)
-            time.sleep(_ALIGN_BRICK_APPROACH_MS / 1000.0 + 0.1)
+        if dist_err < -_ALIGN_BRICK_DIST_TOL_MM:
+            action = "BCK"
+            app_state.robot.send_command_pwm("b", int(bwd_pwm), duration_ms=_ALIGN_BRICK_PULSE_MS)
+        elif not x_ok:
+            cmd = "r" if x_val > 0 else "l"
+            action = f"CURVE_{cmd.upper()}"
+            _curve_fwd(cmd)
         else:
-            print(f"[ALIGN_BRICK PRACTICE]   Too close — backing up {-dist_err:.0f}mm.")
-            app_state.robot.send_command_pwm("b", int(bwd_pwm), duration_ms=_ALIGN_BRICK_APPROACH_MS)
-            time.sleep(_ALIGN_BRICK_APPROACH_MS / 1000.0 + 0.1)
+            action = "FWD"
+            app_state.robot.send_command_pwm("f", int(fwd_pwm), duration_ms=_ALIGN_BRICK_PULSE_MS)
 
-        try:
-            app_state.robot.stop()
-        except Exception:
-            pass
+        print(f"[ALIGN_BRICK PRACTICE] Act {act_num}: {action:<10} dist_err={dist_err:+.0f}mm  x={x_val:+.0f}mm")
+
+        elapsed = time.monotonic() - loop_start
+        if (rem := _ALIGN_BRICK_LOOP_S - elapsed) > 0:
+            time.sleep(rem)
 
     print(f"[ALIGN_BRICK PRACTICE] Hit {_ALIGN_BRICK_MAX_ACTS}-act limit — failed.")
     return False
