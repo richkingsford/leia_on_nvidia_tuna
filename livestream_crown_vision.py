@@ -203,10 +203,8 @@ def _num_text(value, digits: int = 0, suffix: str = "") -> str:
 
 def _build_footer_html() -> str:
     swatch_items = "".join(
-        f"<div style='display:inline-flex;flex-direction:column;align-items:center;gap:2px;margin-right:2px;'>"
-        f"<div style='background:#{h};width:28px;height:22px;border-radius:3px;border:1px solid #444;'></div>"
-        f"<div style='font-size:9px;color:#9cc;font-family:monospace;'>#{h}</div>"
-        f"</div>"
+        f"<span title='#{h}' style='display:inline-block;background:#{h};width:28px;height:20px;"
+        "border-radius:3px;border:1px solid #444;'></span>"
         for h in CYAN_SHADE_HEXES
     )
     lower = list(CROWN_PROFILE_TUNING["hsv_lower"])
@@ -216,13 +214,9 @@ def _build_footer_html() -> str:
         "<div class='footer-sections'>"
         "<div class='footer-section'>"
         "<div class='footer-title'>Tri-brick Vision</div>"
-        f"<div>TensorRT · trapezoid slot gate · HOLD_FRAMES={HOLD_FRAMES}</div>"
-        "</div>"
-        "<div class='footer-section'>"
-        "<div class='footer-title'>Tri-brick Palette</div>"
-        f"<div style='display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;'>{swatch_items}</div>"
+        f"<div>TensorRT · green HSV · trapezoid slot gate · hold {HOLD_FRAMES} frames</div>"
+        f"<div style='display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;'>{swatch_items}</div>"
         f"<div style='margin-top:5px;font-size:10px;color:#9cc;font-family:monospace;'>{hsv_label}</div>"
-        "<div style='margin-top:2px;font-size:10px;color:#777;'>Profile dropdown controls HSV range, gate strictness, and close-up rescue.</div>"
         "</div>"
         "</div>"
     )

@@ -28,10 +28,23 @@ from livestream_crown_vision import (
     CROWN_PROFILE_TUNINGS,
     CrownVisionLivestream,
     HOLD_FRAMES,
+    _build_footer_html,
 )
 
 
 GREEN_BRICK_BGR = (97, 165, 19)
+
+
+class TestCrownVisionLivestreamFooter(unittest.TestCase):
+    def test_footer_collapses_static_tri_brick_details_into_one_section(self):
+        html = _build_footer_html()
+
+        self.assertEqual(html.count("class='footer-section'"), 1)
+        self.assertEqual(html.count("Tri-brick Vision"), 1)
+        self.assertNotIn("Tri-brick Palette", html)
+        self.assertNotIn("Profile dropdown controls", html)
+        self.assertIn("green HSV", html)
+        self.assertIn(f"hold {HOLD_FRAMES} frames", html)
 
 
 # ─── shared stub builder ─────────────────────────────────────────────────────

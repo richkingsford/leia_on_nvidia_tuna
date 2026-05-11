@@ -971,7 +971,6 @@ class StreamServer:
             ".telemetry > div:last-child{border-bottom:none;}"
             ".sidebar-stack{display:flex;flex-direction:column;gap:10px;}"
             ".shape-panel{background:#0f0f0f;border:1px solid #2f2f2f;border-radius:8px;padding:8px;text-align:left;}"
-            ".shape-title{font-size:11px;color:#f0ad4e;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;font-weight:700;}"
             ".shape-wrap{display:flex;justify-content:center;background:#141414;border:1px solid #2b2b2b;border-radius:6px;padding:6px;}"
             ".shape-svg{max-width:100%;height:auto;display:block;}"
             ".stream{display:inline-block;border:4px solid #333;border-radius:8px;"
@@ -1377,7 +1376,6 @@ class StreamServer:
     def _brick_shape_panel_html(self):
         fallback_html = (
             "<div class='shape-panel'>"
-            "<div class='shape-title'>Target Brick Face Shape</div>"
             "<div class='shape-wrap'><div style='color:#bbb;font-size:11px;'>shape coords unavailable</div></div>"
             "</div>"
         )
@@ -1555,13 +1553,11 @@ class StreamServer:
             f"{face_cutout_svg}"
             f"{pink_dot_svg}"
             f"{face_line_svg}"
-            "<text x='14' y='16' fill='#d8fbff' font-size='10.5' font-family='monospace'>source: world_model_brick.json</text>"
             "</svg>"
         )
 
         return (
             "<div class='shape-panel'>"
-            "<div class='shape-title'>Target Brick Face Shape</div>"
             f"<div class='shape-wrap'>{svg_html}</div>"
             "</div>"
         )

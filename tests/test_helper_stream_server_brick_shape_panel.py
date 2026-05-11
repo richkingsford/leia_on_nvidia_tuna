@@ -60,8 +60,9 @@ class TestHelperStreamServerBrickShapePanel(unittest.TestCase):
             finally:
                 helper_stream_server.DEFAULT_BRICK_MODEL_FILE = original_model_file
 
-        self.assertIn("Target Brick Face Shape", html)
-        self.assertIn("source: world_model_brick.json", html)
+        self.assertNotIn("Target Brick Face Shape", html)
+        self.assertNotIn("source: world_model_brick.json", html)
+        self.assertIn("aria-label='Brick face shape reference from world model coordinates'", html)
         self.assertGreaterEqual(html.count("<polygon"), 2)
         self.assertIn("fill='#11181d' stroke='#def7ff'", html)
 
