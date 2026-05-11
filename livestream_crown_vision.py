@@ -19,6 +19,8 @@ from helper_brick_detector_yolo import (
     CYAN_HSV_BALANCED_UPPER,
     CYAN_HSV_TIGHT_LOWER,
     CYAN_HSV_TIGHT_UPPER,
+    CYAN_HSV_WIDE_LOWER,
+    CYAN_HSV_WIDE_UPPER,
     CYAN_SHADE_HEXES,
 )
 from helper_manual_config import load_manual_training_config
@@ -42,6 +44,7 @@ CROWN_PROFILE_BASE_TUNING = {
     "hsv_lower": list(CYAN_HSV_BALANCED_LOWER),
     "hsv_upper": list(CYAN_HSV_BALANCED_UPPER),
     "hsv_cyan_coverage_min": 0.12,
+    "full_frame_hsv_cyan_coverage_min": 0.03,
     "hsv_min_area_ratio": 0.07,
     "shape_gate_mode": "negative_cutouts",
     "negative_cutout_cyan_fill_max": 0.20,
@@ -73,73 +76,72 @@ TIGHT_COLOR_TUNING = {
 }
 
 CROWN_PROFILE_TUNINGS = {
-    "blue_reject": {
+    "max_reach": {
         **CROWN_PROFILE_BASE_TUNING,
-        "label": "1 Strict Blue Reject",
-        "confidence": 0.40,
-        "hsv_lower": [88, 95, 45],
-        "hsv_upper": [99, 255, 245],
-        "hsv_cyan_coverage_min": 0.22,
-        "hsv_min_area_ratio": 0.12,
-        "negative_cutout_min_area_px": 54.0,
-        "negative_cutout_ring_cyan_min": 0.66,
-        "conf_gate_pct": 90.0,
-        "closeup_full_frame_hsv_enabled": False,
+        "label": "0 Max Reach",
+        "confidence": 0.08,
+        "hsv_lower": list(CYAN_HSV_WIDE_LOWER),
+        "hsv_upper": list(CYAN_HSV_WIDE_UPPER),
+        "hsv_cyan_coverage_min": 0.05,
+        "hsv_min_area_ratio": 0.03,
+        "conf_gate_pct": 50.0,
+        "trust_detector_boxes": True,
+        "closeup_full_frame_hsv_enabled": True,
     },
     "tight_color": TIGHT_COLOR_TUNING,
     "tight_far_slots": {
         **TIGHT_COLOR_TUNING,
         "label": "2A Far: Smaller Slots",
-        "confidence": 0.32,
+        "confidence": 0.20,
         "hsv_cyan_coverage_min": 0.16,
         "hsv_min_area_ratio": 0.07,
         "negative_cutout_min_area_px": 24.0,
-        "conf_gate_pct": 82.0,
+        "conf_gate_pct": 65.0,
     },
     "tight_far_conf": {
         **TIGHT_COLOR_TUNING,
         "label": "2B Far: Lower YOLO",
-        "confidence": 0.25,
+        "confidence": 0.15,
         "hsv_cyan_coverage_min": 0.15,
         "hsv_min_area_ratio": 0.06,
         "negative_cutout_min_area_px": 18.0,
-        "conf_gate_pct": 76.0,
+        "conf_gate_pct": 60.0,
     },
     "tight_far_no_erode": {
         **TIGHT_COLOR_TUNING,
         "label": "2C Far: No Erode",
-        "confidence": 0.25,
+        "confidence": 0.15,
         "hsv_erode_iterations": 0,
         "hsv_cyan_coverage_min": 0.14,
         "hsv_min_area_ratio": 0.05,
         "negative_cutout_min_area_px": 12.0,
-        "conf_gate_pct": 76.0,
+        "conf_gate_pct": 60.0,
     },
     "tight_far_dim": {
         **TIGHT_COLOR_TUNING,
-        "label": "2D Far: Dim Cyan",
-        "confidence": 0.22,
+        "label": "2D Far: Dim Green",
+        "confidence": 0.12,
         "hsv_erode_iterations": 0,
-        "hsv_lower": [88, 60, 35],
-        "hsv_upper": [100, 255, 255],
-        "hsv_cyan_coverage_min": 0.12,
-        "hsv_min_area_ratio": 0.045,
+        "hsv_lower": list(CYAN_HSV_BALANCED_LOWER),
+        "hsv_upper": list(CYAN_HSV_BALANCED_UPPER),
+        "hsv_cyan_coverage_min": 0.10,
+        "hsv_min_area_ratio": 0.04,
         "negative_cutout_ring_cyan_min": 0.60,
         "negative_cutout_min_area_px": 10.0,
-        "conf_gate_pct": 72.0,
+        "conf_gate_pct": 55.0,
     },
     "balanced_far_guard": {
         **CROWN_PROFILE_BASE_TUNING,
         "label": "2E Far: Wider Hue Guard",
-        "confidence": 0.22,
-        "hsv_lower": [85, 70, 35],
-        "hsv_upper": list(CYAN_HSV_BALANCED_UPPER),
-        "hsv_cyan_coverage_min": 0.14,
-        "hsv_min_area_ratio": 0.055,
+        "confidence": 0.12,
+        "hsv_lower": list(CYAN_HSV_WIDE_LOWER),
+        "hsv_upper": list(CYAN_HSV_WIDE_UPPER),
+        "hsv_cyan_coverage_min": 0.12,
+        "hsv_min_area_ratio": 0.05,
         "negative_cutout_ring_cyan_min": 0.64,
         "negative_cutout_min_area_px": 14.0,
-        "conf_gate_pct": 78.0,
-        "closeup_full_frame_hsv_enabled": False,
+        "conf_gate_pct": 58.0,
+        "closeup_full_frame_hsv_enabled": True,
     },
 }
 CROWN_PROFILE_OPTIONS = [
@@ -213,11 +215,11 @@ def _build_footer_html() -> str:
     return (
         "<div class='footer-sections'>"
         "<div class='footer-section'>"
-        "<div class='footer-title'>Crown Brick Vision</div>"
+        "<div class='footer-title'>Tri-brick Vision</div>"
         f"<div>TensorRT · trapezoid slot gate · HOLD_FRAMES={HOLD_FRAMES}</div>"
         "</div>"
         "<div class='footer-section'>"
-        "<div class='footer-title'>Cyan Calibration Palette</div>"
+        "<div class='footer-title'>Tri-brick Palette</div>"
         f"<div style='display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;'>{swatch_items}</div>"
         f"<div style='margin-top:5px;font-size:10px;color:#9cc;font-family:monospace;'>{hsv_label}</div>"
         "<div style='margin-top:2px;font-size:10px;color:#777;'>Profile dropdown controls HSV range, gate strictness, and close-up rescue.</div>"
@@ -273,7 +275,7 @@ class CrownVisionLivestream:
         # shows a "loading" placeholder until the first frame arrives.
         self.server, self.url = start_stream_server(
             self.state,
-            title="Crown Brick Vision Livestream",
+            title="Tri-brick Vision Livestream",
             header="",
             footer=_build_footer_html(),
             host=str(self.args.stream_host),

@@ -542,8 +542,8 @@ class StreamServer:
             if camera_width:
                 camera_width_attr = f' width="{int(camera_width)}"'
             try:
-                # 3-pane layout keeps the bird's-eye view readable while fitting
-                # between the telemetry and footer sidebars.
+                # Keep the live views readable while the left sidebar holds all
+                # operator-facing telemetry and vision reference details.
                 layout_width = max(160, int(round(float(self.img_width) * 0.52)))
             except (TypeError, ValueError):
                 layout_width = None
@@ -556,11 +556,6 @@ class StreamServer:
         footer_panel_html = f"<div class='footer-panel'>{self.footer}</div>" if self.footer else ""
         footer_below_html = (
             f"<div class='footer-wrap footer-wrap-standalone'>{footer_panel_html}</div>"
-            if footer_panel_html
-            else ""
-        )
-        footer_sidebar_html = (
-            f"<div class='sidebar info-sidebar'>{footer_panel_html}</div>"
             if footer_panel_html
             else ""
         )
@@ -621,7 +616,7 @@ class StreamServer:
                     option_parts.append(f"<option value='{value_escaped}'>{label_escaped}</option>")
                 controls_parts.append(
                     "<label class='control-item'>"
-                    "Crown Config: "
+                    "Tri Brick Config: "
                     "<select id='cyanProfile' class='control-select'>"
                     + "".join(option_parts)
                     + "</select>"
@@ -1037,13 +1032,13 @@ class StreamServer:
             "<div class='sidebar sidebar-stack'>"
             "<div id='telemetry' class='telemetry'></div>"
             f"{brick_shape_panel_html}"
+            f"{footer_panel_html}"
             "</div>"
             f"<div style='display: flex; flex-direction: column; gap: 12px; align-items: center;'>"
             f"<div class='stream' style='background: white;'><img id='xyzLayout' src='/xyz_workspace_live.svg'{layout_xyz_img_width_attr or xyz_width_attr}></div>"
             f"<div class='stream' style='background: white;'><img id='mastLayout' src='/xyz_mast_live.svg'{layout_xyz_img_width_attr or xyz_width_attr}></div>"
             f"<div class='stream'><img id='videoFeed' src='/video_feed?sid={html.escape(self._instance_id, quote=True)}'{layout_camera_img_width_attr or camera_width_attr}></div>"
             f"</div>"
-            f"{footer_sidebar_html}"
             "</div>"
             "<script>"
             "const videoFeedEl = document.getElementById('videoFeed');"

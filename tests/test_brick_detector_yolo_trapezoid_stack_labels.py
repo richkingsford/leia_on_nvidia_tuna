@@ -11,6 +11,8 @@ import helper_brick_detector_yolo as detector
 
 
 class TestBrickDetectorYoloTrapezoidStackLabels(unittest.TestCase):
+    GREEN_BRICK_BGR = (97, 165, 19)
+
     def _build_detector_stub(self):
         vision = detector.BrickDetector.__new__(detector.BrickDetector)
         vision._face_polygon_model = None
@@ -39,8 +41,7 @@ class TestBrickDetectorYoloTrapezoidStackLabels(unittest.TestCase):
     def test_merged_cyan_stack_splits_into_topmost_numbered_bricks(self):
         vision = self._build_detector_stub()
         frame = np.zeros((180, 220, 3), dtype=np.uint8)
-        cyan_bgr = (177, 157, 31)
-        cv2.rectangle(frame, (32, 18), (188, 160), cyan_bgr, thickness=cv2.FILLED)
+        cv2.rectangle(frame, (32, 18), (188, 160), self.GREEN_BRICK_BGR, thickness=cv2.FILLED)
         self._draw_trapezoid_slot(frame, 46)
         self._draw_trapezoid_slot(frame, 108)
 

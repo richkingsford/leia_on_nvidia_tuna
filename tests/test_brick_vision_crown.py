@@ -31,6 +31,9 @@ from livestream_crown_vision import (
 )
 
 
+GREEN_BRICK_BGR = (97, 165, 19)
+
+
 # ─── shared stub builder ─────────────────────────────────────────────────────
 
 def _make_stub() -> det.BrickDetector:
@@ -84,8 +87,7 @@ def _make_candidate(*, cx: int, cy: int, bbox: tuple) -> dict:
 def _make_stacked_frame_with_slots() -> np.ndarray:
     """Merged cyan blob with two dark trapezoid slots (inner-hole path)."""
     frame = np.zeros((180, 220, 3), dtype=np.uint8)
-    cyan_bgr = (177, 157, 31)
-    cv2.rectangle(frame, (32, 18), (188, 160), cyan_bgr, thickness=cv2.FILLED)
+    cv2.rectangle(frame, (32, 18), (188, 160), GREEN_BRICK_BGR, thickness=cv2.FILLED)
     for y_top in (46, 108):
         slot = np.array(
             [[58, y_top], [162, y_top], [150, y_top + 14], [70, y_top + 14]],
@@ -103,8 +105,7 @@ def _make_stacked_frame_no_slots() -> np.ndarray:
     blob_w = 156
     blob_h = int(round(blob_w * face_aspect * 2.4))  # ~2.4 bricks tall → n_bricks=2
     frame = np.zeros((blob_h + 40, blob_w + 60, 3), dtype=np.uint8)
-    cyan_bgr = (177, 157, 31)
-    cv2.rectangle(frame, (30, 20), (30 + blob_w, 20 + blob_h), cyan_bgr, thickness=cv2.FILLED)
+    cv2.rectangle(frame, (30, 20), (30 + blob_w, 20 + blob_h), GREEN_BRICK_BGR, thickness=cv2.FILLED)
     return frame
 
 
@@ -190,7 +191,7 @@ class TestCrownProfileTuning(unittest.TestCase):
         self.assertLess(conf["confidence"], slots["confidence"])
         self.assertEqual(no_erode["hsv_erode_iterations"], 0)
         self.assertLess(dim["hsv_lower"][1], anchor["hsv_lower"][1])
-        self.assertFalse(wider["closeup_full_frame_hsv_enabled"])
+        self.assertTrue(wider["closeup_full_frame_hsv_enabled"])
 
     def test_shape_gate_mode_is_negative_cutouts(self):
         self.assertEqual(CROWN_PROFILE_TUNING["shape_gate_mode"], "negative_cutouts")
@@ -274,8 +275,7 @@ class TestSingleBrickFallback(unittest.TestCase):
         blob_w = 156
         blob_h = int(round(blob_w * face_aspect * 0.95))  # ~1 brick tall
         frame = np.zeros((blob_h + 40, blob_w + 60, 3), dtype=np.uint8)
-        cyan_bgr = (177, 157, 31)
-        cv2.rectangle(frame, (30, 20), (30 + blob_w, 20 + blob_h), cyan_bgr, thickness=cv2.FILLED)
+        cv2.rectangle(frame, (30, 20), (30 + blob_w, 20 + blob_h), GREEN_BRICK_BGR, thickness=cv2.FILLED)
         return frame
 
     def test_single_brick_no_slots_produces_candidate(self):
@@ -314,8 +314,7 @@ class TestSingleBrickFallback(unittest.TestCase):
         d._build_trapezoid_brick_candidates = lambda *_args, **_kwargs: []
         d._classify_contour_shape = lambda _cnt: (None, 9.0)
         frame = np.zeros((110, 190, 3), dtype=np.uint8)
-        cyan_bgr = (177, 157, 31)
-        cv2.rectangle(frame, (22, 28), (168, 84), cyan_bgr, thickness=cv2.FILLED)
+        cv2.rectangle(frame, (22, 28), (168, 84), GREEN_BRICK_BGR, thickness=cv2.FILLED)
 
         candidates = det.BrickDetector._segment_bricks_hsv(
             d,
@@ -385,6 +384,28 @@ class TestDrawBrickIdLabels(unittest.TestCase):
         det.BrickDetector._draw_brick_id_labels(d, frame, [c1])
         self.assertGreater(self._yellow_px(frame), 0, "Single visible candidate must get a label")
 
+    def test_label_center_uses_brick_bbox_middle_not_slot_anchor(self):
+        d = _make_stub()
+        frame = np.zeros((180, 220, 3), dtype=np.uint8)
+        candidate = _make_candidate(cx=60, cy=35, bbox=(80, 70, 100, 60))
+        candidate["rect"] = ((58.0, 36.0), (90.0, 12.0), 0.0)
+        calls = []
+        original_draw = det.draw_brick_with_id
+
+        def _record_draw(_detector, _frame, _candidate, brick_id, *, center=None):
+            calls.append((brick_id, center))
+            return _frame
+
+        det.draw_brick_with_id = _record_draw
+        try:
+            det.BrickDetector._draw_brick_id_labels(d, frame, [candidate])
+        finally:
+            det.draw_brick_with_id = original_draw
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], 0)
+        self.assertEqual(calls[0][1], (130.0, 100.0))
+
     def test_labels_not_drawn_for_empty_list(self):
         d = _make_stub()
         frame = np.zeros((160, 200, 3), dtype=np.uint8)
@@ -433,9 +454,8 @@ class TestCyanCandidateOutlines(unittest.TestCase):
     def test_draw_debug_hsv_outlines_each_visible_candidate_green(self):
         d = _make_stub()
         frame = np.zeros((140, 180, 3), dtype=np.uint8)
-        cyan_bgr = (177, 157, 31)
-        cv2.rectangle(frame, (30, 20), (90, 52), cyan_bgr, thickness=cv2.FILLED)
-        cv2.rectangle(frame, (30, 78), (90, 110), cyan_bgr, thickness=cv2.FILLED)
+        cv2.rectangle(frame, (30, 20), (90, 52), GREEN_BRICK_BGR, thickness=cv2.FILLED)
+        cv2.rectangle(frame, (30, 78), (90, 110), GREEN_BRICK_BGR, thickness=cv2.FILLED)
         c1 = _make_candidate(cx=60, cy=36, bbox=(24, 14, 76, 46))
         c2 = _make_candidate(cx=60, cy=94, bbox=(24, 72, 76, 46))
 
@@ -457,8 +477,7 @@ class TestCyanCandidateOutlines(unittest.TestCase):
     def test_outline_follows_cyan_pixels_not_loose_candidate_bbox(self):
         d = _make_stub()
         frame = np.zeros((100, 140, 3), dtype=np.uint8)
-        cyan_bgr = (177, 157, 31)
-        cv2.rectangle(frame, (46, 32), (92, 58), cyan_bgr, thickness=cv2.FILLED)
+        cv2.rectangle(frame, (46, 32), (92, 58), GREEN_BRICK_BGR, thickness=cv2.FILLED)
         candidate = _make_candidate(cx=69, cy=45, bbox=(24, 16, 92, 60))
 
         det.BrickDetector._draw_cyan_candidate_outlines(d, frame, [candidate])
@@ -469,6 +488,33 @@ class TestCyanCandidateOutlines(unittest.TestCase):
 
 class TestReadFrameCloseupRecovery(unittest.TestCase):
     """read_frame must reach the full-frame HSV fallback when YOLO returns no boxes."""
+
+    def test_blank_frame_with_no_yolo_boxes_stays_invisible(self):
+        d = _make_stub()
+        d.frame_w = 640
+        d.frame_h = 480
+        d.camera_center_offset_px = 0.0
+        d._smooth_alpha = 1.0
+        d._prev_angle = None
+        d._prev_dist = None
+        d._prev_offset = None
+        d._prev_offset_y = None
+        d.debug = False
+        d.last_status = "idle"
+        d.last_max_confidence = 0.0
+        d.last_primary_confidence = 0.0
+        d.last_partial_count = 0
+        d.last_partial_labels = []
+        d.last_primary_partial_kind = None
+        d.last_primary_partial_label = None
+        d.raw_frame = None
+        d.current_frame = None
+        d._detect = lambda _frame: []
+
+        result = det.BrickDetector.read_frame(d, np.zeros((480, 640, 3), dtype=np.uint8))
+
+        self.assertFalse(result[0])
+        self.assertEqual(d.last_status, "searching")
 
     def test_read_frame_uses_full_frame_hsv_when_yolo_has_no_boxes(self):
         d = _make_stub()
@@ -550,6 +596,51 @@ class TestReadFrameCloseupRecovery(unittest.TestCase):
 
 class TestProcessHsvCandidateHighlights(unittest.TestCase):
     """The HSV pipeline keeps up to two centered candidates for the debug overlay."""
+
+    def test_process_bricks_keeps_top_brick_in_vertical_stack(self):
+        d = _make_stub()
+        d.frame_w = 640
+        d.frame_h = 480
+        d.focal_px = 100.0
+        d.camera_center_offset_px = 0.0
+        d._smooth_alpha = 1.0
+        d._prev_angle = None
+        d._prev_dist = None
+        d._prev_offset = None
+        d._prev_offset_y = None
+        d.debug = True
+        d.last_status = "idle"
+        d.last_max_confidence = 1.0
+        d.last_primary_confidence = 0.0
+        d.last_partial_count = 0
+        d.last_partial_labels = []
+        d.last_primary_partial_kind = None
+        d.last_primary_partial_label = None
+        d.log = type(
+            "_LogStub",
+            (),
+            {"exception": staticmethod(lambda *_args, **_kwargs: None)},
+        )()
+
+        top = _make_candidate(cx=320, cy=190, bbox=(250, 170, 140, 48))
+        bottom = _make_candidate(cx=320, cy=250, bbox=(250, 230, 140, 48))
+        far = _make_candidate(cx=80, cy=430, bbox=(40, 410, 80, 40))
+        d._segment_bricks_hsv = lambda *_args, **_kwargs: [far, top, bottom]
+        d._detect_pink_dot_in_brick = lambda *_args, **_kwargs: (False, None, None)
+        d._refine_angle_for_primary = lambda *_args, **_kwargs: 0.0
+        d._dist_from_triangle_span = lambda *_args, **_kwargs: None
+
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        result = det.BrickDetector._process_bricks(d, frame, [(0, 0, 640, 480, 1.0)])
+
+        self.assertTrue(result[0])
+        self.assertTrue(result[6], "Top brick should set brick_above for the lower primary")
+        top_label_area = d.current_frame[170:225, 245:395]
+        bottom_label_area = d.current_frame[230:285, 245:395]
+        self.assertGreater(TestDrawBrickIdLabels._yellow_px(top_label_area), 0)
+        self.assertGreater(TestDrawBrickIdLabels._yellow_px(bottom_label_area), 0)
+        far_label_area = d.current_frame[405:460, 35:125]
+        self.assertEqual(TestDrawBrickIdLabels._yellow_px(far_label_area), 0)
 
     def test_process_bricks_labels_two_nearest_hsv_candidates(self):
         d = _make_stub()

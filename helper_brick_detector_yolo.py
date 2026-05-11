@@ -80,26 +80,10 @@ YOLO_INPUT_SIZE = 640
 # HSV segmentation for individual cyan brick detection within YOLO boxes
 # ---------------------------------------------------------------------------
 CYAN_SHADE_HEXES = (
-    "03929C",
-    "068A9C",
-    "028991",
-    "0F949B",
-    "018C96",
-    "36BAC6",
-    "007C81",
-    "00888C",
-    "068A90",
-    "007378",
-    "39B7C1",
-    "2AB0BA",
-    "31B0BB",
-    # darker/shadowed shades observed in-room
-    "2E5356",
-    "27464A",
-    "285258",
-    "43686B",
-    "335760",
-    "325A64",
+    # Measured 2026-05-11 live from OAK camera frame (painted green bricks)
+    "13A561",
+    "3ABD8D",
+    "0A5839",
 )
 
 
@@ -140,26 +124,14 @@ def _cyan_palette_hsv_range(
     return lower, upper
 
 
-CYAN_HSV_TIGHT_LOWER, CYAN_HSV_TIGHT_UPPER = _cyan_palette_hsv_range(
-    hue_margin=3,
-    sat_margin=60,
-    val_margin_lower=25,
-    val_ceiling=255,
-    sat_floor=70,
-)
-CYAN_HSV_BALANCED_LOWER, CYAN_HSV_BALANCED_UPPER = _cyan_palette_hsv_range(
-    hue_margin=6,
-    sat_margin=110,
-    val_margin_lower=45,
-    val_ceiling=255,
-    sat_floor=60,
-)
-CYAN_HSV_WIDE_LOWER, CYAN_HSV_WIDE_UPPER = _cyan_palette_hsv_range(
-    hue_margin=10,
-    sat_margin=150,
-    val_margin_lower=65,
-    val_ceiling=255,
-)
+# Calibrated 2026-05-11 from live OAK camera frame of painted green bricks.
+# Brick H clusters tightly at 75-80 (OpenCV).  Replaces computed values.
+CYAN_HSV_TIGHT_LOWER: tuple[int, int, int] = (72, 137, 58)
+CYAN_HSV_TIGHT_UPPER: tuple[int, int, int] = (83, 255, 255)
+CYAN_HSV_BALANCED_LOWER: tuple[int, int, int] = (68, 97, 33)
+CYAN_HSV_BALANCED_UPPER: tuple[int, int, int] = (87, 255, 255)
+CYAN_HSV_WIDE_LOWER: tuple[int, int, int] = (62, 47, 8)
+CYAN_HSV_WIDE_UPPER: tuple[int, int, int] = (93, 255, 255)
 
 CYAN_HSV_LOWER = np.array(CYAN_HSV_BALANCED_LOWER)
 CYAN_HSV_UPPER = np.array(CYAN_HSV_BALANCED_UPPER)
@@ -204,6 +176,7 @@ HSV_ERODE_KERNEL = 5
 HSV_ERODE_ITERATIONS = 2
 HSV_MIN_AREA_RATIO = 0.05       # Min 5% of YOLO bbox area = real brick
 HSV_CYAN_COVERAGE_MIN = 0.08    # Need 8% cyan coverage to engage HSV path
+FULL_FRAME_HSV_CYAN_COVERAGE_MIN = 0.03
 STACK_X_OVERLAP_RATIO = 0.6     # Same-column tolerance for above/below
 STACK_Y_GAP_RATIO = 0.35        # Vertical gap threshold for above/below
 # Reject cyan candidates whose contour shape is nowhere near expected
@@ -425,6 +398,7 @@ class BrickDetector:
         self._hsv_enabled = True
         self._hsv_erode_iterations = HSV_ERODE_ITERATIONS
         self._hsv_cyan_coverage_min = float(HSV_CYAN_COVERAGE_MIN)
+        self._full_frame_hsv_cyan_coverage_min = float(FULL_FRAME_HSV_CYAN_COVERAGE_MIN)
         self._hsv_min_area_ratio = float(HSV_MIN_AREA_RATIO)
         self._require_cyan_shape = False
         self._closeup_full_frame_hsv_enabled = True
@@ -504,6 +478,7 @@ class BrickDetector:
                            negative_cutout_focus_y_max_ratio=None,
                            negative_cutout_focus_weight=None,
                            hsv_cyan_coverage_min=None,
+                           full_frame_hsv_cyan_coverage_min=None,
                            hsv_min_area_ratio=None,
                            trust_detector_boxes=None,
                            require_cyan_shape=None,
@@ -676,6 +651,14 @@ class BrickDetector:
                 )
             except (TypeError, ValueError):
                 pass
+        if full_frame_hsv_cyan_coverage_min is not None:
+            try:
+                self._full_frame_hsv_cyan_coverage_min = max(
+                    0.0,
+                    min(1.0, float(full_frame_hsv_cyan_coverage_min)),
+                )
+            except (TypeError, ValueError):
+                pass
         if hsv_min_area_ratio is not None:
             try:
                 self._hsv_min_area_ratio = max(
@@ -758,6 +741,13 @@ class BrickDetector:
             "negative_cutout_focus_weight": float(self._negative_cutout_focus_weight),
             "hsv_cyan_coverage_min": float(
                 getattr(self, "_hsv_cyan_coverage_min", HSV_CYAN_COVERAGE_MIN)
+            ),
+            "full_frame_hsv_cyan_coverage_min": float(
+                getattr(
+                    self,
+                    "_full_frame_hsv_cyan_coverage_min",
+                    FULL_FRAME_HSV_CYAN_COVERAGE_MIN,
+                )
             ),
             "hsv_min_area_ratio": float(
                 getattr(self, "_hsv_min_area_ratio", HSV_MIN_AREA_RATIO)
@@ -1346,6 +1336,36 @@ class BrickDetector:
     # HSV segmentation for individual cyan brick detection
     # ------------------------------------------------------------------
 
+    def _is_full_frame_hsv_crop(self, x1, y1, x2, y2) -> bool:
+        try:
+            frame_w = getattr(self, "frame_w", None)
+            frame_h = getattr(self, "frame_h", None)
+            if frame_w is None or frame_h is None:
+                return False
+            return (
+                int(x1) <= 0
+                and int(y1) <= 0
+                and int(x2) >= int(frame_w)
+                and int(y2) >= int(frame_h)
+            )
+        except (TypeError, ValueError):
+            return False
+
+    def _hsv_cyan_coverage_min_for_crop(self, x1, y1, x2, y2) -> float:
+        base_min = float(
+            getattr(self, "_hsv_cyan_coverage_min", HSV_CYAN_COVERAGE_MIN)
+        )
+        if self._is_full_frame_hsv_crop(x1, y1, x2, y2):
+            full_frame_min = float(
+                getattr(
+                    self,
+                    "_full_frame_hsv_cyan_coverage_min",
+                    FULL_FRAME_HSV_CYAN_COVERAGE_MIN,
+                )
+            )
+            return min(base_min, full_frame_min)
+        return base_min
+
     def _segment_bricks_hsv(self, frame, x1, y1, x2, y2):
         """
         Segment individual cyan bricks within a single YOLO bbox using HSV
@@ -1365,11 +1385,43 @@ class BrickDetector:
         # Check cyan coverage — if too little, not a cyan brick
         bbox_area = crop.shape[0] * crop.shape[1]
         cyan_pixels = cv2.countNonZero(feature_mask)
-        cyan_coverage_min = float(
-            getattr(self, "_hsv_cyan_coverage_min", HSV_CYAN_COVERAGE_MIN)
-        )
+        cyan_coverage_min = self._hsv_cyan_coverage_min_for_crop(x1, y1, x2, y2)
         if cyan_pixels < bbox_area * cyan_coverage_min:
             return []
+
+        # Fast path when detector boxes are trusted: if the box has enough green
+        # colour, accept it directly without contour analysis.  This avoids
+        # fragmentation from shelf rails or partial occlusions that split the
+        # green region into small pieces that individually fail shape checks.
+        # The full-frame HSV rescue is not a detector box; it still needs the
+        # face/slot gate or it can bless the whole camera view as a brick.
+        if (
+            bool(getattr(self, "_trust_detector_boxes", False))
+            and not self._is_full_frame_hsv_crop(x1, y1, x2, y2)
+        ):
+            bw = x2 - x1
+            bh = y2 - y1
+            cx = x1 + bw / 2.0
+            cy = y1 + bh / 2.0
+            return [{
+                "contour": None,
+                "center_x": cx,
+                "center_y": cy,
+                "rect": ((cx, cy), (float(bw), float(bh)), 0.0),
+                "bbox": (x1, y1, bw, bh),
+                "area": float(bw * bh),
+                "partial": False,
+                "partial_kind": None,
+                "partial_label": None,
+                "partial_edges": {},
+                "shape_profile": "full",
+                "shape_match_score": None,
+                "negative_cutout_polygons": [],
+                "selection_anchor_x": None,
+                "selection_anchor_y": None,
+                "from_color_detection": True,
+                "cyan_coverage": float(cyan_pixels) / float(max(1, bbox_area)),
+            }]
 
         if self._uses_trapezoid_gate():
             candidates = self._build_trapezoid_brick_candidates(
@@ -2200,10 +2252,11 @@ class BrickDetector:
                 hsv_used = True
 
         if hsv_used:
-            detected_hsv_bricks = list(all_hsv_bricks)
-            selectable_hsv_bricks = list(all_hsv_bricks)
+            detected_hsv_bricks = []  # populated after primary is confirmed below
+            identified_hsv_bricks = list(all_hsv_bricks)
+            selectable_hsv_bricks = list(identified_hsv_bricks)
             filtered_hsv_bricks = self._filter_candidates_to_center_y_row(
-                all_hsv_bricks,
+                identified_hsv_bricks,
                 w_frame,
                 h_frame,
             )
@@ -2250,6 +2303,16 @@ class BrickDetector:
                 self.last_primary_confidence = 0.0
                 return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
             conf_pct = min(100.0, combined_conf)
+            # Once the primary has passed the confidence gate, expose only the
+            # nearest already-shape-gated candidates. This keeps stacked bricks
+            # visible without letting the row filter hide the top brick.
+            detected_hsv_bricks = [
+                candidate
+                for candidate in identified_hsv_bricks
+                if isinstance(candidate, dict)
+            ]
+            if primary not in detected_hsv_bricks:
+                detected_hsv_bricks.insert(0, primary)
             primary["_dot_found"] = dot_found
             primary["_dot_cx"] = dot_cx
             primary["_dot_cy"] = dot_cy
@@ -2319,6 +2382,80 @@ class BrickDetector:
             cam_height = self._smooth(raw_cam_height, self._prev_offset_y)
             self._prev_offset_y = cam_height
 
+            # When trusting the detector, supplement detected_hsv_bricks with
+            # YOLO boxes that are same-column as the primary and have some green.
+            # Runs after primary selection so we use the primary's YOLO box as a
+            # stable column reference (not the noisier HSV contour center).
+            if bool(getattr(self, "_trust_detector_boxes", False)) and bricks and primary is not None:
+                # Find the YOLO box that contains the primary HSV brick center.
+                primary_yolo = None
+                for _bx1, _by1, _bx2, _by2, _bc in bricks:
+                    if _bx1 <= primary["center_x"] <= _bx2 and _by1 <= primary["center_y"] <= _by2:
+                        primary_yolo = (_bx1, _by1, _bx2, _by2)
+                        break
+                if primary_yolo is None:
+                    # Nearest YOLO box centre to primary centre as fallback.
+                    _pc = (float(primary["center_x"]), float(primary["center_y"]))
+                    _nearest = min(bricks, key=lambda b: math.hypot((b[0]+b[2])/2-_pc[0], (b[1]+b[3])/2-_pc[1]))
+                    primary_yolo = (_nearest[0], _nearest[1], _nearest[2], _nearest[3])
+                if primary_yolo:
+                    p_cx = (primary_yolo[0] + primary_yolo[2]) / 2.0
+                    p_cy = (primary_yolo[1] + primary_yolo[3]) / 2.0
+                    p_bw = float(primary_yolo[2] - primary_yolo[0])
+                    p_bh = float(primary_yolo[3] - primary_yolo[1])
+                    for bx1, by1, bx2, by2, _bc in bricks:
+                        box_cx = (bx1 + bx2) / 2.0
+                        box_cy = (by1 + by2) / 2.0
+                        # Skip the primary's own box.
+                        if (abs(box_cx - p_cx) < p_bw * 0.3
+                                and abs(box_cy - p_cy) < p_bh * 0.3):
+                            continue
+                        # Skip if already covered by an HSV candidate.
+                        if any(
+                            math.hypot(box_cx - float(b["center_x"]),
+                                       box_cy - float(b["center_y"]))
+                            < max(10.0, float(bx2 - bx1) * 0.35)
+                            for b in detected_hsv_bricks
+                        ):
+                            continue
+                        # Layer 4 (strict): must be in the same x-column.
+                        if abs(box_cx - p_cx) > max(p_bw, float(bx2 - bx1)) * 0.5:
+                            continue
+                        # Layer 4: must be within 2 brick heights vertically.
+                        if abs(box_cy - p_cy) > max(p_bh, float(by2 - by1)) * 2.0:
+                            continue
+                        # Layer 1 minimum: crop must have at least 2% green pixels.
+                        _crop = frame[max(0, int(by1)):max(0, int(by2)),
+                                      max(0, int(bx1)):max(0, int(bx2))]
+                        if _crop.size == 0:
+                            continue
+                        _hsv_crop = cv2.cvtColor(_crop, cv2.COLOR_BGR2HSV)
+                        _cov_mask = cv2.inRange(_hsv_crop, self._hsv_lower, self._hsv_upper)
+                        _coverage = float(cv2.countNonZero(_cov_mask)) / max(1.0, float(_crop.shape[0] * _crop.shape[1]))
+                        if _coverage < 0.05:
+                            continue  # not green — shelf, tray, or background
+                        bw = int(bx2 - bx1)
+                        bh = int(by2 - by1)
+                        detected_hsv_bricks.append({
+                            "center_x": box_cx,
+                            "center_y": box_cy,
+                            "bbox": (int(bx1), int(by1), bw, bh),
+                            "contour": None,
+                            "rect": ((box_cx, box_cy), (float(bw), float(bh)), 0.0),
+                            "area": float(bw * bh),
+                            "partial": False,
+                            "partial_kind": None,
+                            "partial_label": None,
+                            "partial_edges": {},
+                            "shape_profile": "full",
+                            "shape_match_score": None,
+                            "negative_cutout_polygons": [],
+                            "selection_anchor_x": None,
+                            "selection_anchor_y": None,
+                            "from_color_detection": False,
+                            "cyan_coverage": _coverage,
+                        })
+
             # Stack flags from individual positions
             brick_above, brick_below = self._stack_flags_from_individuals(
                 primary, detected_hsv_bricks
@@ -2339,7 +2476,7 @@ class BrickDetector:
 
             if self.debug:
                 self._draw_debug_hsv(
-                    frame, bricks, detected_hsv_bricks, primary,
+                    frame, bricks, identified_hsv_bricks, primary,
                     angle, dist, offset_x, yolo_conf
                 )
 
@@ -2406,13 +2543,15 @@ class BrickDetector:
         if len(matched_boxes) > 1:
             frame_cx = float(w_frame) / 2.0 + float(getattr(self, "camera_center_offset_px", 0.0) or 0.0)
             frame_cy = float(h_frame) / 2.0
+            # Sort by distance to frame center; keep all for stack detection.
+            # Primary is selected by _select_center_box below.
             keep = sorted(
                 range(len(matched_boxes)),
                 key=lambda i: math.hypot(
                     (matched_boxes[i][0] + matched_boxes[i][2]) / 2.0 - frame_cx,
                     (matched_boxes[i][1] + matched_boxes[i][3]) / 2.0 - frame_cy,
                 ),
-            )[:1]
+            )
             matched_boxes = [matched_boxes[i] for i in keep]
             matched_partials = [matched_partials[i] for i in keep]
 
@@ -4792,9 +4931,9 @@ class BrickDetector:
                         angle, dist, offset_x, conf):
         """Draw enhanced debug visualization for HSV-segmented bricks."""
         self._draw_cyan_candidate_outlines(frame, hsv_bricks)
-        self._draw_brick_id_labels(frame, hsv_bricks)
 
-        # Draw primary-only decorations after the per-brick cyan outlines.
+        # Draw primary-only decorations after outlines. Brick IDs are drawn
+        # last so the operator can always read them in the face centers.
         if primary:
             self._draw_pink_dot_on_brick(frame, primary)
             pcx = int(round(float(primary["center_x"])))
@@ -4825,6 +4964,7 @@ class BrickDetector:
             ey = int(pcy - length * math.sin(rad))
             cv2.line(frame, (pcx, pcy), (ex, ey), (0, 0, 255), 2)
 
+        self._draw_brick_id_labels(frame, hsv_bricks)
         self.current_frame = frame
 
     def _draw_brick_id_labels(self, frame, candidates):
@@ -4841,28 +4981,21 @@ class BrickDetector:
             return
 
         def _label_center(candidate):
-            # Prefer the rotated-rect center — it matches the face outline drawn
-            # by _draw_primary_face_outline. Fall back to centroid then bbox center.
+            # Operator-facing IDs belong in the visual middle of the brick face,
+            # not on the slot/selection anchor used for geometry.
             if isinstance(candidate, dict):
-                rect = candidate.get("rect")
-                if rect is not None:
+                bbox = candidate.get("bbox")
+                if isinstance(bbox, tuple) and len(bbox) >= 4:
                     try:
-                        rcx, rcy = rect[0]
-                        return float(rcx), float(rcy)
+                        bx, by, bw, bh = [float(v) for v in bbox[:4]]
+                        if bw > 0.0 and bh > 0.0:
+                            return bx + (bw * 0.5), by + (bh * 0.5)
                     except Exception:
                         pass
                 cx = candidate.get("center_x")
                 cy = candidate.get("center_y")
                 if cx is not None and cy is not None:
                     return float(cx), float(cy)
-            bbox = candidate.get("bbox") if isinstance(candidate, dict) else None
-            if isinstance(bbox, tuple) and len(bbox) >= 4:
-                try:
-                    bx, by, bw, bh = [float(v) for v in bbox[:4]]
-                    if bw > 0.0 and bh > 0.0:
-                        return bx + (bw * 0.5), by + (bh * 0.5)
-                except Exception:
-                    pass
             return 0.0, 0.0
 
         ordered = sorted(
@@ -5009,6 +5142,9 @@ def build_negative_cutout_shape_detector(
     )
     detector._hsv_enabled = True
     detector._hsv_erode_iterations = max(0, int(hsv_erode_iterations or 0))
+    detector._hsv_cyan_coverage_min = float(HSV_CYAN_COVERAGE_MIN)
+    detector._full_frame_hsv_cyan_coverage_min = float(FULL_FRAME_HSV_CYAN_COVERAGE_MIN)
+    detector._hsv_min_area_ratio = float(HSV_MIN_AREA_RATIO)
     detector._face_polygon_model = None
     detector._face_cutouts_model = []
     detector._face_lines_model = []
