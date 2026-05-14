@@ -245,6 +245,16 @@ class TestInnerHoleSplitting(unittest.TestCase):
             d, frame, 0, 0, frame.shape[1], frame.shape[0]
         )
 
+    @staticmethod
+    def _overlap_area(a: tuple, b: tuple) -> int:
+        ax1, ay1, aw, ah = a
+        bx1, by1, bw, bh = b
+        ax2, ay2 = ax1 + aw, ay1 + ah
+        bx2, by2 = bx1 + bw, by1 + bh
+        overlap_w = max(0, min(ax2, bx2) - max(ax1, bx1))
+        overlap_h = max(0, min(ay2, by2) - max(ay1, by1))
+        return overlap_w * overlap_h
+
     def test_two_slots_produce_at_least_two_candidates(self):
         self.assertGreaterEqual(len(self._candidates()), 2)
 
@@ -252,6 +262,46 @@ class TestInnerHoleSplitting(unittest.TestCase):
         candidates = self._candidates()
         ys = [c["center_y"] for c in candidates[:2]]
         self.assertLess(ys[0], ys[1])
+
+    def test_slot_candidates_use_tight_non_overlapping_boxes(self):
+        candidates = self._candidates()
+        top_box = candidates[0]["bbox"]
+        bottom_box = candidates[1]["bbox"]
+
+        self.assertEqual(top_box[0], 32)
+        self.assertEqual(top_box[2], 157)
+        self.assertEqual(bottom_box[0], 32)
+        self.assertEqual(bottom_box[2], 157)
+        self.assertEqual(top_box[1] + top_box[3], bottom_box[1])
+        self.assertEqual(self._overlap_area(top_box, bottom_box), 0)
+        self.assertAlmostEqual(
+            top_box[1] + (top_box[3] / 2.0),
+            candidates[0]["selection_anchor_y"],
+            delta=1.0,
+        )
+        self.assertAlmostEqual(
+            bottom_box[1] + (bottom_box[3] / 2.0),
+            candidates[1]["selection_anchor_y"],
+            delta=1.0,
+        )
+        self.assertTrue(candidates[0].get("from_slot_detection"))
+        self.assertEqual(candidates[0].get("shape_profile"), "full")
+
+    def test_trust_detector_boxes_still_splits_merged_slot_stack(self):
+        d = _make_stub()
+        d._trust_detector_boxes = True
+        frame = _make_stacked_frame_with_slots()
+
+        candidates = det.BrickDetector._segment_bricks_hsv(
+            d, frame, 0, 0, frame.shape[1], frame.shape[0]
+        )
+
+        self.assertGreaterEqual(len(candidates), 2)
+        self.assertEqual(
+            self._overlap_area(candidates[0]["bbox"], candidates[1]["bbox"]),
+            0,
+        )
+        self.assertNotEqual(candidates[0]["bbox"], (0, 0, frame.shape[1], frame.shape[0]))
 
 
 class TestHeightRatioFallback(unittest.TestCase):
@@ -297,9 +347,9 @@ class TestSingleBrickFallback(unittest.TestCase):
         candidates = det.BrickDetector._segment_bricks_hsv(
             d, frame, 0, 0, frame.shape[1], frame.shape[0]
         )
-        self.assertGreaterEqual(
+        self.assertEqual(
             len(candidates), 1,
-            "Single brick with transparent slot must still produce at least one candidate",
+            "Single brick with transparent slot must not be split into a stack",
         )
 
     def test_fallback_scale_uses_face_height(self):
@@ -341,6 +391,62 @@ class TestSingleBrickFallback(unittest.TestCase):
         self.assertGreaterEqual(len(candidates), 1)
         self.assertTrue(any(bool(c.get("from_color_detection")) for c in candidates))
         self.assertTrue(any(c.get("shape_profile") == "color" for c in candidates))
+
+    def test_closeup_single_brick_can_fill_most_of_frame(self):
+        d = _make_stub()
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        cv2.rectangle(frame, (30, 35), (610, 430), GREEN_BRICK_BGR, thickness=cv2.FILLED)
+
+        candidates = det.BrickDetector._segment_bricks_hsv(
+            d,
+            frame,
+            0,
+            0,
+            frame.shape[1],
+            frame.shape[0],
+        )
+
+        self.assertEqual(len(candidates), 1)
+        x, y, w, h = candidates[0]["bbox"]
+        self.assertLessEqual(abs(x - 30), 1)
+        self.assertLessEqual(abs(y - 35), 1)
+        self.assertLessEqual(abs((x + w) - 611), 1)
+        self.assertLessEqual(abs((y + h) - 431), 1)
+
+
+class TestFarSuspectBrick(unittest.TestCase):
+    """Very far green blobs are suspected, not treated as measured-distance locks."""
+
+    @staticmethod
+    def _orange_px(frame: np.ndarray) -> int:
+        b, g, r = det.FAR_SUSPECT_COLOR_BGR
+        return int(np.count_nonzero(
+            (frame[:, :, 0] == b) & (frame[:, :, 1] == g) & (frame[:, :, 2] == r)
+        ))
+
+    def test_tiny_green_blob_reports_single_far_suspect(self):
+        d = _make_stub()
+        d.frame_w = 640
+        d.frame_h = 480
+        d.focal_px = 580.0
+        d._smooth_alpha = 1.0
+        d._prev_angle = None
+        d._prev_dist = None
+        d._prev_offset = None
+        d._prev_offset_y = None
+        d.debug = True
+        d._detect = lambda _frame: []
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        cv2.rectangle(frame, (305, 220), (335, 240), GREEN_BRICK_BGR, thickness=cv2.FILLED)
+
+        result = det.BrickDetector.read_frame(d, frame)
+
+        self.assertTrue(result[0])
+        self.assertEqual(result[2], det.FAR_SUSPECT_DISTANCE_MM)
+        self.assertEqual(d.last_distance_display_text, "500+mm")
+        self.assertTrue(d.last_suspected_far_brick)
+        self.assertEqual(d.last_status, "suspected brick (500+mm)")
+        self.assertGreater(self._orange_px(d.current_frame), 0)
 
 
 class TestShapeMatchThreshold(unittest.TestCase):
@@ -497,6 +603,32 @@ class TestCyanCandidateOutlines(unittest.TestCase):
 
         self.assertGreater(self._green_px(frame[30:61, 44:95]), 0)
         self.assertEqual(self._green_px(frame[14:19, 22:118]), 0)
+
+    def test_debug_hsv_primary_outline_uses_face_polygon_not_loose_bbox(self):
+        d = _make_stub()
+        frame = np.zeros((140, 180, 3), dtype=np.uint8)
+        candidate = _make_candidate(cx=90, cy=70, bbox=(35, 25, 110, 90))
+        candidate["rect"] = ((90.0, 70.0), (80.0, 42.0), -25.0)
+
+        expected_polygon = det.BrickDetector._candidate_face_outline_polygon(d, candidate)
+        edge_mid = np.round((expected_polygon[1] + expected_polygon[2]) * 0.5).astype(int)
+
+        det.BrickDetector._draw_debug_hsv(
+            d,
+            frame,
+            [],
+            [candidate],
+            candidate,
+            angle=0.0,
+            dist=0.0,
+            offset_x=0.0,
+            conf=1.0,
+        )
+
+        x = int(edge_mid[0])
+        y = int(edge_mid[1])
+        self.assertGreater(self._green_px(frame[y - 3:y + 4, x - 3:x + 4]), 0)
+        self.assertEqual(self._green_px(frame[23:28, 33:147]), 0)
 
 
 class TestReadFrameCloseupRecovery(unittest.TestCase):

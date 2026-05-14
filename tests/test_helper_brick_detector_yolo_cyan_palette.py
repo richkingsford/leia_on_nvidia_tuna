@@ -15,13 +15,45 @@ class TestHelperBrickDetectorYoloCyanPalette(unittest.TestCase):
                 "13A561",
                 "3ABD8D",
                 "0A5839",
+                "A8B6AA",
+                "449868",
+                "2B824A",
+                "51A276",
+                "3D8D62",
             ),
         )
 
-    def test_every_manual_cyan_hex_fits_inside_balanced_hsv_range(self):
+    def test_every_saturated_manual_cyan_hex_fits_inside_balanced_hsv_range(self):
         lower = detector.CYAN_HSV_BALANCED_LOWER
         upper = detector.CYAN_HSV_BALANCED_UPPER
+        washed_highlight_hexes = {"A8B6AA"}
         for hex_code in detector.CYAN_SHADE_HEXES:
+            if hex_code in washed_highlight_hexes:
+                continue
+            hue, sat, val = detector._hex_to_opencv_hsv(hex_code)
+            self.assertGreaterEqual(hue, lower[0], hex_code)
+            self.assertLessEqual(hue, upper[0], hex_code)
+            self.assertGreaterEqual(sat, lower[1], hex_code)
+            self.assertLessEqual(sat, upper[1], hex_code)
+            self.assertGreaterEqual(val, lower[2], hex_code)
+            self.assertLessEqual(val, upper[2], hex_code)
+
+    def test_every_manual_cyan_hex_fits_inside_wide_hsv_range(self):
+        lower = detector.CYAN_HSV_WIDE_LOWER
+        upper = detector.CYAN_HSV_WIDE_UPPER
+        for hex_code in detector.CYAN_SHADE_HEXES:
+            hue, sat, val = detector._hex_to_opencv_hsv(hex_code)
+            self.assertGreaterEqual(hue, lower[0], hex_code)
+            self.assertLessEqual(hue, upper[0], hex_code)
+            self.assertGreaterEqual(sat, lower[1], hex_code)
+            self.assertLessEqual(sat, upper[1], hex_code)
+            self.assertGreaterEqual(val, lower[2], hex_code)
+            self.assertLessEqual(val, upper[2], hex_code)
+
+    def test_lights_on_saturated_samples_fit_default_tight_hsv_range(self):
+        lower = detector.CYAN_HSV_TIGHT_LOWER
+        upper = detector.CYAN_HSV_TIGHT_UPPER
+        for hex_code in ("449868", "2B824A", "51A276", "3D8D62"):
             hue, sat, val = detector._hex_to_opencv_hsv(hex_code)
             self.assertGreaterEqual(hue, lower[0], hex_code)
             self.assertLessEqual(hue, upper[0], hex_code)

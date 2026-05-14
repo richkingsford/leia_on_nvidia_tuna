@@ -156,6 +156,25 @@ class TestHelperRobotControlWireMap(unittest.TestCase):
                 min_pwm, _ = robot._min_floor_for_cmd(act)
                 self.assertGreaterEqual(int(action.get("pwm") or 0), int(min_pwm or 0))
 
+    def test_send_custom_actions_pwm_serializes_per_action_durations(self):
+        robot, _dummy_serial = self._make_robot()
+
+        result = robot.send_custom_actions_pwm(
+            "b",
+            [
+                {"target": "l", "action": "f", "pwm": 132, "duration_ms": 300},
+                {"target": "r", "action": "b", "pwm": 132, "duration_ms": 300},
+                {"target": "m", "action": "d", "pwm": 255, "duration_ms": 2000},
+            ],
+            duration_ms=300,
+        )
+
+        self.assertIn("l.f.52.300", result["wire_text"])
+        self.assertIn("r.b.52.300", result["wire_text"])
+        self.assertIn("m.d.100.2000", result["wire_text"])
+        self.assertEqual(result["duration_ms"], 2000)
+        self.assertEqual(robot.last_command, result["wire_text"])
+
     def test_floor_error_message_includes_sender_curve_actual_and_curve_values(self):
         robot, _dummy_serial = self._make_robot()
 

@@ -84,6 +84,12 @@ CYAN_SHADE_HEXES = (
     "13A561",
     "3ABD8D",
     "0A5839",
+    # Measured 2026-05-11 with blinds closed and room lights on
+    "A8B6AA",
+    "449868",
+    "2B824A",
+    "51A276",
+    "3D8D62",
 )
 
 
@@ -125,12 +131,14 @@ def _cyan_palette_hsv_range(
 
 
 # Calibrated 2026-05-11 from live OAK camera frame of painted green bricks.
-# Brick H clusters tightly at 75-80 (OpenCV).  Replaces computed values.
-CYAN_HSV_TIGHT_LOWER: tuple[int, int, int] = (72, 137, 58)
+# Blinds-closed / lights-on samples pulled hue down to ~71 and saturation down
+# to ~128, so the default tight profile keeps those greens without accepting the
+# very low-saturation washed highlight sample.
+CYAN_HSV_TIGHT_LOWER: tuple[int, int, int] = (68, 120, 58)
 CYAN_HSV_TIGHT_UPPER: tuple[int, int, int] = (83, 255, 255)
 CYAN_HSV_BALANCED_LOWER: tuple[int, int, int] = (68, 97, 33)
 CYAN_HSV_BALANCED_UPPER: tuple[int, int, int] = (87, 255, 255)
-CYAN_HSV_WIDE_LOWER: tuple[int, int, int] = (62, 47, 8)
+CYAN_HSV_WIDE_LOWER: tuple[int, int, int] = (60, 15, 8)
 CYAN_HSV_WIDE_UPPER: tuple[int, int, int] = (93, 255, 255)
 
 CYAN_HSV_LOWER = np.array(CYAN_HSV_BALANCED_LOWER)
@@ -234,6 +242,11 @@ STACK_CENTER_Y_ROW_FILTER_ENABLED = True
 STACK_CENTER_Y_ROW_MIN_CANDIDATES = 2
 STACK_CENTER_Y_ROW_TOLERANCE_PX = 12.0
 PARTIAL_EDGE_MARGIN_PX = 1
+BRICK_BBOX_TIGHTEN_PAD_RATIO_X = 0.20
+BRICK_BBOX_TIGHTEN_PAD_RATIO_Y = 0.45
+FAR_SUSPECT_DISTANCE_MM = 500.0
+FAR_SUSPECT_CONF_PCT = 50.0
+FAR_SUSPECT_COLOR_BGR = (0, 165, 255)
 PARTIAL_COLOR_BGR = (0, 165, 255)
 PARTIAL_LABEL_TOP = "TOP HALF"
 PARTIAL_LABEL_BOTTOM = "LOWER PARTIAL"
@@ -316,6 +329,8 @@ class BrickDetector:
         self.last_partial_labels = []
         self.last_primary_partial_kind = None
         self.last_primary_partial_label = None
+        self.last_suspected_far_brick = False
+        self.last_distance_display_text = None
         # Keep debug view readable when low confidence rescue profiles are active.
         self.debug_show_all_candidates = False
         self.debug_max_boxes = 1
@@ -999,6 +1014,51 @@ class BrickDetector:
         self.last_bbox_calibrated_height_dist = components.get("calibrated_height_dist_mm")
         self.last_bbox_dist = components.get("bbox_dist_mm")
 
+    def _clear_far_suspect_state(self):
+        self.last_suspected_far_brick = False
+        self.last_distance_display_text = None
+
+    def _candidate_distance_proxy_mm(self, candidate):
+        face_size = self._candidate_face_size_px(candidate)
+        if face_size is not None:
+            bbox_w, bbox_h = face_size
+        else:
+            bbox = candidate.get("bbox") if isinstance(candidate, dict) else None
+            if not isinstance(bbox, (tuple, list)) or len(bbox) < 4:
+                return None
+            try:
+                _bx, _by, bbox_w, bbox_h = [float(v) for v in bbox[:4]]
+            except (TypeError, ValueError):
+                return None
+        try:
+            components = self._distance_components_from_box(
+                bbox_w,
+                bbox_h,
+                candidate.get("partial_kind") if isinstance(candidate, dict) else None,
+            )
+        except Exception:
+            return None
+        if not isinstance(components, dict):
+            return None
+        return components.get("bbox_dist_mm")
+
+    def _is_far_suspect_candidate(self, candidate) -> bool:
+        if not isinstance(candidate, dict):
+            return False
+        if not (
+            bool(candidate.get("from_color_detection"))
+            or bool(candidate.get("from_slot_detection"))
+            or bool(candidate.get("suspected_far"))
+        ):
+            return False
+        proxy = self._candidate_distance_proxy_mm(candidate)
+        if proxy is None:
+            return False
+        try:
+            return float(proxy) > float(FAR_SUSPECT_DISTANCE_MM)
+        except (TypeError, ValueError):
+            return False
+
     def _estimate_offset_x_mm(self, center_x_px, dist_mm):
         """
         Estimate camera-space horizontal offset in mm from the camera X center
@@ -1088,6 +1148,104 @@ class BrickDetector:
         self.last_tri_span_px = span_px
         self.last_tri_span_dist = dist
         return dist
+
+    def _candidate_bbox_midpoint(self, candidate):
+        if not isinstance(candidate, dict):
+            return None
+        bbox = candidate.get("bbox")
+        if isinstance(bbox, (tuple, list)) and len(bbox) >= 4:
+            try:
+                bx, by, bw, bh = [float(v) for v in bbox[:4]]
+            except (TypeError, ValueError):
+                return None
+            if bw > 0.0 and bh > 0.0:
+                return bx + (bw * 0.5), by + (bh * 0.5)
+        return None
+
+    def _candidate_face_midpoint(self, candidate):
+        """Return the brick face midpoint used for target choice and telemetry."""
+        if not isinstance(candidate, dict):
+            return 0.0, 0.0
+
+        for key in ("target_face_polygon", "debug_face_polygon", "face_polygon"):
+            explicit = candidate.get(key)
+            if explicit is None:
+                continue
+            try:
+                polygon = np.asarray(explicit, dtype=np.float32).reshape(-1, 2)
+            except Exception:
+                polygon = None
+            if isinstance(polygon, np.ndarray) and polygon.shape[0] >= 3:
+                try:
+                    x_min = float(np.min(polygon[:, 0]))
+                    x_max = float(np.max(polygon[:, 0]))
+                    y_min = float(np.min(polygon[:, 1]))
+                    y_max = float(np.max(polygon[:, 1]))
+                    return (x_min + x_max) * 0.5, (y_min + y_max) * 0.5
+                except Exception:
+                    pass
+
+        bbox_mid = self._candidate_bbox_midpoint(candidate)
+        if bbox_mid is not None:
+            return bbox_mid
+
+        polygon = self._candidate_face_outline_polygon(candidate)
+        if isinstance(polygon, np.ndarray) and polygon.shape[0] >= 3:
+            try:
+                x_min = float(np.min(polygon[:, 0]))
+                x_max = float(np.max(polygon[:, 0]))
+                y_min = float(np.min(polygon[:, 1]))
+                y_max = float(np.max(polygon[:, 1]))
+                return (x_min + x_max) * 0.5, (y_min + y_max) * 0.5
+            except Exception:
+                pass
+
+        rect = candidate.get("rect")
+        if rect is not None:
+            try:
+                center = rect[0]
+                return float(center[0]), float(center[1])
+            except Exception:
+                pass
+
+        return (
+            float(candidate.get("center_x", 0.0)),
+            float(candidate.get("center_y", 0.0)),
+        )
+
+    def _candidate_face_size_px(self, candidate):
+        """Return apparent face width/height in pixels for distance telemetry."""
+        if not isinstance(candidate, dict):
+            return None
+
+        polygon = self._candidate_face_outline_polygon(candidate)
+        if isinstance(polygon, np.ndarray) and polygon.shape[0] >= 3:
+            try:
+                rect = cv2.minAreaRect(polygon.reshape(-1, 1, 2).astype(np.float32))
+                rw, rh = float(rect[1][0]), float(rect[1][1])
+                if rw > 0.0 and rh > 0.0:
+                    return max(rw, rh), min(rw, rh)
+            except Exception:
+                pass
+
+        bbox = candidate.get("bbox")
+        if isinstance(bbox, (tuple, list)) and len(bbox) >= 4:
+            try:
+                _bx, _by, bw, bh = [float(v) for v in bbox[:4]]
+            except (TypeError, ValueError):
+                return None
+            if bw > 0.0 and bh > 0.0:
+                return bw, bh
+
+        rect = candidate.get("rect")
+        if rect is not None:
+            try:
+                rw, rh = float(rect[1][0]), float(rect[1][1])
+                if rw > 0.0 and rh > 0.0:
+                    return max(rw, rh), min(rw, rh)
+            except Exception:
+                pass
+        return None
 
     def _smooth(self, new_val, prev_val):
         """Exponential moving average for temporal smoothing."""
@@ -1389,12 +1547,30 @@ class BrickDetector:
         if cyan_pixels < bbox_area * cyan_coverage_min:
             return []
 
-        # Fast path when detector boxes are trusted: if the box has enough green
-        # colour, accept it directly without contour analysis.  This avoids
-        # fragmentation from shelf rails or partial occlusions that split the
-        # green region into small pieces that individually fail shape checks.
-        # The full-frame HSV rescue is not a detector box; it still needs the
-        # face/slot gate or it can bless the whole camera view as a brick.
+        if self._uses_trapezoid_gate():
+            candidates = self._build_trapezoid_brick_candidates(
+                feature_mask,
+                crop_x=0,
+                crop_y=0,
+                crop_w=crop.shape[1],
+                crop_h=crop.shape[0],
+            )
+            if candidates:
+                candidates = self._tighten_candidate_bboxes_to_hsv_edges(
+                    candidates,
+                    feature_mask,
+                    crop_x=0,
+                    crop_y=0,
+                )
+                return [
+                    self._offset_candidate_to_frame(candidate, x1, y1)
+                    for candidate in candidates
+                ]
+
+        # Fast path when detector boxes are trusted: only use it after the
+        # world-aware trapezoid/stack split had a chance to produce individual
+        # bricks. The raw YOLO box can cover two bricks, so this path still
+        # tightens to cyan pixels before reporting a single candidate.
         if (
             bool(getattr(self, "_trust_detector_boxes", False))
             and not self._is_full_frame_hsv_crop(x1, y1, x2, y2)
@@ -1403,7 +1579,7 @@ class BrickDetector:
             bh = y2 - y1
             cx = x1 + bw / 2.0
             cy = y1 + bh / 2.0
-            return [{
+            trusted_candidates = [{
                 "contour": None,
                 "center_x": cx,
                 "center_y": cy,
@@ -1422,20 +1598,12 @@ class BrickDetector:
                 "from_color_detection": True,
                 "cyan_coverage": float(cyan_pixels) / float(max(1, bbox_area)),
             }]
-
-        if self._uses_trapezoid_gate():
-            candidates = self._build_trapezoid_brick_candidates(
+            return self._tighten_candidate_bboxes_to_hsv_edges(
+                trusted_candidates,
                 feature_mask,
-                crop_x=0,
-                crop_y=0,
-                crop_w=crop.shape[1],
-                crop_h=crop.shape[0],
+                crop_x=x1,
+                crop_y=y1,
             )
-            if candidates:
-                return [
-                    self._offset_candidate_to_frame(candidate, x1, y1)
-                    for candidate in candidates
-                ]
 
         contours, _ = cv2.findContours(
             mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -1736,7 +1904,12 @@ class BrickDetector:
                 ):
                     bricks[matched_idx] = pair_candidate
 
-        return bricks
+        return self._tighten_candidate_bboxes_to_hsv_edges(
+            bricks,
+            feature_mask,
+            crop_x=x1,
+            crop_y=y1,
+        )
 
     def _offset_candidate_to_frame(self, candidate, offset_x, offset_y):
         """Convert a crop-local candidate dict into frame coordinates."""
@@ -1801,6 +1974,254 @@ class BrickDetector:
             shifted["negative_cutout_polygons"] = shifted_polygons
 
         return shifted
+
+    def _candidate_bbox_edges(self, candidate):
+        bbox = candidate.get("bbox") if isinstance(candidate, dict) else None
+        if not isinstance(bbox, (tuple, list)) or len(bbox) < 4:
+            return None
+        try:
+            bx, by, bw, bh = [float(v) for v in bbox[:4]]
+        except (TypeError, ValueError):
+            return None
+        if bw <= 0.0 or bh <= 0.0:
+            return None
+        return bx, by, bx + bw, by + bh
+
+    def _update_candidate_bbox(self, candidate, x1, y1, x2, y2):
+        if not isinstance(candidate, dict):
+            return False
+        try:
+            nx1 = int(round(float(x1)))
+            ny1 = int(round(float(y1)))
+            nx2 = int(round(float(x2)))
+            ny2 = int(round(float(y2)))
+        except (TypeError, ValueError):
+            return False
+        if nx2 <= nx1 or ny2 <= ny1:
+            return False
+        bw = int(nx2 - nx1)
+        bh = int(ny2 - ny1)
+        candidate["bbox"] = (int(nx1), int(ny1), bw, bh)
+        candidate["center_x"] = float(nx1) + (float(bw) * 0.5)
+        candidate["center_y"] = float(ny1) + (float(bh) * 0.5)
+        if (
+            "from_slot_detection" in candidate
+            or bool(candidate.get("from_color_detection", False))
+        ):
+            candidate["rect"] = (
+                (float(candidate["center_x"]), float(candidate["center_y"])),
+                (float(bw), float(bh)),
+                0.0,
+            )
+        return True
+
+    def _enforce_non_overlapping_candidate_bboxes(self, candidates):
+        """Clip candidate boxes so two reported bricks never occupy the same pixels."""
+        candidate_list = [
+            candidate for candidate in list(candidates or []) if isinstance(candidate, dict)
+        ]
+        if len(candidate_list) <= 1:
+            return candidate_list
+
+        for _pass_idx in range(max(1, len(candidate_list) * 2)):
+            changed = False
+            for i in range(len(candidate_list)):
+                first = candidate_list[i]
+                first_edges = self._candidate_bbox_edges(first)
+                if first_edges is None:
+                    continue
+                for j in range(i + 1, len(candidate_list)):
+                    second = candidate_list[j]
+                    second_edges = self._candidate_bbox_edges(second)
+                    if second_edges is None:
+                        continue
+
+                    f_x1, f_y1, f_x2, f_y2 = first_edges
+                    s_x1, s_y1, s_x2, s_y2 = second_edges
+                    overlap_w = min(f_x2, s_x2) - max(f_x1, s_x1)
+                    overlap_h = min(f_y2, s_y2) - max(f_y1, s_y1)
+                    if overlap_w <= 0.0 or overlap_h <= 0.0:
+                        continue
+
+                    f_cx, f_cy = self._candidate_bbox_midpoint(first) or (
+                        (f_x1 + f_x2) * 0.5,
+                        (f_y1 + f_y2) * 0.5,
+                    )
+                    s_cx, s_cy = self._candidate_bbox_midpoint(second) or (
+                        (s_x1 + s_x2) * 0.5,
+                        (s_y1 + s_y2) * 0.5,
+                    )
+                    dx = float(s_cx) - float(f_cx)
+                    dy = float(s_cy) - float(f_cy)
+                    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+                        continue
+
+                    if abs(dx) >= abs(dy):
+                        boundary = int(round((float(f_cx) + float(s_cx)) * 0.5))
+                        if dx >= 0.0:
+                            new_first = (f_x1, f_y1, min(f_x2, boundary), f_y2)
+                            new_second = (max(s_x1, boundary), s_y1, s_x2, s_y2)
+                        else:
+                            new_first = (max(f_x1, boundary), f_y1, f_x2, f_y2)
+                            new_second = (s_x1, s_y1, min(s_x2, boundary), s_y2)
+                    else:
+                        boundary = int(round((float(f_cy) + float(s_cy)) * 0.5))
+                        if dy >= 0.0:
+                            new_first = (f_x1, f_y1, f_x2, min(f_y2, boundary))
+                            new_second = (s_x1, max(s_y1, boundary), s_x2, s_y2)
+                        else:
+                            new_first = (f_x1, max(f_y1, boundary), f_x2, f_y2)
+                            new_second = (s_x1, s_y1, s_x2, min(s_y2, boundary))
+
+                    if (
+                        new_first[2] <= new_first[0]
+                        or new_first[3] <= new_first[1]
+                        or new_second[2] <= new_second[0]
+                        or new_second[3] <= new_second[1]
+                    ):
+                        continue
+                    first_changed = self._update_candidate_bbox(first, *new_first)
+                    second_changed = self._update_candidate_bbox(second, *new_second)
+                    changed = bool(first_changed or second_changed or changed)
+            if not changed:
+                break
+        return candidate_list
+
+    def _tighten_candidate_bboxes_to_hsv_edges(
+        self,
+        candidates,
+        feature_mask,
+        *,
+        crop_x=0,
+        crop_y=0,
+    ):
+        """Tighten each candidate bbox to the cyan pixels in its non-overlap slice."""
+        candidate_list = [
+            candidate for candidate in list(candidates or []) if isinstance(candidate, dict)
+        ]
+        if not candidate_list:
+            return []
+
+        mask_arr = np.asarray(feature_mask, dtype=np.uint8) if feature_mask is not None else None
+        if mask_arr is None or mask_arr.ndim != 2 or mask_arr.size == 0:
+            return self._enforce_non_overlapping_candidate_bboxes(candidate_list)
+
+        mask_h, mask_w = mask_arr.shape[:2]
+        origin_x = float(crop_x)
+        origin_y = float(crop_y)
+
+        infos = []
+        for idx, candidate in enumerate(candidate_list):
+            edges = self._candidate_bbox_edges(candidate)
+            if edges is None:
+                continue
+            bx1, by1, bx2, by2 = edges
+            try:
+                cx = float(candidate.get("selection_anchor_x"))
+                cy = float(candidate.get("selection_anchor_y"))
+            except (TypeError, ValueError):
+                try:
+                    cx = float(candidate.get("center_x"))
+                    cy = float(candidate.get("center_y"))
+                except (TypeError, ValueError):
+                    cx, cy = self._candidate_bbox_midpoint(candidate) or (
+                        (bx1 + bx2) * 0.5,
+                        (by1 + by2) * 0.5,
+                    )
+            infos.append(
+                {
+                    "idx": idx,
+                    "cx": float(cx) - origin_x,
+                    "cy": float(cy) - origin_y,
+                    "x1": float(bx1) - origin_x,
+                    "y1": float(by1) - origin_y,
+                    "x2": float(bx2) - origin_x,
+                    "y2": float(by2) - origin_y,
+                }
+            )
+        if not infos:
+            return self._enforce_non_overlapping_candidate_bboxes(candidate_list)
+
+        split_axis = None
+        if len(infos) > 1:
+            x_range = max(info["cx"] for info in infos) - min(info["cx"] for info in infos)
+            y_range = max(info["cy"] for info in infos) - min(info["cy"] for info in infos)
+            split_axis = "y" if y_range >= x_range else "x"
+
+        bounds = {}
+        if split_axis is not None:
+            ordered = sorted(infos, key=lambda item: item["cy" if split_axis == "y" else "cx"])
+            for order_idx, item in enumerate(ordered):
+                axis_key = "cy" if split_axis == "y" else "cx"
+                axis_limit = float(mask_h if split_axis == "y" else mask_w)
+                center = float(item[axis_key])
+                lower = 0.0
+                upper = axis_limit
+                if order_idx > 0:
+                    prev = ordered[order_idx - 1]
+                    lower = float(prev[axis_key] + item[axis_key]) * 0.5
+                elif order_idx + 1 < len(ordered):
+                    nxt = ordered[order_idx + 1]
+                    lower = center - (float(nxt[axis_key]) - center) * 0.5
+                if order_idx + 1 < len(ordered):
+                    nxt = ordered[order_idx + 1]
+                    upper = float(item[axis_key] + nxt[axis_key]) * 0.5
+                elif order_idx > 0:
+                    prev = ordered[order_idx - 1]
+                    upper = center + (center - float(prev[axis_key])) * 0.5
+                bounds[int(item["idx"])] = (
+                    max(0.0, float(lower)),
+                    min(axis_limit, float(upper)),
+                )
+
+        for info in infos:
+            idx = int(info["idx"])
+            candidate = candidate_list[idx]
+            local_w = max(1.0, float(info["x2"] - info["x1"]))
+            local_h = max(1.0, float(info["y2"] - info["y1"]))
+            pad_x = max(2, int(round(local_w * BRICK_BBOX_TIGHTEN_PAD_RATIO_X)))
+            pad_y = max(2, int(round(local_h * BRICK_BBOX_TIGHTEN_PAD_RATIO_Y)))
+
+            rx1 = int(math.floor(info["x1"])) - pad_x
+            ry1 = int(math.floor(info["y1"])) - pad_y
+            rx2 = int(math.ceil(info["x2"])) + pad_x
+            ry2 = int(math.ceil(info["y2"])) + pad_y
+
+            if split_axis == "y" and idx in bounds:
+                lower, upper = bounds[idx]
+                ry1 = int(math.floor(lower))
+                ry2 = int(math.ceil(upper))
+            elif split_axis == "x" and idx in bounds:
+                lower, upper = bounds[idx]
+                rx1 = int(math.floor(lower))
+                rx2 = int(math.ceil(upper))
+
+            rx1 = max(0, min(mask_w, rx1))
+            ry1 = max(0, min(mask_h, ry1))
+            rx2 = max(0, min(mask_w, rx2))
+            ry2 = max(0, min(mask_h, ry2))
+            if rx2 <= rx1 or ry2 <= ry1:
+                continue
+
+            roi = mask_arr[ry1:ry2, rx1:rx2]
+            if roi.size == 0:
+                continue
+            if cv2.countNonZero(roi) < 4:
+                continue
+            nonzero = cv2.findNonZero(roi)
+            if nonzero is None:
+                continue
+            tight_x, tight_y, tight_w, tight_h = cv2.boundingRect(nonzero)
+            if tight_w <= 0 or tight_h <= 0:
+                continue
+
+            nx1 = origin_x + float(rx1 + tight_x)
+            ny1 = origin_y + float(ry1 + tight_y)
+            nx2 = nx1 + float(tight_w)
+            ny2 = ny1 + float(tight_h)
+            self._update_candidate_bbox(candidate, nx1, ny1, nx2, ny2)
+
+        return self._enforce_non_overlapping_candidate_bboxes(candidate_list)
 
     def _estimate_angle_from_rect(self, rect):
         """
@@ -1895,8 +2316,7 @@ class BrickDetector:
         sorted_cands = sorted(candidates, key=_score)
         accepted = []
         for candidate in sorted_cands:
-            cx = float(candidate.get("center_x", 0))
-            cy = float(candidate.get("center_y", 0))
+            cx, cy = self._candidate_face_midpoint(candidate)
             bbox = candidate.get("bbox")
             if isinstance(bbox, tuple) and len(bbox) >= 4:
                 _, _, bw, bh = bbox[:4]
@@ -1905,8 +2325,10 @@ class BrickDetector:
                 threshold = 20.0
 
             too_close = any(
-                math.hypot(cx - float(e.get("center_x", 0)),
-                           cy - float(e.get("center_y", 0))) < threshold
+                math.hypot(
+                    cx - self._candidate_face_midpoint(e)[0],
+                    cy - self._candidate_face_midpoint(e)[1],
+                ) < threshold
                 for e in accepted
             )
             if not too_close:
@@ -1945,16 +2367,10 @@ class BrickDetector:
 
         candidates = []
         for idx, brick in enumerate(individual_bricks):
-            candidates.append(
-                {
-                    "index": idx,
-                    "center_x": float(brick["center_x"]),
-                    "center_y": float(brick["center_y"]),
-                    "selection_anchor_x": brick.get("selection_anchor_x"),
-                    "selection_anchor_y": brick.get("selection_anchor_y"),
-                    "partial": bool(brick.get("partial", False)),
-                }
-            )
+            candidate = dict(brick)
+            candidate["index"] = idx
+            candidate["partial"] = bool(brick.get("partial", False))
+            candidates.append(candidate)
         selected_idx = self._select_center_candidate_index(candidates, frame_w, frame_h)
         if selected_idx is None:
             self._center_lock_prev_center = None
@@ -1973,14 +2389,7 @@ class BrickDetector:
     def _candidate_selection_point(self, candidate):
         if not isinstance(candidate, dict):
             return 0.0, 0.0
-        anchor_x = candidate.get("selection_anchor_x")
-        anchor_y = candidate.get("selection_anchor_y")
-        if isinstance(anchor_x, (int, float)) and isinstance(anchor_y, (int, float)):
-            return float(anchor_x), float(anchor_y)
-        return (
-            float(candidate.get("center_x", 0.0)),
-            float(candidate.get("center_y", 0.0)),
-        )
+        return self._candidate_face_midpoint(candidate)
 
     def _candidate_center_score(self, candidate, frame_w, frame_h):
         frame_center_x = float(frame_w) / 2.0 + float(getattr(self, "camera_center_offset_px", 0.0) or 0.0)
@@ -2173,8 +2582,7 @@ class BrickDetector:
         if not primary or len(all_bricks) < 2:
             return False, False
 
-        sel_x = primary["center_x"]
-        sel_y = primary["center_y"]
+        sel_x, sel_y = self._candidate_face_midpoint(primary)
         _, _, bw, bh = primary["bbox"]
 
         x_tol = max(10.0, bw * STACK_X_OVERLAP_RATIO)
@@ -2185,13 +2593,159 @@ class BrickDetector:
         for b in all_bricks:
             if b is primary:
                 continue
-            if abs(b["center_x"] - sel_x) > x_tol:
+            b_x, b_y = self._candidate_face_midpoint(b)
+            if abs(b_x - sel_x) > x_tol:
                 continue
-            if b["center_y"] < sel_y - y_tol:
+            if b_y < sel_y - y_tol:
                 above = True
-            elif b["center_y"] > sel_y + y_tol:
+            elif b_y > sel_y + y_tol:
                 below = True
         return above, below
+
+    def _far_suspect_candidate_from_frame(self, frame):
+        """Return the single best far green blob candidate, if one is plausible."""
+        if frame is None or getattr(frame, "size", 0) == 0:
+            return None
+
+        feature_mask, _contour_mask = self._build_hsv_masks(frame)
+        if feature_mask is None:
+            return None
+
+        contours, _ = cv2.findContours(
+            feature_mask,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        if not contours:
+            return None
+
+        frame_h, frame_w = frame.shape[:2]
+        frame_area = max(1.0, float(frame_w * frame_h))
+        frame_cx = float(frame_w) / 2.0 + float(getattr(self, "camera_center_offset_px", 0.0) or 0.0)
+        frame_cy = float(frame_h) / 2.0
+        min_area = max(10.0, frame_area * 0.00004)
+        max_area = frame_area * 0.12
+        best = None
+        best_score = None
+        for contour in contours:
+            area = float(cv2.contourArea(contour))
+            if area < min_area or area > max_area:
+                continue
+            bx, by, bw, bh = cv2.boundingRect(contour)
+            if bw <= 0 or bh <= 0:
+                continue
+            fill_ratio = area / float(max(1, bw * bh))
+            if fill_ratio < 0.18:
+                continue
+            aspect = float(max(bw, bh)) / float(max(1, min(bw, bh)))
+            if aspect > BRICK_COLOR_FALLBACK_ASPECT_MAX:
+                continue
+
+            cx = float(bx) + (float(bw) * 0.5)
+            cy = float(by) + (float(bh) * 0.5)
+            candidate = {
+                "contour": contour,
+                "center_x": cx,
+                "center_y": cy,
+                "rect": ((cx, cy), (float(bw), float(bh)), 0.0),
+                "bbox": (int(bx), int(by), int(bw), int(bh)),
+                "area": float(area),
+                "partial": False,
+                "partial_kind": None,
+                "partial_label": None,
+                "partial_edges": {},
+                "shape_profile": "color",
+                "shape_match_score": None,
+                "negative_cutout_polygons": [],
+                "selection_anchor_x": cx,
+                "selection_anchor_y": cy,
+                "from_color_detection": True,
+                "suspected_far": True,
+                "cyan_coverage": float(area) / frame_area,
+            }
+            if not self._is_far_suspect_candidate(candidate):
+                continue
+
+            center_score = math.hypot(cx - frame_cx, cy - frame_cy)
+            score = center_score - (min(area, max_area) * 0.01)
+            if best is None or score < best_score:
+                best = candidate
+                best_score = float(score)
+
+        if best is None:
+            return None
+        tightened = self._tighten_candidate_bboxes_to_hsv_edges(
+            [best],
+            feature_mask,
+            crop_x=0,
+            crop_y=0,
+        )
+        return tightened[0] if tightened else best
+
+    def _return_far_suspect(
+        self,
+        frame,
+        yolo_bricks,
+        primary,
+        *,
+        yolo_conf=0.0,
+        candidates=None,
+    ):
+        if not isinstance(primary, dict):
+            return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+
+        primary["suspected_far"] = True
+        self.last_suspected_far_brick = True
+        self.last_distance_display_text = "500+mm"
+        self.last_status = "suspected brick (500+mm)"
+        self.last_geometry_source = "far_suspect_color"
+        conf_pct = max(float(FAR_SUSPECT_CONF_PCT), float(yolo_conf or 0.0) * 100.0)
+        self.last_primary_confidence = conf_pct / 100.0
+
+        face_size = self._candidate_face_size_px(primary)
+        if face_size is not None:
+            bbox_w, bbox_h = face_size
+        else:
+            _bx, _by, bbox_w, bbox_h = primary.get("bbox", (0, 0, 1, 1))[:4]
+        components = self._distance_components_from_box(
+            bbox_w,
+            bbox_h,
+            primary.get("partial_kind"),
+        )
+        self._record_bbox_distance_components(components)
+        self.last_raw_dist = None
+        self.last_final_dist = None
+        self.last_pre_depth_dist = None
+        self.last_depth_dist = None
+        self.last_tri_span_px = None
+        self.last_tri_span_dist = None
+        self._prev_angle = None
+        self._prev_dist = None
+        self._prev_offset = None
+        self._prev_offset_y = None
+        self._set_partial_state([], primary_partial_kind=None, primary_partial_label=None)
+
+        if self.debug:
+            self._draw_debug_hsv(
+                frame,
+                yolo_bricks,
+                [primary] if candidates is None else list(candidates),
+                primary,
+                angle=0.0,
+                dist=float(FAR_SUSPECT_DISTANCE_MM),
+                offset_x=0.0,
+                conf=conf_pct / 100.0,
+            )
+        return (
+            True,
+            0.0,
+            float(FAR_SUSPECT_DISTANCE_MM),
+            0.0,
+            conf_pct,
+            0.0,
+            False,
+            False,
+        )
 
     # ------------------------------------------------------------------
     # Shared processing pipeline
@@ -2207,6 +2761,7 @@ class BrickDetector:
         """
         w_frame = self.frame_w
         h_frame = self.frame_h
+        self._clear_far_suspect_state()
 
         # Sort by confidence (highest first)
         bricks.sort(key=lambda b: b[4], reverse=True)
@@ -2243,6 +2798,9 @@ class BrickDetector:
                         bricks = [(0, 0, w_frame, h_frame, 1.0)]
             if all_hsv_bricks:
                 all_hsv_bricks = self._dedup_hsv_candidates(all_hsv_bricks)
+                all_hsv_bricks = self._enforce_non_overlapping_candidate_bboxes(
+                    all_hsv_bricks
+                )
                 all_hsv_bricks = self._cap_candidates_to_nearest(
                     all_hsv_bricks,
                     w_frame,
@@ -2250,6 +2808,18 @@ class BrickDetector:
                     max_count=MAX_HIGHLIGHTED_BRICKS,
                 )
                 hsv_used = True
+            elif self._hsv_enabled:
+                far_suspect = self._far_suspect_candidate_from_frame(frame)
+                if far_suspect is not None:
+                    suspect_yolo_conf = fallback_conf if bricks else 0.0
+                    fallback_box = [(0, 0, w_frame, h_frame, suspect_yolo_conf)]
+                    return self._return_far_suspect(
+                        frame,
+                        fallback_box,
+                        far_suspect,
+                        yolo_conf=suspect_yolo_conf,
+                        candidates=[far_suspect],
+                    )
 
         if hsv_used:
             detected_hsv_bricks = []  # populated after primary is confirmed below
@@ -2264,14 +2834,15 @@ class BrickDetector:
                 selectable_hsv_bricks = filtered_hsv_bricks
             # HSV path: center-most brick, contour-based angle, individual distance
             primary = self._select_center_brick(selectable_hsv_bricks, w_frame, h_frame)
+            primary_face_cx, primary_face_cy = self._candidate_face_midpoint(primary)
             self.last_status = "target locked (HSV)"
 
             # Use YOLO confidence from the box that contained this brick
-            # (find which YOLO box contains the primary brick center)
+            # (find which YOLO box contains the primary brick face midpoint)
             yolo_conf = bricks[0][4]
             for x1, y1, x2, y2, conf in bricks:
-                if (x1 <= primary["center_x"] <= x2 and
-                        y1 <= primary["center_y"] <= y2):
+                if (x1 <= primary_face_cx <= x2 and
+                        y1 <= primary_face_cy <= y2):
                     yolo_conf = conf
                     break
             if closeup_hsv_fallback_used:
@@ -2299,6 +2870,14 @@ class BrickDetector:
                 conf_pct = max(conf_pct, float(COLOR_ONLY_CONF_PCT))
             combined_conf = conf_pct + (PINK_DOT_CONF_BONUS if dot_found else 0.0)
             if combined_conf < conf_gate_pct:
+                if self._is_far_suspect_candidate(primary):
+                    return self._return_far_suspect(
+                        frame,
+                        bricks,
+                        primary,
+                        yolo_conf=yolo_conf,
+                        candidates=[primary],
+                    )
                 self.last_status = "low confidence"
                 self.last_primary_confidence = 0.0
                 return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
@@ -2311,42 +2890,39 @@ class BrickDetector:
                 for candidate in identified_hsv_bricks
                 if isinstance(candidate, dict)
             ]
-            if primary not in detected_hsv_bricks:
+            if not any(candidate is primary for candidate in detected_hsv_bricks):
                 detected_hsv_bricks.insert(0, primary)
             primary["_dot_found"] = dot_found
             primary["_dot_cx"] = dot_cx
             primary["_dot_cy"] = dot_cy
+            if self._is_far_suspect_candidate(primary):
+                return self._return_far_suspect(
+                    frame,
+                    bricks,
+                    primary,
+                    yolo_conf=yolo_conf,
+                    candidates=[primary],
+                )
 
             # Angle from contour with jump clamping to prevent 0/90 flips
             raw_angle = self._refine_angle_for_primary(frame, primary)
             angle = self._smooth_angle(raw_angle, self._prev_angle)
             self._prev_angle = angle
 
-            # Geometry anchor: use triangles + dot centroid when all markers
-            # are detected; otherwise fall back to contour centroid.
-            anchor_cx = float(primary["center_x"])
-            anchor_cy = float(primary["center_y"])
-            if dot_found and dot_cx is not None:
-                cutout_polys = primary.get("negative_cutout_polygons") or []
-                tri_cx_list = []
-                tri_cy_list = []
-                for poly in cutout_polys:
-                    arr = np.asarray(poly, dtype=np.float32)
-                    if arr.ndim == 2 and arr.shape[0] >= 3:
-                        tri_cx_list.append(float(np.mean(arr[:, 0])))
-                        tri_cy_list.append(float(np.mean(arr[:, 1])))
-                if tri_cx_list:
-                    all_cx = tri_cx_list + [float(dot_cx)]
-                    all_cy = tri_cy_list + [float(dot_cy)]
-                    anchor_cx = sum(all_cx) / len(all_cx)
-                    anchor_cy = sum(all_cy) / len(all_cy)
+            # Robot-facing telemetry is anchored on the brick face midpoint,
+            # not on cutout/dot marker centroids.
+            anchor_cx, anchor_cy = self._candidate_face_midpoint(primary)
 
             # Distance from the OAK stereo depth map when available, otherwise
             # use apparent brick size.
             # When both triangles are confirmed use their pixel span: the outer
             # left edge to outer right edge spans BRICK_WIDTH_MM in world model,
             # giving a much more stable signal than the YOLO bounding box.
-            _, _, ind_bw, ind_bh = primary["bbox"]
+            face_size = self._candidate_face_size_px(primary)
+            if face_size is not None:
+                ind_bw, ind_bh = face_size
+            else:
+                _, _, ind_bw, ind_bh = primary["bbox"]
             bbox_dist_components = self._distance_components_from_box(
                 ind_bw,
                 ind_bh,
@@ -2387,15 +2963,15 @@ class BrickDetector:
             # Runs after primary selection so we use the primary's YOLO box as a
             # stable column reference (not the noisier HSV contour center).
             if bool(getattr(self, "_trust_detector_boxes", False)) and bricks and primary is not None:
-                # Find the YOLO box that contains the primary HSV brick center.
+                # Find the YOLO box that contains the primary HSV brick face midpoint.
                 primary_yolo = None
                 for _bx1, _by1, _bx2, _by2, _bc in bricks:
-                    if _bx1 <= primary["center_x"] <= _bx2 and _by1 <= primary["center_y"] <= _by2:
+                    if _bx1 <= anchor_cx <= _bx2 and _by1 <= anchor_cy <= _by2:
                         primary_yolo = (_bx1, _by1, _bx2, _by2)
                         break
                 if primary_yolo is None:
                     # Nearest YOLO box centre to primary centre as fallback.
-                    _pc = (float(primary["center_x"]), float(primary["center_y"]))
+                    _pc = (float(anchor_cx), float(anchor_cy))
                     _nearest = min(bricks, key=lambda b: math.hypot((b[0]+b[2])/2-_pc[0], (b[1]+b[3])/2-_pc[1]))
                     primary_yolo = (_nearest[0], _nearest[1], _nearest[2], _nearest[3])
                 if primary_yolo:
@@ -2412,8 +2988,10 @@ class BrickDetector:
                             continue
                         # Skip if already covered by an HSV candidate.
                         if any(
-                            math.hypot(box_cx - float(b["center_x"]),
-                                       box_cy - float(b["center_y"]))
+                            math.hypot(
+                                box_cx - self._candidate_face_midpoint(b)[0],
+                                box_cy - self._candidate_face_midpoint(b)[1],
+                            )
                             < max(10.0, float(bx2 - bx1) * 0.35)
                             for b in detected_hsv_bricks
                         ):
@@ -3677,21 +4255,18 @@ class BrickDetector:
         slot_y_min_mm = float(np.min(slot_ys))
         slot_y_max_mm = float(np.max(slot_ys))
         slot_h_mm = max(1e-3, slot_y_max_mm - slot_y_min_mm)
+        slot_x_min_mm = float(np.min(cutout_pts[:, 0]))
+        slot_x_max_mm = float(np.max(cutout_pts[:, 0]))
+        slot_w_mm = max(1e-3, slot_x_max_mm - slot_x_min_mm)
 
         face_poly = getattr(self, "_face_polygon_model", None)
         if face_poly is not None and isinstance(face_poly, np.ndarray) and face_poly.shape[0] >= 3:
-            face_y_min_mm = float(np.min(face_poly[:, 1]))
             face_y_max_mm = float(np.max(face_poly[:, 1]))
-            face_h_mm = max(1e-3, face_y_max_mm - face_y_min_mm)
+            face_h_mm = max(1e-3, face_y_max_mm - float(np.min(face_poly[:, 1])))
             face_w_mm = max(1e-3, float(np.max(face_poly[:, 0])) - float(np.min(face_poly[:, 0])))
         else:
             face_h_mm = BRICK_HEIGHT_MM
             face_w_mm = BRICK_WIDTH_MM
-
-        # Ratio of face height to slot height (used to scale bbox from detected slot size)
-        face_to_slot_h = face_h_mm / slot_h_mm
-        # Fraction of face height above the slot top
-        slot_top_ratio = (slot_y_min_mm - (face_y_min_mm if face_poly is not None else 0.0)) / face_h_mm
 
         h_mask, w_mask = mask_arr.shape[:2]
         ex, ey = int(crop_x), int(crop_y)
@@ -3747,18 +4322,28 @@ class BrickDetector:
                 if slot_rel_y < 0.05 or slot_rel_y > 0.90:
                     continue
 
-            # Estimate the brick bbox from slot position + model ratios.
-            # Scale: slot_h_px / slot_h_mm gives px-per-mm; then face_h_px = scale * face_h_mm
+            # Estimate the brick bbox from the negative trapezoid center.
+            # The world rule is that the negative trapezoid marks the center
+            # of one brick face; final edges are snapped to the green mask.
             scale_px_per_mm = float(bh) / slot_h_mm
-            face_h_px = int(round(face_h_mm * scale_px_per_mm))
-            face_w_px = int(round(face_w_mm * scale_px_per_mm))
-            # Slot top is slot_top_ratio down from the face top.
-            face_top_px = (by + ey) - int(round(slot_top_ratio * face_h_px))
-            face_left_px = (bx + ex) + bw // 2 - face_w_px // 2
+            scale_x_px_per_mm = float(bw) / slot_w_mm
+            face_h_px = int(
+                round(
+                    max(
+                        face_h_mm * scale_px_per_mm,
+                        face_h_mm * scale_x_px_per_mm,
+                    )
+                )
+            )
+            face_w_px = int(round(face_w_mm * scale_x_px_per_mm))
+            face_h_px = max(1, face_h_px)
+            face_w_px = max(1, face_w_px)
 
             # Centroid from slot position (center of slot = good per-brick anchor)
             cx_frame = float(bx + bw / 2.0) + float(ex)
             cy_frame = float(by + bh / 2.0) + float(ey)
+            face_left_px = int(round(cx_frame - (float(face_w_px) * 0.5)))
+            face_top_px = int(round(cy_frame - (float(face_h_px) * 0.5)))
 
             candidates.append({
                 "contour": parent_cnt,
@@ -3788,13 +4373,14 @@ class BrickDetector:
         # Fallback: no dark inner holes found (transparent slot shows cyan background).
         # Divide outer blobs by height/width aspect ratio. n_bricks=1 handles the
         # single-brick transparent-slot case; n_bricks>=2 handles merged stacks.
-        face_aspect = face_h_mm / max(1e-3, face_w_mm)  # expected h/w ratio of one brick
+        stack_face_aspect = float(BRICK_HEIGHT_MM) / max(1e-3, float(BRICK_WIDTH_MM))
         outer_contours, _ = cv2.findContours(roi_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for cnt in (outer_contours or []):
             bx, by, bw, bh = cv2.boundingRect(cnt)
             if bw <= 0 or bh <= 0:
                 continue
-            n_bricks = max(1, int(round(float(bh) / max(1, float(bw)) / face_aspect)))
+            stack_ratio = float(bh) / max(1.0, float(bw) * stack_face_aspect)
+            n_bricks = 1 if stack_ratio < 1.85 else max(2, int(round(stack_ratio)))
             slice_h = float(bh) / n_bricks
             for i in range(n_bricks):
                 sy = float(by) + i * slice_h
@@ -4639,6 +5225,153 @@ class BrickDetector:
             return None
         return projected.reshape(-1, 2)
 
+    def _project_face_model_points_to_rect(self, model_points, rect_points):
+        if not isinstance(model_points, np.ndarray) or model_points.size == 0:
+            return None
+        if not isinstance(rect_points, np.ndarray) or rect_points.shape != (4, 2):
+            return None
+
+        model_arr = np.asarray(model_points, dtype=np.float32).reshape(-1, 2)
+        if model_arr.shape[0] < 3:
+            return None
+        x_min = float(np.min(model_arr[:, 0]))
+        x_max = float(np.max(model_arr[:, 0]))
+        y_min = float(np.min(model_arr[:, 1]))
+        y_max = float(np.max(model_arr[:, 1]))
+        if (x_max - x_min) <= 1e-6 or (y_max - y_min) <= 1e-6:
+            return None
+
+        src = np.asarray(
+            [
+                [x_min, y_max],
+                [x_max, y_max],
+                [x_max, y_min],
+                [x_min, y_min],
+            ],
+            dtype=np.float32,
+        )
+        try:
+            transform = cv2.getPerspectiveTransform(src, rect_points.astype(np.float32))
+        except Exception:
+            return None
+        pts_in = model_arr.reshape(-1, 1, 2)
+        try:
+            projected = cv2.perspectiveTransform(pts_in, transform)
+        except Exception:
+            return None
+        if projected is None:
+            return None
+        return projected.reshape(-1, 2)
+
+    def _model_face_polygon_for_candidate(self, candidate):
+        face_polygon_model = getattr(self, "_face_polygon_model", None)
+        if not isinstance(face_polygon_model, np.ndarray) or face_polygon_model.size < 6:
+            return None
+        if not isinstance(candidate, dict):
+            return None
+
+        shape_profile = str(candidate.get("shape_profile") or "").strip().lower()
+        if not shape_profile:
+            if bool(candidate.get("partial")):
+                partial_kind = str(candidate.get("partial_kind") or "").strip().lower()
+                if partial_kind in {"top_half", "bottom_half"}:
+                    shape_profile = partial_kind
+            if not shape_profile:
+                shape_profile = "full"
+
+        if shape_profile == "top_half":
+            y_vals = face_polygon_model[:, 1]
+            y_mid = (float(np.min(y_vals)) + float(np.max(y_vals))) * 0.5
+            return self._clip_polygon_y(face_polygon_model, y_mid, keep_above=True)
+        if shape_profile == "bottom_half":
+            y_vals = face_polygon_model[:, 1]
+            y_mid = (float(np.min(y_vals)) + float(np.max(y_vals))) * 0.5
+            return self._clip_polygon_y(face_polygon_model, y_mid, keep_above=False)
+        return face_polygon_model
+
+    def _bbox_rect_points(self, bbox):
+        if not isinstance(bbox, (tuple, list)) or len(bbox) < 4:
+            return None
+        try:
+            bx, by, bw, bh = [float(v) for v in bbox[:4]]
+        except (TypeError, ValueError):
+            return None
+        if bw <= 0.0 or bh <= 0.0:
+            return None
+        return np.asarray(
+            [
+                [bx, by],
+                [bx + bw, by],
+                [bx + bw, by + bh],
+                [bx, by + bh],
+            ],
+            dtype=np.float32,
+        )
+
+    def _candidate_face_outline_polygon(self, candidate):
+        if not isinstance(candidate, dict):
+            return None
+
+        for key in ("target_face_polygon", "debug_face_polygon", "face_polygon"):
+            explicit = candidate.get(key)
+            if explicit is None:
+                continue
+            try:
+                explicit_arr = np.asarray(explicit, dtype=np.float32).reshape(-1, 2)
+            except Exception:
+                explicit_arr = None
+            if explicit_arr is not None and explicit_arr.shape[0] >= 3:
+                return explicit_arr
+
+        model_poly = self._model_face_polygon_for_candidate(candidate)
+        if isinstance(model_poly, np.ndarray) and model_poly.size >= 6:
+            bbox_first = (
+                "from_slot_detection" in candidate
+                or bool(candidate.get("from_color_detection", False))
+            )
+            bbox_points = self._bbox_rect_points(candidate.get("bbox"))
+            rect = candidate.get("rect")
+
+            if bbox_first and bbox_points is not None:
+                projected = self._project_face_model_points_to_rect(model_poly, bbox_points)
+                if isinstance(projected, np.ndarray) and projected.shape[0] >= 3:
+                    return projected
+
+            if rect is not None:
+                try:
+                    rect_points = self._ordered_rect_points(rect)
+                except Exception:
+                    rect_points = None
+                if isinstance(rect_points, np.ndarray) and rect_points.shape == (4, 2):
+                    projected = self._project_face_model_points_to_rect(model_poly, rect_points)
+                    if isinstance(projected, np.ndarray) and projected.shape[0] >= 3:
+                        return projected
+
+            if bbox_points is not None:
+                projected = self._project_face_model_points_to_rect(model_poly, bbox_points)
+                if isinstance(projected, np.ndarray) and projected.shape[0] >= 3:
+                    return projected
+
+        contour = candidate.get("debug_outline_contour")
+        if contour is None:
+            contour = candidate.get("contour")
+        if contour is not None:
+            try:
+                contour_arr = np.asarray(contour, dtype=np.float32).reshape(-1, 2)
+            except Exception:
+                contour_arr = None
+            if contour_arr is not None and contour_arr.shape[0] >= 3:
+                return contour_arr
+        return None
+
+    def _draw_candidate_face_outline_polygon(self, frame, candidate, color, thickness=2):
+        polygon = self._candidate_face_outline_polygon(candidate)
+        if not isinstance(polygon, np.ndarray) or polygon.shape[0] < 3:
+            return False
+        poly_draw = np.round(polygon).astype(np.int32).reshape(-1, 1, 2)
+        cv2.polylines(frame, [poly_draw], True, color, int(thickness), cv2.LINE_AA)
+        return True
+
     def _draw_primary_face_outline(self, frame, primary):
         if not isinstance(primary, dict):
             return
@@ -4652,20 +5385,23 @@ class BrickDetector:
             except Exception:
                 contour_arr = None
         rect = primary.get("rect")
-        if contour_arr is None and not rect:
+        face_outline = self._candidate_face_outline_polygon(primary)
+        if contour_arr is None and not rect and face_outline is None:
             return
 
         is_partial = bool(primary.get("partial"))
-        outline_color = PARTIAL_COLOR_BGR if is_partial else (0, 255, 0)
+        outline_color = FAR_SUSPECT_COLOR_BGR if bool(primary.get("suspected_far")) else (0, 255, 0)
         outline_thickness = 3 if is_partial else 2
 
         if self._uses_negative_cutout_gate():
             cutout_polygons = primary.get("negative_cutout_polygons")
 
-            # When pair_candidates found triangles, primary["contour"] is already
-            # the face-shape polygon. Draw it directly.
-            # Fall back to bbox rect so there is always a visible outline.
-            if contour_arr is not None and contour_arr.shape[0] >= 3:
+            # Draw the target face polygon first; only fall back to the loose
+            # rectangle when no face geometry is available.
+            if isinstance(face_outline, np.ndarray) and face_outline.shape[0] >= 3:
+                poly_draw = np.round(face_outline).astype(np.int32).reshape(-1, 1, 2)
+                cv2.polylines(frame, [poly_draw], True, outline_color, 2, cv2.LINE_AA)
+            elif contour_arr is not None and contour_arr.shape[0] >= 3:
                 cv2.polylines(frame, [contour_arr], True, outline_color, 2, cv2.LINE_AA)
             else:
                 bbox = primary.get("bbox")
@@ -4690,8 +5426,13 @@ class BrickDetector:
                     )
             return
 
-        # Prioritize model-constrained shape when rect is available.
-        # Only fall back to raw contour if rect is unavailable.
+        # Prioritize the selected target face polygon; it is cleaner than a
+        # loose bbox and follows rotated/perspective face geometry when present.
+        if isinstance(face_outline, np.ndarray) and face_outline.shape[0] >= 3:
+            poly_draw = np.round(face_outline).astype(np.int32).reshape(-1, 1, 2)
+            cv2.polylines(frame, [poly_draw], True, outline_color, 2, cv2.LINE_AA)
+            return
+
         if rect is None:
             if contour_arr is not None and contour_arr.shape[0] >= 3:
                 cv2.polylines(frame, [contour_arr], True, outline_color, outline_thickness, cv2.LINE_AA)
@@ -4700,38 +5441,6 @@ class BrickDetector:
         points = self._ordered_rect_points(rect)
         center = np.asarray(rect[0], dtype=np.float32)
         edges = primary.get("partial_edges") or {}
-
-        shape_profile = str(primary.get("shape_profile") or "").strip().lower()
-        if not shape_profile:
-            if is_partial:
-                partial_kind = str(primary.get("partial_kind") or "").strip().lower()
-                if partial_kind in {"top_half", "bottom_half"}:
-                    shape_profile = partial_kind
-            if not shape_profile:
-                shape_profile = "full"
-
-        # Draw canonical world-model face shape for full/top/bottom profiles.
-        model_poly = None
-        face_polygon_model = getattr(self, "_face_polygon_model", None)
-        if isinstance(face_polygon_model, np.ndarray):
-            if shape_profile == "top_half":
-                y_vals = face_polygon_model[:, 1]
-                y_mid = (float(np.min(y_vals)) + float(np.max(y_vals))) * 0.5
-                model_poly = self._clip_polygon_y(face_polygon_model, y_mid, keep_above=True)
-            elif shape_profile == "bottom_half":
-                y_vals = face_polygon_model[:, 1]
-                y_mid = (float(np.min(y_vals)) + float(np.max(y_vals))) * 0.5
-                model_poly = self._clip_polygon_y(face_polygon_model, y_mid, keep_above=False)
-            else:
-                model_poly = face_polygon_model
-
-        if isinstance(model_poly, np.ndarray) and model_poly.size >= 6:
-            poly_proj = self._project_model_points_to_rect(model_poly, points)
-            if isinstance(poly_proj, np.ndarray) and len(poly_proj) >= 3:
-                poly_draw = np.round(poly_proj).astype(np.int32).reshape(-1, 1, 2)
-                cv2.polylines(frame, [poly_draw], True, outline_color, 2, cv2.LINE_AA)
-
-                return
 
         if contour_arr is not None and contour_arr.shape[0] >= 3:
             cv2.polylines(frame, [contour_arr], True, outline_color, outline_thickness, cv2.LINE_AA)
@@ -4763,7 +5472,7 @@ class BrickDetector:
         Returns (found, center_x_px, center_y_px).  The dot sits below the
         dark triangle cutouts, so we search the lower ~45% of the bounding box.
         """
-        bx, by, bw, bh = primary["bbox"]
+        bx, by, bw, bh = [int(round(float(v))) for v in primary["bbox"][:4]]
         if bw <= 0 or bh <= 0:
             return False, None, None
         search_top = by + int(bh * 0.55)
@@ -4917,28 +5626,83 @@ class BrickDetector:
             max_count=MAX_HIGHLIGHTED_BRICKS,
         )
         for candidate in highlight_candidates:
+            outline_color = (
+                FAR_SUSPECT_COLOR_BGR
+                if bool(candidate.get("suspected_far"))
+                else (0, 255, 0)
+            )
+            has_face_geometry = (
+                any(candidate.get(key) is not None for key in ("target_face_polygon", "debug_face_polygon", "face_polygon"))
+                or candidate.get("rect") is not None
+                or bool(candidate.get("from_slot_detection"))
+            )
+            if has_face_geometry and self._draw_candidate_face_outline_polygon(frame, candidate, outline_color, 2):
+                continue
             for contour in self._cyan_outline_contours_for_candidate(frame, candidate):
                 cv2.polylines(
                     frame,
                     [contour],
                     True,
-                    (0, 255, 0),
+                    outline_color,
                     2,
                     cv2.LINE_AA,
                 )
 
+    def _same_debug_candidate(self, first, second):
+        if first is second:
+            return True
+        if not isinstance(first, dict) or not isinstance(second, dict):
+            return False
+        first_bbox = first.get("bbox")
+        second_bbox = second.get("bbox")
+        if (
+            isinstance(first_bbox, (tuple, list))
+            and isinstance(second_bbox, (tuple, list))
+            and len(first_bbox) >= 4
+            and len(second_bbox) >= 4
+        ):
+            try:
+                bbox_delta = max(
+                    abs(float(a) - float(b))
+                    for a, b in zip(first_bbox[:4], second_bbox[:4])
+                )
+                if bbox_delta <= 1.0:
+                    return True
+            except (TypeError, ValueError):
+                pass
+        try:
+            return (
+                abs(float(first.get("center_x")) - float(second.get("center_x"))) <= 1.0
+                and abs(float(first.get("center_y")) - float(second.get("center_y"))) <= 1.0
+            )
+        except (TypeError, ValueError):
+            return False
+
     def _draw_debug_hsv(self, frame, yolo_bricks, hsv_bricks, primary,
                         angle, dist, offset_x, conf):
         """Draw enhanced debug visualization for HSV-segmented bricks."""
-        self._draw_cyan_candidate_outlines(frame, hsv_bricks)
+        outline_candidates = hsv_bricks
+        if isinstance(primary, dict) and isinstance(hsv_bricks, list):
+            outline_candidates = [
+                candidate
+                for candidate in hsv_bricks
+                if not self._same_debug_candidate(candidate, primary)
+            ]
+        self._draw_cyan_candidate_outlines(frame, outline_candidates)
 
         # Draw primary-only decorations after outlines. Brick IDs are drawn
         # last so the operator can always read them in the face centers.
         if primary:
+            self._draw_primary_face_outline(frame, primary)
             self._draw_pink_dot_on_brick(frame, primary)
-            pcx = int(round(float(primary["center_x"])))
-            pcy = int(round(float(primary["center_y"])))
-            primary_color = PARTIAL_COLOR_BGR if bool(primary.get("partial")) else (0, 255, 0)
+            face_cx, face_cy = self._candidate_face_midpoint(primary)
+            pcx = int(round(float(face_cx)))
+            pcy = int(round(float(face_cy)))
+            primary_color = (
+                FAR_SUSPECT_COLOR_BGR
+                if bool(primary.get("suspected_far"))
+                else (PARTIAL_COLOR_BGR if bool(primary.get("partial")) else (0, 255, 0))
+            )
             cv2.drawMarker(frame, (pcx, pcy), primary_color,
                            cv2.MARKER_CROSS, 15, 2)
 
@@ -4957,8 +5721,12 @@ class BrickDetector:
                 )
 
             # Red angle line from primary brick center
-            _, _, bw, bh = primary["bbox"]
-            length = min(bw, bh) // 2
+            face_size = self._candidate_face_size_px(primary)
+            if face_size is not None:
+                bw, bh = face_size
+            else:
+                _, _, bw, bh = primary["bbox"]
+            length = int(max(1, min(float(bw), float(bh)) // 2))
             rad = math.radians(angle - 90.0)
             ex = int(pcx + length * math.cos(rad))
             ey = int(pcy - length * math.sin(rad))
@@ -4981,21 +5749,8 @@ class BrickDetector:
             return
 
         def _label_center(candidate):
-            # Operator-facing IDs belong in the visual middle of the brick face,
-            # not on the slot/selection anchor used for geometry.
             if isinstance(candidate, dict):
-                bbox = candidate.get("bbox")
-                if isinstance(bbox, tuple) and len(bbox) >= 4:
-                    try:
-                        bx, by, bw, bh = [float(v) for v in bbox[:4]]
-                        if bw > 0.0 and bh > 0.0:
-                            return bx + (bw * 0.5), by + (bh * 0.5)
-                    except Exception:
-                        pass
-                cx = candidate.get("center_x")
-                cy = candidate.get("center_y")
-                if cx is not None and cy is not None:
-                    return float(cx), float(cy)
+                return self._candidate_face_midpoint(candidate)
             return 0.0, 0.0
 
         ordered = sorted(
@@ -5244,8 +5999,14 @@ def draw_single_negative_cutout_brick_highlight(detector, frame, candidate):
     if detector is None or frame is None or not isinstance(candidate, dict):
         return frame
 
+    drew_face_outline = detector._draw_candidate_face_outline_polygon(
+        frame,
+        candidate,
+        (0, 255, 255),
+        3,
+    )
     bbox = candidate.get("bbox")
-    if isinstance(bbox, tuple) and len(bbox) >= 4:
+    if not drew_face_outline and isinstance(bbox, tuple) and len(bbox) >= 4:
         x, y, w, h = [int(round(float(v))) for v in bbox[:4]]
         if w > 0 and h > 0:
             cv2.rectangle(

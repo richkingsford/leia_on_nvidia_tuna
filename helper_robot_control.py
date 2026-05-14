@@ -385,7 +385,7 @@ class Robot:
         except (TypeError, ValueError):
             duration_val = 0
         duration_val = max(0, int(duration_val))
-        timed = duration_val > 0
+        max_duration_val = int(duration_val)
 
         tokens = []
         normalized_actions = []
@@ -403,9 +403,25 @@ class Robot:
                 continue
             if target_key == "m" and action_key not in ("u", "d", "s"):
                 continue
+            try:
+                action_duration_val = int(round(float(spec.get("duration_ms", duration_val))))
+            except (TypeError, ValueError):
+                action_duration_val = int(duration_val)
+            action_duration_val = max(0, int(action_duration_val))
+            max_duration_val = max(int(max_duration_val), int(action_duration_val))
+            action_timed = action_duration_val > 0
             if action_key == "s":
                 tokens.append(self._format_uno_token(target_key, "s"))
-                normalized_actions.append({"target": target_key, "action": "s", "pwm": 0, "percent": 0, "power": 0.0})
+                normalized_actions.append(
+                    {
+                        "target": target_key,
+                        "action": "s",
+                        "pwm": 0,
+                        "percent": 0,
+                        "power": 0.0,
+                        "duration_ms": int(action_duration_val),
+                    }
+                )
                 continue
 
             pwm_raw = spec.get("pwm")
@@ -434,7 +450,7 @@ class Robot:
                         target_key,
                         "s",
                         percent=0,
-                        duration_ms=duration_val if timed else None,
+                        duration_ms=action_duration_val if action_timed else None,
                     )
                 )
                 normalized_actions.append(
@@ -444,6 +460,7 @@ class Robot:
                         "pwm": 0,
                         "percent": 0,
                         "power": 0.0,
+                        "duration_ms": int(action_duration_val),
                     }
                 )
                 continue
@@ -456,7 +473,7 @@ class Robot:
                     target_key,
                     action_key,
                     percent=percent_val,
-                    duration_ms=duration_val if timed else None,
+                    duration_ms=action_duration_val if action_timed else None,
                 )
             )
             normalized_actions.append(
@@ -466,6 +483,7 @@ class Robot:
                     "pwm": int(effective_pwm),
                     "percent": int(percent_val),
                     "power": float(effective_power),
+                    "duration_ms": int(action_duration_val),
                 }
             )
             peak_pwm = max(int(peak_pwm), int(effective_pwm))
@@ -480,7 +498,7 @@ class Robot:
             "pwm": int(peak_pwm),
             "power": float(peak_power),
             "percent": int(peak_percent),
-            "duration_ms": int(duration_val),
+            "duration_ms": int(max_duration_val),
             "wire_text": ",".join(tokens),
             "actions": normalized_actions,
         }
@@ -666,9 +684,16 @@ class Robot:
                     continue
                 action_key = str(spec.get("action") or "").strip().lower()
                 spec_copy = dict(spec)
+                try:
+                    action_duration = int(round(float(spec_copy.get("duration_ms", duration))))
+                except (TypeError, ValueError):
+                    action_duration = int(duration)
                 if action_key in VALID_MOTION_COMMANDS and action_key != "s":
                     spec_copy["pwm"] = self._floor_safe_pwm_for_cmd(action_key, spec_copy.get("pwm"))
-                    duration_clamped = max(int(duration_clamped), int(self._floor_safe_duration_for_cmd(action_key, duration)))
+                    action_duration = int(self._floor_safe_duration_for_cmd(action_key, action_duration))
+                action_duration = max(0, int(action_duration))
+                spec_copy["duration_ms"] = int(action_duration)
+                duration_clamped = max(int(duration_clamped), int(action_duration))
                 normalized_specs.append(spec_copy)
         else:
             normalized_specs = action_specs
@@ -681,7 +706,7 @@ class Robot:
             self._validate_minimum_act(
                 action.get("action"),
                 int(round(float(action.get("pwm") or 0))),
-                duration_clamped,
+                int(round(float(action.get("duration_ms", duration_clamped) or 0))),
                 source_fn="send_custom_actions_pwm",
             )
         self._send(f"{payload['wire_text']}\n")

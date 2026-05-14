@@ -55,20 +55,62 @@ class TestBrickDetectorYoloCenterLock(unittest.TestCase):
         selected = BrickDetector._select_center_brick(det, bricks, 640, 480)
         self.assertIs(selected, bricks[1])
 
-    def test_select_center_brick_uses_cutout_selection_anchor(self):
+    def test_select_center_brick_ignores_cutout_anchor_for_face_midpoint(self):
         det = self._detector_stub()
         bricks = [
             {
                 "center_x": 320.0,
                 "center_y": 340.0,
+                "bbox": (300.0, 320.0, 40.0, 40.0),
                 "selection_anchor_x": 320.0,
                 "selection_anchor_y": 242.0,
                 "partial": False,
             },
-            {"center_x": 320.0, "center_y": 260.0, "partial": False},
+            {"center_x": 320.0, "center_y": 260.0, "bbox": (300.0, 240.0, 40.0, 40.0), "partial": False},
         ]
         selected = BrickDetector._select_center_brick(det, bricks, 640, 480)
-        self.assertIs(selected, bricks[0])
+        self.assertIs(selected, bricks[1])
+
+    def test_hsv_telemetry_uses_face_midpoint_not_slot_anchor(self):
+        det = self._detector_stub()
+        det._conf_gate_pct = 0.0
+        det._refine_angle_for_primary = lambda *_args, **_kwargs: 0.0
+        det._estimate_distance_from_box = lambda _bbox_w, _bbox_h, _partial_kind=None: 200.0
+        depth_anchor = {}
+
+        def _prefer_depth(fallback, cx, cy, bbox=None):
+            depth_anchor["cx"] = cx
+            depth_anchor["cy"] = cy
+            depth_anchor["bbox"] = bbox
+            return fallback
+
+        det._prefer_depth_distance = _prefer_depth
+        primary = {
+            "center_x": 320.0,
+            "center_y": 240.0,
+            "bbox": (340.0, 320.0, 40.0, 40.0),
+            "contour": None,
+            "rect": None,
+            "area": 1600.0,
+            "partial": False,
+            "partial_kind": None,
+            "partial_label": None,
+            "partial_edges": {},
+            "shape_profile": "full",
+            "negative_cutout_polygons": [],
+            "selection_anchor_x": 320.0,
+            "selection_anchor_y": 240.0,
+        }
+        det._segment_bricks_hsv = lambda *_args, **_kwargs: [primary]
+
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        result = BrickDetector._process_bricks(det, frame, [(0, 0, 640, 480, 0.9)])
+
+        self.assertTrue(result[0])
+        self.assertAlmostEqual(depth_anchor["cx"], 360.0, places=6)
+        self.assertAlmostEqual(depth_anchor["cy"], 340.0, places=6)
+        self.assertAlmostEqual(result[3], 80.0, places=6)
+        self.assertAlmostEqual(result[5], 100.0, places=6)
 
     def test_select_center_brick_prefers_highest_candidate_below_midpoint(self):
         det = self._detector_stub()

@@ -43,21 +43,13 @@ CROWN_PROFILE_BASE_TUNING = {
     "hsv_erode_iterations": 1,
     "hsv_lower": list(CYAN_HSV_BALANCED_LOWER),
     "hsv_upper": list(CYAN_HSV_BALANCED_UPPER),
-    "hsv_cyan_coverage_min": 0.12,
+    "hsv_cyan_coverage_min": 0.10,
     "full_frame_hsv_cyan_coverage_min": 0.03,
-    "hsv_min_area_ratio": 0.07,
-    "shape_gate_mode": "negative_cutouts",
-    "negative_cutout_cyan_fill_max": 0.20,
-    "negative_cutout_ring_cyan_min": 0.58,
-    "negative_cutout_ring_dilate_px": 4,
-    "negative_cutout_min_area_px": 24.0,
-    "negative_cutout_triangle_side_ratio_max": 1.75,
-    "negative_cutout_triangle_angle_spread_max_deg": 60.0,
-    "negative_cutout_triangle_overlap_min": 0.75,
-    "negative_cutout_pair_x_axis_max_angle_deg": 10.0,
-    "conf_gate_pct": 75.0,
-    "trust_detector_boxes": False,
-    "require_cyan_shape": True,
+    "hsv_min_area_ratio": 0.05,
+    "shape_gate_mode": "shape_match",
+    "conf_gate_pct": 55.0,
+    "trust_detector_boxes": True,
+    "require_cyan_shape": False,
     "closeup_full_frame_hsv_enabled": True,
     "depth_source_mode": "pinhole",
     "stereo_config_mode": "standard",
@@ -66,13 +58,12 @@ CROWN_PROFILE_BASE_TUNING = {
 TIGHT_COLOR_TUNING = {
     **CROWN_PROFILE_BASE_TUNING,
     "label": "2 Tight Color",
-    "confidence": 0.35,
+    "confidence": 0.25,
     "hsv_lower": list(CYAN_HSV_TIGHT_LOWER),
     "hsv_upper": list(CYAN_HSV_TIGHT_UPPER),
-    "hsv_cyan_coverage_min": 0.18,
-    "hsv_min_area_ratio": 0.10,
-    "negative_cutout_min_area_px": 42.0,
-    "conf_gate_pct": 85.0,
+    "hsv_cyan_coverage_min": 0.12,
+    "hsv_min_area_ratio": 0.07,
+    "conf_gate_pct": 60.0,
 }
 
 CROWN_PROFILE_TUNINGS = {
@@ -91,11 +82,10 @@ CROWN_PROFILE_TUNINGS = {
     "tight_color": TIGHT_COLOR_TUNING,
     "tight_far_slots": {
         **TIGHT_COLOR_TUNING,
-        "label": "2A Far: Smaller Slots",
+        "label": "2A Far: Smaller Blobs",
         "confidence": 0.20,
         "hsv_cyan_coverage_min": 0.16,
         "hsv_min_area_ratio": 0.07,
-        "negative_cutout_min_area_px": 24.0,
         "conf_gate_pct": 65.0,
     },
     "tight_far_conf": {
@@ -104,7 +94,6 @@ CROWN_PROFILE_TUNINGS = {
         "confidence": 0.15,
         "hsv_cyan_coverage_min": 0.15,
         "hsv_min_area_ratio": 0.06,
-        "negative_cutout_min_area_px": 18.0,
         "conf_gate_pct": 60.0,
     },
     "tight_far_no_erode": {
@@ -114,7 +103,6 @@ CROWN_PROFILE_TUNINGS = {
         "hsv_erode_iterations": 0,
         "hsv_cyan_coverage_min": 0.14,
         "hsv_min_area_ratio": 0.05,
-        "negative_cutout_min_area_px": 12.0,
         "conf_gate_pct": 60.0,
     },
     "tight_far_dim": {
@@ -126,8 +114,6 @@ CROWN_PROFILE_TUNINGS = {
         "hsv_upper": list(CYAN_HSV_BALANCED_UPPER),
         "hsv_cyan_coverage_min": 0.10,
         "hsv_min_area_ratio": 0.04,
-        "negative_cutout_ring_cyan_min": 0.60,
-        "negative_cutout_min_area_px": 10.0,
         "conf_gate_pct": 55.0,
     },
     "balanced_far_guard": {
@@ -138,8 +124,6 @@ CROWN_PROFILE_TUNINGS = {
         "hsv_upper": list(CYAN_HSV_WIDE_UPPER),
         "hsv_cyan_coverage_min": 0.12,
         "hsv_min_area_ratio": 0.05,
-        "negative_cutout_ring_cyan_min": 0.64,
-        "negative_cutout_min_area_px": 14.0,
         "conf_gate_pct": 58.0,
         "closeup_full_frame_hsv_enabled": True,
     },
@@ -214,7 +198,7 @@ def _build_footer_html() -> str:
         "<div class='footer-sections'>"
         "<div class='footer-section'>"
         "<div class='footer-title'>Tri-brick Vision</div>"
-        f"<div>TensorRT · green HSV · trapezoid slot gate · hold {HOLD_FRAMES} frames</div>"
+        f"<div>TensorRT · green HSV · A-shape contour gate · hold {HOLD_FRAMES} frames</div>"
         f"<div style='display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;'>{swatch_items}</div>"
         f"<div style='margin-top:5px;font-size:10px;color:#9cc;font-family:monospace;'>{hsv_label}</div>"
         "</div>"
@@ -390,14 +374,15 @@ class CrownVisionLivestream:
             offset_x = result[3]
             conf_pct = result[4]
             cam_height = result[5]
+        suspected_far = bool(getattr(self.vision, "last_suspected_far_brick", False))
 
         with self.state["lock"]:
             previous = self.state.get("xyz_workspace")
         return helper_xyz_coords.build_live_position_workspace(
             previous,
-            dist_mm=dist if found else None,
-            x_axis_mm=offset_x if found else None,
-            y_axis_mm=cam_height if found else None,
+            dist_mm=dist if found and not suspected_far else None,
+            x_axis_mm=offset_x if found and not suspected_far else None,
+            y_axis_mm=cam_height if found and not suspected_far else None,
             confidence=conf_pct if found else None,
             visible=found,
             target_name="brick_supply",
@@ -438,6 +423,8 @@ class CrownVisionLivestream:
         raw_dist = getattr(vision, "last_raw_dist", None)
         tri_span_px = getattr(vision, "last_tri_span_px", None)
         tri_span_dist = getattr(vision, "last_tri_span_dist", None)
+        suspected_far = bool(getattr(vision, "last_suspected_far_brick", False))
+        distance_display_text = str(getattr(vision, "last_distance_display_text", "") or "")
         depth_stats = getattr(vision, "last_depth_stats", {}) or {}
         if not isinstance(depth_stats, dict):
             depth_stats = {}
@@ -479,6 +466,22 @@ class CrownVisionLivestream:
                 if bbox_w_px is not None and bbox_h_px is not None
                 else "-"
             )
+            if suspected_far:
+                lines.extend(
+                    [
+                        {"text": "SUSPECTED BRICK: true", "color": "#ffaa00"},
+                        {
+                            "text": (
+                                f"DIST:   {distance_display_text or '500+mm'} "
+                                f"(suspected, {geometry_source})"
+                            ),
+                            "color": "#ffaa00",
+                        },
+                        {"text": f"  bbox: {bbox_dims} | f={_num_text(focal_px, 0)}px", "color": "#aaaaaa"},
+                        {"text": f"CONF:   {float(conf_pct):.0f}%", "color": "#ffffff"},
+                    ]
+                )
+                return lines
             bbox_calc = (
                 f"W={_num_text(bbox_width_dist, 0, 'mm')} "
                 f"H={_num_text(bbox_height_dist, 0, 'mm')} "

@@ -1,5 +1,0 @@
-[CROWN] READY — open: http://127.0.0.1:5000
-[CROWN] Camera initialising in background (~15 s until live feed).
-[CROWN] Press Ctrl-C to stop.
-[18443010218BC60F00] [1.1] [2.087] [StereoDepth(3)] [error] Switching depthAlign mode at runtime is not supported while aligning to a specific camera is enabled (setDepthAlign API)!
-[18443010218BC60F00] [1.1] [2.135] [StereoDepth(3)] [error] Switching depthAlign mode at runtime is not supported while aligning to a specific camera is enabled (setDepthAlign API)!
