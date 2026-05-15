@@ -390,12 +390,12 @@
                     "tol": 9.0
                 },
                 "yAxis_offset_abs": {
-                    "target": 5.7888,
+                    "target": 4.25129472,
                     "tol": 9.0
                 },
                 "dist": {
-                    "target": 65.0,
-                    "tol": 9.0
+                    "target": 63.882,
+                    "tol": 20.0
                 }
             },
             "lock_success_gates": true
@@ -494,7 +494,7 @@
                     "tol": 9.0
                 },
                 "dist": {
-                    "target": 65.0,
+                    "target": 63.882,
                     "tol": 9.0
                 }
             },

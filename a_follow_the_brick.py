@@ -35,10 +35,10 @@ import telemetry_robot as _telemetry_robot
 
 # ── tuning ────────────────────────────────────────────────────────────────────
 # Success-gate values from world_model_process.json → steps → ALIGN_BRICK → success_gates
-TARGET_DIST_MM = 65.0    # dist.target
-DIST_TOL_MM    = 9.0     # dist.tol
+TARGET_DIST_MM = 63.882  # dist.target
+DIST_TOL_MM    = 20.0    # dist.tol
 X_TOL_MM       = 9.0     # xAxis_offset_abs.tol  (centred at x=0)
-Y_TARGET_MM    = -5.7888 # signed y target from confident brick reading
+Y_TARGET_MM    = -4.25129472 # signed y target from confident brick reading
 Y_TOL_MM       = 9.0     # yAxis_offset_abs.tol from ALIGN_BRICK
 
 SPEED_SCORE        = 1    # slowest motor speed score
@@ -52,21 +52,23 @@ RESET_REVERSE_TURN_PULSE_MS = 150    # Slower movement (was 50ms)
 RESET_REVERSE_TURN_TIMEOUT_S = 1.5
 RESET_REVERSE_TURN_SETTLE_S = 0.06
 RESET_POST_PAUSE_S = 2.0
-RESET_X_OFFSET_MIN_MM = 25.0
-RESET_X_OFFSET_MAX_MM = 45.0
-RESET_TARGET_ABS_X_MM = 35.0
+RESET_X_OFFSET_MIN_MM = 12.0
+RESET_X_OFFSET_MAX_MM = 18.0
+RESET_TARGET_ABS_X_MM = 15.0
 RESET_X_OFFSET_CONFIRM_FRAMES = 2
 RESET_DIST_TARGET_MM = TARGET_DIST_MM * 1.75
 RESET_DIST_TOL_MM = 9.0
-RESET_MAST_UP_MIN_MS = 1500
-RESET_MAST_UP_MAX_MS = 2500
+RESET_Y_TARGET_MM = -5.0
+RESET_SHARP_FINISH_MS = 300
+RESET_MAST_UP_MIN_MS = 400
+RESET_MAST_UP_MAX_MS = 700
 RESET_MAST_UP_PWM = 255
 RESET_MAST_UP_SETTLE_S = 0.1
 DEFAULT_RESET_ARC_ALGORITHM_POINTS = (
-    {"x_gap_mm": 0.0, "slower_pwm": 103, "faster_pwm": 125},
-    {"x_gap_mm": 20.0, "slower_pwm": 108, "faster_pwm": 172},
-    {"x_gap_mm": 41.28, "slower_pwm": 114, "faster_pwm": 217},
-    {"x_gap_mm": 60.0, "slower_pwm": 120, "faster_pwm": 242},
+    {"x_gap_mm": 0.0, "slower_pwm": 103, "faster_pwm": 111},
+    {"x_gap_mm": 20.0, "slower_pwm": 104, "faster_pwm": 125},
+    {"x_gap_mm": 41.28, "slower_pwm": 106, "faster_pwm": 146},
+    {"x_gap_mm": 60.0, "slower_pwm": 108, "faster_pwm": 162},
 )
 DEFAULT_MOTION_POWER_SCALE = 1.0
 DEFAULT_NORMAL_SPEED_SCORE = 1
@@ -78,7 +80,7 @@ DEFAULT_TURN_CURVE_OUTER_PWMS = {
 }
 DEFAULT_STRONG_CURVE_ABS_X_ERR_MM = 18.0
 DEFAULT_MEDIUM_CURVE_ABS_X_ERR_MM = 10.0
-DEFAULT_MAX_ACT_MS = 500
+DEFAULT_MAX_ACT_MS = 400
 DEFAULT_FOLLOW_COMBINED_GAP_POLICY = {
     "straight_x_outside_max_mm": 0.0,
     "straight_dist_outside_min_mm": 8.0,
@@ -87,37 +89,71 @@ DEFAULT_FOLLOW_COMBINED_GAP_POLICY = {
     "medium_x_outside_max_mm": 12.0,
 }
 DEFAULT_DIST_APPROACH_POLICY = {
-    "closure_shots": 3.0,
-    "settle_after_act_s": 0.12,
+    "closure_shots": 1.0,
+    "settle_after_act_s": 0.04,
     "require_y_ok_before_dist": True,
+    "min_forward_pulse_ms": 200,
+    "max_forward_pulse_ms": 400,
+    "full_forward_gap_mm": 75.0,
+    "near_target_forward_veto_mm": 12.0,
+}
+DEFAULT_X_PRIORITY_POLICY = {
+    "polish_abs_x_mm": 6.0,
+    "huge_dist_gap_mm": 200.0,
+    "huge_dist_tiny_abs_x_mm": 5.0,
+    "x_first_turn_strength": "adaptive",
+    "adaptive_outer_pwm_scale": 0.75,
+}
+DEFAULT_X_DIST_CURVE_POLICY = {
+    "large_dist_gap_mm": 60.0,
+    "small_x_gap_mm": 6.0,
+    "large_dist_small_x_strength": "gentle",
+    "near_dist_gap_mm": 12.0,
+    "wide_x_gap_mm": 9.0,
+    "near_wide_x_strength": "strong",
+    "too_close_wide_x_drive_mode": "backward",
+}
+DEFAULT_X_ONLY_TURN_POLICY = {
+    "drive_mode": "backward",
+    "far_drive_mode": "forward",
+    "forward_min_dist_err_mm": 60.0,
 }
 DEFAULT_TOO_CLOSE_ESCAPE_POLICY = {
     "pwm": 104,
-    "pulse_ms": 500,
+    "pulse_ms": 400,
+    "min_pulse_ms": 200,
+    "full_escape_gap_mm": 25.0,
     "attach_mast": True,
 }
 DEFAULT_WIN_CONFIRMATION_CONFIG = {
     "settle_s": 0.25,
-    "confirm_frames": 1,
+    "confirm_frames": 2,
+    "min_axis_closeness_pct": 0.0,
 }
 DEFAULT_FOLLOW_Y_AXIS_CONFIG = {
     "enabled": True,
     "win_target_mm": Y_TARGET_MM,
     "win_tol_mm": Y_TOL_MM,
-    "reset_target_mm": Y_TARGET_MM * 1.3,
+    "reset_target_mm": RESET_Y_TARGET_MM,
     "reset_tol_mm": Y_TOL_MM,
     "approach_high_factor": 1.3,
     "endgame_dist_tol_mm": DIST_TOL_MM,
     "endgame_x_tol_mm": X_TOL_MM,
+    "finish_y_only_dist_deadband_mm": DIST_TOL_MM,
+    "finish_y_only_too_far_deadband_mm": 15.0,
+    "finish_y_only_too_close_deadband_mm": DIST_TOL_MM,
+    "finish_y_only_x_deadband_mm": X_TOL_MM,
     "protect_below_y_mm": 11.0,
     "priority_abs_err_mm": 14.0,
     "lock_on_enabled": True,
     "lock_on_dist_mm": 90.0,
     "lock_on_dist_window_mm": 10.0,
     "lock_on_mast_pwm": 255,
-    "lock_on_pulse_ms": 1000,
+    "lock_on_pulse_ms": 400,
     "mast_pwm": 40,
     "mast_pulse_ms": 220,
+    "finish_mast_pwm": 120,
+    "finish_mast_pulse_ms": 300,
 }
 DEFAULT_TURN_BIAS_CURVES = {
     "micro": {"inner_pwm": 103, "outer_pwm": 106},
@@ -254,6 +290,20 @@ def _coerce_float(
 
 def _coerce_curve_strength(value, fallback: str = "gentle") -> str:
     strength = str(value or "").strip().lower()
+    if strength == "adaptive":
+        return "adaptive"
+    if strength in {"gentle", "medium", "strong"}:
+        return strength
+    fallback_strength = str(fallback or "").strip().lower()
+    if fallback_strength == "adaptive":
+        return "adaptive"
+    if fallback_strength in {"gentle", "medium", "strong"}:
+        return fallback_strength
+    return "gentle"
+
+
+def _coerce_discrete_curve_strength(value, fallback: str = "gentle") -> str:
+    strength = str(value or "").strip().lower()
     if strength in {"gentle", "medium", "strong"}:
         return strength
     fallback_strength = str(fallback or "").strip().lower()
@@ -285,6 +335,9 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         "max_act_ms": int(DEFAULT_MAX_ACT_MS),
         "combined_gap_policy": dict(DEFAULT_FOLLOW_COMBINED_GAP_POLICY),
         "dist_approach_policy": dict(DEFAULT_DIST_APPROACH_POLICY),
+        "x_priority_policy": dict(DEFAULT_X_PRIORITY_POLICY),
+        "x_dist_curve_policy": dict(DEFAULT_X_DIST_CURVE_POLICY),
+        "x_only_turn": dict(DEFAULT_X_ONLY_TURN_POLICY),
         "too_close_escape": dict(DEFAULT_TOO_CLOSE_ESCAPE_POLICY),
         "win_confirmation": dict(DEFAULT_WIN_CONFIRMATION_CONFIG),
         "y_axis": dict(DEFAULT_FOLLOW_Y_AXIS_CONFIG),
@@ -319,7 +372,7 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         raw.get("max_act_ms"),
         DEFAULT_MAX_ACT_MS,
         minimum=1,
-        maximum=500,
+        maximum=400,
     )
     turn_curves = raw.get("turn_curves") if isinstance(raw.get("turn_curves"), dict) else {}
     cfg["turn_curves"]["inner_pwm"] = _coerce_int(
@@ -382,6 +435,77 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
             DEFAULT_DIST_APPROACH_POLICY["require_y_ok_before_dist"],
         )
     )
+    for key in ("min_forward_pulse_ms", "max_forward_pulse_ms"):
+        cfg["dist_approach_policy"][key] = _coerce_int(
+            raw_dist_approach.get(key),
+            DEFAULT_DIST_APPROACH_POLICY[key],
+            minimum=1,
+            maximum=400,
+        )
+    cfg["dist_approach_policy"]["full_forward_gap_mm"] = _coerce_float(
+        raw_dist_approach.get("full_forward_gap_mm"),
+        DEFAULT_DIST_APPROACH_POLICY["full_forward_gap_mm"],
+        minimum=0.1,
+    )
+    cfg["dist_approach_policy"]["near_target_forward_veto_mm"] = _coerce_float(
+        raw_dist_approach.get("near_target_forward_veto_mm"),
+        DEFAULT_DIST_APPROACH_POLICY["near_target_forward_veto_mm"],
+        minimum=0.0,
+    )
+    raw_x_priority = raw.get("x_priority_policy") if isinstance(raw.get("x_priority_policy"), dict) else {}
+    for key in ("polish_abs_x_mm", "huge_dist_gap_mm", "huge_dist_tiny_abs_x_mm"):
+        cfg["x_priority_policy"][key] = _coerce_float(
+            raw_x_priority.get(key),
+            DEFAULT_X_PRIORITY_POLICY[key],
+            minimum=0.0,
+        )
+    cfg["x_priority_policy"]["x_first_turn_strength"] = _coerce_curve_strength(
+        raw_x_priority.get("x_first_turn_strength"),
+        DEFAULT_X_PRIORITY_POLICY["x_first_turn_strength"],
+    )
+    cfg["x_priority_policy"]["adaptive_outer_pwm_scale"] = _coerce_float(
+        raw_x_priority.get("adaptive_outer_pwm_scale"),
+        DEFAULT_X_PRIORITY_POLICY["adaptive_outer_pwm_scale"],
+        minimum=0.5,
+        maximum=2.0,
+    )
+    raw_x_dist = raw.get("x_dist_curve_policy") if isinstance(raw.get("x_dist_curve_policy"), dict) else {}
+    for key in ("large_dist_gap_mm", "small_x_gap_mm", "near_dist_gap_mm", "wide_x_gap_mm"):
+        cfg["x_dist_curve_policy"][key] = _coerce_float(
+            raw_x_dist.get(key),
+            DEFAULT_X_DIST_CURVE_POLICY[key],
+            minimum=0.0,
+        )
+    cfg["x_dist_curve_policy"]["large_dist_small_x_strength"] = _coerce_curve_strength(
+        raw_x_dist.get("large_dist_small_x_strength"),
+        DEFAULT_X_DIST_CURVE_POLICY["large_dist_small_x_strength"],
+    )
+    cfg["x_dist_curve_policy"]["near_wide_x_strength"] = _coerce_curve_strength(
+        raw_x_dist.get("near_wide_x_strength"),
+        DEFAULT_X_DIST_CURVE_POLICY["near_wide_x_strength"],
+    )
+    if cfg["x_dist_curve_policy"]["near_wide_x_strength"] == "adaptive":
+        cfg["x_dist_curve_policy"]["near_wide_x_strength"] = "strong"
+    if cfg["x_dist_curve_policy"]["large_dist_small_x_strength"] == "adaptive":
+        cfg["x_dist_curve_policy"]["large_dist_small_x_strength"] = "gentle"
+    drive_mode = str(
+        raw_x_dist.get(
+            "too_close_wide_x_drive_mode",
+            DEFAULT_X_DIST_CURVE_POLICY["too_close_wide_x_drive_mode"],
+        )
+    ).strip().lower()
+    cfg["x_dist_curve_policy"]["too_close_wide_x_drive_mode"] = (
+        drive_mode if drive_mode in {"forward", "backward"} else "backward"
+    )
+    raw_x_only = raw.get("x_only_turn") if isinstance(raw.get("x_only_turn"), dict) else {}
+    for key in ("drive_mode", "far_drive_mode"):
+        mode = str(raw_x_only.get(key, DEFAULT_X_ONLY_TURN_POLICY[key])).strip().lower()
+        cfg["x_only_turn"][key] = mode if mode in {"forward", "backward"} else DEFAULT_X_ONLY_TURN_POLICY[key]
+    cfg["x_only_turn"]["forward_min_dist_err_mm"] = _coerce_float(
+        raw_x_only.get("forward_min_dist_err_mm"),
+        DEFAULT_X_ONLY_TURN_POLICY["forward_min_dist_err_mm"],
+        minimum=0.0,
+    )
     raw_escape = raw.get("too_close_escape") if isinstance(raw.get("too_close_escape"), dict) else {}
     cfg["too_close_escape"]["pwm"] = _coerce_int(
         raw_escape.get("pwm"),
@@ -393,7 +517,18 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         raw_escape.get("pulse_ms"),
         DEFAULT_TOO_CLOSE_ESCAPE_POLICY["pulse_ms"],
         minimum=1,
-        maximum=5000,
+        maximum=400,
+    )
+    cfg["too_close_escape"]["min_pulse_ms"] = _coerce_int(
+        raw_escape.get("min_pulse_ms"),
+        DEFAULT_TOO_CLOSE_ESCAPE_POLICY["min_pulse_ms"],
+        minimum=1,
+        maximum=400,
+    )
+    cfg["too_close_escape"]["full_escape_gap_mm"] = _coerce_float(
+        raw_escape.get("full_escape_gap_mm"),
+        DEFAULT_TOO_CLOSE_ESCAPE_POLICY["full_escape_gap_mm"],
+        minimum=0.1,
     )
     cfg["too_close_escape"]["attach_mast"] = bool(
         raw_escape.get("attach_mast", DEFAULT_TOO_CLOSE_ESCAPE_POLICY["attach_mast"])
@@ -412,6 +547,12 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         DEFAULT_WIN_CONFIRMATION_CONFIG["confirm_frames"],
         minimum=1,
         maximum=10,
+    )
+    cfg["win_confirmation"]["min_axis_closeness_pct"] = _coerce_float(
+        raw_win_confirmation.get("min_axis_closeness_pct"),
+        DEFAULT_WIN_CONFIRMATION_CONFIG["min_axis_closeness_pct"],
+        minimum=0.0,
+        maximum=100.0,
     )
     raw_y_axis = raw.get("y_axis") if isinstance(raw.get("y_axis"), dict) else {}
     cfg["y_axis"]["enabled"] = bool(raw_y_axis.get("enabled", DEFAULT_FOLLOW_Y_AXIS_CONFIG["enabled"]))
@@ -452,10 +593,15 @@ def _load_reset_motion_config(path: Path | None = None) -> dict:
             "x_offset_min_mm": float(RESET_X_OFFSET_MIN_MM),
             "x_offset_max_mm": float(RESET_X_OFFSET_MAX_MM),
             "target_abs_x_mm": float(RESET_TARGET_ABS_X_MM),
-            "y_target_mm": float(DEFAULT_FOLLOW_Y_AXIS_CONFIG["reset_target_mm"]),
+            "y_target_mm": float(RESET_Y_TARGET_MM),
             "y_tol_mm": float(DEFAULT_FOLLOW_Y_AXIS_CONFIG["reset_tol_mm"]),
             "confirm_frames": int(RESET_X_OFFSET_CONFIRM_FRAMES),
             "arc_algorithm": {"points": [dict(point) for point in DEFAULT_RESET_ARC_ALGORITHM_POINTS]},
+            "sharp_finish": {
+                "enabled": True,
+                "duration_ms": int(RESET_SHARP_FINISH_MS),
+                "mode": "faster_wheel_only",
+            },
         },
         "mast_up": {
             "enabled": True,
@@ -530,7 +676,7 @@ def _load_reset_motion_config(path: Path | None = None) -> dict:
     )
     cfg["reverse_turn"]["y_target_mm"] = _coerce_float(
         reverse_turn.get("y_target_mm"),
-        DEFAULT_FOLLOW_Y_AXIS_CONFIG["reset_target_mm"],
+        RESET_Y_TARGET_MM,
     )
     cfg["reverse_turn"]["y_tol_mm"] = _coerce_float(
         reverse_turn.get("y_tol_mm"),
@@ -556,6 +702,21 @@ def _load_reset_motion_config(path: Path | None = None) -> dict:
     cfg["reverse_turn"]["arc_algorithm"] = {
         "gap_metric": str(raw_algorithm.get("gap_metric") or "target_abs_x_minus_current_abs_x"),
         "points": points,
+    }
+    raw_sharp_finish = (
+        reverse_turn.get("sharp_finish")
+        if isinstance(reverse_turn.get("sharp_finish"), dict)
+        else {}
+    )
+    cfg["reverse_turn"]["sharp_finish"] = {
+        "enabled": bool(raw_sharp_finish.get("enabled", True)),
+        "duration_ms": _coerce_int(
+            raw_sharp_finish.get("duration_ms"),
+            RESET_SHARP_FINISH_MS,
+            minimum=0,
+            maximum=max(0, cfg["reverse_turn"]["pulse_ms"]),
+        ),
+        "mode": str(raw_sharp_finish.get("mode") or "faster_wheel_only").strip().lower(),
     }
     mast_up = raw.get("mast_up") if isinstance(raw.get("mast_up"), dict) else {}
     cfg["mast_up"]["enabled"] = bool(mast_up.get("enabled", True))
@@ -637,8 +798,29 @@ def _normal_speed_score() -> int:
 def _x_only_turn_drive_mode() -> str:
     cfg = _follow_motion_config()
     raw = cfg.get("x_only_turn") if isinstance(cfg.get("x_only_turn"), dict) else {}
-    drive_mode = str(raw.get("drive_mode") or "forward").strip().lower()
-    return drive_mode if drive_mode in {"forward", "backward"} else "forward"
+    drive_mode = str(raw.get("drive_mode") or DEFAULT_X_ONLY_TURN_POLICY["drive_mode"]).strip().lower()
+    return drive_mode if drive_mode in {"forward", "backward"} else DEFAULT_X_ONLY_TURN_POLICY["drive_mode"]
+
+
+def _x_only_turn_drive_mode_for_dist(dist_err: float) -> str:
+    cfg = _follow_motion_config()
+    raw = cfg.get("x_only_turn") if isinstance(cfg.get("x_only_turn"), dict) else {}
+    near_mode = _x_only_turn_drive_mode()
+    far_mode = str(raw.get("far_drive_mode") or DEFAULT_X_ONLY_TURN_POLICY["far_drive_mode"]).strip().lower()
+    if far_mode not in {"forward", "backward"}:
+        far_mode = DEFAULT_X_ONLY_TURN_POLICY["far_drive_mode"]
+    forward_min_dist = _coerce_float(
+        raw.get("forward_min_dist_err_mm"),
+        DEFAULT_X_ONLY_TURN_POLICY["forward_min_dist_err_mm"],
+        minimum=0.0,
+    )
+    try:
+        dist_val = float(dist_err)
+    except (TypeError, ValueError):
+        dist_val = 0.0
+    if dist_val >= float(forward_min_dist):
+        return far_mode
+    return near_mode
 
 
 def _max_act_ms() -> int:
@@ -647,7 +829,7 @@ def _max_act_ms() -> int:
         cfg.get("max_act_ms"),
         DEFAULT_MAX_ACT_MS,
         minimum=1,
-        maximum=500,
+        maximum=400,
     )
 
 
@@ -814,7 +996,7 @@ def _turn_curve_for_drive_mode(drive_mode: str, strength: str) -> dict:
     drive_key = str(drive_mode or "").strip().lower()
     if drive_key not in {"forward", "backward"}:
         drive_key = "forward"
-    strength_key = _coerce_curve_strength(strength, "gentle")
+    strength_key = _coerce_discrete_curve_strength(strength, "gentle")
     raw_drive = turn_curves.get(drive_key) if isinstance(turn_curves.get(drive_key), dict) else {}
     raw_curve = raw_drive.get(strength_key) if isinstance(raw_drive.get(strength_key), dict) else {}
     return {
@@ -863,6 +1045,91 @@ def _turn_bias_curve_for_drive_mode(drive_mode: str, strength: str) -> dict:
         "strength": strength_key,
         "drive_mode": drive_key,
     }
+
+
+def _lerp_pwm(low_pwm: int, high_pwm: int, ratio: float) -> int:
+    ratio_val = max(0.0, min(1.0, float(ratio)))
+    return int(round(float(low_pwm) + ((float(high_pwm) - float(low_pwm)) * ratio_val)))
+
+
+def _interp_between_curve_points(points: list[tuple[float, dict]], x_abs_mm: float) -> dict:
+    ordered = sorted(points, key=lambda row: float(row[0]))
+    if not ordered:
+        return {}
+    x_val = max(0.0, float(x_abs_mm))
+    if x_val <= float(ordered[0][0]):
+        out = dict(ordered[0][1])
+        out["x_curve_gap_mm"] = float(x_val)
+        return out
+    for (left_x, left_curve), (right_x, right_curve) in zip(ordered, ordered[1:]):
+        if x_val > float(right_x):
+            continue
+        span = max(1e-6, float(right_x) - float(left_x))
+        ratio = (x_val - float(left_x)) / span
+        out = dict(left_curve)
+        out["inner_pwm"] = _lerp_pwm(int(left_curve["inner_pwm"]), int(right_curve["inner_pwm"]), ratio)
+        out["outer_pwm"] = _lerp_pwm(int(left_curve["outer_pwm"]), int(right_curve["outer_pwm"]), ratio)
+        out["strength"] = f"adaptive_{x_val:.1f}mm"
+        out["x_curve_gap_mm"] = float(x_val)
+        out["x_curve_ratio"] = float(max(0.0, min(1.0, ratio)))
+        return out
+    out = dict(ordered[-1][1])
+    out["strength"] = f"adaptive_{x_val:.1f}mm"
+    out["x_curve_gap_mm"] = float(x_val)
+    out["x_curve_ratio"] = 1.0
+    return out
+
+
+def _adaptive_turn_curve_for_drive_mode(drive_mode: str, x_abs_mm: float) -> dict:
+    medium_at = _coerce_float(
+        _follow_motion_config().get("curve_strength_abs_x_err_mm", {}).get("medium"),
+        DEFAULT_MEDIUM_CURVE_ABS_X_ERR_MM,
+        minimum=0.0,
+    )
+    strong_at = _coerce_float(
+        _follow_motion_config().get("curve_strength_abs_x_err_mm", {}).get("strong"),
+        DEFAULT_STRONG_CURVE_ABS_X_ERR_MM,
+        minimum=0.0,
+    )
+    if strong_at < medium_at:
+        strong_at = medium_at
+    points = [
+        (0.0, _turn_curve_for_drive_mode(drive_mode, "gentle")),
+        (medium_at, _turn_curve_for_drive_mode(drive_mode, "medium")),
+        (strong_at, _turn_curve_for_drive_mode(drive_mode, "strong")),
+    ]
+    out = _interp_between_curve_points(points, x_abs_mm)
+    out["drive_mode"] = str(drive_mode or out.get("drive_mode") or "forward")
+    scale = float(_follow_x_priority_policy().get("adaptive_outer_pwm_scale", 1.0))
+    out["outer_pwm"] = _telemetry_robot.clamp_pwm(int(round(float(out["outer_pwm"]) * scale)))
+    out["adaptive_outer_pwm_scale"] = float(scale)
+    return out
+
+
+def _adaptive_turn_bias_curve_for_drive_mode(drive_mode: str, x_abs_mm: float) -> dict:
+    medium_at = _coerce_float(
+        _follow_motion_config().get("curve_strength_abs_x_err_mm", {}).get("medium"),
+        DEFAULT_MEDIUM_CURVE_ABS_X_ERR_MM,
+        minimum=0.0,
+    )
+    strong_at = _coerce_float(
+        _follow_motion_config().get("curve_strength_abs_x_err_mm", {}).get("strong"),
+        DEFAULT_STRONG_CURVE_ABS_X_ERR_MM,
+        minimum=0.0,
+    )
+    if strong_at < medium_at:
+        strong_at = medium_at
+    points = [
+        (0.0, _turn_bias_curve_for_drive_mode(drive_mode, "gentle")),
+        (medium_at, _turn_bias_curve_for_drive_mode(drive_mode, "medium")),
+        (strong_at, _turn_bias_curve_for_drive_mode(drive_mode, "strong")),
+    ]
+    out = _interp_between_curve_points(points, x_abs_mm)
+    out["drive_mode"] = str(drive_mode or out.get("drive_mode") or "forward")
+    scale = float(_follow_x_priority_policy().get("adaptive_outer_pwm_scale", 1.0))
+    out["outer_pwm"] = _telemetry_robot.clamp_pwm(int(round(float(out["outer_pwm"]) * scale)))
+    out["adaptive_outer_pwm_scale"] = float(scale)
+    return out
 
 
 def _turn_curve_actions(*, drive_mode: str, cmd: str, curve: dict) -> list[dict]:
@@ -968,7 +1235,15 @@ def _send_turn_curve(
     context: str,
     mast_cmd: str | None = None,
 ) -> dict | None:
-    curve = _turn_curve_for_drive_mode(drive_mode, strength)
+    try:
+        x_abs = abs(float((reading or {}).get("x_mm", 0.0)))
+    except (TypeError, ValueError):
+        x_abs = 0.0
+    curve = (
+        _adaptive_turn_curve_for_drive_mode(drive_mode, x_abs)
+        if str(strength or "").strip().lower() == "adaptive"
+        else _turn_curve_for_drive_mode(drive_mode, strength)
+    )
     actions = _turn_curve_actions(drive_mode=drive_mode, cmd=cmd, curve=curve)
     if not actions:
         return None
@@ -986,7 +1261,10 @@ def _send_turn_curve(
             "cmd_sent": str(cmd),
             "actions": scaled_actions,
             "duration_ms": _bounded_act_duration_ms(duration_ms),
+            "x_curve": dict(curve),
         }
+    if isinstance(send_result, dict):
+        send_result["x_curve"] = dict(curve)
     return send_result
 
 
@@ -1003,7 +1281,15 @@ def _send_drive_bias(
 ) -> dict | None:
     drive_key = str(drive_mode or "").strip().lower()
     logical_cmd = "b" if drive_key == "backward" else "f"
-    curve = _turn_bias_curve_for_drive_mode(drive_key, strength)
+    try:
+        x_abs = abs(float((reading or {}).get("x_mm", 0.0)))
+    except (TypeError, ValueError):
+        x_abs = 0.0
+    curve = (
+        _adaptive_turn_bias_curve_for_drive_mode(drive_key, x_abs)
+        if str(strength or "").strip().lower() == "adaptive"
+        else _turn_bias_curve_for_drive_mode(drive_key, strength)
+    )
     actions = _turn_bias_actions(drive_mode=drive_key, turn_cmd=turn_cmd, curve=curve)
     if not actions:
         return None
@@ -1022,7 +1308,10 @@ def _send_drive_bias(
             "turn_cmd": str(turn_cmd),
             "actions": scaled_actions,
             "duration_ms": _bounded_act_duration_ms(duration_ms),
+            "x_curve": dict(curve),
         }
+    if isinstance(send_result, dict):
+        send_result["x_curve"] = dict(curve)
     return send_result
 
 
@@ -1124,13 +1413,22 @@ def _drive(
     )
 
 
-def _mast(robot: Robot, direction: str, reading: dict) -> dict | None:
+def _mast(
+    robot: Robot,
+    direction: str,
+    reading: dict,
+    *,
+    pwm: int | float | None = None,
+    duration_ms: int | float | None = None,
+) -> dict | None:
     cmd = str(direction or "").strip().lower()
     if cmd not in {"u", "d"}:
         return None
     y_cfg = _follow_y_axis_config()
-    pwm = _scaled_pwm_for_cmd(cmd, y_cfg.get("mast_pwm"))
-    duration_ms = _bounded_act_duration_ms(y_cfg.get("mast_pulse_ms"))
+    mast_pwm = y_cfg.get("mast_pwm") if pwm is None else pwm
+    mast_duration_ms = y_cfg.get("mast_pulse_ms") if duration_ms is None else duration_ms
+    pwm = _scaled_pwm_for_cmd(cmd, mast_pwm)
+    duration_ms = _bounded_act_duration_ms(mast_duration_ms)
     return guarded_send_command_pwm(
         robot,
         cmd,
@@ -1144,7 +1442,7 @@ def _mast(robot: Robot, direction: str, reading: dict) -> dict | None:
 def _lock_on_mast_down(robot: Robot, reading: dict) -> dict | None:
     y_cfg = _follow_y_axis_config()
     pwm = _scaled_pwm_for_cmd("d", y_cfg.get("lock_on_mast_pwm", 255))
-    duration_ms = _coerce_int(y_cfg.get("lock_on_pulse_ms"), 1000, minimum=1, maximum=5000)
+    duration_ms = _bounded_act_duration_ms(y_cfg.get("lock_on_pulse_ms"))
     return guarded_send_command_pwm(
         robot,
         "d",
@@ -1192,6 +1490,41 @@ def _turn_in_place(robot: Robot, cmd: str, reading: dict) -> None:
     )
 
 
+def _reset_sharp_finish_ms(reset_cfg: dict, total_duration_ms: int) -> int:
+    sharp_cfg = reset_cfg.get("sharp_finish") if isinstance(reset_cfg.get("sharp_finish"), dict) else {}
+    if not bool(sharp_cfg.get("enabled", True)):
+        return 0
+    return _coerce_int(
+        sharp_cfg.get("duration_ms"),
+        RESET_SHARP_FINISH_MS,
+        minimum=0,
+        maximum=max(0, int(total_duration_ms)),
+    )
+
+
+def _reset_segmented_turn_actions(actions: list[dict], reset_cfg: dict, curve: dict, duration_ms: int) -> tuple[list[dict], int]:
+    """Build one reset packet: gentle arc first, then faster wheel finishes sharp."""
+    total_ms = _coerce_int(duration_ms, RESET_REVERSE_TURN_PULSE_MS, minimum=1)
+    sharp_ms = _reset_sharp_finish_ms(reset_cfg, total_ms)
+    gentle_ms = max(1, int(total_ms) - int(sharp_ms))
+    try:
+        faster_pwm = int(curve.get("faster_pwm"))
+    except (TypeError, ValueError):
+        faster_pwm = max((int(action.get("pwm") or 0) for action in actions or []), default=0)
+    segmented = []
+    for action in actions or []:
+        if not isinstance(action, dict):
+            continue
+        row = dict(action)
+        try:
+            raw_pwm = int(round(float(row.get("pwm"))))
+        except (TypeError, ValueError):
+            raw_pwm = 0
+        row["duration_ms"] = int(total_ms if raw_pwm >= int(faster_pwm) else gentle_ms)
+        segmented.append(row)
+    return _scaled_actions(segmented), int(sharp_ms)
+
+
 def _reset_reverse_turn(
     robot: Robot,
     direction: str,
@@ -1210,11 +1543,7 @@ def _reset_reverse_turn(
     if not actions:
         return None
     duration_ms = _reset_act_duration_ms(reset_cfg)
-    scaled_actions = []
-    for action in _scaled_actions(actions):
-        row = dict(action)
-        row["duration_ms"] = int(duration_ms)
-        scaled_actions.append(row)
+    scaled_actions, sharp_finish_ms = _reset_segmented_turn_actions(actions, reset_cfg, curve, duration_ms)
     mast_action, mast_up_ms, mast_settle_s = _reset_mast_up_action_spec(rng=rng)
     if mast_action is not None:
         scaled_actions.append(mast_action)
@@ -1230,6 +1559,8 @@ def _reset_reverse_turn(
         return None
     return {
         "wheel_ms": int(duration_ms),
+        "gentle_ms": int(max(1, int(duration_ms) - int(sharp_finish_ms))),
+        "sharp_finish_ms": int(sharp_finish_ms),
         "mast_up_ms": int(mast_up_ms),
         "mast_settle_s": float(mast_settle_s),
         "duration_ms": int(max(int(duration_ms), int(mast_up_ms))),
@@ -1338,7 +1669,7 @@ def _follow_combined_gap_policy() -> dict:
 def _follow_dist_approach_policy() -> dict:
     cfg = _follow_motion_config()
     raw = cfg.get("dist_approach_policy") if isinstance(cfg.get("dist_approach_policy"), dict) else {}
-    return {
+    out = {
         "closure_shots": _coerce_float(
             raw.get("closure_shots"),
             DEFAULT_DIST_APPROACH_POLICY["closure_shots"],
@@ -1356,14 +1687,106 @@ def _follow_dist_approach_policy() -> dict:
                 DEFAULT_DIST_APPROACH_POLICY["require_y_ok_before_dist"],
             )
         ),
+        "min_forward_pulse_ms": _coerce_int(
+            raw.get("min_forward_pulse_ms"),
+            DEFAULT_DIST_APPROACH_POLICY["min_forward_pulse_ms"],
+            minimum=1,
+            maximum=_max_act_ms(),
+        ),
+        "max_forward_pulse_ms": _coerce_int(
+            raw.get("max_forward_pulse_ms"),
+            DEFAULT_DIST_APPROACH_POLICY["max_forward_pulse_ms"],
+            minimum=1,
+            maximum=_max_act_ms(),
+        ),
+        "full_forward_gap_mm": _coerce_float(
+            raw.get("full_forward_gap_mm"),
+            DEFAULT_DIST_APPROACH_POLICY["full_forward_gap_mm"],
+            minimum=0.1,
+        ),
+        "near_target_forward_veto_mm": _coerce_float(
+            raw.get("near_target_forward_veto_mm"),
+            DEFAULT_DIST_APPROACH_POLICY["near_target_forward_veto_mm"],
+            minimum=0.0,
+        ),
     }
+    if int(out["min_forward_pulse_ms"]) > int(out["max_forward_pulse_ms"]):
+        out["min_forward_pulse_ms"], out["max_forward_pulse_ms"] = (
+            out["max_forward_pulse_ms"],
+            out["min_forward_pulse_ms"],
+        )
+    return out
+
+
+def _follow_x_priority_policy() -> dict:
+    cfg = _follow_motion_config()
+    raw = cfg.get("x_priority_policy") if isinstance(cfg.get("x_priority_policy"), dict) else {}
+    return {
+        "polish_abs_x_mm": _coerce_float(
+            raw.get("polish_abs_x_mm"),
+            DEFAULT_X_PRIORITY_POLICY["polish_abs_x_mm"],
+            minimum=0.0,
+        ),
+        "huge_dist_gap_mm": _coerce_float(
+            raw.get("huge_dist_gap_mm"),
+            DEFAULT_X_PRIORITY_POLICY["huge_dist_gap_mm"],
+            minimum=0.0,
+        ),
+        "huge_dist_tiny_abs_x_mm": _coerce_float(
+            raw.get("huge_dist_tiny_abs_x_mm"),
+            DEFAULT_X_PRIORITY_POLICY["huge_dist_tiny_abs_x_mm"],
+            minimum=0.0,
+        ),
+        "x_first_turn_strength": _coerce_curve_strength(
+            raw.get("x_first_turn_strength"),
+            DEFAULT_X_PRIORITY_POLICY["x_first_turn_strength"],
+        ),
+        "adaptive_outer_pwm_scale": _coerce_float(
+            raw.get("adaptive_outer_pwm_scale"),
+            DEFAULT_X_PRIORITY_POLICY["adaptive_outer_pwm_scale"],
+            minimum=0.5,
+            maximum=2.0,
+        ),
+    }
+
+
+def _follow_x_dist_curve_policy() -> dict:
+    cfg = _follow_motion_config()
+    raw = cfg.get("x_dist_curve_policy") if isinstance(cfg.get("x_dist_curve_policy"), dict) else {}
+    out = {}
+    for key in ("large_dist_gap_mm", "small_x_gap_mm", "near_dist_gap_mm", "wide_x_gap_mm"):
+        out[key] = _coerce_float(
+            raw.get(key),
+            DEFAULT_X_DIST_CURVE_POLICY[key],
+            minimum=0.0,
+        )
+    out["large_dist_small_x_strength"] = _coerce_curve_strength(
+        raw.get("large_dist_small_x_strength"),
+        DEFAULT_X_DIST_CURVE_POLICY["large_dist_small_x_strength"],
+    )
+    out["near_wide_x_strength"] = _coerce_curve_strength(
+        raw.get("near_wide_x_strength"),
+        DEFAULT_X_DIST_CURVE_POLICY["near_wide_x_strength"],
+    )
+    if out["large_dist_small_x_strength"] == "adaptive":
+        out["large_dist_small_x_strength"] = "gentle"
+    if out["near_wide_x_strength"] == "adaptive":
+        out["near_wide_x_strength"] = "strong"
+    drive_mode = str(
+        raw.get(
+            "too_close_wide_x_drive_mode",
+            DEFAULT_X_DIST_CURVE_POLICY["too_close_wide_x_drive_mode"],
+        )
+    ).strip().lower()
+    out["too_close_wide_x_drive_mode"] = drive_mode if drive_mode in {"forward", "backward"} else "backward"
+    return out
 
 
 def _too_close_escape_policy() -> dict:
     cfg = _follow_motion_config()
     raw = cfg.get("too_close_escape") if isinstance(cfg.get("too_close_escape"), dict) else {}
     approved_pwm = int(_approved_straight_drive_pwm("b"))
-    return {
+    out = {
         "pwm": _coerce_int(
             raw.get("pwm"),
             approved_pwm or DEFAULT_TOO_CLOSE_ESCAPE_POLICY["pwm"],
@@ -1374,10 +1797,24 @@ def _too_close_escape_policy() -> dict:
             raw.get("pulse_ms"),
             DEFAULT_TOO_CLOSE_ESCAPE_POLICY["pulse_ms"],
             minimum=1,
-            maximum=5000,
+            maximum=_max_act_ms(),
+        ),
+        "min_pulse_ms": _coerce_int(
+            raw.get("min_pulse_ms"),
+            DEFAULT_TOO_CLOSE_ESCAPE_POLICY["min_pulse_ms"],
+            minimum=1,
+            maximum=_max_act_ms(),
+        ),
+        "full_escape_gap_mm": _coerce_float(
+            raw.get("full_escape_gap_mm"),
+            DEFAULT_TOO_CLOSE_ESCAPE_POLICY["full_escape_gap_mm"],
+            minimum=0.1,
         ),
         "attach_mast": bool(raw.get("attach_mast", DEFAULT_TOO_CLOSE_ESCAPE_POLICY["attach_mast"])),
     }
+    if int(out["min_pulse_ms"]) > int(out["pulse_ms"]):
+        out["min_pulse_ms"], out["pulse_ms"] = int(out["pulse_ms"]), int(out["min_pulse_ms"])
+    return out
 
 
 def _win_confirmation_config() -> dict:
@@ -1395,6 +1832,12 @@ def _win_confirmation_config() -> dict:
             DEFAULT_WIN_CONFIRMATION_CONFIG["confirm_frames"],
             minimum=1,
             maximum=10,
+        ),
+        "min_axis_closeness_pct": _coerce_float(
+            raw.get("min_axis_closeness_pct"),
+            DEFAULT_WIN_CONFIRMATION_CONFIG["min_axis_closeness_pct"],
+            minimum=0.0,
+            maximum=100.0,
         ),
     }
 
@@ -1438,6 +1881,33 @@ def _target_closeness_pct(error: float, tolerance: float) -> float:
     if tol <= 0.0:
         return 100.0 if abs_error <= 0.0 else 0.0
     return max(0.0, min(100.0, 100.0 * (1.0 - (abs_error / tol))))
+
+
+def _win_min_axis_closeness_pct() -> float:
+    cfg = _win_confirmation_config()
+    return _coerce_float(
+        cfg.get("min_axis_closeness_pct"),
+        DEFAULT_WIN_CONFIRMATION_CONFIG["min_axis_closeness_pct"],
+        minimum=0.0,
+        maximum=100.0,
+    )
+
+
+def _win_axis_ok(error: float, tolerance: float) -> bool:
+    try:
+        abs_error = abs(float(error))
+    except (TypeError, ValueError):
+        return False
+    return float(abs_error) <= float(_win_effective_tolerance(tolerance))
+
+
+def _win_effective_tolerance(tolerance: float) -> float:
+    try:
+        tol = float(tolerance)
+    except (TypeError, ValueError):
+        return 0.0
+    min_close = _win_min_axis_closeness_pct()
+    return max(0.0, float(tol) * (1.0 - (float(min_close) / 100.0)))
 
 
 def _band_target_closeness_pct(value: float, *, target: float, minimum: float, maximum: float) -> float:
@@ -1484,6 +1954,10 @@ def _pct_text(value: float | None) -> str:
     return "N/A" if value is None else f"{float(value):.0f}%"
 
 
+def _fmt_mm(value: float | None) -> str:
+    return "N/A" if value is None else f"{float(value):.1f}mm"
+
+
 def _pct_avg_std_text(values) -> str:
     avg = _avg(values)
     std = _stddev(values)
@@ -1504,6 +1978,124 @@ def _bias_strength_for_x_outside(x_outside_mm: float) -> str:
     return "strong"
 
 
+def _bias_strength_for_dist_x(*, dist_err: float, x_err: float, x_outside_mm: float) -> str:
+    policy = _follow_x_dist_curve_policy()
+    if (
+        float(dist_err) >= float(policy.get("large_dist_gap_mm", DEFAULT_X_DIST_CURVE_POLICY["large_dist_gap_mm"]))
+        and abs(float(x_err)) <= float(policy.get("small_x_gap_mm", DEFAULT_X_DIST_CURVE_POLICY["small_x_gap_mm"]))
+    ):
+        return str(policy.get("large_dist_small_x_strength", "gentle"))
+    return _bias_strength_for_x_outside(x_outside_mm)
+
+
+def _near_wide_x_turn_strength(abs_x_err: float) -> str:
+    policy = _follow_x_dist_curve_policy()
+    if abs(float(abs_x_err)) >= float(policy.get("wide_x_gap_mm", DEFAULT_X_DIST_CURVE_POLICY["wide_x_gap_mm"])):
+        return str(policy.get("near_wide_x_strength", "strong"))
+    return _curve_strength_for_abs_x_err(abs(float(abs_x_err)))
+
+
+def _should_back_turn_for_too_close_wide_x(*, dist_err: float, x_err: float) -> bool:
+    policy = _follow_x_dist_curve_policy()
+    return (
+        float(dist_err) <= float(policy.get("near_dist_gap_mm", DEFAULT_X_DIST_CURVE_POLICY["near_dist_gap_mm"]))
+        and abs(float(x_err)) >= float(policy.get("wide_x_gap_mm", DEFAULT_X_DIST_CURVE_POLICY["wide_x_gap_mm"]))
+    )
+
+
+def _proportional_duration_ms(*, gap_mm: float, min_ms: int, max_ms: int, full_gap_mm: float) -> int:
+    low = _coerce_int(min_ms, PULSE_MS, minimum=1, maximum=_max_act_ms())
+    high = _coerce_int(max_ms, low, minimum=1, maximum=_max_act_ms())
+    if low > high:
+        low, high = high, low
+    span = max(0, int(high) - int(low))
+    if span <= 0:
+        return _bounded_act_duration_ms(low)
+    full_gap = max(0.1, float(full_gap_mm))
+    ratio = max(0.0, min(1.0, float(gap_mm) / float(full_gap)))
+    return _bounded_act_duration_ms(int(round(float(low) + (float(span) * ratio))))
+
+
+def _distance_creep_duration_ms(dist_err: float) -> int:
+    policy = _follow_dist_approach_policy()
+    gap = max(0.0, float(dist_err) - _win_effective_tolerance(DIST_TOL_MM))
+    return _proportional_duration_ms(
+        gap_mm=gap,
+        min_ms=int(policy.get("min_forward_pulse_ms", PULSE_MS)),
+        max_ms=int(policy.get("max_forward_pulse_ms", PULSE_MS)),
+        full_gap_mm=float(policy.get("full_forward_gap_mm", DEFAULT_DIST_APPROACH_POLICY["full_forward_gap_mm"])),
+    )
+
+
+def _too_close_escape_duration_ms(dist_err: float, escape_policy: dict | None = None) -> int:
+    policy = escape_policy if isinstance(escape_policy, dict) else _too_close_escape_policy()
+    gap = max(0.0, abs(float(dist_err)) - _win_effective_tolerance(DIST_TOL_MM))
+    return _proportional_duration_ms(
+        gap_mm=gap,
+        min_ms=int(policy.get("min_pulse_ms", PULSE_MS)),
+        max_ms=int(policy.get("pulse_ms", DEFAULT_TOO_CLOSE_ESCAPE_POLICY["pulse_ms"])),
+        full_gap_mm=float(policy.get("full_escape_gap_mm", DEFAULT_TOO_CLOSE_ESCAPE_POLICY["full_escape_gap_mm"])),
+    )
+
+
+def _should_close_x_before_distance(*, abs_x_err: float, dist_err: float) -> bool:
+    policy = _follow_x_priority_policy()
+    abs_x = abs(float(abs_x_err))
+    if abs_x <= float(policy.get("polish_abs_x_mm", DEFAULT_X_PRIORITY_POLICY["polish_abs_x_mm"])):
+        return False
+    if (
+        float(dist_err) >= float(policy.get("huge_dist_gap_mm", DEFAULT_X_PRIORITY_POLICY["huge_dist_gap_mm"]))
+        and abs_x <= float(policy.get("huge_dist_tiny_abs_x_mm", DEFAULT_X_PRIORITY_POLICY["huge_dist_tiny_abs_x_mm"]))
+    ):
+        return False
+    return True
+
+
+def _near_target_forward_veto_active(*, dist_err: float, x_ok: bool, y_ok: bool) -> bool:
+    policy = _follow_dist_approach_policy()
+    veto_mm = float(policy.get("near_target_forward_veto_mm", 0.0))
+    if veto_mm <= 0.0:
+        return False
+    if bool(x_ok) and bool(y_ok):
+        return False
+    return _win_effective_tolerance(DIST_TOL_MM) < float(dist_err) <= float(veto_mm)
+
+
+def _finish_y_dist_ok(dist_err: float, y_cfg: dict | None = None) -> bool:
+    cfg = y_cfg if isinstance(y_cfg, dict) else _follow_y_axis_config()
+    dist_fallback = _coerce_float(
+        cfg.get("finish_y_only_dist_deadband_mm"),
+        DIST_TOL_MM,
+        minimum=0.0,
+    )
+    too_far_deadband = _coerce_float(
+        cfg.get("finish_y_only_too_far_deadband_mm"),
+        dist_fallback,
+        minimum=0.0,
+    )
+    too_close_deadband = _coerce_float(
+        cfg.get("finish_y_only_too_close_deadband_mm"),
+        dist_fallback,
+        minimum=0.0,
+    )
+    dist_val = float(dist_err)
+    if dist_val < 0.0:
+        return abs(dist_val) <= float(too_close_deadband)
+    return dist_val <= float(too_far_deadband)
+
+
+def _should_finish_y_before_wheels(y_plan: dict | None, *, dist_err: float, x_err: float) -> bool:
+    if not isinstance(y_plan, dict):
+        return False
+    y_cfg = _follow_y_axis_config()
+    x_deadband = _coerce_float(
+        y_cfg.get("finish_y_only_x_deadband_mm"),
+        X_TOL_MM,
+        minimum=0.0,
+    )
+    return _finish_y_dist_ok(dist_err, y_cfg) and abs(float(x_err)) <= float(x_deadband)
+
+
 def _y_axis_action_plan(reading: dict, *, dist_err: float, x_err: float) -> dict | None:
     y_cfg = _follow_y_axis_config()
     if not bool(y_cfg.get("enabled")):
@@ -1519,6 +2111,9 @@ def _y_axis_action_plan(reading: dict, *, dist_err: float, x_err: float) -> dict
     near_end = (
         abs(float(dist_err)) <= float(y_cfg.get("endgame_dist_tol_mm", DIST_TOL_MM))
         and abs(float(x_err)) <= float(y_cfg.get("endgame_x_tol_mm", X_TOL_MM))
+    ) or (
+        _finish_y_dist_ok(dist_err, y_cfg)
+        and abs(float(x_err)) <= float(y_cfg.get("finish_y_only_x_deadband_mm", X_TOL_MM))
     )
     if bool((reading or {}).get("brick_below")) or y_mm > protect_below:
         return {
@@ -1533,11 +2128,13 @@ def _y_axis_action_plan(reading: dict, *, dist_err: float, x_err: float) -> dict
             "reason": "protect_lower_edge",
         }
     active_target = target if near_end else high_target
-    active_tol = tol
+    active_tol = _win_effective_tolerance(tol) if near_end else tol
     y_err = y_mm - active_target
     if abs(y_err) <= active_tol:
         return None
     cmd = "d" if y_err > 0.0 else "u"
+    pwm_key = "finish_mast_pwm" if near_end else "mast_pwm"
+    pulse_key = "finish_mast_pulse_ms" if near_end else "mast_pulse_ms"
     return {
         "kind": "mast",
         "cmd": cmd,
@@ -1547,6 +2144,8 @@ def _y_axis_action_plan(reading: dict, *, dist_err: float, x_err: float) -> dict
         "y_err": float(y_err),
         "y_mm": float(y_mm),
         "y_target_mm": float(active_target),
+        "pwm": int(_coerce_int(y_cfg.get(pwm_key), y_cfg.get("mast_pwm", 40), minimum=1, maximum=255)),
+        "duration_ms": int(_bounded_act_duration_ms(y_cfg.get(pulse_key, y_cfg.get("mast_pulse_ms", 220)))),
         "reason": "final_y" if near_end else "approach_high_y",
     }
 
@@ -1573,17 +2172,45 @@ def _follow_action_plan(reading: dict) -> dict:
     x_mm = float(reading["x_mm"])
     dist_err = dist_mm - TARGET_DIST_MM
     x_err = x_mm
-    x_ok = abs(x_err) <= X_TOL_MM
-    dist_ok = abs(dist_err) <= DIST_TOL_MM
+    x_ok = _win_axis_ok(x_err, X_TOL_MM)
+    dist_ok = _win_axis_ok(dist_err, DIST_TOL_MM)
+    dist_happy_tol = _win_effective_tolerance(DIST_TOL_MM)
     y_cfg = _follow_y_axis_config()
     y_plan = _y_axis_action_plan(reading, dist_err=dist_err, x_err=x_err)
     y_err = _y_err_for_reading(reading, target=float(y_cfg.get("win_target_mm", Y_TARGET_MM)))
-    y_ok = True if y_err is None or not bool(y_cfg.get("enabled")) else abs(float(y_err)) <= float(y_cfg.get("win_tol_mm", Y_TOL_MM))
+    y_ok = (
+        True
+        if y_err is None or not bool(y_cfg.get("enabled"))
+        else _win_axis_ok(float(y_err), float(y_cfg.get("win_tol_mm", Y_TOL_MM)))
+    )
 
     if x_ok and dist_ok and y_ok:
         return {"kind": "hold", "action": "HAPPY", "dist_err": dist_err, "x_err": x_err, "y_err": y_err}
-    if dist_err < -DIST_TOL_MM:
+    if _should_finish_y_before_wheels(y_plan, dist_err=dist_err, x_err=x_err):
+        return y_plan
+    if dist_err < -dist_happy_tol:
+        if _should_back_turn_for_too_close_wide_x(dist_err=dist_err, x_err=x_err):
+            escape = _too_close_escape_policy()
+            turn_cmd = _turn_cmd_to_close_x_gap(x_err) or "r"
+            policy = _follow_x_dist_curve_policy()
+            drive_mode = str(policy.get("too_close_wide_x_drive_mode", "backward"))
+            strength = str(policy.get("near_wide_x_strength", "strong"))
+            return _attach_mast_to_plan({
+                "kind": "drive_bias",
+                "cmd": "b" if drive_mode == "backward" else "f",
+                "turn_cmd": turn_cmd,
+                "drive_mode": drive_mode,
+                "strength": strength,
+                "action": f"BCK_BIAS_{turn_cmd.upper()}_{strength.upper()}" if drive_mode == "backward" else f"BIAS_{turn_cmd.upper()}_{strength.upper()}",
+                "dist_err": dist_err,
+                "x_err": x_err,
+                "x_outside_mm": float(_x_outside_gate_mm(x_err)),
+                "dist_outside_mm": float(_dist_outside_gate_mm(dist_err)),
+                "duration_ms": _too_close_escape_duration_ms(dist_err, escape),
+                "reason": "too_close_wide_x_back_turn",
+            }, y_plan)
         escape = _too_close_escape_policy()
+        duration_ms = _too_close_escape_duration_ms(dist_err, escape)
         plan = {
             "kind": "drive",
             "cmd": "b",
@@ -1591,7 +2218,7 @@ def _follow_action_plan(reading: dict) -> dict:
             "dist_err": dist_err,
             "x_err": x_err,
             "pwm": int(escape["pwm"]),
-            "duration_ms": int(escape["pulse_ms"]),
+            "duration_ms": int(duration_ms),
             "reason": "too_close_escape",
         }
         if bool(escape.get("attach_mast")):
@@ -1616,10 +2243,37 @@ def _follow_action_plan(reading: dict) -> dict:
         turn_cmd = _turn_cmd_to_close_x_gap(x_err) or "r"
         x_outside = _x_outside_gate_mm(x_err)
         dist_outside = _dist_outside_gate_mm(dist_err)
-        if dist_err > DIST_TOL_MM:
+        if _near_target_forward_veto_active(dist_err=dist_err, x_ok=x_ok, y_ok=y_ok):
+            return _attach_mast_to_plan({
+                "kind": "turn",
+                "cmd": turn_cmd,
+                "drive_mode": _x_only_turn_drive_mode_for_dist(dist_err),
+                "strength": _near_wide_x_turn_strength(abs(x_err)),
+                "action": f"TURN_{turn_cmd.upper()}",
+                "dist_err": dist_err,
+                "x_err": x_err,
+                "x_outside_mm": float(x_outside),
+                "dist_outside_mm": float(dist_outside),
+                "reason": "near_target_x_before_forward",
+            }, y_plan)
+        if _should_close_x_before_distance(abs_x_err=abs(x_err), dist_err=dist_err):
+            return _attach_mast_to_plan({
+                "kind": "turn",
+                "cmd": turn_cmd,
+                "drive_mode": _x_only_turn_drive_mode_for_dist(dist_err),
+                "strength": str(_follow_x_priority_policy().get("x_first_turn_strength", "strong")),
+                "action": f"TURN_{turn_cmd.upper()}",
+                "dist_err": dist_err,
+                "x_err": x_err,
+                "x_outside_mm": float(x_outside),
+                "dist_outside_mm": float(dist_outside),
+                "reason": "x_first_before_dist",
+            }, y_plan)
+        if dist_err > dist_happy_tol:
             policy = _follow_combined_gap_policy()
             if (
-                x_outside <= float(policy.get("straight_x_outside_max_mm", 0.0))
+                abs(float(x_err)) <= _win_effective_tolerance(X_TOL_MM)
+                and x_outside <= float(policy.get("straight_x_outside_max_mm", 0.0))
                 and dist_outside >= float(policy.get("straight_dist_outside_min_mm", 0.0))
             ):
                 return _attach_mast_to_plan({
@@ -1630,11 +2284,11 @@ def _follow_action_plan(reading: dict) -> dict:
                     "x_err": x_err,
                     "x_outside_mm": float(x_outside),
                     "dist_outside_mm": float(dist_outside),
-                    "duration_ms": PULSE_MS,
+                    "duration_ms": _distance_creep_duration_ms(dist_err),
                     "distance_creep": True,
                     "reason": "dist_dominant_tiny_x_gap",
                 }, y_plan)
-            strength = _bias_strength_for_x_outside(x_outside)
+            strength = _bias_strength_for_dist_x(dist_err=dist_err, x_err=x_err, x_outside_mm=x_outside)
             return _attach_mast_to_plan({
                 "kind": "drive_bias",
                 "cmd": "f",
@@ -1646,15 +2300,21 @@ def _follow_action_plan(reading: dict) -> dict:
                 "x_err": x_err,
                 "x_outside_mm": float(x_outside),
                 "dist_outside_mm": float(dist_outside),
+                "duration_ms": _distance_creep_duration_ms(dist_err),
+                "distance_creep": True,
+                "reason": "x_polish_while_creeping_dist",
             }, y_plan)
         return _attach_mast_to_plan({
             "kind": "turn",
             "cmd": turn_cmd,
+            "drive_mode": _x_only_turn_drive_mode_for_dist(dist_err),
+            "strength": str(_follow_x_priority_policy().get("x_first_turn_strength", "strong")),
             "action": f"TURN_{turn_cmd.upper()}",
             "dist_err": dist_err,
             "x_err": x_err,
             "x_outside_mm": float(x_outside),
             "dist_outside_mm": float(dist_outside),
+            "reason": "x_first_before_dist",
         }, y_plan)
 
     return _attach_mast_to_plan({
@@ -1663,8 +2323,9 @@ def _follow_action_plan(reading: dict) -> dict:
         "action": "FWD",
         "dist_err": dist_err,
         "x_err": x_err,
-        "duration_ms": PULSE_MS,
+        "duration_ms": _distance_creep_duration_ms(dist_err),
         "distance_creep": True,
+        "reason": "dist_only_creep",
     }, y_plan)
 
 
@@ -1685,7 +2346,7 @@ def _execute_follow_action(robot: Robot, plan: dict, reading: dict) -> None:
             turn_cmd=str(plan.get("turn_cmd") or "l"),
             drive_mode=str(plan.get("drive_mode") or "forward"),
             strength=str(plan.get("strength") or "micro"),
-            duration_ms=_bounded_act_duration_ms(PULSE_MS),
+            duration_ms=_bounded_act_duration_ms(plan.get("duration_ms", PULSE_MS)),
             reading=reading,
             context="follow_drive_bias",
             mast_cmd=plan.get("mast_cmd"),
@@ -1702,10 +2363,41 @@ def _execute_follow_action(robot: Robot, plan: dict, reading: dict) -> None:
             mast_cmd=plan.get("mast_cmd"),
         )
     elif kind == "mast":
-        return _mast(robot, str(plan.get("cmd") or "u"), reading)
+        return _mast(
+            robot,
+            str(plan.get("cmd") or "u"),
+            reading,
+            pwm=plan.get("pwm"),
+            duration_ms=plan.get("duration_ms"),
+        )
     else:
         _stop_robot(robot)
         return {"cmd_sent": "s", "pwm": 0, "power": 0.0, "duration_ms": 0}
+
+
+def _x_curve_for_plan(plan: dict, reading: dict) -> dict | None:
+    if not isinstance(plan, dict):
+        return None
+    kind = str(plan.get("kind") or "").strip().lower()
+    if kind not in {"turn", "drive_bias"}:
+        return None
+    try:
+        x_abs = abs(float((reading or {}).get("x_mm", plan.get("x_err", 0.0))))
+    except (TypeError, ValueError):
+        x_abs = 0.0
+    drive_mode = str(plan.get("drive_mode") or _x_only_turn_drive_mode()).strip().lower()
+    strength = str(plan.get("strength") or "").strip().lower()
+    if kind == "drive_bias":
+        return (
+            _adaptive_turn_bias_curve_for_drive_mode(drive_mode, x_abs)
+            if strength == "adaptive"
+            else _turn_bias_curve_for_drive_mode(drive_mode, strength)
+        )
+    return (
+        _adaptive_turn_curve_for_drive_mode(drive_mode, x_abs)
+        if strength == "adaptive"
+        else _turn_curve_for_drive_mode(drive_mode, strength)
+    )
 
 
 def _post_action_wait_s(plan: dict, send_result) -> float:
@@ -1791,12 +2483,15 @@ def _reverse_turn_until_x_offset(
         target_abs_x = (float(x_min) + float(x_max)) / 2.0
     dist_target = float(reset_cfg.get("dist_target_mm", RESET_DIST_TARGET_MM))
     dist_tol = float(reset_cfg.get("dist_tol_mm", RESET_DIST_TOL_MM))
+    y_target = float(reset_cfg.get("y_target_mm", RESET_Y_TARGET_MM))
+    y_tol = float(reset_cfg.get("y_tol_mm", Y_TOL_MM))
     settle_s = float(reset_cfg.get("settle_s", RESET_REVERSE_TURN_SETTLE_S))
 
     print(
         f"[RESET] One-act reset: BACK_TURN_{turn_cmd.upper()} "
         f"target dist={dist_target:.0f}±{dist_tol:.0f}mm, "
-        f"|x|~{target_abs_x:.0f}mm ({x_min:.0f}-{x_max:.0f}mm)",
+        f"|x|~{target_abs_x:.0f}mm ({x_min:.0f}-{x_max:.0f}mm), "
+        f"y={y_target:+.0f}±{y_tol:.0f}mm",
         flush=True,
     )
 
@@ -1822,16 +2517,23 @@ def _reverse_turn_until_x_offset(
         _stop_robot(robot)
         return False, "reverse_turn_unavailable", before_reading
     pulse_ms = int(reset_motion.get("wheel_ms", reset_motion.get("duration_ms", 0)) or 0)
+    gentle_ms = int(reset_motion.get("gentle_ms", 0) or 0)
+    sharp_finish_ms = int(reset_motion.get("sharp_finish_ms", 0) or 0)
     mast_up_ms = int(reset_motion.get("mast_up_ms", 0) or 0)
     mast_settle_s = float(reset_motion.get("mast_settle_s", 0.0) or 0.0)
     mast_text = f" mast_up={mast_up_ms}ms" if mast_up_ms > 0 else " mast_up=off"
+    finish_text = (
+        f" gentle={gentle_ms}ms sharp_finish={sharp_finish_ms}ms"
+        if sharp_finish_ms > 0
+        else ""
+    )
 
     print(
         f"[RESET] BACK_TURN_{turn_cmd.upper()} sent: "
         f"need_x_gap={reset_curve['x_gap_mm']:.1f}mm "
         f"faster_pwm={int(reset_curve['faster_pwm'])} slower_pwm={int(reset_curve['slower_pwm'])} "
         f"before dist={before_dist:.1f}mm x={before_x:+.1f}mm y={before_y_text} "
-        f"wheel_pulse={int(pulse_ms)}ms{mast_text}",
+        f"wheel_pulse={int(pulse_ms)}ms{finish_text}{mast_text}",
         flush=True,
     )
     wheel_wait_s = (float(pulse_ms) / 1000.0) + float(settle_s)
@@ -1928,6 +2630,7 @@ def _new_game_stats() -> dict:
         "blocked_act_counts": {},
         "observed_after_act_counts": {},
         "no_observed_after_act_counts": {},
+        "x_curve_samples": [],
         "miss_reasons": {},
         "non_win_dist_target_closeness_pct": [],
         "non_win_x_target_closeness_pct": [],
@@ -2141,6 +2844,25 @@ def _record_observed_after_pending_act(stats: dict, reading: dict) -> None:
     else:
         _bump_stat_count(stats, "no_observed_after_act_counts", action)
         _bump_stat_count(stats, "miss_reasons", "no_observed_change_after_act")
+    x_curve = pending.get("x_curve")
+    if isinstance(x_curve, dict):
+        before_abs = abs(float(prev_x))
+        after_abs = abs(float(x_mm))
+        sample = {
+            "action": action,
+            "x_before_mm": float(prev_x),
+            "x_after_mm": float(x_mm),
+            "abs_x_before_mm": float(before_abs),
+            "abs_x_after_mm": float(after_abs),
+            "x_reduction_mm": float(before_abs - after_abs),
+            "x_overshot": bool(prev_x and x_mm and (prev_x > 0.0) != (x_mm > 0.0)),
+            "drive_mode": str(x_curve.get("drive_mode") or ""),
+            "strength": str(x_curve.get("strength") or ""),
+            "inner_pwm": int(x_curve.get("inner_pwm", 0) or 0),
+            "outer_pwm": int(x_curve.get("outer_pwm", 0) or 0),
+            "duration_ms": int(pending.get("duration_ms", 0) or 0),
+        }
+        stats.setdefault("x_curve_samples", []).append(sample)
 
 
 def _reset_closeness_from_reading(reading: dict, reset_cfg: dict | None = None) -> tuple[float, float, float | None, float] | None:
@@ -2294,6 +3016,41 @@ def _format_snapshot(snapshot: dict | None) -> str:
     )
 
 
+def _format_x_curve_learning(samples: list | None) -> list[str]:
+    rows = [
+        "",
+        "| X Curve Learning | Value |",
+        "|---|---:|",
+    ]
+    if not isinstance(samples, list) or not samples:
+        rows.append("| Samples | 0 |")
+        return rows
+    reductions = [float(s.get("x_reduction_mm", 0.0)) for s in samples if isinstance(s, dict)]
+    before_vals = [float(s.get("abs_x_before_mm", 0.0)) for s in samples if isinstance(s, dict)]
+    after_vals = [float(s.get("abs_x_after_mm", 0.0)) for s in samples if isinstance(s, dict)]
+    overshoots = sum(1 for s in samples if isinstance(s, dict) and bool(s.get("x_overshot")))
+    improved = sum(1 for value in reductions if value > 0.0)
+    rows.extend(
+        [
+            f"| Samples | {len(reductions)} |",
+            f"| Improved x | {improved}/{len(reductions)} |",
+            f"| Overshot x sign | {overshoots}/{len(reductions)} |",
+            f"| Avg |x| before | {_fmt_mm(_avg(before_vals))} |",
+            f"| Avg |x| after | {_fmt_mm(_avg(after_vals))} |",
+            f"| Avg x reduction | {_fmt_mm(_avg(reductions))} |",
+        ]
+    )
+    latest = next((s for s in reversed(samples) if isinstance(s, dict)), None)
+    if latest:
+        rows.append(
+            "| Last curve | "
+            f"{latest.get('action')} {latest.get('drive_mode')} {latest.get('strength')} "
+            f"{latest.get('inner_pwm')}/{latest.get('outer_pwm')} pwm, "
+            f"x {float(latest.get('x_before_mm', 0.0)):+.1f}->{float(latest.get('x_after_mm', 0.0)):+.1f}mm |"
+        )
+    return rows
+
+
 def _format_game_results_table(stats: dict) -> str:
     avg_x = _avg_reset_abs_x_after_mm(stats)
     avg_dist = _avg_reset_dist_after_mm(stats)
@@ -2331,8 +3088,7 @@ def _format_game_results_table(stats: dict) -> str:
     miss_reasons = _format_count_items(stats.get("miss_reasons"))
     closest_non_win = _format_snapshot(stats.get("closest_non_win"))
     last_non_win = _format_snapshot(stats.get("last_non_win"))
-    return "\n".join(
-        [
+    rows = [
             "| Target | Samples | Hits | Close avg±sd | Dist avg±sd | X avg±sd | Y avg±sd | Avg after |",
             "|---|---:|---:|---:|---:|---:|---:|---|",
             f"| Win | {int(stats.get('win_count', 0))} | {int(stats.get('win_count', 0))} | "
@@ -2368,7 +3124,8 @@ def _format_game_results_table(stats: dict) -> str:
             f"| Closest non-win | {closest_non_win} |",
             f"| Last non-win | {last_non_win} |",
         ]
-    )
+    rows.extend(_format_x_curve_learning(stats.get("x_curve_samples")))
+    return "\n".join(rows)
 
 
 INVISIBLE_STOP_FRAMES = 1   # stop motors on the first not-visible frame
@@ -2585,12 +3342,25 @@ def _follow_loop(
             if not (isinstance(send_result, dict) and bool(send_result.get("blocked"))):
                 loop_wait_s = _post_action_wait_s(plan, send_result)
             if not (isinstance(send_result, dict) and bool(send_result.get("blocked"))):
-                stats["pending_observation"] = {
+                pending = {
                     "action": action,
                     "dist_mm": dist_mm,
                     "x_mm": x_mm,
                     "y_mm": y_mm,
                 }
+                if isinstance(send_result, dict) and isinstance(send_result.get("x_curve"), dict):
+                    pending["x_curve"] = dict(send_result["x_curve"])
+                    pending["duration_ms"] = int(send_result.get("duration_ms", plan.get("duration_ms", PULSE_MS)) or 0)
+                else:
+                    plan_curve = _x_curve_for_plan(plan, reading)
+                    if isinstance(plan_curve, dict):
+                        pending["x_curve"] = dict(plan_curve)
+                        try:
+                            duration_val = (send_result or {}).get("duration_ms") if isinstance(send_result, dict) else None
+                            pending["duration_ms"] = int(duration_val if duration_val is not None else plan.get("duration_ms", PULSE_MS))
+                        except (TypeError, ValueError):
+                            pending["duration_ms"] = int(PULSE_MS)
+                stats["pending_observation"] = pending
 
         # Print on state change or every 20 ticks (~1 s) to avoid flooding
         print_ticker += 1
@@ -2629,7 +3399,7 @@ def _parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument(
         "--duration-s",
         type=float,
-        default=40.0,
+        default=30.0,
         help="Follow-loop duration when not using --reset-only.",
     )
     parser.add_argument(
