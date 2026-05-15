@@ -37,9 +37,10 @@ import telemetry_robot as _telemetry_robot
 # Success-gate values from world_model_process.json → steps → ALIGN_BRICK → success_gates
 TARGET_DIST_MM = 63.882  # dist.target
 DIST_TOL_MM    = 20.0    # dist.tol
-X_TOL_MM       = 9.0     # xAxis_offset_abs.tol  (centred at x=0)
+X_TARGET_MM    = -0.9425903280420904 # signed x target from confident brick reading
+X_TOL_MM       = 8.0     # xAxis_offset_abs.tol
 Y_TARGET_MM    = -4.25129472 # signed y target from confident brick reading
-Y_TOL_MM       = 9.0     # yAxis_offset_abs.tol from ALIGN_BRICK
+Y_TOL_MM       = 1.0     # yAxis_offset_abs.tol from ALIGN_BRICK
 
 SPEED_SCORE        = 1    # slowest motor speed score
 PULSE_MS       = 200     # motor pulse duration — long enough for slow motor to engage
@@ -59,9 +60,9 @@ RESET_X_OFFSET_CONFIRM_FRAMES = 2
 RESET_DIST_TARGET_MM = TARGET_DIST_MM * 1.75
 RESET_DIST_TOL_MM = 9.0
 RESET_Y_TARGET_MM = -5.0
-RESET_SHARP_FINISH_MS = 300
-RESET_MAST_UP_MIN_MS = 400
-RESET_MAST_UP_MAX_MS = 700
+RESET_SHARP_FINISH_MS = 325
+RESET_MAST_UP_MIN_MS = 2500
+RESET_MAST_UP_MAX_MS = 3000
 RESET_MAST_UP_PWM = 255
 RESET_MAST_UP_SETTLE_S = 0.1
 DEFAULT_RESET_ARC_ALGORITHM_POINTS = (
@@ -118,6 +119,39 @@ DEFAULT_X_ONLY_TURN_POLICY = {
     "far_drive_mode": "forward",
     "forward_min_dist_err_mm": 60.0,
 }
+DEFAULT_FOLLOW_X_AXIS_CONFIG = {
+    "win_target_mm": X_TARGET_MM,
+    "win_tol_mm": X_TOL_MM,
+}
+DEFAULT_STEP2_CONFIG = {
+    "seat_mast_cmd": "d",
+    "seat_mast_pwm": 255,
+    "seat_mast_duration_ms": 1700,
+    "seat_drive_cmd": "f",
+    "seat_drive_pwm": 103,
+    "seat_drive_duration_ms": 2000,
+    "post_seat_pause_s": 0.25,
+    "recovery_creep_enabled": True,
+    "recovery_creep_pulse_ms": 200,
+    "recovery_creep_max_attempts": 6,
+    "recovery_creep_settle_s": 0.15,
+    "semi_happy_targets": {
+        "dist_mm": 81.0,
+        "dist_tol_mm": 5.0,
+        "x_mm": 0.3,
+        "x_tol_mm": 9.0,
+        "y_mm": -5.3,
+        "y_tol_mm": 1.0,
+    },
+    "targets": {
+        "dist_mm": None,
+        "dist_tol_mm": None,
+        "x_mm": 0.0,
+        "x_tol_mm": X_TOL_MM,
+        "y_mm": None,
+        "y_tol_mm": None,
+    },
+}
 DEFAULT_TOO_CLOSE_ESCAPE_POLICY = {
     "pwm": 104,
     "pulse_ms": 400,
@@ -150,9 +184,9 @@ DEFAULT_FOLLOW_Y_AXIS_CONFIG = {
     "lock_on_dist_window_mm": 10.0,
     "lock_on_mast_pwm": 255,
     "lock_on_pulse_ms": 400,
-    "mast_pwm": 40,
+    "mast_pwm": 255,
     "mast_pulse_ms": 220,
-    "finish_mast_pwm": 120,
+    "finish_mast_pwm": 255,
     "finish_mast_pulse_ms": 300,
 }
 DEFAULT_TURN_BIAS_CURVES = {
@@ -288,6 +322,18 @@ def _coerce_float(
     return float(coerced)
 
 
+def _coerce_optional_float(
+    value,
+    fallback: float | None = None,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float | None:
+    if value is None:
+        return None if fallback is None else _coerce_float(fallback, fallback, minimum=minimum, maximum=maximum)
+    return _coerce_float(value, fallback if fallback is not None else 0.0, minimum=minimum, maximum=maximum)
+
+
 def _coerce_curve_strength(value, fallback: str = "gentle") -> str:
     strength = str(value or "").strip().lower()
     if strength == "adaptive":
@@ -340,7 +386,12 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         "x_only_turn": dict(DEFAULT_X_ONLY_TURN_POLICY),
         "too_close_escape": dict(DEFAULT_TOO_CLOSE_ESCAPE_POLICY),
         "win_confirmation": dict(DEFAULT_WIN_CONFIRMATION_CONFIG),
+        "x_axis": dict(DEFAULT_FOLLOW_X_AXIS_CONFIG),
         "y_axis": dict(DEFAULT_FOLLOW_Y_AXIS_CONFIG),
+        "step2": {
+            **{key: value for key, value in DEFAULT_STEP2_CONFIG.items() if key != "targets"},
+            "targets": dict(DEFAULT_STEP2_CONFIG["targets"]),
+        },
         "turn_bias_curves": {
             drive_mode: {
                 name: dict(curve)
@@ -554,6 +605,16 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         minimum=0.0,
         maximum=100.0,
     )
+    raw_x_axis = raw.get("x_axis") if isinstance(raw.get("x_axis"), dict) else {}
+    cfg["x_axis"]["win_target_mm"] = _coerce_float(
+        raw_x_axis.get("win_target_mm"),
+        DEFAULT_FOLLOW_X_AXIS_CONFIG["win_target_mm"],
+    )
+    cfg["x_axis"]["win_tol_mm"] = _coerce_float(
+        raw_x_axis.get("win_tol_mm"),
+        DEFAULT_FOLLOW_X_AXIS_CONFIG["win_tol_mm"],
+        minimum=0.0,
+    )
     raw_y_axis = raw.get("y_axis") if isinstance(raw.get("y_axis"), dict) else {}
     cfg["y_axis"]["enabled"] = bool(raw_y_axis.get("enabled", DEFAULT_FOLLOW_Y_AXIS_CONFIG["enabled"]))
     for key, fallback in DEFAULT_FOLLOW_Y_AXIS_CONFIG.items():
@@ -579,6 +640,84 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
                 minimum=1,
                 maximum=255,
             )
+    raw_step2 = raw.get("step2") if isinstance(raw.get("step2"), dict) else {}
+    step2 = cfg["step2"]
+    mast_cmd = str(raw_step2.get("seat_mast_cmd", DEFAULT_STEP2_CONFIG["seat_mast_cmd"])).strip().lower()
+    drive_cmd = str(raw_step2.get("seat_drive_cmd", DEFAULT_STEP2_CONFIG["seat_drive_cmd"])).strip().lower()
+    step2["seat_mast_cmd"] = mast_cmd if mast_cmd in {"u", "d"} else DEFAULT_STEP2_CONFIG["seat_mast_cmd"]
+    step2["seat_drive_cmd"] = drive_cmd if drive_cmd in {"f", "b"} else DEFAULT_STEP2_CONFIG["seat_drive_cmd"]
+    step2["seat_mast_pwm"] = _coerce_int(
+        raw_step2.get("seat_mast_pwm"),
+        DEFAULT_STEP2_CONFIG["seat_mast_pwm"],
+        minimum=1,
+        maximum=255,
+    )
+    step2["seat_drive_pwm"] = _coerce_int(
+        raw_step2.get("seat_drive_pwm"),
+        DEFAULT_STEP2_CONFIG["seat_drive_pwm"],
+        minimum=1,
+        maximum=255,
+    )
+    step2["seat_mast_duration_ms"] = _coerce_int(
+        raw_step2.get("seat_mast_duration_ms"),
+        DEFAULT_STEP2_CONFIG["seat_mast_duration_ms"],
+        minimum=1,
+        maximum=5000,
+    )
+    step2["seat_drive_duration_ms"] = _coerce_int(
+        raw_step2.get("seat_drive_duration_ms"),
+        DEFAULT_STEP2_CONFIG["seat_drive_duration_ms"],
+        minimum=1,
+        maximum=5000,
+    )
+    step2["post_seat_pause_s"] = _coerce_float(
+        raw_step2.get("post_seat_pause_s"),
+        DEFAULT_STEP2_CONFIG["post_seat_pause_s"],
+        minimum=0.0,
+        maximum=3.0,
+    )
+    step2["recovery_creep_enabled"] = bool(
+        raw_step2.get("recovery_creep_enabled", DEFAULT_STEP2_CONFIG["recovery_creep_enabled"])
+    )
+    step2["recovery_creep_pulse_ms"] = _coerce_int(
+        raw_step2.get("recovery_creep_pulse_ms"),
+        DEFAULT_STEP2_CONFIG["recovery_creep_pulse_ms"],
+        minimum=1,
+        maximum=400,
+    )
+    step2["recovery_creep_max_attempts"] = _coerce_int(
+        raw_step2.get("recovery_creep_max_attempts"),
+        DEFAULT_STEP2_CONFIG["recovery_creep_max_attempts"],
+        minimum=0,
+        maximum=20,
+    )
+    step2["recovery_creep_settle_s"] = _coerce_float(
+        raw_step2.get("recovery_creep_settle_s"),
+        DEFAULT_STEP2_CONFIG["recovery_creep_settle_s"],
+        minimum=0.0,
+        maximum=2.0,
+    )
+    raw_targets = raw_step2.get("targets") if isinstance(raw_step2.get("targets"), dict) else {}
+    target_cfg = step2["targets"]
+    for key in ("dist_mm", "x_mm", "y_mm"):
+        target_cfg[key] = _coerce_optional_float(raw_targets.get(key), DEFAULT_STEP2_CONFIG["targets"][key])
+    for key in ("dist_tol_mm", "x_tol_mm", "y_tol_mm"):
+        target_cfg[key] = _coerce_optional_float(
+            raw_targets.get(key),
+            DEFAULT_STEP2_CONFIG["targets"][key],
+            minimum=0.0,
+        )
+    raw_semi = raw_step2.get("semi_happy_targets") if isinstance(raw_step2.get("semi_happy_targets"), dict) else {}
+    semi_cfg = dict(DEFAULT_STEP2_CONFIG["semi_happy_targets"])
+    for key in ("dist_mm", "x_mm", "y_mm"):
+        semi_cfg[key] = _coerce_optional_float(raw_semi.get(key), DEFAULT_STEP2_CONFIG["semi_happy_targets"][key])
+    for key in ("dist_tol_mm", "x_tol_mm", "y_tol_mm"):
+        semi_cfg[key] = _coerce_optional_float(
+            raw_semi.get(key),
+            DEFAULT_STEP2_CONFIG["semi_happy_targets"][key],
+            minimum=0.0,
+        )
+    step2["semi_happy_targets"] = semi_cfg
     return cfg
 
 
@@ -957,7 +1096,7 @@ def _curve_strength_for_reading(reading: dict | None) -> str:
     This keeps the robot more stable during distance corrections.
     """
     try:
-        x_err = abs(float((reading or {}).get("x_mm", 0.0)))
+        x_err = abs(_x_err_for_reading(reading) or 0.0)
     except (TypeError, ValueError):
         x_err = 0.0
 
@@ -1413,6 +1552,239 @@ def _drive(
     )
 
 
+def _follow_step2_config() -> dict:
+    cfg = _follow_motion_config()
+    step2 = cfg.get("step2") if isinstance(cfg.get("step2"), dict) else {}
+    return step2 if isinstance(step2, dict) else {}
+
+
+def _configured_step2_targets(step2_cfg: dict | None = None) -> dict:
+    cfg = step2_cfg if isinstance(step2_cfg, dict) else _follow_step2_config()
+    targets = cfg.get("targets") if isinstance(cfg.get("targets"), dict) else {}
+    return targets if isinstance(targets, dict) else {}
+
+
+def _step2_missing_target_keys(step2_cfg: dict | None = None) -> list[str]:
+    targets = _configured_step2_targets(step2_cfg)
+    missing = []
+    for key in ("dist_mm", "dist_tol_mm", "x_mm", "x_tol_mm", "y_mm", "y_tol_mm"):
+        if targets.get(key) is None:
+            missing.append(key)
+    return missing
+
+
+def _step2_target_closeness_from_reading(reading: dict, step2_cfg: dict | None = None) -> dict | None:
+    if not isinstance(reading, dict):
+        return None
+    targets = _configured_step2_targets(step2_cfg)
+    axis_specs = (
+        ("dist", "dist_mm", "dist_tol_mm"),
+        ("x", "x_mm", "x_tol_mm"),
+        ("y", "y_mm", "y_tol_mm"),
+    )
+    closeness = {}
+    values = []
+    for label, value_key, tol_key in axis_specs:
+        target = targets.get(value_key)
+        tol = targets.get(tol_key)
+        if target is None or tol is None:
+            closeness[f"{label}_target_closeness_pct"] = None
+            continue
+        try:
+            value = float(reading.get(value_key))
+        except (TypeError, ValueError):
+            return None
+        close = _target_closeness_pct(value - float(target), float(tol))
+        closeness[f"{label}_target_closeness_pct"] = float(close)
+        values.append(float(close))
+    closeness["target_closeness_pct"] = None if not values else float(sum(values) / float(len(values)))
+    return closeness
+
+
+def _step2_targets_ready(reading: dict, step2_cfg: dict | None = None) -> tuple[bool, str, dict | None]:
+    missing = _step2_missing_target_keys(step2_cfg)
+    if missing:
+        return False, "step2_targets_pending:" + ",".join(missing), None
+    closeness = _step2_target_closeness_from_reading(reading, step2_cfg)
+    if not isinstance(closeness, dict):
+        return False, "invalid_step2_reading", None
+    targets = _configured_step2_targets(step2_cfg)
+    try:
+        dist_ok = abs(float((reading or {}).get("dist_mm")) - float(targets.get("dist_mm"))) <= float(targets.get("dist_tol_mm"))
+        x_ok = abs(float((reading or {}).get("x_mm")) - float(targets.get("x_mm"))) <= float(targets.get("x_tol_mm"))
+        y_ok = abs(float((reading or {}).get("y_mm")) - float(targets.get("y_mm"))) <= float(targets.get("y_tol_mm"))
+    except (TypeError, ValueError):
+        return False, "invalid_step2_reading", closeness
+    return bool(dist_ok and x_ok and y_ok), "step2_targets_scored", closeness
+
+
+def _step2_should_creep_forward(reading: dict, step2_cfg: dict | None = None) -> bool:
+    if not isinstance(reading, dict) or not bool(reading.get("confident")):
+        return False
+    targets = _configured_step2_targets(step2_cfg)
+    try:
+        dist_mm = float(reading.get("dist_mm"))
+        dist_target = float(targets.get("dist_mm"))
+        dist_tol = float(targets.get("dist_tol_mm"))
+    except (TypeError, ValueError):
+        return False
+    return float(dist_mm) > float(dist_target) + float(dist_tol)
+
+
+def _step2_creep_forward_if_short(vision: BrickDetector, robot: Robot, reading: dict, step2_cfg: dict) -> tuple[dict, int]:
+    current = reading if isinstance(reading, dict) else {}
+    if not bool(step2_cfg.get("recovery_creep_enabled", True)):
+        return current, 0
+    drive_cmd = str(step2_cfg.get("seat_drive_cmd") or DEFAULT_STEP2_CONFIG["seat_drive_cmd"]).strip().lower()
+    if drive_cmd != "f":
+        return current, 0
+    drive_pwm = _clamp_to_approved_straight_drive_pwm(
+        "f",
+        step2_cfg.get("seat_drive_pwm", DEFAULT_STEP2_CONFIG["seat_drive_pwm"]),
+    )
+    pulse_ms = _coerce_int(
+        step2_cfg.get("recovery_creep_pulse_ms"),
+        DEFAULT_STEP2_CONFIG["recovery_creep_pulse_ms"],
+        minimum=1,
+        maximum=400,
+    )
+    max_attempts = _coerce_int(
+        step2_cfg.get("recovery_creep_max_attempts"),
+        DEFAULT_STEP2_CONFIG["recovery_creep_max_attempts"],
+        minimum=0,
+        maximum=20,
+    )
+    settle_s = _coerce_float(
+        step2_cfg.get("recovery_creep_settle_s"),
+        DEFAULT_STEP2_CONFIG["recovery_creep_settle_s"],
+        minimum=0.0,
+        maximum=2.0,
+    )
+    attempts = 0
+    while attempts < int(max_attempts) and _step2_should_creep_forward(current, step2_cfg):
+        send_result = guarded_send_command_pwm(
+            robot,
+            "f",
+            drive_pwm,
+            duration_ms=pulse_ms,
+            reading=current,
+            context="follow_step2_recovery_creep_forward",
+        )
+        if isinstance(send_result, dict) and bool(send_result.get("blocked")):
+            break
+        attempts += 1
+        time.sleep((float(pulse_ms) / 1000.0) + float(settle_s))
+        _stop_robot(robot)
+        current = _read_brick_measurement(vision)
+    return current, int(attempts)
+
+
+def _run_step2_seat_sequence(
+    vision: BrickDetector,
+    robot: Robot,
+    *,
+    probe_before_forward: bool = False,
+) -> dict:
+    step2 = _follow_step2_config()
+    before = _read_brick_measurement(vision)
+    if not bool(before.get("confident")):
+        return {
+            "success": False,
+            "target_met": False,
+            "reason": "brick_not_confident_before_step2",
+            "before": before,
+            "reading": before,
+        }
+    drive_cmd = str(step2.get("seat_drive_cmd") or DEFAULT_STEP2_CONFIG["seat_drive_cmd"]).strip().lower()
+    mast_cmd = str(step2.get("seat_mast_cmd") or DEFAULT_STEP2_CONFIG["seat_mast_cmd"]).strip().lower()
+    drive_pwm = _clamp_to_approved_straight_drive_pwm(
+        drive_cmd,
+        step2.get("seat_drive_pwm", DEFAULT_STEP2_CONFIG["seat_drive_pwm"]),
+    )
+    drive_duration_ms = _coerce_int(
+        step2.get("seat_drive_duration_ms"),
+        DEFAULT_STEP2_CONFIG["seat_drive_duration_ms"],
+        minimum=1,
+        maximum=5000,
+    )
+    mast_duration_ms = _coerce_int(
+        step2.get("seat_mast_duration_ms"),
+        DEFAULT_STEP2_CONFIG["seat_mast_duration_ms"],
+        minimum=1,
+        maximum=5000,
+    )
+    mast_pwm = _scaled_pwm_for_cmd(mast_cmd, step2.get("seat_mast_pwm"))
+    mast_result = guarded_send_command_pwm(
+        robot,
+        mast_cmd,
+        mast_pwm,
+        duration_ms=mast_duration_ms,
+        reading=before,
+        context="follow_step2_seat_mast",
+    )
+    if isinstance(mast_result, dict) and bool(mast_result.get("blocked")):
+        return {
+            "success": False,
+            "target_met": False,
+            "reason": f"step2_mast_blocked:{mast_result.get('reason')}",
+            "send_result": mast_result,
+            "before": before,
+            "reading": before,
+            "duration_ms": int(mast_duration_ms),
+        }
+    time.sleep(float(mast_duration_ms) / 1000.0)
+    _stop_robot(robot)
+    after_mast = _read_brick_measurement(vision)
+    if bool(probe_before_forward):
+        return {
+            "success": True,
+            "target_met": False,
+            "reason": "step2_probe_before_forward",
+            "mast_result": mast_result,
+            "before": before,
+            "after_mast": after_mast,
+            "reading": after_mast,
+            "duration_ms": int(mast_duration_ms),
+            "mast_duration_ms": int(mast_duration_ms),
+            "drive_duration_ms": 0,
+            "creep_attempts": 0,
+            "closeness": _step2_target_closeness_from_reading(after_mast, step2) if bool(after_mast.get("confident")) else None,
+            "probe": True,
+        }
+    drive_guard_reading = after_mast if bool(after_mast.get("confident")) else before
+    drive_result = guarded_send_command_pwm(
+        robot,
+        drive_cmd,
+        drive_pwm,
+        duration_ms=drive_duration_ms,
+        reading=drive_guard_reading,
+        context="follow_step2_seat_drive_blind_after_start",
+    )
+    time.sleep(float(drive_duration_ms) / 1000.0 + float(step2.get("post_seat_pause_s", 0.0)))
+    _stop_robot(robot)
+    after = _read_brick_measurement(vision)
+    after, creep_attempts = _step2_creep_forward_if_short(vision, robot, after, step2)
+    if bool(after.get("confident")):
+        target_met, target_reason, closeness = _step2_targets_ready(after, step2)
+    else:
+        target_met, target_reason, closeness = False, "step2_unconfirmed_no_final_visibility", None
+    return {
+        "success": not (isinstance(drive_result, dict) and bool(drive_result.get("blocked"))),
+        "target_met": bool(target_met),
+        "reason": target_reason,
+        "send_result": drive_result,
+        "mast_result": mast_result,
+        "before": before,
+        "after_mast": after_mast,
+        "reading": after,
+        "duration_ms": int(mast_duration_ms) + int(drive_duration_ms),
+        "mast_duration_ms": int(mast_duration_ms),
+        "drive_duration_ms": int(drive_duration_ms),
+        "creep_attempts": int(creep_attempts),
+        "closeness": closeness,
+    }
+
+
 def _mast(
     robot: Robot,
     direction: str,
@@ -1855,8 +2227,34 @@ def _follow_y_axis_config() -> dict:
     return out
 
 
+def _follow_x_axis_config() -> dict:
+    cfg = _follow_motion_config()
+    raw = cfg.get("x_axis") if isinstance(cfg.get("x_axis"), dict) else {}
+    out = dict(DEFAULT_FOLLOW_X_AXIS_CONFIG)
+    out["win_target_mm"] = _coerce_float(raw.get("win_target_mm"), out["win_target_mm"])
+    out["win_tol_mm"] = _coerce_float(raw.get("win_tol_mm"), out["win_tol_mm"], minimum=0.0)
+    return out
+
+
+def _x_target_mm() -> float:
+    return float(_follow_x_axis_config().get("win_target_mm", X_TARGET_MM))
+
+
+def _x_tol_mm() -> float:
+    return float(_follow_x_axis_config().get("win_tol_mm", X_TOL_MM))
+
+
+def _x_err_for_reading(reading: dict | None, *, target: float | None = None) -> float | None:
+    try:
+        x_mm = float((reading or {}).get("x_mm"))
+    except (TypeError, ValueError):
+        return None
+    target_val = float(_x_target_mm() if target is None else target)
+    return float(x_mm - target_val)
+
+
 def _x_outside_gate_mm(x_err: float) -> float:
-    return max(0.0, abs(float(x_err)) - float(X_TOL_MM))
+    return max(0.0, abs(float(x_err)) - float(_x_tol_mm()))
 
 
 def _dist_outside_gate_mm(dist_err: float) -> float:
@@ -2090,7 +2488,7 @@ def _should_finish_y_before_wheels(y_plan: dict | None, *, dist_err: float, x_er
     y_cfg = _follow_y_axis_config()
     x_deadband = _coerce_float(
         y_cfg.get("finish_y_only_x_deadband_mm"),
-        X_TOL_MM,
+        _x_tol_mm(),
         minimum=0.0,
     )
     return _finish_y_dist_ok(dist_err, y_cfg) and abs(float(x_err)) <= float(x_deadband)
@@ -2110,10 +2508,10 @@ def _y_axis_action_plan(reading: dict, *, dist_err: float, x_err: float) -> dict
     protect_below = float(y_cfg.get("protect_below_y_mm", max(high_target + tol, target + (3.0 * tol))))
     near_end = (
         abs(float(dist_err)) <= float(y_cfg.get("endgame_dist_tol_mm", DIST_TOL_MM))
-        and abs(float(x_err)) <= float(y_cfg.get("endgame_x_tol_mm", X_TOL_MM))
+        and abs(float(x_err)) <= float(y_cfg.get("endgame_x_tol_mm", _x_tol_mm()))
     ) or (
         _finish_y_dist_ok(dist_err, y_cfg)
-        and abs(float(x_err)) <= float(y_cfg.get("finish_y_only_x_deadband_mm", X_TOL_MM))
+        and abs(float(x_err)) <= float(y_cfg.get("finish_y_only_x_deadband_mm", _x_tol_mm()))
     )
     if bool((reading or {}).get("brick_below")) or y_mm > protect_below:
         return {
@@ -2171,8 +2569,8 @@ def _follow_action_plan(reading: dict) -> dict:
     dist_mm = float(reading["dist_mm"])
     x_mm = float(reading["x_mm"])
     dist_err = dist_mm - TARGET_DIST_MM
-    x_err = x_mm
-    x_ok = _win_axis_ok(x_err, X_TOL_MM)
+    x_err = float(x_mm - _x_target_mm())
+    x_ok = _win_axis_ok(x_err, _x_tol_mm())
     dist_ok = _win_axis_ok(dist_err, DIST_TOL_MM)
     dist_happy_tol = _win_effective_tolerance(DIST_TOL_MM)
     y_cfg = _follow_y_axis_config()
@@ -2272,7 +2670,7 @@ def _follow_action_plan(reading: dict) -> dict:
         if dist_err > dist_happy_tol:
             policy = _follow_combined_gap_policy()
             if (
-                abs(float(x_err)) <= _win_effective_tolerance(X_TOL_MM)
+                abs(float(x_err)) <= _win_effective_tolerance(_x_tol_mm())
                 and x_outside <= float(policy.get("straight_x_outside_max_mm", 0.0))
                 and dist_outside >= float(policy.get("straight_dist_outside_min_mm", 0.0))
             ):
@@ -2655,6 +3053,20 @@ def _new_game_stats() -> dict:
         "reset_y_target_closeness_pct": [],
         "reset_target_closeness_pct": [],
         "last_reset_reason": None,
+        "step2_attempt_count": 0,
+        "step2_count": 0,
+        "step2_target_met_count": 0,
+        "step2_confirmed_win_count": 0,
+        "step2_unconfirmed_win_count": 0,
+        "step2_creep_attempt_count": 0,
+        "step2_dist_after_mm": [],
+        "step2_x_after_mm": [],
+        "step2_y_after_mm": [],
+        "step2_dist_target_closeness_pct": [],
+        "step2_x_target_closeness_pct": [],
+        "step2_y_target_closeness_pct": [],
+        "step2_target_closeness_pct": [],
+        "last_step2_reason": None,
         "y_lock_on_armed": True,
     }
 
@@ -2707,11 +3119,11 @@ def _record_win_stats(stats: dict, reading: dict, plan: dict) -> None:
     except (TypeError, ValueError):
         try:
             dist_err = float((reading or {}).get("dist_mm")) - float(TARGET_DIST_MM)
-            x_err = float((reading or {}).get("x_mm"))
+            x_err = float((reading or {}).get("x_mm")) - float(_x_target_mm())
         except (TypeError, ValueError):
             return
     dist_closeness = _target_closeness_pct(dist_err, DIST_TOL_MM)
-    x_closeness = _target_closeness_pct(x_err, X_TOL_MM)
+    x_closeness = _target_closeness_pct(x_err, _x_tol_mm())
     y_cfg = _follow_y_axis_config()
     y_closeness = None
     y_err = _y_err_for_reading(reading, target=float(y_cfg.get("win_target_mm", Y_TARGET_MM)))
@@ -2733,7 +3145,7 @@ def _miss_reason_for_plan(plan: dict) -> str:
     except (TypeError, ValueError):
         return "invalid_reading"
     dist_outside = abs(dist_err) > float(DIST_TOL_MM)
-    x_outside = abs(x_err) > float(X_TOL_MM)
+    x_outside = abs(x_err) > float(_x_tol_mm())
     if dist_outside and x_outside:
         return "dist_and_x_outside"
     if x_outside:
@@ -2763,7 +3175,7 @@ def _record_non_win_stats(
     except (TypeError, ValueError):
         return
     dist_closeness = _target_closeness_pct(dist_err, DIST_TOL_MM)
-    x_closeness = _target_closeness_pct(x_err, X_TOL_MM)
+    x_closeness = _target_closeness_pct(x_err, _x_tol_mm())
     combined_closeness = float((dist_closeness + x_closeness) / 2.0)
     stats.setdefault("non_win_dist_target_closeness_pct", []).append(float(dist_closeness))
     stats.setdefault("non_win_x_target_closeness_pct", []).append(float(x_closeness))
@@ -2953,6 +3365,49 @@ def _record_reset_stats(stats: dict, reset_result: dict) -> None:
         stats.setdefault("reset_target_closeness_pct", []).append(float(combined_closeness))
 
 
+def _record_step2_stats(stats: dict, step2_result: dict) -> None:
+    if not isinstance(stats, dict) or not isinstance(step2_result, dict):
+        return
+    stats["step2_attempt_count"] = int(stats.get("step2_attempt_count", 0)) + 1
+    stats["last_step2_reason"] = step2_result.get("reason")
+    _bump_stat_count(stats, "act_counts", "STEP2_SEAT")
+    if bool(step2_result.get("success")):
+        _bump_stat_count(stats, "sent_act_counts", "STEP2_SEAT")
+    try:
+        creep_attempts = int(step2_result.get("creep_attempts", 0) or 0)
+    except (TypeError, ValueError):
+        creep_attempts = 0
+    if creep_attempts > 0:
+        stats["step2_creep_attempt_count"] = int(stats.get("step2_creep_attempt_count", 0)) + int(creep_attempts)
+        _bump_stat_count(stats, "act_counts", "STEP2_CREEP_FWD", creep_attempts)
+        _bump_stat_count(stats, "sent_act_counts", "STEP2_CREEP_FWD", creep_attempts)
+    reading = step2_result.get("reading")
+    if not isinstance(reading, dict):
+        return
+    stats["step2_count"] = int(stats.get("step2_count", 0)) + 1
+    if bool(step2_result.get("target_met")):
+        stats["step2_target_met_count"] = int(stats.get("step2_target_met_count", 0)) + 1
+        stats["step2_confirmed_win_count"] = int(stats.get("step2_confirmed_win_count", 0)) + 1
+    elif bool(step2_result.get("success")):
+        stats["step2_unconfirmed_win_count"] = int(stats.get("step2_unconfirmed_win_count", 0)) + 1
+    for axis in ("dist", "x", "y"):
+        try:
+            stats.setdefault(f"step2_{axis}_after_mm", []).append(float(reading.get(f"{axis}_mm")))
+        except (TypeError, ValueError):
+            pass
+    closeness = step2_result.get("closeness")
+    if not isinstance(closeness, dict):
+        closeness = _step2_target_closeness_from_reading(reading)
+    if isinstance(closeness, dict):
+        for axis in ("dist", "x", "y"):
+            value = closeness.get(f"{axis}_target_closeness_pct")
+            if value is not None:
+                stats.setdefault(f"step2_{axis}_target_closeness_pct", []).append(float(value))
+        combined = closeness.get("target_closeness_pct")
+        if combined is not None:
+            stats.setdefault("step2_target_closeness_pct", []).append(float(combined))
+
+
 def _print_reset_stats(stats: dict) -> None:
     reset_values = stats.get("reset_x_after_mm") if isinstance(stats, dict) else None
     reset_dist_values = stats.get("reset_dist_after_mm") if isinstance(stats, dict) else None
@@ -3065,6 +3520,7 @@ def _format_game_results_table(stats: dict) -> str:
     )
     avg_win_close_val = _avg_stat(stats, "win_target_closeness_pct")
     avg_reset_close_val = _avg_stat(stats, "reset_target_closeness_pct")
+    avg_step2_close_val = _avg_stat(stats, "step2_target_closeness_pct")
     win_close_values = stats.get("win_target_closeness_pct")
     win_dist_values = stats.get("win_dist_target_closeness_pct")
     win_x_values = stats.get("win_x_target_closeness_pct")
@@ -3073,6 +3529,21 @@ def _format_game_results_table(stats: dict) -> str:
     reset_dist_values = stats.get("reset_dist_target_closeness_pct")
     reset_x_values = stats.get("reset_x_target_closeness_pct")
     reset_y_values = stats.get("reset_y_target_closeness_pct")
+    step2_close_values = stats.get("step2_target_closeness_pct")
+    step2_dist_values = stats.get("step2_dist_target_closeness_pct")
+    step2_x_values = stats.get("step2_x_target_closeness_pct")
+    step2_y_values = stats.get("step2_y_target_closeness_pct")
+    step2_dist_after = _avg(stats.get("step2_dist_after_mm") if isinstance(stats, dict) else None)
+    step2_x_after = _avg(stats.get("step2_x_after_mm") if isinstance(stats, dict) else None)
+    step2_y_after = _avg(stats.get("step2_y_after_mm") if isinstance(stats, dict) else None)
+    step2_avg_after_text = "N/A"
+    if step2_dist_after is not None or step2_x_after is not None or step2_y_after is not None:
+        step2_avg_after_text = (
+            f"dist {_fmt_mm(step2_dist_after)}, x {_fmt_mm(step2_x_after)}, y {_fmt_mm(step2_y_after)}"
+        )
+    step2_missing = _step2_missing_target_keys()
+    if step2_missing:
+        step2_avg_after_text = "targets pending: " + ", ".join(step2_missing)
     attempts = int(stats.get("follow_attempt_count", 0))
     confident = int(stats.get("confident_sample_count", 0))
     sample_count = int(stats.get("sample_count", 0))
@@ -3080,6 +3551,11 @@ def _format_game_results_table(stats: dict) -> str:
     wins = int(stats.get("win_count", 0))
     reset_attempts = int(stats.get("reset_attempt_count", 0))
     reset_hits = int(stats.get("reset_target_met_count", 0))
+    step2_attempts = int(stats.get("step2_attempt_count", 0))
+    step2_hits = int(stats.get("step2_target_met_count", 0))
+    step2_confirmed = int(stats.get("step2_confirmed_win_count", 0))
+    step2_unconfirmed = int(stats.get("step2_unconfirmed_win_count", 0))
+    step2_creeps = int(stats.get("step2_creep_attempt_count", 0))
     act_counts = _format_count_items(stats.get("act_counts"))
     sent_act_counts = _format_count_items(stats.get("sent_act_counts"))
     blocked_act_counts = _format_count_items(stats.get("blocked_act_counts"))
@@ -3091,14 +3567,18 @@ def _format_game_results_table(stats: dict) -> str:
     rows = [
             "| Target | Samples | Hits | Close avg±sd | Dist avg±sd | X avg±sd | Y avg±sd | Avg after |",
             "|---|---:|---:|---:|---:|---:|---:|---|",
-            f"| Win | {int(stats.get('win_count', 0))} | {int(stats.get('win_count', 0))} | "
+            f"| Step 1 Win | {int(stats.get('win_count', 0))} | {int(stats.get('win_count', 0))} | "
             f"{_pct_avg_std_text(win_close_values)} {_bar_pct(avg_win_close_val)} | "
             f"{_pct_avg_std_text(win_dist_values)} | {_pct_avg_std_text(win_x_values)} | {_pct_avg_std_text(win_y_values)} | "
-            f"target dist {TARGET_DIST_MM:.1f}mm, x 0.0mm, y {Y_TARGET_MM:.1f}mm |",
-            f"| Reset | {int(stats.get('reset_count', 0))}/{int(stats.get('reset_attempt_count', 0))} | "
+            f"target dist {TARGET_DIST_MM:.1f}mm, x {_x_target_mm():.1f}mm, y {Y_TARGET_MM:.1f}mm |",
+            f"| Step 1 Reset | {int(stats.get('reset_count', 0))}/{int(stats.get('reset_attempt_count', 0))} | "
             f"{int(stats.get('reset_target_met_count', 0))}/{int(stats.get('reset_count', 0))} | "
             f"{_pct_avg_std_text(reset_close_values)} {_bar_pct(avg_reset_close_val)} | "
             f"{_pct_avg_std_text(reset_dist_values)} | {_pct_avg_std_text(reset_x_values)} | {_pct_avg_std_text(reset_y_values)} | {avg_after_text} |",
+            f"| Step 2 Win | {int(stats.get('step2_count', 0))}/{int(stats.get('step2_attempt_count', 0))} | "
+            f"{int(stats.get('step2_target_met_count', 0))}/{int(stats.get('step2_count', 0))} | "
+            f"{_pct_avg_std_text(step2_close_values)} {_bar_pct(avg_step2_close_val)} | "
+            f"{_pct_avg_std_text(step2_dist_values)} | {_pct_avg_std_text(step2_x_values)} | {_pct_avg_std_text(step2_y_values)} | {step2_avg_after_text} |",
             "",
             "| Attempts | Count |",
             "|---|---:|",
@@ -3109,6 +3589,11 @@ def _format_game_results_table(stats: dict) -> str:
             f"| Wins | {wins} |",
             f"| Reset attempts | {reset_attempts} |",
             f"| Reset target hits | {reset_hits} |",
+            f"| Step 2 attempts | {step2_attempts} |",
+            f"| Step 2 target hits | {step2_hits} |",
+            f"| Step 2 confirmed wins | {step2_confirmed} |",
+            f"| Step 2 unconfirmed wins | {step2_unconfirmed} |",
+            f"| Step 2 recovery creeps | {step2_creeps} |",
             "",
             "| Movement acts | Count |",
             "|---|---:|",
@@ -3179,6 +3664,7 @@ def _follow_loop(
     *,
     reset_after_win: bool = True,
     stop_after_win: bool = False,
+    step2_probe_before_forward: bool = False,
 ) -> dict:
     last_action = ""
     print_ticker = 0
@@ -3303,17 +3789,52 @@ def _follow_loop(
             stats["win_count"] = int(stats.get("win_count", 0)) + 1
             _record_win_stats(stats, reading, plan)
             win_dist_close = _target_closeness_pct(dist_err, DIST_TOL_MM)
-            win_x_close = _target_closeness_pct(x_err, X_TOL_MM)
+            win_x_close = _target_closeness_pct(x_err, _x_tol_mm())
             print(
                 f"[FOLLOW] WIN #{int(stats['win_count'])}: "
                 f"dist_err={dist_err:+.1f}mm x_err={x_err:+.1f}mm "
                 f"{y_text} close={win_dist_close:.0f}%/{win_x_close:.0f}% conf={conf:.0f}%",
                 flush=True,
             )
+            if bool(stop_after_win):
+                last_action = "HAPPY"
+                break
+            step2_result = _run_step2_seat_sequence(
+                vision,
+                robot,
+                probe_before_forward=bool(step2_probe_before_forward),
+            )
+            _record_step2_stats(stats, step2_result)
+            step2_reading = step2_result.get("reading") if isinstance(step2_result, dict) else None
+            step2_dist = step2_x = step2_y = "N/A"
+            if isinstance(step2_reading, dict):
+                try:
+                    step2_dist = f"{float(step2_reading.get('dist_mm')):.1f}mm"
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    step2_x = f"{float(step2_reading.get('x_mm')):+.1f}mm"
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    step2_y = f"{float(step2_reading.get('y_mm')):+.1f}mm"
+                except (TypeError, ValueError):
+                    pass
+            print(
+                f"[STEP2] Attempt after step 1 win: reason={step2_result.get('reason')} "
+                f"target_met={bool(step2_result.get('target_met'))} "
+                f"after=dist {step2_dist}, x {step2_x}, y {step2_y}",
+                flush=True,
+            )
+            if bool(step2_result.get("probe")):
+                print("[STEP2] Probe complete before forward drive; stopped without reset.", flush=True)
+                last_action = "STEP2_PROBE"
+                break
+            if not bool(step2_result.get("success")):
+                print(f"[STEP2] Failed gracefully: {step2_result.get('reason')}", flush=True)
+                break
             if not bool(reset_after_win):
                 last_action = "HAPPY"
-                if bool(stop_after_win):
-                    break
                 elapsed = time.monotonic() - loop_start
                 if (remaining := LOOP_S - elapsed) > 0:
                     time.sleep(remaining)
@@ -3397,6 +3918,16 @@ def _parse_args(argv=None) -> argparse.Namespace:
         help="Move to the happy target, stop, and do not run reset.",
     )
     parser.add_argument(
+        "--step2-seat-once",
+        action="store_true",
+        help="Run one step 2 seat act: mast down for 2s plus slow forward for 1.4s, then measure.",
+    )
+    parser.add_argument(
+        "--step2-probe-before-forward",
+        action="store_true",
+        help="After a step 1 win, lower for step 2, report the pre-forward reading, then stop.",
+    )
+    parser.add_argument(
         "--duration-s",
         type=float,
         default=30.0,
@@ -3430,6 +3961,10 @@ def _worker_argv(args: argparse.Namespace) -> list[str]:
         argv.append("--reset-only")
     if bool(args.park_happy):
         argv.append("--park-happy")
+    if bool(args.step2_seat_once):
+        argv.append("--step2-seat-once")
+    if bool(args.step2_probe_before_forward):
+        argv.append("--step2-probe-before-forward")
     if bool(args.skip_vision_preflight):
         argv.append("--skip-vision-preflight")
     return argv
@@ -3490,7 +4025,7 @@ def _run_worker(args: argparse.Namespace) -> int:
     robot = None
     print(
         f"[FOLLOW] Target: dist={TARGET_DIST_MM:.0f}mm ±{DIST_TOL_MM:.0f}mm  "
-        f"x=0 ±{X_TOL_MM:.0f}mm  |  pulse: {PULSE_MS}ms  |  loop: {int(1/LOOP_S)}Hz  "
+        f"x={_x_target_mm():+.1f}mm ±{_x_tol_mm():.0f}mm  |  pulse: {PULSE_MS}ms  |  loop: {int(1/LOOP_S)}Hz  "
         f"|  max act: {_max_act_ms()}ms  |  normal score: {_normal_speed_score()}  "
         f"|  power scale: {_motion_power_scale():.2f}x",
         flush=True,
@@ -3520,6 +4055,35 @@ def _run_worker(args: argparse.Namespace) -> int:
                     flush=True,
                 )
                 return 1
+        elif bool(args.step2_seat_once):
+            result = _run_step2_seat_sequence(vision, robot)
+            stats = _new_game_stats()
+            _record_step2_stats(stats, result)
+            reading = result.get("reading") if isinstance(result, dict) else None
+            dist_text = x_text = y_text = "N/A"
+            if isinstance(reading, dict):
+                try:
+                    dist_text = f"{float(reading.get('dist_mm')):.1f}mm"
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    x_text = f"{float(reading.get('x_mm')):+.1f}mm"
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    y_text = f"{float(reading.get('y_mm')):+.1f}mm"
+                except (TypeError, ValueError):
+                    pass
+            print(
+                f"[STEP2] Seat done: reason={result.get('reason')} "
+                f"target_met={bool(result.get('target_met'))} "
+                f"after=dist {dist_text}, x {x_text}, y {y_text}",
+                flush=True,
+            )
+            print("[RESULTS]", flush=True)
+            print(_format_game_results_table(stats), flush=True)
+            if not bool(result.get("success")):
+                return 1
         else:
             stats = _follow_loop(
                 vision,
@@ -3527,6 +4091,7 @@ def _run_worker(args: argparse.Namespace) -> int:
                 duration_s=float(args.duration_s),
                 reset_after_win=not bool(args.park_happy),
                 stop_after_win=bool(args.park_happy),
+                step2_probe_before_forward=bool(args.step2_probe_before_forward),
             )
             print(f"[FOLLOW] {float(args.duration_s):.0f} s elapsed — done.", flush=True)
             print("[RESULTS]", flush=True)

@@ -136,8 +136,8 @@
   },
   "follow_the_brick_reset": {
     "reverse_turn": {
-      "pulse_ms": 1555,
-      "timeout_s": 1.555,
+      "pulse_ms": 4455,
+      "timeout_s": 4.455,
       "settle_s": 0.06,
       "post_pause_s": 2.0,
       "x_offset_min_mm": 12.0,
@@ -150,7 +150,7 @@
       "confirm_frames": 2,
       "sharp_finish": {
         "enabled": true,
-        "duration_ms": 300,
+        "duration_ms": 325,
         "mode": "faster_wheel_only"
       },
       "arc_algorithm": {
@@ -181,8 +181,8 @@
     },
     "mast_up": {
       "enabled": true,
-      "min_duration_ms": 400,
-      "max_duration_ms": 700,
+      "min_duration_ms": 2500,
+      "max_duration_ms": 3000,
       "pwm": 255,
       "settle_s": 0.1
     }
@@ -235,6 +235,10 @@
       "confirm_frames": 2,
       "min_axis_closeness_pct": 0.0
     },
+    "x_axis": {
+      "win_target_mm": -0.9425903280420904,
+      "win_tol_mm": 8.0
+    },
     "x_only_turn": {
       "drive_mode": "backward",
       "far_drive_mode": "forward",
@@ -243,7 +247,7 @@
     "y_axis": {
       "enabled": true,
       "win_target_mm": -4.25129472,
-      "win_tol_mm": 9.0,
+      "win_tol_mm": 1.0,
       "reset_target_mm": -5.0,
       "reset_tol_mm": 9.0,
       "approach_high_factor": 1.3,
@@ -260,9 +264,9 @@
       "lock_on_dist_window_mm": 10.0,
       "lock_on_mast_pwm": 255,
       "lock_on_pulse_ms": 400,
-      "mast_pwm": 40,
+      "mast_pwm": 255,
       "mast_pulse_ms": 220,
-      "finish_mast_pwm": 120,
+      "finish_mast_pwm": 255,
       "finish_mast_pulse_ms": 300
     },
     "turn_bias_curves": {
@@ -331,6 +335,35 @@
     "curve_strength_abs_x_err_mm": {
       "medium": 10.0,
       "strong": 18.0
+    },
+    "step2": {
+      "seat_mast_cmd": "d",
+      "seat_mast_pwm": 255,
+      "seat_mast_duration_ms": 1700,
+      "seat_drive_cmd": "f",
+      "seat_drive_pwm": 103,
+      "seat_drive_duration_ms": 2000,
+      "post_seat_pause_s": 0.25,
+      "recovery_creep_enabled": true,
+      "recovery_creep_pulse_ms": 200,
+      "recovery_creep_max_attempts": 6,
+      "recovery_creep_settle_s": 0.15,
+      "semi_happy_targets": {
+        "dist_mm": 81.0,
+        "dist_tol_mm": 5.0,
+        "x_mm": 0.3,
+        "x_tol_mm": 9.0,
+        "y_mm": -5.3,
+        "y_tol_mm": 1.0
+      },
+      "targets": {
+        "dist_mm": 24.79368453176562,
+        "dist_tol_mm": 2.0,
+        "x_mm": 0.0,
+        "x_tol_mm": 9.0,
+        "y_mm": null,
+        "y_tol_mm": null
+      }
     }
   },
   "turn_drive_motion_assist": {
