@@ -150,7 +150,7 @@
       "confirm_frames": 2,
       "sharp_finish": {
         "enabled": true,
-        "duration_ms": 325,
+        "duration_ms": 270,
         "mode": "faster_wheel_only"
       },
       "arc_algorithm": {
@@ -339,15 +339,22 @@
     "step2": {
       "seat_mast_cmd": "d",
       "seat_mast_pwm": 255,
-      "seat_mast_duration_ms": 1700,
+      "seat_mast_duration_ms": 600,
       "seat_drive_cmd": "f",
       "seat_drive_pwm": 103,
-      "seat_drive_duration_ms": 2000,
+      "seat_drive_duration_ms": 0,
       "post_seat_pause_s": 0.25,
       "recovery_creep_enabled": true,
       "recovery_creep_pulse_ms": 200,
       "recovery_creep_max_attempts": 6,
       "recovery_creep_settle_s": 0.15,
+      "precision_settle_enabled": true,
+      "precision_max_attempts": 12,
+      "precision_drive_min_pulse_ms": 80,
+      "precision_drive_max_pulse_ms": 200,
+      "precision_dist_positive_cmd": "f",
+      "precision_mast_pulse_ms": 250,
+      "precision_settle_s": 0.12,
       "semi_happy_targets": {
         "dist_mm": 81.0,
         "dist_tol_mm": 5.0,
@@ -361,8 +368,82 @@
         "dist_tol_mm": 2.0,
         "x_mm": 0.0,
         "x_tol_mm": 9.0,
-        "y_mm": null,
-        "y_tol_mm": null
+        "y_mm": -0.7,
+        "y_tol_mm": 1.0
+      }
+    },
+    "step3": {
+      "lift_mast_cmd": "u",
+      "lift_mast_pwm": 255,
+      "lift_pulse_ms": 250,
+      "lift_settle_s": 0.12,
+      "max_lift_attempts": 12,
+      "targets": {
+        "y_mm": -3.5,
+        "y_tol_mm": 1.0
+      }
+    },
+    "game_profiles": {
+      "empty": {
+        "holding": false,
+        "step2": {
+          "semi_happy_targets": {
+            "dist_mm": 81.0,
+            "dist_tol_mm": 5.0,
+            "x_mm": 0.3,
+            "x_tol_mm": 9.0,
+            "y_mm": -5.3,
+            "y_tol_mm": 1.0
+          },
+          "targets": {
+            "dist_mm": 24.79368453176562,
+            "dist_tol_mm": 2.0,
+            "x_mm": 0.0,
+            "x_tol_mm": 9.0,
+            "y_mm": -0.7,
+            "y_tol_mm": 1.0
+          }
+        },
+        "step3": {
+          "targets": {
+            "y_mm": -3.5,
+            "y_tol_mm": 1.0
+          }
+        }
+      },
+      "holding": {
+        "holding": true,
+        "y_axis": {
+          "win_target_mm": -4.25129472,
+          "win_tol_mm": 2.5
+        },
+        "step2": {
+          "seat_mast_duration_ms": 0,
+          "recovery_creep_max_attempts": 12,
+          "semi_happy_targets": {
+            "dist_mm": 81.0,
+            "dist_tol_mm": 5.0,
+            "x_mm": 0.3,
+            "x_tol_mm": 9.0,
+            "y_mm": -2.3,
+            "y_tol_mm": 1.0
+          },
+          "targets": {
+            "dist_mm": 60.5624991405603,
+            "dist_tol_mm": 2.0,
+            "x_mm": -0.5625407776090038,
+            "x_tol_mm": 9.0,
+            "y_mm": 3.0088939736803805,
+            "y_tol_mm": 1.0
+          }
+        },
+        "step3": {
+          "lift_mast_cmd": "d",
+          "targets": {
+            "y_mm": 3.0088939736803805,
+            "y_tol_mm": 1.0
+          }
+        }
       }
     }
   },

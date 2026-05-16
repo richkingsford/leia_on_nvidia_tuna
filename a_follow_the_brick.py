@@ -30,6 +30,7 @@ from helper_brick_visibility_safety import (
     guarded_send_command_pwm,
     guarded_send_custom_actions_pwm,
 )
+from helper_holding_brick import detect_holding_brick
 from helper_robot_control import Robot
 import telemetry_robot as _telemetry_robot
 
@@ -60,7 +61,7 @@ RESET_X_OFFSET_CONFIRM_FRAMES = 2
 RESET_DIST_TARGET_MM = TARGET_DIST_MM * 1.75
 RESET_DIST_TOL_MM = 9.0
 RESET_Y_TARGET_MM = -5.0
-RESET_SHARP_FINISH_MS = 325
+RESET_SHARP_FINISH_MS = 270
 RESET_MAST_UP_MIN_MS = 2500
 RESET_MAST_UP_MAX_MS = 3000
 RESET_MAST_UP_PWM = 255
@@ -126,15 +127,22 @@ DEFAULT_FOLLOW_X_AXIS_CONFIG = {
 DEFAULT_STEP2_CONFIG = {
     "seat_mast_cmd": "d",
     "seat_mast_pwm": 255,
-    "seat_mast_duration_ms": 1700,
+    "seat_mast_duration_ms": 600,
     "seat_drive_cmd": "f",
     "seat_drive_pwm": 103,
-    "seat_drive_duration_ms": 2000,
+    "seat_drive_duration_ms": 0,
     "post_seat_pause_s": 0.25,
     "recovery_creep_enabled": True,
     "recovery_creep_pulse_ms": 200,
     "recovery_creep_max_attempts": 6,
     "recovery_creep_settle_s": 0.15,
+    "precision_settle_enabled": True,
+    "precision_max_attempts": 12,
+    "precision_drive_min_pulse_ms": 80,
+    "precision_drive_max_pulse_ms": 200,
+    "precision_dist_positive_cmd": "f",
+    "precision_mast_pulse_ms": 250,
+    "precision_settle_s": 0.12,
     "semi_happy_targets": {
         "dist_mm": 81.0,
         "dist_tol_mm": 5.0,
@@ -148,10 +156,23 @@ DEFAULT_STEP2_CONFIG = {
         "dist_tol_mm": None,
         "x_mm": 0.0,
         "x_tol_mm": X_TOL_MM,
-        "y_mm": None,
-        "y_tol_mm": None,
+        "y_mm": -0.7,
+        "y_tol_mm": 1.0,
     },
 }
+DEFAULT_STEP3_CONFIG = {
+    "lift_mast_cmd": "u",
+    "lift_mast_pwm": 255,
+    "lift_pulse_ms": 250,
+    "lift_settle_s": 0.12,
+    "max_lift_attempts": 12,
+    "targets": {
+        "y_mm": -3.5,
+        "y_tol_mm": 1.0,
+    },
+}
+CURRENT_GAME_PROFILE = "empty"
+HOLDING_TARGET_MASK_Y_SHIFT_PX = 100
 DEFAULT_TOO_CLOSE_ESCAPE_POLICY = {
     "pwm": 104,
     "pulse_ms": 400,
@@ -334,6 +355,41 @@ def _coerce_optional_float(
     return _coerce_float(value, fallback if fallback is not None else 0.0, minimum=minimum, maximum=maximum)
 
 
+def _active_game_profile() -> str:
+    profile = str(globals().get("CURRENT_GAME_PROFILE", "empty") or "empty").strip().lower()
+    return profile if profile in {"empty", "holding"} else "empty"
+
+
+def _set_game_profile(profile: str) -> None:
+    global CURRENT_GAME_PROFILE
+    name = str(profile or "empty").strip().lower()
+    CURRENT_GAME_PROFILE = name if name in {"empty", "holding"} else "empty"
+    if hasattr(_follow_motion_config, "_cache"):
+        delattr(_follow_motion_config, "_cache")
+
+
+def _auto_select_game_profile(vision: BrickDetector, *, samples: int = 3, sample_s: float = 0.08) -> tuple[str, dict]:
+    votes = []
+    for _idx in range(max(1, int(samples))):
+        try:
+            vision.read()
+            frame = getattr(vision, "raw_frame", None)
+            result = detect_holding_brick(frame)
+        except Exception as exc:
+            result = {"holding": False, "reason": f"holding_detector_error:{exc}"}
+        votes.append(result)
+        if sample_s > 0:
+            time.sleep(float(sample_s))
+    holding_count = sum(1 for row in votes if bool(row.get("holding")))
+    selected = "holding" if holding_count > (len(votes) / 2.0) else "empty"
+    return selected, {
+        "samples": len(votes),
+        "holding_count": int(holding_count),
+        "empty_count": int(len(votes) - holding_count),
+        "votes": votes,
+    }
+
+
 def _coerce_curve_strength(value, fallback: str = "gentle") -> str:
     strength = str(value or "").strip().lower()
     if strength == "adaptive":
@@ -391,6 +447,10 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         "step2": {
             **{key: value for key, value in DEFAULT_STEP2_CONFIG.items() if key != "targets"},
             "targets": dict(DEFAULT_STEP2_CONFIG["targets"]),
+        },
+        "step3": {
+            **{key: value for key, value in DEFAULT_STEP3_CONFIG.items() if key != "targets"},
+            "targets": dict(DEFAULT_STEP3_CONFIG["targets"]),
         },
         "turn_bias_curves": {
             drive_mode: {
@@ -667,7 +727,7 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
     step2["seat_drive_duration_ms"] = _coerce_int(
         raw_step2.get("seat_drive_duration_ms"),
         DEFAULT_STEP2_CONFIG["seat_drive_duration_ms"],
-        minimum=1,
+        minimum=0,
         maximum=5000,
     )
     step2["post_seat_pause_s"] = _coerce_float(
@@ -697,6 +757,30 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         minimum=0.0,
         maximum=2.0,
     )
+    step2["precision_settle_enabled"] = bool(
+        raw_step2.get("precision_settle_enabled", DEFAULT_STEP2_CONFIG["precision_settle_enabled"])
+    )
+    step2["precision_max_attempts"] = _coerce_int(
+        raw_step2.get("precision_max_attempts"),
+        DEFAULT_STEP2_CONFIG["precision_max_attempts"],
+        minimum=1,
+        maximum=40,
+    )
+    for key in ("precision_drive_min_pulse_ms", "precision_drive_max_pulse_ms", "precision_mast_pulse_ms"):
+        step2[key] = _coerce_int(
+            raw_step2.get(key),
+            DEFAULT_STEP2_CONFIG[key],
+            minimum=1,
+            maximum=1000,
+        )
+    positive_cmd = str(raw_step2.get("precision_dist_positive_cmd", DEFAULT_STEP2_CONFIG["precision_dist_positive_cmd"])).strip().lower()
+    step2["precision_dist_positive_cmd"] = positive_cmd if positive_cmd in {"f", "b"} else DEFAULT_STEP2_CONFIG["precision_dist_positive_cmd"]
+    step2["precision_settle_s"] = _coerce_float(
+        raw_step2.get("precision_settle_s"),
+        DEFAULT_STEP2_CONFIG["precision_settle_s"],
+        minimum=0.0,
+        maximum=2.0,
+    )
     raw_targets = raw_step2.get("targets") if isinstance(raw_step2.get("targets"), dict) else {}
     target_cfg = step2["targets"]
     for key in ("dist_mm", "x_mm", "y_mm"):
@@ -718,6 +802,154 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
             minimum=0.0,
         )
     step2["semi_happy_targets"] = semi_cfg
+    raw_step3 = raw.get("step3") if isinstance(raw.get("step3"), dict) else {}
+    step3 = cfg["step3"]
+    lift_cmd = str(raw_step3.get("lift_mast_cmd", DEFAULT_STEP3_CONFIG["lift_mast_cmd"])).strip().lower()
+    step3["lift_mast_cmd"] = lift_cmd if lift_cmd in {"u", "d"} else DEFAULT_STEP3_CONFIG["lift_mast_cmd"]
+    step3["lift_mast_pwm"] = _coerce_int(
+        raw_step3.get("lift_mast_pwm"),
+        DEFAULT_STEP3_CONFIG["lift_mast_pwm"],
+        minimum=1,
+        maximum=255,
+    )
+    step3["lift_pulse_ms"] = _coerce_int(
+        raw_step3.get("lift_pulse_ms"),
+        DEFAULT_STEP3_CONFIG["lift_pulse_ms"],
+        minimum=1,
+        maximum=1000,
+    )
+    step3["lift_settle_s"] = _coerce_float(
+        raw_step3.get("lift_settle_s"),
+        DEFAULT_STEP3_CONFIG["lift_settle_s"],
+        minimum=0.0,
+        maximum=2.0,
+    )
+    step3["max_lift_attempts"] = _coerce_int(
+        raw_step3.get("max_lift_attempts"),
+        DEFAULT_STEP3_CONFIG["max_lift_attempts"],
+        minimum=1,
+        maximum=50,
+    )
+    raw_step3_targets = raw_step3.get("targets") if isinstance(raw_step3.get("targets"), dict) else {}
+    step3_targets = step3["targets"]
+    step3_targets["y_mm"] = _coerce_optional_float(
+        raw_step3_targets.get("y_mm"),
+        DEFAULT_STEP3_CONFIG["targets"]["y_mm"],
+    )
+    step3_targets["y_tol_mm"] = _coerce_optional_float(
+        raw_step3_targets.get("y_tol_mm"),
+        DEFAULT_STEP3_CONFIG["targets"]["y_tol_mm"],
+        minimum=0.0,
+    )
+    raw_profiles = raw.get("game_profiles") if isinstance(raw.get("game_profiles"), dict) else {}
+    raw_profile = raw_profiles.get(_active_game_profile()) if isinstance(raw_profiles.get(_active_game_profile()), dict) else {}
+    raw_profile_y_axis = raw_profile.get("y_axis") if isinstance(raw_profile.get("y_axis"), dict) else {}
+    for key in ("win_target_mm", "win_tol_mm"):
+        if key in raw_profile_y_axis:
+            minimum = 0.0 if key == "win_tol_mm" else None
+            cfg["y_axis"][key] = _coerce_float(raw_profile_y_axis.get(key), cfg["y_axis"].get(key), minimum=minimum)
+    raw_profile_step2 = raw_profile.get("step2") if isinstance(raw_profile.get("step2"), dict) else {}
+    for key in ("seat_mast_cmd", "seat_drive_cmd"):
+        if key in raw_profile_step2:
+            mode = str(raw_profile_step2.get(key) or "").strip().lower()
+            if mode in {"u", "d"} and key == "seat_mast_cmd":
+                step2[key] = mode
+            if mode in {"f", "b"} and key == "seat_drive_cmd":
+                step2[key] = mode
+    for key in ("seat_mast_pwm", "seat_drive_pwm"):
+        if key in raw_profile_step2:
+            step2[key] = _coerce_int(raw_profile_step2.get(key), step2.get(key), minimum=1, maximum=255)
+    for key in ("seat_mast_duration_ms", "seat_drive_duration_ms"):
+        if key in raw_profile_step2:
+            step2[key] = _coerce_int(raw_profile_step2.get(key), step2.get(key), minimum=0, maximum=5000)
+    if "post_seat_pause_s" in raw_profile_step2:
+        step2["post_seat_pause_s"] = _coerce_float(
+            raw_profile_step2.get("post_seat_pause_s"),
+            step2.get("post_seat_pause_s"),
+            minimum=0.0,
+            maximum=3.0,
+        )
+    if "recovery_creep_enabled" in raw_profile_step2:
+        step2["recovery_creep_enabled"] = bool(raw_profile_step2.get("recovery_creep_enabled"))
+    if "recovery_creep_pulse_ms" in raw_profile_step2:
+        step2["recovery_creep_pulse_ms"] = _coerce_int(
+            raw_profile_step2.get("recovery_creep_pulse_ms"),
+            step2.get("recovery_creep_pulse_ms"),
+            minimum=1,
+            maximum=400,
+        )
+    if "recovery_creep_max_attempts" in raw_profile_step2:
+        step2["recovery_creep_max_attempts"] = _coerce_int(
+            raw_profile_step2.get("recovery_creep_max_attempts"),
+            step2.get("recovery_creep_max_attempts"),
+            minimum=0,
+            maximum=20,
+        )
+    if "recovery_creep_settle_s" in raw_profile_step2:
+        step2["recovery_creep_settle_s"] = _coerce_float(
+            raw_profile_step2.get("recovery_creep_settle_s"),
+            step2.get("recovery_creep_settle_s"),
+            minimum=0.0,
+            maximum=2.0,
+        )
+    if "precision_settle_enabled" in raw_profile_step2:
+        step2["precision_settle_enabled"] = bool(raw_profile_step2.get("precision_settle_enabled"))
+    for key in ("precision_max_attempts", "precision_drive_min_pulse_ms", "precision_drive_max_pulse_ms", "precision_mast_pulse_ms"):
+        if key in raw_profile_step2:
+            step2[key] = _coerce_int(
+                raw_profile_step2.get(key),
+                step2.get(key, DEFAULT_STEP2_CONFIG.get(key)),
+                minimum=1,
+                maximum=1000 if key != "precision_max_attempts" else 40,
+            )
+    if "precision_dist_positive_cmd" in raw_profile_step2:
+        profile_positive_cmd = str(raw_profile_step2.get("precision_dist_positive_cmd") or "").strip().lower()
+        if profile_positive_cmd in {"f", "b"}:
+            step2["precision_dist_positive_cmd"] = profile_positive_cmd
+    if "precision_settle_s" in raw_profile_step2:
+        step2["precision_settle_s"] = _coerce_float(
+            raw_profile_step2.get("precision_settle_s"),
+            step2.get("precision_settle_s", DEFAULT_STEP2_CONFIG["precision_settle_s"]),
+            minimum=0.0,
+            maximum=2.0,
+        )
+    raw_profile_step2_semi = (
+        raw_profile_step2.get("semi_happy_targets")
+        if isinstance(raw_profile_step2.get("semi_happy_targets"), dict)
+        else {}
+    )
+    for key in ("dist_mm", "x_mm", "y_mm"):
+        if key in raw_profile_step2_semi:
+            semi_cfg[key] = _coerce_optional_float(raw_profile_step2_semi.get(key), semi_cfg.get(key))
+    for key in ("dist_tol_mm", "x_tol_mm", "y_tol_mm"):
+        if key in raw_profile_step2_semi:
+            semi_cfg[key] = _coerce_optional_float(raw_profile_step2_semi.get(key), semi_cfg.get(key), minimum=0.0)
+    step2["semi_happy_targets"] = semi_cfg
+    raw_profile_step2_targets = (
+        raw_profile_step2.get("targets") if isinstance(raw_profile_step2.get("targets"), dict) else {}
+    )
+    for key in ("dist_mm", "x_mm", "y_mm"):
+        if key in raw_profile_step2_targets:
+            target_cfg[key] = _coerce_optional_float(raw_profile_step2_targets.get(key), target_cfg.get(key))
+    for key in ("dist_tol_mm", "x_tol_mm", "y_tol_mm"):
+        if key in raw_profile_step2_targets:
+            target_cfg[key] = _coerce_optional_float(raw_profile_step2_targets.get(key), target_cfg.get(key), minimum=0.0)
+    raw_profile_step3 = raw_profile.get("step3") if isinstance(raw_profile.get("step3"), dict) else {}
+    if "lift_mast_cmd" in raw_profile_step3:
+        profile_lift_cmd = str(raw_profile_step3.get("lift_mast_cmd") or "").strip().lower()
+        if profile_lift_cmd in {"u", "d"}:
+            step3["lift_mast_cmd"] = profile_lift_cmd
+    raw_profile_step3_targets = (
+        raw_profile_step3.get("targets") if isinstance(raw_profile_step3.get("targets"), dict) else {}
+    )
+    if "y_mm" in raw_profile_step3_targets:
+        step3_targets["y_mm"] = _coerce_optional_float(raw_profile_step3_targets.get("y_mm"), step3_targets.get("y_mm"))
+    if "y_tol_mm" in raw_profile_step3_targets:
+        step3_targets["y_tol_mm"] = _coerce_optional_float(
+            raw_profile_step3_targets.get("y_tol_mm"),
+            step3_targets.get("y_tol_mm"),
+            minimum=0.0,
+        )
     return cfg
 
 
@@ -1558,6 +1790,180 @@ def _follow_step2_config() -> dict:
     return step2 if isinstance(step2, dict) else {}
 
 
+def _follow_step3_config() -> dict:
+    cfg = _follow_motion_config()
+    step3 = cfg.get("step3") if isinstance(cfg.get("step3"), dict) else {}
+    return step3 if isinstance(step3, dict) else {}
+
+
+def _step3_missing_target_keys(step3_cfg: dict | None = None) -> list[str]:
+    cfg = step3_cfg if isinstance(step3_cfg, dict) else _follow_step3_config()
+    targets = cfg.get("targets") if isinstance(cfg.get("targets"), dict) else {}
+    missing = []
+    for key in ("y_mm", "y_tol_mm"):
+        if targets.get(key) is None:
+            missing.append(key)
+    return missing
+
+
+def _step3_targets_ready(reading: dict, step3_cfg: dict | None = None) -> tuple[bool, str]:
+    missing = _step3_missing_target_keys(step3_cfg)
+    if missing:
+        return False, "step3_targets_pending:" + ",".join(missing)
+    cfg = step3_cfg if isinstance(step3_cfg, dict) else _follow_step3_config()
+    targets = cfg.get("targets") if isinstance(cfg.get("targets"), dict) else {}
+    try:
+        y_mm = float((reading or {}).get("y_mm"))
+        y_target = float(targets.get("y_mm"))
+        y_tol = float(targets.get("y_tol_mm"))
+    except (TypeError, ValueError):
+        return False, "invalid_step3_reading"
+    return abs(y_mm - y_target) <= y_tol, "step3_targets_scored"
+
+
+def _run_step3_lift_sequence(vision: BrickDetector, robot: Robot) -> dict:
+    step3 = _follow_step3_config()
+    targets = step3.get("targets") if isinstance(step3.get("targets"), dict) else {}
+    missing = _step3_missing_target_keys(step3)
+    before = _read_brick_measurement(vision)
+    if not bool(before.get("confident")):
+        return {
+            "success": False,
+            "target_met": False,
+            "holding": False,
+            "reason": "brick_not_confident_before_step3",
+            "reading": before,
+        }
+    if missing:
+        return {
+            "success": False,
+            "target_met": False,
+            "holding": False,
+            "reason": "step3_targets_pending:" + ",".join(missing),
+            "reading": before,
+        }
+    lift_cmd = str(step3.get("lift_mast_cmd") or DEFAULT_STEP3_CONFIG["lift_mast_cmd"]).strip().lower()
+    lift_pwm = _scaled_pwm_for_cmd(lift_cmd, step3.get("lift_mast_pwm"))
+    pulse_ms = _coerce_int(
+        step3.get("lift_pulse_ms"),
+        DEFAULT_STEP3_CONFIG["lift_pulse_ms"],
+        minimum=1,
+        maximum=1000,
+    )
+    max_attempts = _coerce_int(
+        step3.get("max_lift_attempts"),
+        DEFAULT_STEP3_CONFIG["max_lift_attempts"],
+        minimum=1,
+        maximum=50,
+    )
+    settle_s = _coerce_float(
+        step3.get("lift_settle_s"),
+        DEFAULT_STEP3_CONFIG["lift_settle_s"],
+        minimum=0.0,
+        maximum=2.0,
+    )
+    current = before
+    attempts = 0
+    last_send = None
+    try:
+        y_target = float(targets.get("y_mm"))
+        y_tol = float(targets.get("y_tol_mm"))
+    except (TypeError, ValueError):
+        return {
+            "success": False,
+            "target_met": False,
+            "holding": False,
+            "reason": "invalid_step3_targets",
+            "reading": before,
+        }
+    while attempts <= int(max_attempts):
+        if not bool(current.get("confident")):
+            return {
+                "success": False,
+                "target_met": False,
+                "holding": False,
+                "reason": "lost_confident_brick_during_step3",
+                "reading": current,
+                "attempts": attempts,
+                "send_result": last_send,
+            }
+        try:
+            y_mm = float(current.get("y_mm"))
+        except (TypeError, ValueError):
+            return {
+                "success": False,
+                "target_met": False,
+                "holding": False,
+                "reason": "invalid_step3_reading",
+                "reading": current,
+                "attempts": attempts,
+                "send_result": last_send,
+            }
+        if abs(y_mm - y_target) <= y_tol:
+            return {
+                "success": True,
+                "target_met": True,
+                "holding": True,
+                "reason": "step3_targets_scored",
+                "reading": current,
+                "attempts": attempts,
+                "send_result": last_send,
+            }
+        if lift_cmd == "u" and y_mm < y_target - y_tol:
+            return {
+                "success": True,
+                "target_met": False,
+                "holding": True,
+                "reason": "step3_already_past_y_target",
+                "reading": current,
+                "attempts": attempts,
+                "send_result": last_send,
+            }
+        if lift_cmd == "d" and y_mm > y_target + y_tol:
+            return {
+                "success": True,
+                "target_met": False,
+                "holding": True,
+                "reason": "step3_already_past_y_target",
+                "reading": current,
+                "attempts": attempts,
+                "send_result": last_send,
+            }
+        if attempts >= int(max_attempts):
+            break
+        last_send = guarded_send_command_pwm(
+            robot,
+            lift_cmd,
+            lift_pwm,
+            duration_ms=pulse_ms,
+            reading=current,
+            context="follow_step3_lift_to_y_target",
+        )
+        if isinstance(last_send, dict) and bool(last_send.get("blocked")):
+            return {
+                "success": False,
+                "target_met": False,
+                "holding": False,
+                "reason": f"step3_lift_blocked:{last_send.get('reason')}",
+                "reading": current,
+                "attempts": attempts,
+                "send_result": last_send,
+            }
+        attempts += 1
+        time.sleep(float(pulse_ms) / 1000.0 + float(settle_s))
+        _stop_robot(robot)
+        current = _read_brick_measurement(vision)
+    return {
+        "success": False,
+        "target_met": False,
+        "holding": False,
+        "reason": "step3_y_target_not_reached",
+        "reading": current,
+        "attempts": attempts,
+        "send_result": last_send,
+    }
+
+
 def _configured_step2_targets(step2_cfg: dict | None = None) -> dict:
     cfg = step2_cfg if isinstance(step2_cfg, dict) else _follow_step2_config()
     targets = cfg.get("targets") if isinstance(cfg.get("targets"), dict) else {}
@@ -1631,6 +2037,125 @@ def _step2_should_creep_forward(reading: dict, step2_cfg: dict | None = None) ->
     return float(dist_mm) > float(dist_target) + float(dist_tol)
 
 
+def _step2_precision_drive_duration_ms(dist_gap_mm: float, step2_cfg: dict) -> int:
+    min_ms = _coerce_int(
+        step2_cfg.get("precision_drive_min_pulse_ms"),
+        DEFAULT_STEP2_CONFIG["precision_drive_min_pulse_ms"],
+        minimum=1,
+        maximum=1000,
+    )
+    max_ms = _coerce_int(
+        step2_cfg.get("precision_drive_max_pulse_ms"),
+        DEFAULT_STEP2_CONFIG["precision_drive_max_pulse_ms"],
+        minimum=1,
+        maximum=1000,
+    )
+    return _proportional_duration_ms(
+        gap_mm=max(0.0, float(dist_gap_mm)),
+        min_ms=min_ms,
+        max_ms=max_ms,
+        full_gap_mm=30.0,
+    )
+
+
+def _step2_precision_mast_cmd(y_err: float) -> str:
+    # Same y semantics as the main follow planner: positive y error is corrected by mast down.
+    return "d" if float(y_err) > 0.0 else "u"
+
+
+def _step2_precision_dist_cmd(dist_err: float, step2_cfg: dict) -> str:
+    positive_cmd = str(
+        step2_cfg.get("precision_dist_positive_cmd", DEFAULT_STEP2_CONFIG["precision_dist_positive_cmd"])
+    ).strip().lower()
+    if positive_cmd not in {"f", "b"}:
+        positive_cmd = DEFAULT_STEP2_CONFIG["precision_dist_positive_cmd"]
+    if float(dist_err) > 0.0:
+        return positive_cmd
+    return "b" if positive_cmd == "f" else "f"
+
+
+def _step2_precision_settle_to_targets(
+    vision: BrickDetector,
+    robot: Robot,
+    reading: dict,
+    step2_cfg: dict,
+) -> tuple[dict, dict]:
+    current = reading if isinstance(reading, dict) else {}
+    counts = {"fwd": 0, "bck": 0, "mast_u": 0, "mast_d": 0, "blocked": 0}
+    if not bool(step2_cfg.get("precision_settle_enabled", True)):
+        return current, counts
+    if _step2_missing_target_keys(step2_cfg):
+        return current, counts
+    max_attempts = _coerce_int(
+        step2_cfg.get("precision_max_attempts"),
+        DEFAULT_STEP2_CONFIG["precision_max_attempts"],
+        minimum=1,
+        maximum=40,
+    )
+    settle_s = _coerce_float(
+        step2_cfg.get("precision_settle_s"),
+        DEFAULT_STEP2_CONFIG["precision_settle_s"],
+        minimum=0.0,
+        maximum=2.0,
+    )
+    targets = _configured_step2_targets(step2_cfg)
+    prev_dist_err = None
+    for _idx in range(int(max_attempts)):
+        if not bool(current.get("confident")):
+            break
+        target_met, _target_reason, _closeness = _step2_targets_ready(current, step2_cfg)
+        if bool(target_met):
+            break
+        try:
+            dist_err = float(current.get("dist_mm")) - float(targets.get("dist_mm"))
+            dist_tol = float(targets.get("dist_tol_mm"))
+            y_err = float(current.get("y_mm")) - float(targets.get("y_mm"))
+            y_tol = float(targets.get("y_tol_mm"))
+        except (TypeError, ValueError):
+            break
+        dist_gap = max(0.0, abs(float(dist_err)) - float(dist_tol))
+        y_gap = max(0.0, abs(float(y_err)) - float(y_tol))
+        if dist_gap <= 0.0 and y_gap <= 0.0:
+            break
+        if y_gap > 0.0 and (dist_gap <= 0.0 or y_gap >= dist_gap):
+            cmd = _step2_precision_mast_cmd(y_err)
+            pwm = _scaled_pwm_for_cmd(cmd, step2_cfg.get("seat_mast_pwm", DEFAULT_STEP2_CONFIG["seat_mast_pwm"]))
+            duration_ms = _coerce_int(
+                step2_cfg.get("precision_mast_pulse_ms"),
+                DEFAULT_STEP2_CONFIG["precision_mast_pulse_ms"],
+                minimum=1,
+                maximum=1000,
+            )
+            action_key = "mast_d" if cmd == "d" else "mast_u"
+        else:
+            cmd = _step2_precision_dist_cmd(dist_err, step2_cfg)
+            pwm = _clamp_to_approved_straight_drive_pwm(
+                cmd,
+                step2_cfg.get("seat_drive_pwm", DEFAULT_STEP2_CONFIG["seat_drive_pwm"]),
+            )
+            duration_ms = _step2_precision_drive_duration_ms(dist_gap, step2_cfg)
+            if prev_dist_err is not None and (float(prev_dist_err) * float(dist_err)) < 0.0:
+                duration_ms = max(40, int(duration_ms * 0.5))
+            prev_dist_err = float(dist_err)
+            action_key = "fwd" if cmd == "f" else "bck"
+        send_result = guarded_send_command_pwm(
+            robot,
+            cmd,
+            pwm,
+            duration_ms=duration_ms,
+            reading=current,
+            context="follow_step2_precision_settle",
+        )
+        if isinstance(send_result, dict) and bool(send_result.get("blocked")):
+            counts["blocked"] = int(counts.get("blocked", 0)) + 1
+            break
+        counts[action_key] = int(counts.get(action_key, 0)) + 1
+        time.sleep((float(duration_ms) / 1000.0) + float(settle_s))
+        _stop_robot(robot)
+        current = _read_brick_measurement(vision)
+    return current, counts
+
+
 def _step2_creep_forward_if_short(vision: BrickDetector, robot: Robot, reading: dict, step2_cfg: dict) -> tuple[dict, int]:
     current = reading if isinstance(reading, dict) else {}
     if not bool(step2_cfg.get("recovery_creep_enabled", True)):
@@ -1695,33 +2220,24 @@ def _run_step2_seat_sequence(
             "before": before,
             "reading": before,
         }
-    drive_cmd = str(step2.get("seat_drive_cmd") or DEFAULT_STEP2_CONFIG["seat_drive_cmd"]).strip().lower()
     mast_cmd = str(step2.get("seat_mast_cmd") or DEFAULT_STEP2_CONFIG["seat_mast_cmd"]).strip().lower()
-    drive_pwm = _clamp_to_approved_straight_drive_pwm(
-        drive_cmd,
-        step2.get("seat_drive_pwm", DEFAULT_STEP2_CONFIG["seat_drive_pwm"]),
-    )
-    drive_duration_ms = _coerce_int(
-        step2.get("seat_drive_duration_ms"),
-        DEFAULT_STEP2_CONFIG["seat_drive_duration_ms"],
-        minimum=1,
-        maximum=5000,
-    )
     mast_duration_ms = _coerce_int(
         step2.get("seat_mast_duration_ms"),
         DEFAULT_STEP2_CONFIG["seat_mast_duration_ms"],
-        minimum=1,
+        minimum=0,
         maximum=5000,
     )
     mast_pwm = _scaled_pwm_for_cmd(mast_cmd, step2.get("seat_mast_pwm"))
-    mast_result = guarded_send_command_pwm(
-        robot,
-        mast_cmd,
-        mast_pwm,
-        duration_ms=mast_duration_ms,
-        reading=before,
-        context="follow_step2_seat_mast",
-    )
+    mast_result = {"skipped": True, "reason": "step2_mast_duration_zero"}
+    if mast_duration_ms > 0:
+        mast_result = guarded_send_command_pwm(
+            robot,
+            mast_cmd,
+            mast_pwm,
+            duration_ms=mast_duration_ms,
+            reading=before,
+            context="follow_step2_seat_mast",
+        )
     if isinstance(mast_result, dict) and bool(mast_result.get("blocked")):
         return {
             "success": False,
@@ -1732,9 +2248,12 @@ def _run_step2_seat_sequence(
             "reading": before,
             "duration_ms": int(mast_duration_ms),
         }
-    time.sleep(float(mast_duration_ms) / 1000.0)
-    _stop_robot(robot)
-    after_mast = _read_brick_measurement(vision)
+    if mast_duration_ms > 0:
+        time.sleep(float(mast_duration_ms) / 1000.0)
+        _stop_robot(robot)
+        after_mast = _read_brick_measurement(vision)
+    else:
+        after_mast = before
     if bool(probe_before_forward):
         return {
             "success": True,
@@ -1748,39 +2267,83 @@ def _run_step2_seat_sequence(
             "mast_duration_ms": int(mast_duration_ms),
             "drive_duration_ms": 0,
             "creep_attempts": 0,
+            "precision_counts": {},
             "closeness": _step2_target_closeness_from_reading(after_mast, step2) if bool(after_mast.get("confident")) else None,
             "probe": True,
         }
-    drive_guard_reading = after_mast if bool(after_mast.get("confident")) else before
-    drive_result = guarded_send_command_pwm(
-        robot,
-        drive_cmd,
-        drive_pwm,
-        duration_ms=drive_duration_ms,
-        reading=drive_guard_reading,
-        context="follow_step2_seat_drive_blind_after_start",
-    )
-    time.sleep(float(drive_duration_ms) / 1000.0 + float(step2.get("post_seat_pause_s", 0.0)))
-    _stop_robot(robot)
-    after = _read_brick_measurement(vision)
-    after, creep_attempts = _step2_creep_forward_if_short(vision, robot, after, step2)
+    if not bool(after_mast.get("confident")):
+        return {
+            "success": False,
+            "target_met": False,
+            "reason": "brick_not_confident_after_step2_mast_no_forward",
+            "send_result": {"skipped": True, "reason": "no_blind_step2_drive_without_visibility"},
+            "mast_result": mast_result,
+            "before": before,
+            "after_mast": after_mast,
+            "reading": after_mast,
+            "duration_ms": int(mast_duration_ms),
+            "mast_duration_ms": int(mast_duration_ms),
+            "drive_duration_ms": 0,
+            "creep_attempts": 0,
+            "precision_counts": {},
+            "closeness": None,
+        }
+    if bool(step2.get("precision_settle_enabled", True)):
+        after, precision_counts = _step2_precision_settle_to_targets(vision, robot, after_mast, step2)
+        creep_attempts = int((precision_counts or {}).get("fwd", 0))
+    else:
+        after, creep_attempts = _step2_creep_forward_if_short(vision, robot, after_mast, step2)
+        precision_counts = {"fwd": int(creep_attempts), "bck": 0, "mast_u": 0, "mast_d": 0, "blocked": 0}
     if bool(after.get("confident")):
         target_met, target_reason, closeness = _step2_targets_ready(after, step2)
     else:
         target_met, target_reason, closeness = False, "step2_unconfirmed_no_final_visibility", None
     return {
-        "success": not (isinstance(drive_result, dict) and bool(drive_result.get("blocked"))),
+        "success": True,
         "target_met": bool(target_met),
         "reason": target_reason,
-        "send_result": drive_result,
+        "send_result": {"skipped": True, "reason": "no_blind_step2_drive"},
         "mast_result": mast_result,
         "before": before,
         "after_mast": after_mast,
         "reading": after,
-        "duration_ms": int(mast_duration_ms) + int(drive_duration_ms),
+        "duration_ms": int(mast_duration_ms),
         "mast_duration_ms": int(mast_duration_ms),
-        "drive_duration_ms": int(drive_duration_ms),
+        "drive_duration_ms": 0,
         "creep_attempts": int(creep_attempts),
+        "precision_counts": dict(precision_counts or {}),
+        "closeness": closeness,
+    }
+
+
+def _run_step2_settle_sequence(vision: BrickDetector, robot: Robot) -> dict:
+    step2 = _follow_step2_config()
+    before = _read_brick_measurement(vision)
+    if not bool(before.get("confident")):
+        return {
+            "success": False,
+            "target_met": False,
+            "reason": "brick_not_confident_before_step2_settle",
+            "before": before,
+            "reading": before,
+            "precision_counts": {},
+        }
+    after, precision_counts = _step2_precision_settle_to_targets(vision, robot, before, step2)
+    if bool(after.get("confident")):
+        target_met, target_reason, closeness = _step2_targets_ready(after, step2)
+    else:
+        target_met, target_reason, closeness = False, "step2_unconfirmed_no_final_visibility", None
+    return {
+        "success": True,
+        "target_met": bool(target_met),
+        "reason": target_reason,
+        "before": before,
+        "reading": after,
+        "duration_ms": 0,
+        "mast_duration_ms": 0,
+        "drive_duration_ms": 0,
+        "creep_attempts": int((precision_counts or {}).get("fwd", 0)),
+        "precision_counts": dict(precision_counts or {}),
         "closeness": closeness,
     }
 
@@ -2019,14 +2582,63 @@ def _wait_for_confident_brick(
     return last_reading
 
 
+def _mask_held_brick_for_target_frame(frame, holding_result: dict | None):
+    """Return a frame copy that hides held-brick pixels from target detection."""
+    if frame is None or not hasattr(frame, "shape"):
+        return None
+    masked = frame.copy()
+    height, width = masked.shape[:2]
+    y_shift = int(HOLDING_TARGET_MASK_Y_SHIFT_PX)
+    floor_roi_y = max(0, int(round(float(height) / 3.0)) - y_shift)
+    masked[:floor_roi_y, :] = 0
+    best = holding_result.get("best") if isinstance(holding_result, dict) else None
+    bbox = best.get("bbox") if isinstance(best, dict) else None
+    if isinstance(bbox, (tuple, list)) and len(bbox) == 4:
+        x, y, w, h = [int(v) for v in bbox]
+        pad = 8
+        x1 = max(0, x - pad)
+        y1 = max(0, y - y_shift - pad)
+        x2 = min(width, x + w + pad)
+        y2 = min(height, y + h - y_shift + pad)
+        if x2 > x1 and y2 > y1:
+            masked[y1:y2, x1:x2] = 0
+    return masked
+
+
 def _read_brick_measurement(vision: BrickDetector) -> dict:
-    """Return a fresh brick reading without any held-frame fallback."""
+    """Return a fresh brick reading, masking held bricks out of target vision."""
     try:
         result = vision.read()
     except Exception as exc:
         log.warning("Vision read error: %s", exc)
         return brick_motion_measurement_from_result(None)
-    return brick_motion_measurement_from_result(result)
+    reading = brick_motion_measurement_from_result(result)
+    frame = getattr(vision, "raw_frame", None)
+    holding_result = detect_holding_brick(frame)
+    reading["holding"] = bool(holding_result.get("holding"))
+    reading["holding_reason"] = holding_result.get("reason")
+    if not bool(holding_result.get("holding")):
+        return reading
+    masked = _mask_held_brick_for_target_frame(frame, holding_result)
+    if masked is None:
+        reading["target_masked_for_holding"] = False
+        return reading
+    try:
+        masked_result = vision.read_frame(masked)
+    except Exception as exc:
+        log.warning("Holding-masked target read error: %s", exc)
+        reading["target_masked_for_holding"] = False
+        return reading
+    masked_reading = brick_motion_measurement_from_result(masked_result)
+    masked_reading["holding"] = True
+    masked_reading["holding_reason"] = holding_result.get("reason")
+    masked_reading["target_masked_for_holding"] = True
+    masked_reading["unmasked_target_reading"] = reading
+    try:
+        vision.raw_frame = frame.copy()
+    except Exception:
+        pass
+    return masked_reading
 
 
 def _follow_combined_gap_policy() -> dict:
@@ -2425,6 +3037,17 @@ def _distance_creep_duration_ms(dist_err: float) -> int:
     )
 
 
+def _distance_correction_duration_ms(dist_err: float) -> int:
+    policy = _follow_dist_approach_policy()
+    gap = max(0.0, abs(float(dist_err)) - _win_effective_tolerance(DIST_TOL_MM))
+    return _proportional_duration_ms(
+        gap_mm=gap,
+        min_ms=int(policy.get("min_forward_pulse_ms", DEFAULT_DIST_APPROACH_POLICY["min_forward_pulse_ms"])),
+        max_ms=int(policy.get("max_forward_pulse_ms", DEFAULT_DIST_APPROACH_POLICY["max_forward_pulse_ms"])),
+        full_gap_mm=float(policy.get("full_forward_gap_mm", DEFAULT_DIST_APPROACH_POLICY["full_forward_gap_mm"])),
+    )
+
+
 def _too_close_escape_duration_ms(dist_err: float, escape_policy: dict | None = None) -> int:
     policy = escape_policy if isinstance(escape_policy, dict) else _too_close_escape_policy()
     gap = max(0.0, abs(float(dist_err)) - _win_effective_tolerance(DIST_TOL_MM))
@@ -2584,44 +3207,33 @@ def _follow_action_plan(reading: dict) -> dict:
 
     if x_ok and dist_ok and y_ok:
         return {"kind": "hold", "action": "HAPPY", "dist_err": dist_err, "x_err": x_err, "y_err": y_err}
-    if _should_finish_y_before_wheels(y_plan, dist_err=dist_err, x_err=x_err):
-        return y_plan
     if dist_err < -dist_happy_tol:
-        if _should_back_turn_for_too_close_wide_x(dist_err=dist_err, x_err=x_err):
-            escape = _too_close_escape_policy()
+        if not x_ok:
             turn_cmd = _turn_cmd_to_close_x_gap(x_err) or "r"
-            policy = _follow_x_dist_curve_policy()
-            drive_mode = str(policy.get("too_close_wide_x_drive_mode", "backward"))
-            strength = str(policy.get("near_wide_x_strength", "strong"))
-            return _attach_mast_to_plan({
-                "kind": "drive_bias",
-                "cmd": "b" if drive_mode == "backward" else "f",
-                "turn_cmd": turn_cmd,
-                "drive_mode": drive_mode,
-                "strength": strength,
-                "action": f"BCK_BIAS_{turn_cmd.upper()}_{strength.upper()}" if drive_mode == "backward" else f"BIAS_{turn_cmd.upper()}_{strength.upper()}",
+            return {
+                "kind": "turn",
+                "cmd": turn_cmd,
+                "drive_mode": "backward",
+                "strength": str(_follow_x_priority_policy().get("x_first_turn_strength", "strong")),
+                "action": f"TURN_{turn_cmd.upper()}",
                 "dist_err": dist_err,
                 "x_err": x_err,
                 "x_outside_mm": float(_x_outside_gate_mm(x_err)),
                 "dist_outside_mm": float(_dist_outside_gate_mm(dist_err)),
-                "duration_ms": _too_close_escape_duration_ms(dist_err, escape),
-                "reason": "too_close_wide_x_back_turn",
-            }, y_plan)
-        escape = _too_close_escape_policy()
-        duration_ms = _too_close_escape_duration_ms(dist_err, escape)
-        plan = {
+                "reason": "x_first_before_dist",
+            }
+        return {
             "kind": "drive",
             "cmd": "b",
-            "action": "BCK_ESCAPE",
+            "action": "BCK",
             "dist_err": dist_err,
             "x_err": x_err,
-            "pwm": int(escape["pwm"]),
-            "duration_ms": int(duration_ms),
-            "reason": "too_close_escape",
+            "duration_ms": _distance_correction_duration_ms(dist_err),
+            "distance_creep": True,
+            "reason": "dist_only_creep",
         }
-        if bool(escape.get("attach_mast")):
-            return _attach_mast_to_plan(plan, y_plan)
-        return plan
+    if _should_finish_y_before_wheels(y_plan, dist_err=dist_err, x_err=x_err):
+        return y_plan
     dist_approach = _follow_dist_approach_policy()
     if bool(dist_approach.get("require_y_ok_before_dist")) and y_plan is not None and x_ok:
         return y_plan
@@ -2715,13 +3327,14 @@ def _follow_action_plan(reading: dict) -> dict:
             "reason": "x_first_before_dist",
         }, y_plan)
 
+    dist_cmd = "b" if dist_err < 0.0 else "f"
     return _attach_mast_to_plan({
         "kind": "drive",
-        "cmd": "f",
-        "action": "FWD",
+        "cmd": dist_cmd,
+        "action": "BCK" if dist_cmd == "b" else "FWD",
         "dist_err": dist_err,
         "x_err": x_err,
-        "duration_ms": _distance_creep_duration_ms(dist_err),
+        "duration_ms": _distance_correction_duration_ms(dist_err),
         "distance_creep": True,
         "reason": "dist_only_creep",
     }, y_plan)
@@ -3381,6 +3994,20 @@ def _record_step2_stats(stats: dict, step2_result: dict) -> None:
         stats["step2_creep_attempt_count"] = int(stats.get("step2_creep_attempt_count", 0)) + int(creep_attempts)
         _bump_stat_count(stats, "act_counts", "STEP2_CREEP_FWD", creep_attempts)
         _bump_stat_count(stats, "sent_act_counts", "STEP2_CREEP_FWD", creep_attempts)
+    precision_counts = step2_result.get("precision_counts")
+    if isinstance(precision_counts, dict):
+        for key, action in (
+            ("bck", "STEP2_PRECISION_BCK"),
+            ("mast_u", "STEP2_PRECISION_MAST_U"),
+            ("mast_d", "STEP2_PRECISION_MAST_D"),
+        ):
+            try:
+                count = int(precision_counts.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                count = 0
+            if count > 0:
+                _bump_stat_count(stats, "act_counts", action, count)
+                _bump_stat_count(stats, "sent_act_counts", action, count)
     reading = step2_result.get("reading")
     if not isinstance(reading, dict):
         return
@@ -3664,6 +4291,7 @@ def _follow_loop(
     *,
     reset_after_win: bool = True,
     stop_after_win: bool = False,
+    stop_after_step2: bool = False,
     step2_probe_before_forward: bool = False,
 ) -> dict:
     last_action = ""
@@ -3833,6 +4461,37 @@ def _follow_loop(
             if not bool(step2_result.get("success")):
                 print(f"[STEP2] Failed gracefully: {step2_result.get('reason')}", flush=True)
                 break
+            if not bool(step2_result.get("target_met")):
+                print("[STEP2] Not starting step 3 until step 2 is an honest target hit.", flush=True)
+                last_action = "STEP2_NEEDS_WORK"
+                break
+            if bool(stop_after_step2):
+                print("[STEP2] Parked at step 2; stopped without reset.", flush=True)
+                last_action = "STEP2_PARK"
+                break
+            step3_result = _run_step3_lift_sequence(vision, robot)
+            step3_reading = step3_result.get("reading") if isinstance(step3_result, dict) else None
+            step3_y = "N/A"
+            if isinstance(step3_reading, dict):
+                try:
+                    step3_y = f"{float(step3_reading.get('y_mm')):+.1f}mm"
+                except (TypeError, ValueError):
+                    pass
+            print(
+                f"[STEP3] Lift after step 2: reason={step3_result.get('reason')} "
+                f"target_met={bool(step3_result.get('target_met'))} holding={bool(step3_result.get('holding'))} "
+                f"after_y={step3_y}",
+                flush=True,
+            )
+            if bool(step3_result.get("holding")):
+                _set_game_profile("holding")
+            if not bool(step3_result.get("success")):
+                print(f"[STEP3] Failed gracefully: {step3_result.get('reason')}", flush=True)
+                break
+            if not bool(step3_result.get("target_met")):
+                print("[STEP3] Not resetting until step 3 is an honest target hit.", flush=True)
+                last_action = "STEP3_NEEDS_WORK"
+                break
             if not bool(reset_after_win):
                 last_action = "HAPPY"
                 elapsed = time.monotonic() - loop_start
@@ -3918,14 +4577,35 @@ def _parse_args(argv=None) -> argparse.Namespace:
         help="Move to the happy target, stop, and do not run reset.",
     )
     parser.add_argument(
+        "--park-step2",
+        action="store_true",
+        help="Move to step 1 happy, run the step 2 seat act, then stop without reset.",
+    )
+    parser.add_argument(
         "--step2-seat-once",
         action="store_true",
-        help="Run one step 2 seat act: mast down for 2s plus slow forward for 1.4s, then measure.",
+        help="Run one step 2 seat act: mast down plus slow forward, then measure.",
+    )
+    parser.add_argument(
+        "--step2-settle-only",
+        action="store_true",
+        help="Run only step 2 precision settling from the current pose, with no blind seat/reset.",
     )
     parser.add_argument(
         "--step2-probe-before-forward",
         action="store_true",
         help="After a step 1 win, lower for step 2, report the pre-forward reading, then stop.",
+    )
+    parser.add_argument(
+        "--step3-lift-once",
+        action="store_true",
+        help="Run one step 3 lift to the active profile's y target, then measure.",
+    )
+    parser.add_argument(
+        "--game-profile",
+        choices=("auto", "empty", "holding"),
+        default="auto",
+        help="Use auto detection, or force the empty/holding target profile.",
     )
     parser.add_argument(
         "--duration-s",
@@ -3961,10 +4641,17 @@ def _worker_argv(args: argparse.Namespace) -> list[str]:
         argv.append("--reset-only")
     if bool(args.park_happy):
         argv.append("--park-happy")
+    if bool(args.park_step2):
+        argv.append("--park-step2")
     if bool(args.step2_seat_once):
         argv.append("--step2-seat-once")
+    if bool(args.step2_settle_only):
+        argv.append("--step2-settle-only")
     if bool(args.step2_probe_before_forward):
         argv.append("--step2-probe-before-forward")
+    if bool(args.step3_lift_once):
+        argv.append("--step3-lift-once")
+    argv.extend(["--game-profile", str(args.game_profile)])
     if bool(args.skip_vision_preflight):
         argv.append("--skip-vision-preflight")
     return argv
@@ -4009,6 +4696,8 @@ def _supervise_run(args: argparse.Namespace) -> int:
 
 def _run_worker(args: argparse.Namespace) -> int:
     logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
+    requested_profile = str(args.game_profile)
+    _set_game_profile("empty" if requested_profile == "auto" else requested_profile)
 
     if not bool(args.skip_vision_preflight):
         ok, reason = _vision_memory_preflight(min_lfb_mb=float(args.min_lfb_mb))
@@ -4036,6 +4725,22 @@ def _run_worker(args: argparse.Namespace) -> int:
         vision = BrickDetector(debug=True)
         vision.set_runtime_tuning(**dict(CROWN_PROFILE_TUNING))
         _warmup(vision)
+        if requested_profile == "auto":
+            selected_profile, profile_vote = _auto_select_game_profile(vision)
+            _set_game_profile(selected_profile)
+            vote_details = []
+            for idx, vote in enumerate(profile_vote.get("votes", []), start=1):
+                vote_details.append(
+                    f"{idx}:{'holding' if bool(vote.get('holding')) else 'empty'}"
+                    f"/{vote.get('reason', 'unknown')}"
+                )
+            print(
+                f"[PROFILE] holding_detector: {profile_vote['holding_count']}/{profile_vote['samples']} "
+                f"holding=True -> using {selected_profile} game ({', '.join(vote_details)})",
+                flush=True,
+            )
+        else:
+            print(f"[PROFILE] forced -> using {requested_profile} game", flush=True)
         pregame_reading = _wait_for_confident_brick(vision)
         if not bool(pregame_reading.get("confident")):
             return 1
@@ -4055,8 +4760,8 @@ def _run_worker(args: argparse.Namespace) -> int:
                     flush=True,
                 )
                 return 1
-        elif bool(args.step2_seat_once):
-            result = _run_step2_seat_sequence(vision, robot)
+        elif bool(args.step2_seat_once) or bool(args.step2_settle_only):
+            result = _run_step2_settle_sequence(vision, robot) if bool(args.step2_settle_only) else _run_step2_seat_sequence(vision, robot)
             stats = _new_game_stats()
             _record_step2_stats(stats, result)
             reading = result.get("reading") if isinstance(result, dict) else None
@@ -4075,7 +4780,7 @@ def _run_worker(args: argparse.Namespace) -> int:
                 except (TypeError, ValueError):
                     pass
             print(
-                f"[STEP2] Seat done: reason={result.get('reason')} "
+                f"[STEP2] {'Settle' if bool(args.step2_settle_only) else 'Seat'} done: reason={result.get('reason')} "
                 f"target_met={bool(result.get('target_met'))} "
                 f"after=dist {dist_text}, x {x_text}, y {y_text}",
                 flush=True,
@@ -4084,13 +4789,32 @@ def _run_worker(args: argparse.Namespace) -> int:
             print(_format_game_results_table(stats), flush=True)
             if not bool(result.get("success")):
                 return 1
+        elif bool(args.step3_lift_once):
+            result = _run_step3_lift_sequence(vision, robot)
+            reading = result.get("reading") if isinstance(result, dict) else None
+            y_text = "N/A"
+            if isinstance(reading, dict):
+                try:
+                    y_text = f"{float(reading.get('y_mm')):+.1f}mm"
+                except (TypeError, ValueError):
+                    pass
+            print(
+                f"[STEP3] Lift done: reason={result.get('reason')} "
+                f"target_met={bool(result.get('target_met'))} holding={bool(result.get('holding'))} y={y_text}",
+                flush=True,
+            )
+            if bool(result.get("holding")):
+                _set_game_profile("holding")
+            if not bool(result.get("success")):
+                return 1
         else:
             stats = _follow_loop(
                 vision,
                 robot,
                 duration_s=float(args.duration_s),
-                reset_after_win=not bool(args.park_happy),
+                reset_after_win=not (bool(args.park_happy) or bool(args.park_step2)),
                 stop_after_win=bool(args.park_happy),
+                stop_after_step2=bool(args.park_step2),
                 step2_probe_before_forward=bool(args.step2_probe_before_forward),
             )
             print(f"[FOLLOW] {float(args.duration_s):.0f} s elapsed — done.", flush=True)
