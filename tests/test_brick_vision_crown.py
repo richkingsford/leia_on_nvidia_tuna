@@ -172,7 +172,7 @@ def _make_stream_stub() -> CrownVisionLivestream:
 # ─── tests ───────────────────────────────────────────────────────────────────
 
 class TestCrownProfileTuning(unittest.TestCase):
-    """Crown profile must use negative_cutouts gate."""
+    """Crown profile protects the practical bright-green stack detector."""
 
     def test_standalone_dropdown_exposes_distance_sweep_profiles(self):
         option_keys = [key for key, _label in CROWN_PROFILE_OPTIONS]
@@ -186,10 +186,13 @@ class TestCrownProfileTuning(unittest.TestCase):
 
     def test_default_profile_is_known_good_tight_color(self):
         self.assertEqual(CROWN_PROFILE_KEY, "tight_color")
-        self.assertEqual(CROWN_PROFILE_TUNING["hsv_lower"], list(det.CYAN_HSV_TIGHT_LOWER))
-        self.assertEqual(CROWN_PROFILE_TUNING["hsv_upper"], list(det.CYAN_HSV_TIGHT_UPPER))
-        self.assertAlmostEqual(CROWN_PROFILE_TUNING["confidence"], 0.35)
+        self.assertEqual(CROWN_PROFILE_TUNING["hsv_lower"], list(det.CYAN_HSV_WIDE_LOWER))
+        self.assertEqual(CROWN_PROFILE_TUNING["hsv_upper"], list(det.CYAN_HSV_WIDE_UPPER))
+        self.assertAlmostEqual(CROWN_PROFILE_TUNING["confidence"], 0.20)
         self.assertEqual(CROWN_PROFILE_TUNING["depth_source_mode"], "pinhole")
+        self.assertTrue(CROWN_PROFILE_TUNING["trust_detector_boxes"])
+        self.assertTrue(CROWN_PROFILE_TUNING["require_cyan_shape"])
+        self.assertFalse(CROWN_PROFILE_TUNING["far_suspect_enabled"])
 
     def test_far_profiles_relax_distance_gates_from_tight_anchor(self):
         anchor = CROWN_PROFILE_TUNINGS["tight_color"]
@@ -199,24 +202,24 @@ class TestCrownProfileTuning(unittest.TestCase):
         dim = CROWN_PROFILE_TUNINGS["tight_far_dim"]
         wider = CROWN_PROFILE_TUNINGS["balanced_far_guard"]
 
-        self.assertLess(slots["negative_cutout_min_area_px"], anchor["negative_cutout_min_area_px"])
-        self.assertLess(slots["hsv_min_area_ratio"], anchor["hsv_min_area_ratio"])
+        self.assertGreater(slots["hsv_cyan_coverage_min"], anchor["hsv_cyan_coverage_min"])
+        self.assertGreater(slots["hsv_min_area_ratio"], anchor["hsv_min_area_ratio"])
         self.assertLess(conf["confidence"], slots["confidence"])
         self.assertEqual(no_erode["hsv_erode_iterations"], 0)
-        self.assertLess(dim["hsv_lower"][1], anchor["hsv_lower"][1])
+        self.assertGreater(dim["hsv_cyan_coverage_min"], anchor["hsv_cyan_coverage_min"])
         self.assertTrue(wider["closeup_full_frame_hsv_enabled"])
 
-    def test_shape_gate_mode_is_negative_cutouts(self):
-        self.assertEqual(CROWN_PROFILE_TUNING["shape_gate_mode"], "negative_cutouts")
+    def test_shape_gate_mode_is_shape_match(self):
+        self.assertEqual(CROWN_PROFILE_TUNING["shape_gate_mode"], "shape_match")
 
-    def test_profile_has_negative_cutout_keys(self):
-        keys = [k for k in CROWN_PROFILE_TUNING if k.startswith("negative_cutout")]
-        self.assertTrue(len(keys) > 0, "Crown profile must include negative_cutout gate keys")
+    def test_profile_disables_far_suspect_runtime_path(self):
+        self.assertFalse(CROWN_PROFILE_TUNING["far_suspect_enabled"])
 
-    def test_profile_applied_sets_negative_cutouts_mode(self):
+    def test_profile_applied_sets_shape_match_mode(self):
         d = _make_stub()
         d.set_runtime_tuning(**dict(CROWN_PROFILE_TUNING))
-        self.assertEqual(d._face_shape_gate_mode, det.BRICK_FACE_GATE_MODE_NEGATIVE_CUTOUTS)
+        self.assertEqual(d._face_shape_gate_mode, det.BRICK_FACE_GATE_MODE_SHAPE_MATCH)
+        self.assertFalse(d._far_suspect_enabled)
 
 
 class TestTrapezoidGate(unittest.TestCase):

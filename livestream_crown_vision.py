@@ -24,6 +24,13 @@ from helper_brick_detector_yolo import (
     CYAN_SHADE_HEXES,
 )
 from helper_manual_config import load_manual_training_config
+from helper_holding_brick import (
+    contour_target_result_tuple,
+    detect_holding_brick,
+    detect_masked_target_brick_contour,
+    draw_masked_target_contour,
+    mask_held_brick_for_target_frame,
+)
 from helper_stream_server import format_stream_url
 from helper_streaming import start_stream_server
 import helper_xyz_coords
@@ -37,19 +44,20 @@ HOLD_FRAMES = 15
 CROWN_PROFILE_KEY = "tight_color"
 
 CROWN_PROFILE_BASE_TUNING = {
-    "confidence": 0.25,
+    "confidence": 0.20,
     "smoothing_alpha": 0.15,
     "hsv_enabled": True,
     "hsv_erode_iterations": 1,
-    "hsv_lower": list(CYAN_HSV_BALANCED_LOWER),
-    "hsv_upper": list(CYAN_HSV_BALANCED_UPPER),
-    "hsv_cyan_coverage_min": 0.10,
+    "hsv_lower": list(CYAN_HSV_WIDE_LOWER),
+    "hsv_upper": list(CYAN_HSV_WIDE_UPPER),
+    "hsv_cyan_coverage_min": 0.05,
     "full_frame_hsv_cyan_coverage_min": 0.03,
-    "hsv_min_area_ratio": 0.05,
+    "hsv_min_area_ratio": 0.03,
     "shape_gate_mode": "shape_match",
-    "conf_gate_pct": 55.0,
+    "conf_gate_pct": 50.0,
     "trust_detector_boxes": True,
-    "require_cyan_shape": False,
+    "require_cyan_shape": True,
+    "far_suspect_enabled": False,
     "closeup_full_frame_hsv_enabled": True,
     "depth_source_mode": "pinhole",
     "stereo_config_mode": "standard",
@@ -58,12 +66,12 @@ CROWN_PROFILE_BASE_TUNING = {
 TIGHT_COLOR_TUNING = {
     **CROWN_PROFILE_BASE_TUNING,
     "label": "2 Tight Color",
-    "confidence": 0.25,
-    "hsv_lower": list(CYAN_HSV_TIGHT_LOWER),
-    "hsv_upper": list(CYAN_HSV_TIGHT_UPPER),
-    "hsv_cyan_coverage_min": 0.12,
-    "hsv_min_area_ratio": 0.07,
-    "conf_gate_pct": 60.0,
+    "confidence": 0.20,
+    "hsv_lower": list(CYAN_HSV_WIDE_LOWER),
+    "hsv_upper": list(CYAN_HSV_WIDE_UPPER),
+    "hsv_cyan_coverage_min": 0.05,
+    "hsv_min_area_ratio": 0.03,
+    "conf_gate_pct": 50.0,
 }
 
 CROWN_PROFILE_TUNINGS = {
@@ -77,6 +85,8 @@ CROWN_PROFILE_TUNINGS = {
         "hsv_min_area_ratio": 0.03,
         "conf_gate_pct": 50.0,
         "trust_detector_boxes": True,
+        "require_cyan_shape": True,
+        "far_suspect_enabled": False,
         "closeup_full_frame_hsv_enabled": True,
     },
     "tight_color": TIGHT_COLOR_TUNING,
@@ -137,6 +147,15 @@ CROWN_PROFILE_TUNING = {
     key: value
     for key, value in CROWN_PROFILE_TUNINGS[CROWN_PROFILE_KEY].items()
     if key != "label"
+}
+HELD_TARGET_TUNING = {
+    "confidence": 0.12,
+    "conf_gate_pct": 45.0,
+    "hsv_cyan_coverage_min": 0.08,
+    "hsv_min_area_ratio": 0.04,
+    "trust_detector_boxes": False,
+    "require_cyan_shape": True,
+    "far_suspect_enabled": False,
 }
 
 
@@ -246,6 +265,7 @@ class CrownVisionLivestream:
         self._held_result = None
         self._held_frame = None
         self._miss_count = 0
+        self._holding_result = {"holding": False, "reason": "not_checked"}
 
     def start(self) -> str:
         # Start Flask immediately so the URL is accessible within ~1 s.
@@ -326,6 +346,39 @@ class CrownVisionLivestream:
             result = None
             try:
                 result = self.vision.read()
+                raw_frame = getattr(self.vision, "raw_frame", None)
+                holding_result = detect_holding_brick(raw_frame)
+                self._holding_result = dict(holding_result) if isinstance(holding_result, dict) else {
+                    "holding": False,
+                    "reason": "invalid_holding_result",
+                }
+                if bool(holding_result.get("holding")):
+                    masked = mask_held_brick_for_target_frame(raw_frame, holding_result)
+                    if masked is not None:
+                        contour_result = detect_masked_target_brick_contour(masked, detector=self.vision)
+                        if bool(contour_result.get("found")):
+                            result = contour_target_result_tuple(contour_result)
+                            try:
+                                self.vision.current_frame = draw_masked_target_contour(raw_frame, contour_result)
+                                self.vision.last_status = "target contour locked below held brick"
+                            except Exception:
+                                pass
+                            self._publish(result)
+                            elapsed = time.monotonic() - started
+                            if elapsed < interval_s:
+                                time.sleep(interval_s - elapsed)
+                            continue
+                        try:
+                            self.vision.set_runtime_tuning(**HELD_TARGET_TUNING)
+                            masked_result = self.vision.read_frame(masked)
+                        finally:
+                            self.vision.set_runtime_tuning(**dict(settings))
+                        if isinstance(masked_result, tuple) and len(masked_result) >= 1 and bool(masked_result[0]):
+                            result = masked_result
+                            try:
+                                self.vision.last_status = "target locked below held brick"
+                            except Exception:
+                                pass
             except Exception as exc:
                 logging.getLogger("CrownVisionLivestream").exception("Vision read failed: %s", exc)
             self._publish(result)
@@ -430,6 +483,30 @@ class CrownVisionLivestream:
             depth_stats = {}
         with self.state["lock"]:
             profile_label = _profile_label(self.state.get("cyan_profile", CROWN_PROFILE_KEY))
+        raw_holding_result = getattr(self, "_holding_result", None)
+        holding_result = raw_holding_result if isinstance(raw_holding_result, dict) else {}
+        holding = bool(holding_result.get("holding"))
+        holding_reason = str(holding_result.get("reason") or "-")
+        holding_coverage = holding_result.get("coverage_ratio")
+        holding_best = holding_result.get("best") if isinstance(holding_result.get("best"), dict) else {}
+        holding_checks = holding_result.get("checks") if isinstance(holding_result.get("checks"), dict) else {}
+        holding_detail = f"HOLDING: {str(holding).lower()} ({holding_reason})"
+        try:
+            holding_detail += f" coverage={float(holding_coverage) * 100.0:.1f}%"
+        except (TypeError, ValueError):
+            pass
+        if holding_best:
+            try:
+                holding_detail += (
+                    f" area={float(holding_best.get('area_px')):.0f}px"
+                    f" width={float(holding_best.get('width_ratio')) * 100.0:.0f}%"
+                    f" height={int(holding_best.get('height_px'))}px"
+                )
+            except (TypeError, ValueError):
+                pass
+        if holding_checks:
+            failed = [name for name, ok in holding_checks.items() if not bool(ok)]
+            holding_detail += " checks=ok" if not failed else " failed=" + ",".join(failed)
 
         lines = [
             {
@@ -458,6 +535,10 @@ class CrownVisionLivestream:
             {
                 "text": f"VISIBLE: {str(bool(found)).lower()}",
                 "color": "#00ff00" if bool(found) else "#ff5555",
+            },
+            {
+                "text": holding_detail,
+                "color": "#ffd166" if holding else "#a8d8ff",
             },
         ]
         if bool(found):

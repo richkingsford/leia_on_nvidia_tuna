@@ -122,6 +122,35 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertIn("--duration-s", argv)
         self.assertIn("12.0", argv)
 
+    def test_worker_does_not_reset_when_pregame_visibility_fails(self):
+        args = follow._parse_args(["--skip-vision-preflight"])
+        args.worker = True
+        vision = _FakeVision((False,))
+        robot = _FakeRobot()
+
+        with mock.patch.object(follow, "BrickDetector", return_value=vision), mock.patch.object(
+            follow,
+            "Robot",
+            return_value=robot,
+        ), mock.patch.object(follow, "_warmup"), mock.patch.object(
+            follow,
+            "_wait_for_confident_brick",
+            return_value=follow.brick_motion_measurement_from_result((False,)),
+        ), mock.patch.object(
+            follow,
+            "_run_reset_sequence",
+        ) as reset_mock, mock.patch.object(
+            follow,
+            "_run_step3_no_visibility_fallback",
+        ) as fallback_mock:
+            code = follow._run_worker(args)
+
+        self.assertEqual(code, 1)
+        reset_mock.assert_not_called()
+        fallback_mock.assert_not_called()
+        self.assertEqual(robot.commands, [])
+        self.assertEqual(robot.custom_commands, [])
+
     def test_auto_select_game_profile_uses_holding_majority(self):
         class _Vision:
             def __init__(self):
@@ -149,7 +178,7 @@ class TestFollowTheBrickReset(unittest.TestCase):
         holding_result = {
             "holding": True,
             "reason": "held_brick_detected",
-            "best": {"bbox": (120, 40, 420, 160)},
+            "best": {"bbox": (120, 40, 420, 100)},
         }
 
         with mock.patch.object(follow, "detect_holding_brick", return_value=holding_result):
@@ -160,7 +189,43 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual(reading["dist_mm"], 120.0)
         self.assertEqual(reading["unmasked_target_reading"]["dist_mm"], 37.0)
         self.assertIsNotNone(vision.masked_frame)
-        self.assertEqual(int(vision.masked_frame[80, 200].sum()), 0)
+        self.assertEqual(int(vision.masked_frame[50, 130].sum()), 0)
+        self.assertGreater(int(vision.masked_frame[50, 200].sum()), 0)
+        self.assertGreater(int(vision.masked_frame[60, 200].sum()), 0)
+        self.assertGreater(int(vision.masked_frame[180, 320].sum()), 0)
+        self.assertGreater(int(vision.masked_frame[180, 125].sum()), 0)
+
+    def test_read_brick_measurement_relaxes_confidence_for_holding_target(self):
+        class _LowConfHoldingVision(_FakeHoldingVision):
+            def __init__(self):
+                super().__init__()
+                self.tuning_calls = []
+
+            def set_runtime_tuning(self, **kwargs):
+                self.tuning_calls.append(dict(kwargs))
+
+            def read_frame(self, frame):
+                self.masked_frame = frame.copy()
+                return (True, 0.0, 120.0, 4.0, 50.0, -4.0, False, False)
+
+        vision = _LowConfHoldingVision()
+        holding_result = {
+            "holding": True,
+            "reason": "held_brick_detected",
+            "best": {"bbox": (120, 40, 420, 160)},
+        }
+
+        with mock.patch.object(follow, "detect_holding_brick", return_value=holding_result):
+            reading = follow._read_brick_measurement(vision)
+
+        self.assertTrue(reading["holding"])
+        self.assertTrue(reading["target_masked_for_holding"])
+        self.assertTrue(reading["holding_target_relaxed_confidence"])
+        self.assertTrue(reading["confident"])
+        self.assertEqual(reading["conf"], 50.0)
+        self.assertEqual(reading["min_confidence_pct"], 40.0)
+        self.assertEqual(reading["dist_mm"], 120.0)
+        self.assertGreaterEqual(len(vision.tuning_calls), 2)
 
     def test_default_game_duration_is_thirty_seconds(self):
         args = follow._parse_args([])
@@ -169,10 +234,31 @@ class TestFollowTheBrickReset(unittest.TestCase):
 
     def test_distance_tolerances_are_configured_for_current_game(self):
         self.assertEqual(follow.TARGET_DIST_MM, 63.882)
-        self.assertEqual(follow.DIST_TOL_MM, 20.0)
+        self.assertEqual(follow.DIST_TOL_MM, 8.0)
+        self.assertAlmostEqual(follow._dist_target_mm(), 63.882)
+        self.assertEqual(follow._dist_tol_mm(), 8.0)
         self.assertAlmostEqual(follow.X_TARGET_MM, -0.9425903280420904)
         self.assertEqual(follow.X_TOL_MM, 8.0)
+        self.assertAlmostEqual(follow._x_target_mm(), -0.9425903280420904)
+        self.assertEqual(follow._x_tol_mm(), 3.0)
+        self.assertAlmostEqual(follow.Y_TARGET_MM, -4.25129472)
+        self.assertAlmostEqual(follow._y_win_target_mm(), -4.25129472)
         self.assertEqual(follow.Y_TOL_MM, 1.0)
+        self.assertEqual(follow._follow_y_axis_config()["win_tol_mm"], 0.6)
+        self.assertEqual(follow._win_confirmation_config()["single_win_allowance_s"], 9.0)
+
+    def test_holding_step1_targets_can_override_dist_x_and_y_from_world_model(self):
+        follow._set_game_profile("holding")
+
+        self.assertAlmostEqual(follow._dist_target_mm(), 82.87841288248698)
+        self.assertEqual(follow._dist_tol_mm(), 4.0)
+        self.assertAlmostEqual(follow._x_target_mm(), -2.322967529296875)
+        self.assertEqual(follow._x_tol_mm(), 3.0)
+        self.assertTrue(follow._follow_y_axis_config()["enabled"])
+        self.assertFalse(follow._follow_y_axis_config()["lock_on_enabled"])
+        self.assertAlmostEqual(follow._y_win_target_mm(), 5.250551859537761)
+        self.assertEqual(follow._y_win_tol_mm(), 2.5)
+        self.assertEqual(follow._cautious_visibility_config()["motion_min_confidence_pct"], 75.0)
         self.assertAlmostEqual(follow.RESET_DIST_TARGET_MM, follow.TARGET_DIST_MM * 1.75)
         self.assertAlmostEqual(follow.RESET_DIST_TOL_MM, 9.0)
 
@@ -199,6 +285,35 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertFalse(missing["visible"])
         self.assertFalse(missing["confident"])
 
+    def test_read_brick_measurement_rejects_placeholder_even_with_history(self):
+        vision = _SequenceVision(
+            [
+                (True, 0.0, 130.0, 3.0, 85.0, -2.0, False, False),
+                (True, 0.0, 132.0, 4.0, 86.0, -3.0, False, False),
+                (True, 0.0, 500.0, 0.0, 50.0, 0.0, False, False),
+            ]
+        )
+
+        first = follow._read_brick_measurement(vision)
+        second = follow._read_brick_measurement(vision)
+        rejected = follow._read_brick_measurement(vision)
+
+        self.assertTrue(first["confident"])
+        self.assertTrue(second["confident"])
+        self.assertFalse(rejected["confident"])
+        self.assertEqual(rejected["reason"], "placeholder_500_0_0_rejected")
+        self.assertTrue(rejected["placeholder_rejected"])
+        self.assertEqual(rejected["dist_mm"], 500.0)
+
+    def test_read_brick_measurement_rejects_placeholder_without_history(self):
+        reading = follow._read_brick_measurement(
+            _FakeVision((True, 0.0, 500.0, 0.0, 50.0, 0.0, False, False))
+        )
+
+        self.assertTrue(reading["visible"])
+        self.assertFalse(reading["confident"])
+        self.assertEqual(reading["reason"], "placeholder_500_0_0_rejected")
+
     def test_wait_for_confident_brick_blocks_without_visibility(self):
         fake_clock = _FakeClock()
 
@@ -224,6 +339,35 @@ class TestFollowTheBrickReset(unittest.TestCase):
 
         self.assertTrue(reading["confident"])
         self.assertEqual(reading["dist_mm"], 150.0)
+
+    def test_visibility_recovery_waits_and_returns_recovered_sample(self):
+        fake_clock = _FakeClock()
+        robot = _FakeRobot()
+        vision = _SequenceVision(
+            [
+                (False,),
+                (False,),
+                (True, 0.0, 144.0, 3.0, 88.0, -2.0, False, False),
+            ]
+        )
+
+        with mock.patch.object(follow.time, "monotonic", side_effect=fake_clock.monotonic), mock.patch.object(
+            follow.time,
+            "sleep",
+            side_effect=fake_clock.sleep,
+        ):
+            reading = follow._wait_for_visibility_recovery(
+                vision,
+                robot,
+                follow.brick_motion_measurement_from_result((False,)),
+                timeout_s=3.0,
+                sample_s=0.15,
+                context="test",
+            )
+
+        self.assertTrue(reading["confident"])
+        self.assertEqual(reading["dist_mm"], 144.0)
+        self.assertGreaterEqual(robot.stops, 1)
 
     def test_reset_reverse_turn_uses_gap_algorithm_for_one_backward_arc(self):
         robot = _FakeRobot()
@@ -315,11 +459,16 @@ class TestFollowTheBrickReset(unittest.TestCase):
     def test_reverse_turn_until_x_offset_refuses_to_move_without_visible_brick(self):
         robot = _FakeRobot()
 
-        ok, reason, reading = follow._reverse_turn_until_x_offset(
-            _FakeVision((False,)),
-            robot,
-            direction="l",
-        )
+        with mock.patch.object(
+            follow,
+            "_wait_for_visibility_recovery",
+            side_effect=lambda _vision, _robot, reading, **_kwargs: reading,
+        ):
+            ok, reason, reading = follow._reverse_turn_until_x_offset(
+                _FakeVision((False,)),
+                robot,
+                direction="l",
+            )
 
         self.assertFalse(ok)
         self.assertEqual(reason, "brick_not_confident_before_reset_motion")
@@ -333,12 +482,16 @@ class TestFollowTheBrickReset(unittest.TestCase):
         vision = _SequenceVision(
             [
                 (True, 0.0, follow.TARGET_DIST_MM, 4.0, 88.0, 0.0, False, False),
-                (True, 0.0, 176.0, 6.0, 88.0, 0.0, False, False),
+                (True, 0.0, 176.0, 36.0, 88.0, 0.0, False, False),
             ]
         )
         fake_clock = _FakeClock()
 
-        with mock.patch.object(follow.time, "sleep", side_effect=fake_clock.sleep):
+        with mock.patch.object(follow.time, "sleep", side_effect=fake_clock.sleep), mock.patch.object(
+            follow,
+            "_reset_adjustment_config",
+            return_value={"enabled": False, "max_attempts": 0, "pulse_min_ms": 60, "pulse_max_ms": 260, "settle_s": 0.12},
+        ):
             ok, reason, reading = follow._reverse_turn_until_x_offset(
                 vision,
                 robot,
@@ -383,13 +536,107 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(reason, "one_act_complete")
         self.assertEqual(reading["dist_mm"], 176.0)
-        self.assertEqual(reading["x_mm"], 6.0)
+        self.assertEqual(reading["x_mm"], 36.0)
         self.assertEqual(robot.commands, [])
         self.assertEqual(len(robot.custom_commands), 1)
         cmd, actions, _duration_ms = robot.custom_commands[0]
         self.assertEqual(cmd, "l")
         self.assertEqual(actions, expected_actions)
         self.assertGreaterEqual(robot.stops, 1)
+
+    def test_reverse_turn_adjusts_until_reset_x_and_dist_are_ready(self):
+        robot = _FakeRobot()
+        reset_cfg = follow._reset_motion_config()["reverse_turn"]
+        vision = _SequenceVision(
+            [
+                (True, 0.0, follow.TARGET_DIST_MM, 0.0, 88.0, 0.0, False, False),
+                (True, 0.0, 112.0, 45.0, 88.0, 0.0, False, False),
+                (True, 0.0, 112.0, 15.0, 88.0, 0.0, False, False),
+            ]
+        )
+        fake_clock = _FakeClock()
+
+        with mock.patch.object(follow.time, "sleep", side_effect=fake_clock.sleep):
+            ok, reason, reading = follow._reverse_turn_until_x_offset(
+                vision,
+                robot,
+                direction="l",
+                rng=_FakeRng("l", uniform_value=2750.0),
+            )
+
+        expected_adjust = follow._scaled_actions(
+            follow._turn_curve_actions(
+                drive_mode="backward",
+                cmd="r",
+                curve={
+                    "inner_pwm": reset_cfg["low_x_extra_sharp_turn"]["slower_pwm"],
+                    "outer_pwm": reset_cfg["low_x_extra_sharp_turn"]["faster_pwm"],
+                    "slower_pwm": reset_cfg["low_x_extra_sharp_turn"]["slower_pwm"],
+                    "faster_pwm": reset_cfg["low_x_extra_sharp_turn"]["faster_pwm"],
+                    "x_gap_mm": 0.0,
+                },
+            )
+        )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "adjusted_target_hit")
+        self.assertEqual(reading["x_mm"], 15.0)
+        self.assertEqual(len(robot.custom_commands), 2)
+        cmd, actions, duration_ms = robot.custom_commands[1]
+        self.assertEqual(cmd, "r")
+        self.assertGreaterEqual(duration_ms, 60)
+        self.assertEqual(actions, expected_adjust)
+
+    def test_y_action_stall_guard_ignores_dist_and_x_jitter(self):
+        stats = follow._new_game_stats()
+        max_tries = int(follow._act_stall_guard_config()["y_max_no_change_tries"])
+        for idx in range(max_tries):
+            stats["pending_observation"] = {
+                "action": "MAST_D_PROTECT",
+                "dist_mm": 100.0 + float(idx),
+                "x_mm": 5.0 + float(idx),
+                "y_mm": 20.0,
+                "y_target_mm": 0.0,
+                "duration_ms": 100,
+            }
+            result = follow._record_observed_after_pending_act(
+                stats,
+                {
+                    "dist_mm": 105.0 + float(idx),
+                    "x_mm": 10.0 + float(idx),
+                    "y_mm": 20.2,
+                },
+            )
+            self.assertFalse(result["observed"])
+            if idx < max_tries - 1:
+                self.assertFalse(stats["stall_guard_triggered"])
+        self.assertTrue(stats["stall_guard_triggered"])
+        self.assertEqual(stats["stall_guard_reason"], "act_stall_no_observed_change:MAST_D_PROTECT")
+        self.assertEqual(stats["stall_guard_detail"]["observed_mode"], "target_error")
+
+    def test_holding_profile_halves_reset_back_duration(self):
+        cfg = {"pulse_ms": 1000, "timeout_s": 1.0, "holding_pulse_scale": 0.5}
+        old_profile = getattr(follow, "CURRENT_GAME_PROFILE", "empty")
+        try:
+            follow._set_game_profile("empty")
+            self.assertEqual(follow._reset_act_duration_ms(cfg), 1000)
+            follow._set_game_profile("holding")
+            self.assertEqual(follow._reset_act_duration_ms(cfg), 500)
+        finally:
+            follow._set_game_profile(old_profile)
+
+    def test_reset_config_uses_holding_profile_targets(self):
+        old_profile = getattr(follow, "CURRENT_GAME_PROFILE", "empty")
+        try:
+            follow._set_game_profile("empty")
+            follow._set_game_profile("holding")
+            holding_reset = follow._reset_motion_config()["reverse_turn"]
+        finally:
+            follow._set_game_profile(old_profile)
+        self.assertAlmostEqual(holding_reset["dist_target_mm"], 105.9495, places=3)
+        self.assertAlmostEqual(holding_reset["target_abs_x_mm"], 35.445, places=3)
+        self.assertAlmostEqual(holding_reset["y_target_mm"], -13.716072095906299, places=3)
+        self.assertAlmostEqual(holding_reset["x_offset_min_mm"], 32.4, places=3)
+        self.assertAlmostEqual(holding_reset["x_offset_max_mm"], 38.4, places=3)
 
     def test_follow_loop_stops_on_first_missing_frame_without_stale_motion(self):
         robot = _FakeRobot()
@@ -413,14 +660,16 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual(robot.custom_commands, [])
         self.assertGreaterEqual(robot.stops, 1)
 
-    def test_follow_loop_prioritizes_sharp_x_turn_when_x_gap_is_not_polished(self):
+    def test_follow_loop_biases_forward_when_x_gap_is_not_polished(self):
         robot = _FakeRobot()
+        forward_gap = follow._follow_motion_config()["x_only_turn"]["forward_min_dist_err_mm"] + 5.0
+        x_mm = follow.X_TOL_MM + 0.8
         vision = _FakeVision(
             (
                 True,
                 0.0,
-                follow.TARGET_DIST_MM + follow.DIST_TOL_MM + 45.0,
-                follow.X_TOL_MM + 0.8,
+                follow.TARGET_DIST_MM + forward_gap,
+                x_mm,
                 88.0,
                 follow.Y_TARGET_MM,
                 False,
@@ -439,15 +688,15 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual(robot.commands, [])
         self.assertEqual(len(robot.custom_commands), 1)
         cmd, actions, duration_ms = robot.custom_commands[0]
-        self.assertEqual(cmd, "r")
-        self.assertEqual(duration_ms, follow.PULSE_MS)
+        self.assertEqual(cmd, "f")
+        self.assertEqual(duration_ms, follow._distance_creep_duration_ms(forward_gap))
         self.assertEqual(
             actions,
-            follow._turn_curve_actions(
+            follow._scaled_actions(follow._turn_bias_actions(
                 drive_mode="forward",
-                cmd="r",
-                curve=follow._adaptive_turn_curve_for_drive_mode("forward", follow.X_TOL_MM + 0.8),
-            ),
+                turn_cmd="r",
+                curve=follow._turn_bias_curve_for_drive_mode("forward", "medium"),
+            )),
         )
 
     def test_follow_loop_creeps_dist_in_discrete_readback_acts(self):
@@ -492,7 +741,7 @@ class TestFollowTheBrickReset(unittest.TestCase):
                 True,
                 follow.Y_TARGET_MM,
                 follow.TARGET_DIST_MM + follow.DIST_TOL_MM + 1.0,
-                5.0,
+                follow._x_target_mm(),
                 88.0,
                 follow.Y_TARGET_MM,
                 False,
@@ -508,17 +757,12 @@ class TestFollowTheBrickReset(unittest.TestCase):
         ):
             follow._follow_loop(vision, robot, duration_s=0.025)
 
-        self.assertEqual(
-            robot.commands,
-            [
-                (
-                    "f",
-                    follow._normal_drive_pwm("f"),
-                    follow._distance_creep_duration_ms(follow.DIST_TOL_MM + 1.0),
-                )
-            ],
-        )
-        self.assertEqual(robot.custom_commands, [])
+        self.assertEqual(robot.commands, [])
+        self.assertEqual(len(robot.custom_commands), 1)
+        sent_cmd, actions, duration_ms = robot.custom_commands[0]
+        self.assertEqual(sent_cmd, "f")
+        self.assertEqual(duration_ms, 200)
+        self.assertEqual([action["pwm"] for action in actions], [0, 103])
 
     def test_follow_loop_uses_turn_curve_when_only_x_gap_is_open(self):
         robot = _FakeRobot()
@@ -553,7 +797,10 @@ class TestFollowTheBrickReset(unittest.TestCase):
             follow._turn_curve_actions(
                 drive_mode="backward",
                 cmd="r",
-                curve=follow._adaptive_turn_curve_for_drive_mode("backward", follow.X_TOL_MM + 0.5),
+                curve=follow._adaptive_turn_curve_for_drive_mode(
+                    "backward",
+                    abs((follow.X_TOL_MM + 0.5) - follow._x_target_mm()),
+                ),
             ),
         )
 
@@ -563,8 +810,8 @@ class TestFollowTheBrickReset(unittest.TestCase):
             (
                 True,
                 0.0,
-                follow.TARGET_DIST_MM + follow.DIST_TOL_MM + 35.0,
-                0.0,
+                follow.TARGET_DIST_MM + (follow.DIST_TOL_MM / 2.0),
+                follow._x_target_mm(),
                 88.0,
                 follow.Y_TARGET_MM + follow.Y_TOL_MM + 2.0,
                 False,
@@ -572,8 +819,14 @@ class TestFollowTheBrickReset(unittest.TestCase):
             )
         )
         fake_clock = _FakeClock()
+        y_cfg = follow._follow_y_axis_config()
+        y_cfg["lock_on_enabled"] = True
 
-        with mock.patch.object(follow.time, "monotonic", side_effect=fake_clock.monotonic), mock.patch.object(
+        with mock.patch.object(follow, "_follow_y_axis_config", return_value=y_cfg), mock.patch.object(
+            follow.time,
+            "monotonic",
+            side_effect=fake_clock.monotonic,
+        ), mock.patch.object(
             follow.time,
             "sleep",
             side_effect=fake_clock.sleep,
@@ -581,7 +834,7 @@ class TestFollowTheBrickReset(unittest.TestCase):
             stats = follow._follow_loop(vision, robot, duration_s=0.025)
 
         self.assertEqual(robot.custom_commands, [])
-        self.assertEqual(robot.commands, [("d", 40, 220)])
+        self.assertEqual(robot.commands, [("d", 255, 300)])
         self.assertEqual(stats["act_counts"], {"MAST_D": 1})
 
     def test_follow_loop_prioritizes_mast_only_when_y_gap_is_large(self):
@@ -590,17 +843,23 @@ class TestFollowTheBrickReset(unittest.TestCase):
             (
                 True,
                 0.0,
-                follow.TARGET_DIST_MM + follow.DIST_TOL_MM + 35.0,
-                0.0,
+                220.0,
+                follow._x_target_mm(),
                 88.0,
                 follow.Y_TARGET_MM + 40.0,
                 False,
-                False,
+                True,
             )
         )
         fake_clock = _FakeClock()
+        y_cfg = follow._follow_y_axis_config()
+        y_cfg["lock_on_enabled"] = True
 
-        with mock.patch.object(follow.time, "monotonic", side_effect=fake_clock.monotonic), mock.patch.object(
+        with mock.patch.object(follow, "_follow_y_axis_config", return_value=y_cfg), mock.patch.object(
+            follow.time,
+            "monotonic",
+            side_effect=fake_clock.monotonic,
+        ), mock.patch.object(
             follow.time,
             "sleep",
             side_effect=fake_clock.sleep,
@@ -609,7 +868,7 @@ class TestFollowTheBrickReset(unittest.TestCase):
 
         self.assertEqual(robot.custom_commands, [])
         self.assertEqual(len(robot.commands), 1)
-        self.assertEqual(robot.commands[0], ("d", 40, 220))
+        self.assertEqual(robot.commands[0], ("d", 255, 220))
         self.assertEqual(stats["act_counts"], {"MAST_D_PROTECT": 1})
 
     def test_follow_loop_prioritizes_x_when_x_and_y_gaps_are_large(self):
@@ -627,20 +886,30 @@ class TestFollowTheBrickReset(unittest.TestCase):
             )
         )
         fake_clock = _FakeClock()
+        y_cfg = follow._follow_y_axis_config()
+        y_cfg["lock_on_enabled"] = True
 
-        with mock.patch.object(follow.time, "monotonic", side_effect=fake_clock.monotonic), mock.patch.object(
+        with mock.patch.object(follow, "_follow_y_axis_config", return_value=y_cfg), mock.patch.object(
             follow.time,
-            "sleep",
-            side_effect=fake_clock.sleep,
-        ):
+            "monotonic",
+            side_effect=fake_clock.monotonic,
+        ), mock.patch.object(follow.time, "sleep", side_effect=fake_clock.sleep):
             stats = follow._follow_loop(vision, robot, duration_s=0.025)
 
         self.assertEqual(robot.commands, [])
         self.assertEqual(len(robot.custom_commands), 1)
-        cmd, actions, _duration_ms = robot.custom_commands[0]
+        cmd, actions, duration_ms = robot.custom_commands[0]
         self.assertEqual(cmd, "r")
-        self.assertEqual(actions[-1], {"target": "m", "action": "u", "pwm": 40})
-        self.assertEqual(stats["act_counts"], {"TURN_R_MAST_D": 1})
+        self.assertEqual(duration_ms, follow.PULSE_MS)
+        self.assertEqual(
+            actions,
+            follow._scaled_actions(follow._turn_curve_actions(
+                drive_mode="backward",
+                cmd="r",
+                curve=follow._adaptive_turn_curve_for_drive_mode("backward", follow.X_TOL_MM + 30.0 - follow._x_target_mm()),
+            )),
+        )
+        self.assertEqual(stats["act_counts"], {"TURN_R": 1})
 
     def test_follow_loop_runs_y_lock_on_near_ninety_mm(self):
         robot = _FakeRobot()
@@ -657,18 +926,175 @@ class TestFollowTheBrickReset(unittest.TestCase):
             )
         )
         fake_clock = _FakeClock()
+        y_cfg = follow._follow_y_axis_config()
+        y_cfg["lock_on_enabled"] = True
 
-        with mock.patch.object(follow.time, "monotonic", side_effect=fake_clock.monotonic), mock.patch.object(
+        with mock.patch.object(follow, "_follow_y_axis_config", return_value=y_cfg), mock.patch.object(
             follow.time,
-            "sleep",
-            side_effect=fake_clock.sleep,
-        ):
+            "monotonic",
+            side_effect=fake_clock.monotonic,
+        ), mock.patch.object(follow.time, "sleep", side_effect=fake_clock.sleep):
             stats = follow._follow_loop(vision, robot, duration_s=0.025)
 
         self.assertEqual(robot.custom_commands, [])
         self.assertEqual(robot.commands, [("d", 255, 400)])
         self.assertEqual(stats["act_counts"], {"Y_LOCK_MAST_D": 1})
         self.assertFalse(stats["y_lock_on_armed"])
+
+    def test_follow_loop_releases_y_commit_when_xz_leaves_gate(self):
+        robot = _FakeRobot()
+        vision = _SequenceVision(
+            [
+                (
+                    True,
+                    0.0,
+                    90.0,
+                    follow._x_target_mm(),
+                    88.0,
+                    follow._y_win_target_mm() + 20.0,
+                    False,
+                    False,
+                ),
+                (
+                    True,
+                    0.0,
+                    follow.TARGET_DIST_MM - follow.DIST_TOL_MM - 25.0,
+                    follow._x_target_mm(),
+                    88.0,
+                    follow._y_win_target_mm() + 10.0,
+                    False,
+                    False,
+                ),
+            ]
+        )
+        fake_clock = _FakeClock()
+        y_cfg = follow._follow_y_axis_config()
+        y_cfg["lock_on_enabled"] = True
+
+        with mock.patch.object(follow, "_follow_y_axis_config", return_value=y_cfg), mock.patch.object(
+            follow.time,
+            "monotonic",
+            side_effect=fake_clock.monotonic,
+        ), mock.patch.object(
+            follow.time,
+            "sleep",
+            side_effect=fake_clock.sleep,
+        ):
+            stats = follow._follow_loop(vision, robot, duration_s=0.65)
+
+        self.assertEqual(robot.custom_commands, [])
+        self.assertEqual(robot.commands, [("d", 255, 400), ("b", 103, 373)])
+        self.assertEqual(stats["act_counts"], {"Y_LOCK_MAST_D": 1, "BCK": 1})
+        self.assertFalse(stats["y_commit_active"])
+        self.assertEqual(
+            stats["miss_reasons"],
+            {"y_lock_on": 1, "y_commit_released_xz_outside": 1, "too_close": 1},
+        )
+
+    def test_debug_mode_does_not_terminate_on_y_commit_target_before_step_win(self):
+        robot = _FakeRobot()
+        vision = _SequenceVision(
+            [
+                (
+                    True,
+                    0.0,
+                    90.0,
+                    follow._x_target_mm(),
+                    88.0,
+                    follow._y_win_target_mm() + 20.0,
+                    False,
+                    False,
+                ),
+                (
+                    True,
+                    0.0,
+                    follow.TARGET_DIST_MM - follow.DIST_TOL_MM - 25.0,
+                    follow._x_target_mm(),
+                    88.0,
+                    follow._y_win_target_mm(),
+                    False,
+                    False,
+                ),
+            ]
+        )
+        fake_clock = _FakeClock()
+        y_cfg = follow._follow_y_axis_config()
+        y_cfg["lock_on_enabled"] = True
+
+        with mock.patch.object(follow, "_follow_y_axis_config", return_value=y_cfg), mock.patch.object(
+            follow.time,
+            "monotonic",
+            side_effect=fake_clock.monotonic,
+        ), mock.patch.object(
+            follow.time,
+            "sleep",
+            side_effect=fake_clock.sleep,
+        ):
+            stats = follow._follow_loop(vision, robot, duration_s=0.65, debug_mode=True)
+
+        self.assertEqual(robot.custom_commands, [])
+        self.assertEqual(robot.commands, [("d", 255, 400), ("b", 103, 373)])
+        self.assertFalse(stats.get("debug_mode_terminated", False))
+        self.assertNotEqual(stats.get("last_action"), "DEBUG_Y_COMMIT_TERMINATE")
+        self.assertEqual(stats["y_commit_target_hit_count"], 0)
+        self.assertGreaterEqual(robot.stops, 1)
+
+    def test_debug_mode_continues_after_full_step1_win_without_step2_or_reset(self):
+        robot = _FakeRobot()
+        vision = _SequenceVision(
+            [
+                (
+                    True,
+                    0.0,
+                    follow.TARGET_DIST_MM,
+                    follow._x_target_mm(),
+                    88.0,
+                    follow._y_win_target_mm(),
+                    False,
+                    False,
+                ),
+                (
+                    True,
+                    0.0,
+                    follow.TARGET_DIST_MM,
+                    follow._x_target_mm(),
+                    88.0,
+                    follow._y_win_target_mm(),
+                    False,
+                    False,
+                ),
+                (
+                    True,
+                    0.0,
+                    follow.TARGET_DIST_MM,
+                    follow._x_target_mm(),
+                    88.0,
+                    follow._y_win_target_mm(),
+                    False,
+                    False,
+                ),
+            ]
+        )
+        fake_clock = _FakeClock()
+
+        with mock.patch.object(follow.time, "monotonic", side_effect=fake_clock.monotonic), mock.patch.object(
+            follow.time,
+            "sleep",
+            side_effect=fake_clock.sleep,
+        ), mock.patch.object(
+            follow,
+            "_run_step2_seat_sequence",
+        ) as step2_mock, mock.patch.object(
+            follow,
+            "_run_reset_sequence",
+        ) as reset_mock:
+            stats = follow._follow_loop(vision, robot, duration_s=2.0, debug_mode=True)
+
+        self.assertFalse(stats.get("debug_mode_terminated", False))
+        self.assertGreaterEqual(stats["win_count"], 1)
+        step2_mock.assert_not_called()
+        reset_mock.assert_not_called()
+        self.assertGreaterEqual(robot.stops, 1)
 
     def test_follow_loop_backs_up_from_signed_distance_error_when_too_close(self):
         robot = _FakeRobot()
@@ -694,7 +1120,10 @@ class TestFollowTheBrickReset(unittest.TestCase):
             stats = follow._follow_loop(vision, robot, duration_s=0.025)
 
         self.assertEqual(robot.custom_commands, [])
-        self.assertEqual(robot.commands, [("b", 103, follow._distance_correction_duration_ms(-45.0))])
+        self.assertEqual(
+            robot.commands,
+            [("b", 103, follow._distance_correction_duration_ms(-(follow.DIST_TOL_MM + 25.0)))],
+        )
         self.assertEqual(stats["act_counts"], {"BCK": 1})
 
     def test_approved_straight_drive_pwm_matches_uno_effective_score_one_floor(self):
@@ -725,7 +1154,10 @@ class TestFollowTheBrickReset(unittest.TestCase):
             stats = follow._follow_loop(vision, robot, duration_s=0.025)
 
         self.assertEqual(robot.custom_commands, [])
-        self.assertEqual(robot.commands, [("b", 103, follow._distance_correction_duration_ms(-45.0))])
+        self.assertEqual(
+            robot.commands,
+            [("b", 103, follow._distance_correction_duration_ms(-(follow.DIST_TOL_MM + 25.0)))],
+        )
         self.assertEqual(stats["act_counts"], {"BCK": 1})
 
     def test_too_close_escape_clamps_configured_pwm_to_approved_top_speed(self):
@@ -745,8 +1177,43 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual(policy["pwm"], follow._approved_straight_drive_pwm("b"))
         self.assertEqual(policy["pulse_ms"], 400)
 
-    def test_follow_act_duration_is_capped_at_four_hundred_ms(self):
-        self.assertEqual(follow._bounded_act_duration_ms(999), 400)
+    def test_follow_act_duration_allows_two_second_far_distance_acts(self):
+        self.assertEqual(follow._bounded_act_duration_ms(2500), 2000)
+
+    def test_post_action_wait_respects_timed_turn_duration(self):
+        wait_s = follow._post_action_wait_s(
+            {"kind": "turn", "action": "TURN_L"},
+            {"duration_ms": 255},
+        )
+
+        self.assertAlmostEqual(wait_s, 0.655, places=3)
+        self.assertGreater(wait_s, follow.LOOP_S)
+
+    def test_post_action_wait_keeps_distance_creep_settle(self):
+        wait_s = follow._post_action_wait_s(
+            {"kind": "drive", "action": "FWD", "distance_creep": True},
+            {"duration_ms": 300},
+        )
+
+        self.assertAlmostEqual(wait_s, 0.34, places=3)
+
+    def test_empty_post_turn_wait_adds_observation_settle(self):
+        wait_s = follow._post_action_wait_s(
+            {"kind": "turn", "action": "TURN_R", "duration_ms": 200},
+            {"duration_ms": 200},
+        )
+
+        self.assertAlmostEqual(wait_s, 0.6, places=3)
+
+    def test_attached_mast_action_keeps_its_own_duration(self):
+        actions = follow._actions_with_mast(
+            [{"target": "l", "action": "b", "pwm": 103}],
+            "d",
+            mast_pwm=255,
+            mast_duration_ms=300,
+        )
+
+        self.assertEqual(actions[-1], {"target": "m", "action": "u", "pwm": 255, "duration_ms": 300})
 
     def test_follow_loop_blocks_low_confidence_visible_brick(self):
         robot = _FakeRobot()
@@ -802,6 +1269,93 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual(len(stats["non_win_target_closeness_pct"]), 1)
         self.assertAlmostEqual(stats["non_win_target_closeness_pct"][0], 25.0)
 
+    def test_follow_loop_waits_for_timed_turn_before_next_sample(self):
+        class _TimedTurnRobot(_FakeRobot):
+            def send_custom_actions_pwm(self, cmd, actions, duration_ms=None):
+                super().send_custom_actions_pwm(cmd, actions, duration_ms)
+                return {
+                    "cmd_sent": cmd,
+                    "duration_ms": 255,
+                    "actions": list(actions),
+                }
+
+        robot = _TimedTurnRobot()
+        vision = _FakeVision(
+            (
+                True,
+                0.0,
+                185.6,
+                -11.2,
+                86.0,
+                follow.Y_TARGET_MM,
+                False,
+                False,
+            )
+        )
+        fake_clock = _FakeClock()
+
+        with mock.patch.object(follow.time, "monotonic", side_effect=fake_clock.monotonic), mock.patch.object(
+            follow.time,
+            "sleep",
+            side_effect=fake_clock.sleep,
+        ):
+            stats = follow._follow_loop(vision, robot, duration_s=0.24)
+
+        self.assertEqual(len(robot.custom_commands), 1)
+        self.assertEqual(stats["sample_count"], 1)
+        self.assertEqual(stats["act_counts"], {"BIAS_L_MEDIUM": 1})
+
+    def test_follow_loop_hard_stops_after_six_no_change_acts(self):
+        robot = _FakeRobot()
+        vision = _FakeVision((True, 0.0, 500.0, 0.0, 85.0, follow.Y_TARGET_MM, False, False))
+        fake_clock = _FakeClock()
+
+        with mock.patch.object(follow.time, "monotonic", side_effect=fake_clock.monotonic), mock.patch.object(
+            follow.time,
+            "sleep",
+            side_effect=fake_clock.sleep,
+        ):
+            stats = follow._follow_loop(vision, robot, duration_s=13.0)
+
+        self.assertTrue(stats["stall_guard_triggered"])
+        self.assertEqual(stats["stall_guard_reason"], "act_stall_no_observed_change:FWD")
+        self.assertEqual(stats["no_observed_change_streak_count"], 6)
+        self.assertEqual(stats["no_observed_after_act_counts"], {"FWD": 6})
+        self.assertEqual(len(robot.commands), 6)
+        self.assertGreaterEqual(robot.stops, 1)
+
+    def test_follow_loop_gives_mast_stall_guard_y_specific_tries_or_duration(self):
+        robot = _FakeRobot()
+        vision = _FakeVision(
+            (
+                True,
+                0.0,
+                follow.TARGET_DIST_MM,
+                follow._x_target_mm(),
+                85.0,
+                follow.Y_TARGET_MM - 20.0,
+                False,
+                False,
+            )
+        )
+        fake_clock = _FakeClock()
+
+        with mock.patch.object(follow.time, "monotonic", side_effect=fake_clock.monotonic), mock.patch.object(
+            follow.time,
+            "sleep",
+            side_effect=fake_clock.sleep,
+        ):
+            stats = follow._follow_loop(vision, robot, duration_s=10.0)
+
+        self.assertTrue(stats["stall_guard_triggered"])
+        self.assertEqual(stats["stall_guard_reason"], "act_stall_no_observed_change:MAST_U")
+        detail = stats["stall_guard_detail"]
+        cfg = follow._act_stall_guard_config()
+        self.assertEqual(detail["max_no_change_tries"], cfg["y_max_no_change_tries"])
+        self.assertEqual(detail["max_no_change_duration_ms"], cfg["y_max_no_change_duration_ms"])
+        self.assertGreaterEqual(detail["streak_duration_ms"], cfg["y_max_no_change_duration_ms"])
+        self.assertGreater(int(stats["no_observed_change_streak_count"]), 6)
+
     def test_follow_loop_counts_win_then_runs_reset_and_tracks_x_after_reset(self):
         robot = _FakeRobot()
         vision = _SequenceVision(
@@ -813,16 +1367,17 @@ class TestFollowTheBrickReset(unittest.TestCase):
             ]
         )
         fake_clock = _FakeClock()
-        reset_reading = _configured_reset_target_reading(x_mm=-follow._reset_motion_config()["reverse_turn"]["target_abs_x_mm"])
-        reset_result = {
-            "success": True,
-            "phase": "reverse_turn",
-            "reason": "x_offset_confirmed",
-            "turn_cmd": "l",
-            "mast_up_sent": True,
-            "reading": reset_reading,
-            "target_met": True,
-        }
+        def _reset_result_for_active_profile(_vision, _robot):
+            cfg = follow._reset_motion_config()["reverse_turn"]
+            return {
+                "success": True,
+                "phase": "reverse_turn",
+                "reason": "x_offset_confirmed",
+                "turn_cmd": "l",
+                "mast_up_sent": True,
+                "reading": _configured_reset_target_reading(x_mm=-cfg["target_abs_x_mm"]),
+                "target_met": True,
+            }
         step2_result = {
             "success": True,
             "target_met": True,
@@ -841,7 +1396,7 @@ class TestFollowTheBrickReset(unittest.TestCase):
             follow,
             "_run_step3_lift_sequence",
             return_value=step3_result,
-        ), mock.patch.object(follow, "_run_reset_sequence", return_value=reset_result) as reset_mock, mock.patch.object(
+        ), mock.patch.object(follow, "_run_reset_sequence", side_effect=_reset_result_for_active_profile) as reset_mock, mock.patch.object(
             follow.time,
             "monotonic",
             side_effect=fake_clock.monotonic,
@@ -920,6 +1475,110 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual(stats["win_count"], 1)
         self.assertEqual(stats["step2_target_met_count"], 1)
         self.assertEqual(stats["reset_attempt_count"], 0)
+
+    def test_follow_loop_parks_without_reset_after_frozen_xz_step2_hit(self):
+        robot = _FakeRobot()
+        vision = _SequenceVision(
+            [
+                (True, 0.0, follow.TARGET_DIST_MM, 0.0, 88.0, follow.Y_TARGET_MM, False, False),
+                (True, 0.0, follow.TARGET_DIST_MM, 0.0, 88.0, follow.Y_TARGET_MM, False, False),
+                (True, 0.0, follow.TARGET_DIST_MM, 0.0, 88.0, follow.Y_TARGET_MM, False, False),
+                (False,),
+            ]
+        )
+        fake_clock = _FakeClock()
+        step2_result = {
+            "success": True,
+            "target_met": True,
+            "reason": "step2_targets_scored",
+            "reading": {"confident": True, "dist_mm": 60.0, "x_mm": 0.0, "y_mm": 3.0, "xz_frozen": True},
+            "precision_counts": {"xz_freeze": 1, "mast_d": 2, "fwd": 0, "bck": 0},
+        }
+        step3_result = {
+            "success": True,
+            "target_met": True,
+            "holding": True,
+            "reason": "step3_targets_scored",
+            "reading": {"confident": True, "dist_mm": 60.0, "x_mm": 0.0, "y_mm": 3.0},
+        }
+
+        with mock.patch.object(follow, "_run_step2_seat_sequence", return_value=step2_result), mock.patch.object(
+            follow,
+            "_run_step3_lift_sequence",
+            return_value=step3_result,
+        ), mock.patch.object(follow, "_run_reset_sequence") as reset_mock, mock.patch.object(
+            follow.time,
+            "monotonic",
+            side_effect=fake_clock.monotonic,
+        ), mock.patch.object(
+            follow.time,
+            "sleep",
+            side_effect=fake_clock.sleep,
+        ):
+            stats = follow._follow_loop(vision, robot, duration_s=0.26)
+
+        reset_mock.assert_not_called()
+        self.assertEqual(stats["win_count"], 1)
+        self.assertEqual(stats["step2_target_met_count"], 1)
+        self.assertEqual(stats["reset_attempt_count"], 0)
+        self.assertGreaterEqual(robot.stops, 1)
+
+    def test_follow_loop_resets_after_step3_no_visibility_fallback(self):
+        robot = _FakeRobot()
+        vision = _SequenceVision(
+            [
+                (True, 0.0, follow.TARGET_DIST_MM, 0.0, 88.0, follow.Y_TARGET_MM, False, False),
+                (True, 0.0, follow.TARGET_DIST_MM, 0.0, 88.0, follow.Y_TARGET_MM, False, False),
+                (True, 0.0, follow.TARGET_DIST_MM, 0.0, 88.0, follow.Y_TARGET_MM, False, False),
+                (False,),
+            ]
+        )
+        fake_clock = _FakeClock()
+        step2_result = {
+            "success": True,
+            "target_met": True,
+            "reason": "step2_targets_scored",
+            "reading": {"confident": True, "dist_mm": 60.0, "x_mm": 0.0, "y_mm": -7.0},
+        }
+        step3_result = {
+            "success": True,
+            "target_met": False,
+            "fallback_reset_ok": True,
+            "holding": False,
+            "reason": "step3_no_visibility_fallback_lift",
+            "fallback_cmd": "u",
+            "fallback_duration_ms": 3000,
+            "reading": {"confident": False},
+        }
+        reset_result = {
+            "success": True,
+            "phase": "reverse_turn",
+            "reason": "fallback_reset_done",
+            "turn_cmd": "r",
+            "mast_up_sent": True,
+            "reading": _configured_reset_target_reading(),
+            "target_met": True,
+        }
+
+        with mock.patch.object(follow, "_run_step2_seat_sequence", return_value=step2_result), mock.patch.object(
+            follow,
+            "_run_step3_lift_sequence",
+            return_value=step3_result,
+        ), mock.patch.object(follow, "_run_reset_sequence", return_value=reset_result) as reset_mock, mock.patch.object(
+            follow.time,
+            "monotonic",
+            side_effect=fake_clock.monotonic,
+        ), mock.patch.object(
+            follow.time,
+            "sleep",
+            side_effect=fake_clock.sleep,
+        ):
+            stats = follow._follow_loop(vision, robot, duration_s=0.26)
+
+        reset_mock.assert_called_once_with(vision, robot)
+        self.assertEqual(stats["win_count"], 1)
+        self.assertEqual(stats["step2_target_met_count"], 1)
+        self.assertEqual(stats["reset_attempt_count"], 1)
 
     def test_follow_loop_resets_after_step3_target_hit(self):
         robot = _FakeRobot()
@@ -1011,14 +1670,272 @@ class TestFollowTheBrickReset(unittest.TestCase):
 
         reset_mock.assert_not_called()
         self.assertEqual(stats["win_count"], 0)
-        self.assertEqual(stats["sample_count"], 2)
-        self.assertEqual(stats["confident_sample_count"], 2)
+        self.assertGreaterEqual(stats["sample_count"], 2)
+        self.assertGreaterEqual(stats["confident_sample_count"], 2)
         self.assertEqual(stats["follow_attempt_count"], 0)
         self.assertEqual(stats["miss_reasons"], {"happy_not_stopped": 1})
         self.assertEqual(stats["win_target_closeness_pct"], [])
         self.assertEqual(stats["closest_non_win"]["action"], "HAPPY_REJECT")
         self.assertEqual(robot.commands, [])
         self.assertGreaterEqual(robot.stops, 1)
+
+    def test_debug_mode_stops_after_live_happy_reject_instead_of_backing_up(self):
+        robot = _FakeRobot()
+        vision = _SequenceVision(
+            [
+                (True, 0.0, follow.TARGET_DIST_MM, 0.0, 88.0, follow.Y_TARGET_MM, False, False),
+                (
+                    True,
+                    0.0,
+                    follow.TARGET_DIST_MM - follow.DIST_TOL_MM - 12.0,
+                    0.0,
+                    88.0,
+                    follow.Y_TARGET_MM,
+                    False,
+                    False,
+                ),
+            ]
+        )
+        fake_clock = _FakeClock()
+        win_cfg = {
+            "settle_s": 0.0,
+            "confirm_frames": 2,
+            "single_win_allowance_s": 0.1,
+            "min_axis_closeness_pct": 0.0,
+            "min_confidence_pct": 75.0,
+        }
+
+        with mock.patch.object(follow, "_win_confirmation_config", return_value=win_cfg), mock.patch.object(
+            follow.time,
+            "monotonic",
+            side_effect=fake_clock.monotonic,
+        ), mock.patch.object(
+            follow.time,
+            "sleep",
+            side_effect=fake_clock.sleep,
+        ):
+            stats = follow._follow_loop(vision, robot, duration_s=1.0, debug_mode=True)
+
+        self.assertEqual(robot.commands, [])
+        self.assertEqual(stats["win_count"], 0)
+        self.assertTrue(stats["debug_mode_terminated"])
+        self.assertEqual(stats["last_action"], "DEBUG_STEP1_HAPPY_REJECT_TERMINATE")
+        self.assertGreaterEqual(robot.stops, 1)
+
+    def test_park_happy_stops_after_live_happy_reject_instead_of_backing_up(self):
+        robot = _FakeRobot()
+        vision = _SequenceVision(
+            [
+                (True, 0.0, follow.TARGET_DIST_MM, 0.0, 88.0, follow.Y_TARGET_MM, False, False),
+                (
+                    True,
+                    0.0,
+                    follow.TARGET_DIST_MM - follow.DIST_TOL_MM - 12.0,
+                    0.0,
+                    88.0,
+                    follow.Y_TARGET_MM,
+                    False,
+                    False,
+                ),
+            ]
+        )
+        fake_clock = _FakeClock()
+        win_cfg = {
+            "settle_s": 0.0,
+            "confirm_frames": 2,
+            "single_win_allowance_s": 0.1,
+            "min_axis_closeness_pct": 0.0,
+            "min_confidence_pct": 75.0,
+        }
+
+        with mock.patch.object(follow, "_win_confirmation_config", return_value=win_cfg), mock.patch.object(
+            follow.time,
+            "monotonic",
+            side_effect=fake_clock.monotonic,
+        ), mock.patch.object(
+            follow.time,
+            "sleep",
+            side_effect=fake_clock.sleep,
+        ):
+            stats = follow._follow_loop(vision, robot, duration_s=1.0, stop_after_win=True)
+
+        self.assertEqual(robot.commands, [])
+        self.assertEqual(stats["win_count"], 0)
+        self.assertTrue(stats["happy_reject_terminated"])
+        self.assertFalse(stats.get("debug_mode_terminated", False))
+        self.assertEqual(stats["last_action"], "PARK_STEP1_HAPPY_REJECT_TERMINATE")
+        self.assertGreaterEqual(robot.stops, 1)
+
+    def test_park_happy_stops_for_confirmation_instead_of_reversing_after_dist_pingpong(self):
+        robot = _FakeRobot()
+        vision = _SequenceVision(
+            [
+                (
+                    True,
+                    0.0,
+                    follow.TARGET_DIST_MM + 12.0,
+                    follow._x_target_mm(),
+                    88.0,
+                    follow.Y_TARGET_MM,
+                    False,
+                    False,
+                ),
+                (
+                    True,
+                    0.0,
+                    follow.TARGET_DIST_MM - 10.0,
+                    follow._x_target_mm(),
+                    88.0,
+                    follow.Y_TARGET_MM,
+                    False,
+                    False,
+                ),
+            ]
+        )
+        fake_clock = _FakeClock()
+        win_cfg = {
+            "settle_s": 0.0,
+            "confirm_frames": 2,
+            "single_win_allowance_s": 0.1,
+            "min_axis_closeness_pct": 0.0,
+            "min_confidence_pct": 75.0,
+        }
+
+        with mock.patch.object(follow, "_win_confirmation_config", return_value=win_cfg), mock.patch.object(
+            follow.time,
+            "monotonic",
+            side_effect=fake_clock.monotonic,
+        ), mock.patch.object(
+            follow.time,
+            "sleep",
+            side_effect=fake_clock.sleep,
+        ):
+            stats = follow._follow_loop(vision, robot, duration_s=1.0, stop_after_win=True)
+
+        self.assertEqual(robot.commands, [])
+        self.assertEqual(len(robot.custom_commands), 1)
+        sent_cmd, _actions, duration_ms = robot.custom_commands[0]
+        self.assertEqual(sent_cmd, "f")
+        self.assertEqual(duration_ms, 200)
+        self.assertTrue(stats["dist_pingpong_guard_terminated"])
+        self.assertEqual(stats["last_action"], "PARK_DIST_PINGPONG_GUARD_TERMINATE")
+        self.assertGreaterEqual(robot.stops, 1)
+
+    def test_follow_loop_waits_within_single_win_allowance_instead_of_backing_up(self):
+        robot = _FakeRobot()
+        vision = _SequenceVision(
+            [
+                (True, 0.0, follow.TARGET_DIST_MM, 0.0, 88.0, follow.Y_TARGET_MM, False, False),
+                (
+                    True,
+                    0.0,
+                    follow.TARGET_DIST_MM - follow.DIST_TOL_MM - 12.0,
+                    0.0,
+                    88.0,
+                    follow.Y_TARGET_MM,
+                    False,
+                    False,
+                ),
+                (
+                    True,
+                    0.0,
+                    follow.TARGET_DIST_MM - follow.DIST_TOL_MM - 12.0,
+                    0.0,
+                    88.0,
+                    follow.Y_TARGET_MM,
+                    False,
+                    False,
+                ),
+                (
+                    True,
+                    0.0,
+                    follow.TARGET_DIST_MM,
+                    0.0,
+                    88.0,
+                    follow.Y_TARGET_MM,
+                    False,
+                    False,
+                ),
+            ]
+        )
+        fake_clock = _FakeClock()
+
+        with mock.patch.object(follow.time, "monotonic", side_effect=fake_clock.monotonic), mock.patch.object(
+            follow.time,
+            "sleep",
+            side_effect=fake_clock.sleep,
+        ), mock.patch.object(
+            follow,
+            "_run_step2_seat_sequence",
+        ) as step2_mock:
+            stats = follow._follow_loop(vision, robot, duration_s=0.2, debug_mode=True)
+
+        self.assertEqual(robot.commands, [])
+        self.assertEqual(stats["win_count"], 1)
+        self.assertTrue(stats["debug_mode_terminated"])
+        self.assertEqual(stats["last_action"], "DEBUG_STEP1_TERMINATE")
+        step2_mock.assert_not_called()
+
+    def test_follow_loop_accepts_nonconsecutive_stopped_happy_hits_within_allowance(self):
+        robot = _FakeRobot()
+        vision = _SequenceVision(
+            [
+                (True, 0.0, follow.TARGET_DIST_MM, 0.0, 88.0, follow.Y_TARGET_MM, False, False),
+                (
+                    True,
+                    0.0,
+                    follow.TARGET_DIST_MM - follow.DIST_TOL_MM - 12.0,
+                    0.0,
+                    88.0,
+                    follow.Y_TARGET_MM,
+                    False,
+                    False,
+                ),
+                (True, 0.0, follow.TARGET_DIST_MM, 0.0, 88.0, follow.Y_TARGET_MM, False, False),
+                (
+                    True,
+                    0.0,
+                    follow.TARGET_DIST_MM + follow.DIST_TOL_MM + 12.0,
+                    0.0,
+                    88.0,
+                    follow.Y_TARGET_MM,
+                    False,
+                    False,
+                ),
+                (True, 0.0, follow.TARGET_DIST_MM, 0.0, 88.0, follow.Y_TARGET_MM, False, False),
+                (
+                    True,
+                    0.0,
+                    follow.TARGET_DIST_MM + follow.DIST_TOL_MM + 12.0,
+                    0.0,
+                    88.0,
+                    follow.Y_TARGET_MM,
+                    False,
+                    False,
+                ),
+            ]
+        )
+        fake_clock = _FakeClock()
+
+        with mock.patch.object(follow.time, "monotonic", side_effect=fake_clock.monotonic), mock.patch.object(
+            follow.time,
+            "sleep",
+            side_effect=fake_clock.sleep,
+        ), mock.patch.object(
+            follow,
+            "_temporal_filter_brick_reading",
+            side_effect=lambda _vision, reading: reading,
+        ), mock.patch.object(
+            follow,
+            "_run_step2_seat_sequence",
+        ) as step2_mock:
+            stats = follow._follow_loop(vision, robot, duration_s=1.0, debug_mode=True)
+
+        self.assertEqual(robot.commands, [])
+        self.assertEqual(stats["win_count"], 1)
+        self.assertTrue(stats["debug_mode_terminated"])
+        self.assertEqual(stats["last_action"], "DEBUG_STEP1_TERMINATE")
+        step2_mock.assert_not_called()
 
     def test_follow_plan_requires_y_margin_before_claiming_happy(self):
         plan = follow._follow_action_plan(
@@ -1034,7 +1951,7 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual(plan["kind"], "mast")
         self.assertEqual(plan["cmd"], "d")
         self.assertEqual(plan["reason"], "final_y")
-        self.assertEqual(plan["pwm"], 120)
+        self.assertEqual(plan["pwm"], 255)
         self.assertEqual(plan["duration_ms"], 300)
 
     def test_follow_plan_finishes_y_before_small_dist_backup(self):
@@ -1043,7 +1960,7 @@ class TestFollowTheBrickReset(unittest.TestCase):
                 "visible": True,
                 "confident": True,
                 "dist_mm": follow.TARGET_DIST_MM - 8.0,
-                "x_mm": 3.0,
+                "x_mm": follow._x_target_mm(),
                 "y_mm": follow.Y_TARGET_MM + follow.Y_TOL_MM + 0.1,
             }
         )
@@ -1051,7 +1968,7 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual(plan["kind"], "mast")
         self.assertEqual(plan["cmd"], "d")
         self.assertEqual(plan["reason"], "final_y")
-        self.assertEqual(plan["pwm"], 120)
+        self.assertEqual(plan["pwm"], 255)
         self.assertEqual(plan["duration_ms"], 300)
 
     def test_follow_loop_uses_stronger_finish_mast_nudge(self):
@@ -1086,8 +2003,8 @@ class TestFollowTheBrickReset(unittest.TestCase):
             {
                 "visible": True,
                 "confident": True,
-                "dist_mm": follow.TARGET_DIST_MM + 8.0,
-                "x_mm": 6.0,
+                "dist_mm": follow.TARGET_DIST_MM + (follow.DIST_TOL_MM / 2.0),
+                "x_mm": follow._x_target_mm() + 2.0,
                 "y_mm": follow.Y_TARGET_MM + follow.Y_TOL_MM + 0.1,
             }
         )
@@ -1101,8 +2018,8 @@ class TestFollowTheBrickReset(unittest.TestCase):
             {
                 "visible": True,
                 "confident": True,
-                "dist_mm": follow.TARGET_DIST_MM + 14.0,
-                "x_mm": 3.0,
+                "dist_mm": follow.TARGET_DIST_MM + (follow.DIST_TOL_MM / 2.0),
+                "x_mm": follow._x_target_mm(),
                 "y_mm": follow.Y_TARGET_MM + follow.Y_TOL_MM + 0.1,
             }
         )
@@ -1111,20 +2028,79 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual(plan["cmd"], "d")
         self.assertEqual(plan["reason"], "final_y")
 
+    def test_follow_plan_prioritizes_dist_over_y_until_dist_is_happy(self):
+        plan = follow._follow_action_plan(
+            {
+                "visible": True,
+                "confident": True,
+                "dist_mm": follow.TARGET_DIST_MM + follow.DIST_TOL_MM + 30.0,
+                "x_mm": follow._x_target_mm(),
+                "y_mm": follow.Y_TARGET_MM - 20.0,
+            }
+        )
+
+        self.assertEqual(plan["kind"], "drive")
+        self.assertEqual(plan["cmd"], "f")
+        self.assertEqual(plan["reason"], "dist_only_creep")
+
+    def test_follow_plan_allows_protective_y_when_brick_below_camera(self):
+        plan = follow._follow_action_plan(
+            {
+                "visible": True,
+                "confident": True,
+                "dist_mm": 220.0,
+                "x_mm": follow._x_target_mm(),
+                "y_mm": follow.Y_TARGET_MM + 20.0,
+                "brick_below": True,
+            }
+        )
+
+        self.assertEqual(plan["kind"], "mast")
+        self.assertEqual(plan["cmd"], "d")
+        self.assertEqual(plan["reason"], "protect_lower_edge")
+
+    def test_follow_plan_vetoes_protective_y_when_close_even_if_brick_below_camera(self):
+        plan = follow._follow_action_plan(
+            {
+                "visible": True,
+                "confident": True,
+                "dist_mm": 156.9,
+                "x_mm": follow._x_target_mm(),
+                "y_mm": follow.Y_TARGET_MM + 20.0,
+                "brick_below": True,
+            }
+        )
+
+        self.assertNotEqual(plan.get("reason"), "protect_lower_edge")
+
+    def test_follow_plan_does_not_protect_y_from_y_value_alone(self):
+        plan = follow._follow_action_plan(
+            {
+                "visible": True,
+                "confident": True,
+                "dist_mm": 220.0,
+                "x_mm": follow._x_target_mm(),
+                "y_mm": follow.Y_TARGET_MM + 40.0,
+                "brick_below": False,
+            }
+        )
+
+        self.assertNotEqual(plan.get("reason"), "protect_lower_edge")
+
     def test_follow_plan_still_backs_up_when_distance_is_too_close_despite_y_gap(self):
         plan = follow._follow_action_plan(
             {
                 "visible": True,
                 "confident": True,
                 "dist_mm": follow.TARGET_DIST_MM - follow.DIST_TOL_MM - 1.0,
-                "x_mm": 3.0,
+                "x_mm": follow._x_target_mm(),
                 "y_mm": follow.Y_TARGET_MM + follow.Y_TOL_MM + 0.1,
             }
         )
 
-        self.assertEqual(plan["kind"], "drive")
+        self.assertEqual(plan["kind"], "drive_nudge")
         self.assertEqual(plan["cmd"], "b")
-        self.assertEqual(plan["reason"], "dist_only_creep")
+        self.assertEqual(plan["reason"], "dist_micro_nudge")
 
     def test_follow_plan_backs_up_when_dist_overshoots_happy_margin(self):
         plan = follow._follow_action_plan(
@@ -1153,7 +2129,7 @@ class TestFollowTheBrickReset(unittest.TestCase):
             }
         )
 
-        self.assertEqual(plan["kind"], "drive")
+        self.assertEqual(plan["kind"], "drive_nudge")
         self.assertEqual(plan["cmd"], "b")
         self.assertLess(plan["duration_ms"], follow._follow_dist_approach_policy()["max_forward_pulse_ms"])
 
@@ -1173,7 +2149,72 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual(plan["strength"], "adaptive")
         self.assertEqual(plan["reason"], "x_first_before_dist")
 
-    def test_follow_plan_allows_dist_creep_only_after_x_is_polished(self):
+    def test_empty_align_turn_can_carry_y_correction(self):
+        plan = follow._follow_action_plan(
+            {
+                "visible": True,
+                "confident": True,
+                "dist_mm": follow._dist_target_mm() - follow._dist_tol_mm() - 1.0,
+                "x_mm": follow._x_target_mm() + follow._x_tol_mm() + 4.0,
+                "y_mm": follow._y_win_target_mm() - 5.0,
+            }
+        )
+
+        self.assertEqual(plan["kind"], "turn")
+        self.assertEqual(plan["cmd"], "r")
+        self.assertEqual(plan["mast_cmd"], "u")
+        self.assertEqual(plan["mast_reason"], "final_y")
+
+    def test_step1_timeout_allows_bounded_corrective_y_grace(self):
+        robot = _FakeRobot()
+        vision = _SequenceVision(
+            [
+                (
+                    True,
+                    0.0,
+                    follow._dist_target_mm() - follow._dist_tol_mm() - 1.0,
+                    follow._x_target_mm() - follow._x_tol_mm() - 4.0,
+                    88.0,
+                    follow._y_win_target_mm(),
+                    False,
+                    False,
+                ),
+                (
+                    True,
+                    0.0,
+                    follow._dist_target_mm() - follow._dist_tol_mm() - 1.0,
+                    follow._x_target_mm() - follow._x_tol_mm() - 4.0,
+                    88.0,
+                    follow._y_win_target_mm() + follow._y_win_tol_mm() + 0.8,
+                    False,
+                    False,
+                ),
+            ]
+        )
+        fake_clock = _FakeClock()
+        win_cfg = dict(follow._win_confirmation_config())
+        win_cfg["single_win_allowance_s"] = 0.001
+        win_cfg["timeout_y_correction_grace_acts"] = 1
+
+        with mock.patch.object(follow, "_win_confirmation_config", return_value=win_cfg), mock.patch.object(
+            follow.time,
+            "monotonic",
+            side_effect=fake_clock.monotonic,
+        ), mock.patch.object(
+            follow.time,
+            "sleep",
+            side_effect=fake_clock.sleep,
+        ):
+            stats = follow._follow_loop(vision, robot, duration_s=0.7)
+
+        self.assertGreaterEqual(len(robot.custom_commands), 2)
+        _cmd, actions, _duration_ms = robot.custom_commands[1]
+        self.assertTrue(any(action.get("target") == "m" and action.get("action") == "u" for action in actions))
+        self.assertEqual(stats["step1_timeout_y_correction_grace_count"], 1)
+        self.assertFalse(stats.get("step1_attempt_timeout", False))
+        self.assertEqual(stats["sent_act_counts"].get("TURN_L_MAST_D"), 1)
+
+    def test_follow_plan_biases_forward_when_dist_and_x_are_both_open(self):
         plan = follow._follow_action_plan(
             {
                 "visible": True,
@@ -1184,9 +2225,29 @@ class TestFollowTheBrickReset(unittest.TestCase):
             }
         )
 
-        self.assertEqual(plan["kind"], "turn")
-        self.assertEqual(plan["strength"], "adaptive")
-        self.assertEqual(plan["reason"], "x_first_before_dist")
+        self.assertEqual(plan["kind"], "drive_bias")
+        self.assertEqual(plan["cmd"], "f")
+        self.assertEqual(plan["turn_cmd"], "r")
+        self.assertEqual(plan["reason"], "x_polish_while_creeping_dist")
+        self.assertNotIn("mast_cmd", plan)
+
+    def test_follow_plan_keeps_current_stuck_pose_moving_instead_of_turn_stalling(self):
+        plan = follow._follow_action_plan(
+            {
+                "visible": True,
+                "confident": True,
+                "dist_mm": 111.7,
+                "x_mm": 8.8,
+                "y_mm": -14.7,
+            }
+        )
+
+        self.assertEqual(plan["kind"], "drive_bias")
+        self.assertEqual(plan["cmd"], "f")
+        self.assertEqual(plan["turn_cmd"], "r")
+        self.assertEqual(plan["reason"], "x_polish_while_creeping_dist")
+        self.assertEqual(plan["mast_cmd"], "u")
+        self.assertEqual(plan["mast_reason"], "approach_high_y")
 
     def test_follow_plan_creeps_dist_with_tiny_polish_x_gap(self):
         plan = follow._follow_action_plan(
@@ -1199,11 +2260,11 @@ class TestFollowTheBrickReset(unittest.TestCase):
             }
         )
 
-        self.assertEqual(plan["kind"], "drive")
-        self.assertEqual(plan["reason"], "dist_only_creep")
+        self.assertEqual(plan["kind"], "drive_bias")
+        self.assertEqual(plan["reason"], "x_polish_while_creeping_dist")
         self.assertEqual(plan["duration_ms"], follow._distance_creep_duration_ms(60.0))
 
-    def test_follow_plan_uses_strong_turn_when_dist_small_and_x_wide(self):
+    def test_follow_plan_uses_x_first_turn_when_dist_small_and_x_wide(self):
         plan = follow._follow_action_plan(
             {
                 "visible": True,
@@ -1219,13 +2280,88 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual(plan["strength"], "adaptive")
         self.assertEqual(plan["reason"], "x_first_before_dist")
 
+    def test_follow_plan_creeps_forward_near_target_when_dist_still_too_far_and_x_needs_polish(self):
+        old_profile = getattr(follow, "CURRENT_GAME_PROFILE", "empty")
+        try:
+            follow._set_game_profile("holding")
+            plan = follow._follow_action_plan(
+                {
+                    "visible": True,
+                    "confident": True,
+                    "dist_mm": follow._dist_target_mm() + follow._dist_tol_mm() + 7.0,
+                    "x_mm": follow._x_target_mm() + follow._x_tol_mm() + 1.4,
+                    "y_mm": follow._y_win_target_mm(),
+                }
+            )
+        finally:
+            follow._set_game_profile(old_profile)
+
+        self.assertEqual(plan["kind"], "drive_bias")
+        self.assertEqual(plan["cmd"], "f")
+        self.assertEqual(plan["reason"], "x_polish_while_creeping_dist")
+        self.assertEqual(plan["duration_ms"], 200)
+
+    def test_follow_plan_uses_single_tread_nudge_for_tiny_dist_gap_when_x_is_happy(self):
+        old_profile = getattr(follow, "CURRENT_GAME_PROFILE", "empty")
+        try:
+            follow._set_game_profile("holding")
+            plan = follow._follow_action_plan(
+                {
+                    "visible": True,
+                    "confident": True,
+                    "dist_mm": follow._dist_target_mm() - follow._dist_tol_mm() - 5.5,
+                    "x_mm": follow._x_target_mm() - 0.4,
+                    "y_mm": follow._y_win_target_mm(),
+                }
+            )
+        finally:
+            follow._set_game_profile(old_profile)
+
+        self.assertEqual(plan["kind"], "drive_nudge")
+        self.assertEqual(plan["cmd"], "b")
+        self.assertEqual(plan["turn_cmd"], "l")
+        self.assertEqual(plan["reason"], "dist_micro_nudge")
+        self.assertEqual(plan["duration_ms"], 200)
+        self.assertEqual(plan["pwm"], 103)
+
+    def test_execute_single_tread_nudge_sends_one_drive_tread_and_one_zero_tread(self):
+        robot = _FakeRobot()
+        reading = {
+            "visible": True,
+            "confident": True,
+            "conf": 88.0,
+            "dist_mm": follow._dist_target_mm() - follow._dist_tol_mm() - 5.5,
+            "x_mm": follow._x_target_mm() - 0.4,
+            "y_mm": follow._y_win_target_mm(),
+        }
+        plan = {
+            "kind": "drive_nudge",
+            "cmd": "b",
+            "turn_cmd": "l",
+            "pwm": 103,
+            "duration_ms": 200,
+            "dist_err": -9.5,
+            "x_err": -0.4,
+            "distance_creep": True,
+        }
+
+        follow._execute_follow_action(robot, plan, reading)
+
+        self.assertEqual(robot.commands, [])
+        self.assertEqual(len(robot.custom_commands), 1)
+        sent_cmd, actions, duration_ms = robot.custom_commands[0]
+        self.assertEqual(sent_cmd, "b")
+        self.assertEqual(duration_ms, 200)
+        self.assertEqual(actions[0]["pwm"], 0)
+        self.assertEqual(actions[1]["pwm"], 103)
+
     def test_follow_plan_holds_when_all_axes_are_inside_happy_box(self):
         plan = follow._follow_action_plan(
             {
                 "visible": True,
                 "confident": True,
-                "dist_mm": follow.TARGET_DIST_MM + 8.0,
-                "x_mm": 5.0,
+                "dist_mm": follow.TARGET_DIST_MM + (follow.DIST_TOL_MM / 2.0),
+                "x_mm": follow._x_target_mm() + 1.0,
                 "y_mm": follow.Y_TARGET_MM,
             }
         )
@@ -1240,7 +2376,7 @@ class TestFollowTheBrickReset(unittest.TestCase):
                 "visible": True,
                 "confident": True,
                 "dist_mm": follow.TARGET_DIST_MM + policy["large_dist_gap_mm"] + 5.0,
-                "x_mm": follow.X_TOL_MM + 5.0,
+                "x_mm": follow._x_target_mm() + 90.0,
                 "y_mm": follow.Y_TARGET_MM,
             }
         )
@@ -1249,12 +2385,28 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual(plan["drive_mode"], "forward")
         self.assertEqual(plan["reason"], "x_first_before_dist")
 
+    def test_empty_follow_plan_uses_short_x_only_turn_for_large_x_gap(self):
+        plan = follow._follow_action_plan(
+            {
+                "visible": True,
+                "confident": True,
+                "dist_mm": follow._dist_target_mm() + 55.0,
+                "x_mm": follow._x_target_mm() + 42.0,
+                "y_mm": follow._y_win_target_mm(),
+            }
+        )
+
+        self.assertEqual(plan["kind"], "turn")
+        self.assertEqual(plan["reason"], "x_first_before_dist")
+        self.assertEqual(plan["cmd"], "r")
+        self.assertEqual(plan["duration_ms"], follow.PULSE_MS)
+
     def test_follow_plan_holds_when_dist_x_and_y_are_happy(self):
         plan = follow._follow_action_plan(
             {
                 "visible": True,
                 "confident": True,
-                "dist_mm": follow.TARGET_DIST_MM + 8.0,
+                "dist_mm": follow.TARGET_DIST_MM + (follow.DIST_TOL_MM / 2.0),
                 "x_mm": 0.0,
                 "y_mm": follow.Y_TARGET_MM,
             }
@@ -1269,8 +2421,52 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertAlmostEqual(policy["closure_shots"], 1.0)
         self.assertAlmostEqual(policy["settle_after_act_s"], 0.04)
         self.assertEqual(policy["min_forward_pulse_ms"], 200)
-        self.assertEqual(policy["max_forward_pulse_ms"], 400)
-        self.assertEqual(policy["near_target_forward_veto_mm"], 12.0)
+        self.assertEqual(policy["max_forward_pulse_ms"], 2000)
+        self.assertEqual(policy["full_forward_gap_mm"], 100.0)
+        self.assertEqual(policy["near_target_creep_band_mm"], 30.0)
+        self.assertEqual(policy["near_target_min_pulse_ms"], 200)
+        self.assertEqual(policy["near_target_max_pulse_ms"], 300)
+        self.assertEqual(policy["close_target_creep_band_mm"], 20.0)
+        self.assertEqual(policy["close_target_max_pulse_ms"], 200)
+        self.assertEqual(policy["very_close_target_creep_band_mm"], 10.0)
+        self.assertEqual(policy["very_close_target_max_pulse_ms"], 200)
+        self.assertEqual(policy["micro_nudge_abs_dist_err_mm"], 16.0)
+        self.assertEqual(policy["micro_nudge_pulse_ms"], 200)
+        self.assertEqual(policy["micro_nudge_pwm"], 103)
+        self.assertEqual(policy["pingpong_confirm_abs_dist_err_mm"], 20.0)
+        self.assertEqual(policy["near_target_forward_veto_mm"], 0.0)
+
+    def test_near_target_dist_creep_scales_slowly_for_forward_and_backward(self):
+        tol = follow._dist_tol_mm()
+        just_outside = tol + 1.0
+        very_close_band = 10.0
+        close_band = 20.0
+        mid_band = 25.0
+        edge_band = 30.0
+        far_band = 100.0
+
+        self.assertEqual(follow._distance_correction_duration_ms(very_close_band), 200)
+        self.assertLessEqual(follow._distance_correction_duration_ms(close_band), 200)
+
+        self.assertLess(
+            follow._distance_correction_duration_ms(just_outside),
+            follow._distance_correction_duration_ms(mid_band),
+        )
+        self.assertLess(
+            follow._distance_correction_duration_ms(mid_band),
+            follow._distance_correction_duration_ms(edge_band),
+        )
+        self.assertEqual(follow._distance_correction_duration_ms(edge_band), 300)
+        self.assertGreater(follow._distance_correction_duration_ms(far_band), 300)
+        self.assertLessEqual(follow._distance_correction_duration_ms(far_band), 2000)
+        self.assertEqual(
+            follow._distance_correction_duration_ms(-edge_band),
+            follow._distance_correction_duration_ms(edge_band),
+        )
+        self.assertEqual(
+            follow._distance_creep_duration_ms(edge_band),
+            follow._distance_correction_duration_ms(edge_band),
+        )
 
     def test_results_table_includes_win_and_reset_closeness_averages(self):
         stats = follow._new_game_stats()
@@ -1341,9 +2537,55 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual(cfg["seat_drive_duration_ms"], 0)
         self.assertTrue(cfg["precision_settle_enabled"])
         self.assertEqual(cfg["targets"]["x_mm"], 0.0)
-        self.assertEqual(cfg["targets"]["y_mm"], -0.7)
-        self.assertEqual(cfg["targets"]["y_tol_mm"], 1.0)
+        self.assertEqual(cfg["targets"]["y_mm"], -7.093439)
+        self.assertEqual(cfg["targets"]["y_tol_mm"], 0.5)
+        self.assertFalse(cfg["freeze_xz_after_xz_target"])
         self.assertEqual(follow._step2_missing_target_keys(cfg), [])
+
+    def test_holding_profile_step1_has_y_target_without_lock_on_and_step2_is_y_only(self):
+        old_profile = getattr(follow, "CURRENT_GAME_PROFILE", "empty")
+        try:
+            follow._set_game_profile("holding")
+            y_cfg = follow._follow_y_axis_config()
+            cfg = follow._follow_step2_config()
+        finally:
+            follow._set_game_profile(old_profile)
+
+        self.assertTrue(y_cfg["enabled"])
+        self.assertFalse(y_cfg["lock_on_enabled"])
+        self.assertAlmostEqual(y_cfg["win_target_mm"], 5.250551859537761)
+        self.assertEqual(y_cfg["win_tol_mm"], 2.5)
+        self.assertEqual(y_cfg["finish_mast_pwm"], 40)
+        self.assertEqual(y_cfg["finish_mast_pulse_ms"], 260)
+        self.assertFalse(cfg["freeze_xz_after_xz_target"])
+        self.assertFalse(cfg["recovery_creep_enabled"])
+        self.assertFalse(cfg["visibility_recovery_creep_enabled"])
+        self.assertIsNone(cfg["targets"]["dist_mm"])
+        self.assertIsNone(cfg["targets"]["dist_tol_mm"])
+        self.assertIsNone(cfg["targets"]["x_mm"])
+        self.assertIsNone(cfg["targets"]["x_tol_mm"])
+        self.assertAlmostEqual(cfg["targets"]["y_mm"], -10.25129472)
+        self.assertEqual(cfg["targets"]["y_tol_mm"], 2.5)
+        self.assertEqual(follow._step2_missing_target_keys(cfg), [])
+
+    def test_holding_step1_holds_before_downward_y_trek(self):
+        old_profile = getattr(follow, "CURRENT_GAME_PROFILE", "empty")
+        try:
+            follow._set_game_profile("holding")
+            plan = follow._follow_action_plan(
+                {
+                    "visible": True,
+                    "confident": True,
+                    "dist_mm": follow._dist_target_mm(),
+                    "x_mm": follow._x_target_mm(),
+                    "y_mm": follow._y_win_target_mm(),
+                }
+            )
+        finally:
+            follow._set_game_profile(old_profile)
+
+        self.assertEqual(plan["kind"], "hold")
+        self.assertEqual(plan["action"], "HAPPY")
 
     def test_step3_defaults_define_lift_target_for_empty_profile(self):
         cfg = follow._follow_step3_config()
@@ -1351,9 +2593,49 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual(cfg["lift_mast_cmd"], "u")
         self.assertEqual(cfg["lift_mast_pwm"], 255)
         self.assertEqual(cfg["lift_pulse_ms"], 250)
+        self.assertTrue(cfg["no_visibility_fallback_enabled"])
+        self.assertEqual(cfg["no_visibility_fallback_mast_cmd"], "u")
+        self.assertEqual(cfg["no_visibility_fallback_mast_pwm"], 255)
+        self.assertEqual(cfg["no_visibility_fallback_duration_ms"], 3000)
         self.assertEqual(cfg["targets"]["y_mm"], -3.5)
         self.assertEqual(cfg["targets"]["y_tol_mm"], 1.0)
         self.assertEqual(follow._step3_missing_target_keys(cfg), [])
+
+    def test_step3_no_visibility_lifts_mast_then_allows_reset(self):
+        robot = _FakeRobot()
+        vision = _SequenceVision(
+            [
+                (False,),
+                (False,),
+            ]
+        )
+        cfg = {
+            "no_visibility_fallback_enabled": True,
+            "no_visibility_fallback_mast_cmd": "u",
+            "no_visibility_fallback_mast_pwm": 255,
+            "no_visibility_fallback_duration_ms": 3000,
+            "no_visibility_fallback_settle_s": 0.0,
+            "targets": {"y_mm": -3.5, "y_tol_mm": 1.0},
+        }
+
+        with mock.patch.object(follow, "_follow_step3_config", return_value=cfg), mock.patch.object(
+            follow,
+            "_wait_for_visibility_recovery",
+            side_effect=lambda _vision, _robot, reading, **_kwargs: reading,
+        ), mock.patch.object(
+            follow.time,
+            "sleep",
+        ) as sleep_mock:
+            result = follow._run_step3_lift_sequence(vision, robot)
+
+        self.assertEqual(result["reason"], "step3_no_visibility_fallback_lift")
+        self.assertEqual(result["trigger_reason"], "brick_not_confident_before_step3")
+        self.assertTrue(result["success"])
+        self.assertFalse(result["target_met"])
+        self.assertTrue(result["fallback_reset_ok"])
+        self.assertEqual(robot.commands, [("u", 255, 3000)])
+        self.assertGreaterEqual(robot.stops, 1)
+        sleep_mock.assert_called_once_with(3.0)
 
     def test_step2_target_readiness_scores_all_three_axes(self):
         cfg = {
@@ -1376,6 +2658,170 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual(closeness["x_target_closeness_pct"], 50.0)
         self.assertEqual(closeness["y_target_closeness_pct"], 50.0)
         self.assertEqual(closeness["target_closeness_pct"], 50.0)
+
+    def test_step2_target_readiness_allows_y_only_targets(self):
+        cfg = {
+            "targets": {
+                "dist_mm": None,
+                "dist_tol_mm": None,
+                "x_mm": None,
+                "x_tol_mm": None,
+                "y_mm": -7.25,
+                "y_tol_mm": 2.5,
+            }
+        }
+        reading = {"dist_mm": 120.0, "x_mm": 40.0, "y_mm": -8.0}
+
+        ready, reason, closeness = follow._step2_targets_ready(reading, cfg)
+
+        self.assertTrue(ready)
+        self.assertEqual(reason, "step2_targets_scored")
+        self.assertIsNone(closeness["dist_target_closeness_pct"])
+        self.assertIsNone(closeness["x_target_closeness_pct"])
+        self.assertEqual(closeness["y_target_closeness_pct"], 70.0)
+        self.assertEqual(closeness["target_closeness_pct"], 70.0)
+
+    def test_holding_y_only_step2_precision_sends_only_mast(self):
+        robot = _FakeRobot()
+        vision = _SequenceVision(
+            [
+                (True, 0.0, 120.0, 40.0, 88.0, 0.0, False, False),
+                (True, 0.0, 119.0, 42.0, 88.0, -5.0, False, False),
+                (True, 0.0, 118.0, 44.0, 88.0, -7.4, False, False),
+            ]
+        )
+        cfg = {
+            "seat_mast_cmd": "d",
+            "seat_mast_pwm": 255,
+            "seat_mast_duration_ms": 0,
+            "seat_drive_cmd": "f",
+            "seat_drive_pwm": 103,
+            "recovery_creep_enabled": False,
+            "visibility_recovery_creep_enabled": False,
+            "precision_settle_enabled": True,
+            "precision_max_attempts": 4,
+            "precision_mast_pulse_ms": 250,
+            "precision_settle_s": 0.0,
+            "freeze_xz_after_xz_target": False,
+            "targets": {
+                "dist_mm": None,
+                "dist_tol_mm": None,
+                "x_mm": None,
+                "x_tol_mm": None,
+                "y_mm": -7.25,
+                "y_tol_mm": 2.5,
+            },
+        }
+
+        with mock.patch.object(follow, "_follow_step2_config", return_value=cfg), mock.patch.object(
+            follow.time,
+            "sleep",
+        ):
+            result = follow._run_step2_seat_sequence(vision, robot)
+
+        self.assertTrue(result["target_met"])
+        self.assertEqual(robot.commands, [("d", 255, 250)])
+        self.assertEqual(result["precision_counts"]["mast_d"], 1)
+        self.assertEqual(result["precision_counts"]["fwd"], 0)
+        self.assertEqual(result["precision_counts"]["bck"], 0)
+        self.assertNotIn("xz_frozen", result["reading"])
+
+    def test_step2_freezes_xz_and_continues_mast_only_after_lock(self):
+        robot = _FakeRobot()
+        vision = _SequenceVision(
+            [
+                (True, 0.0, 60.0, 0.0, 88.0, 8.0, False, False),
+                (True, 0.0, 100.0, 30.0, 88.0, 5.5, False, False),
+                (True, 0.0, 105.0, 35.0, 88.0, 3.2, False, False),
+            ]
+        )
+        cfg = {
+            "seat_mast_cmd": "d",
+            "seat_mast_pwm": 255,
+            "seat_mast_duration_ms": 0,
+            "seat_drive_cmd": "f",
+            "seat_drive_pwm": 103,
+            "precision_settle_enabled": True,
+            "precision_max_attempts": 5,
+            "precision_mast_pulse_ms": 250,
+            "precision_settle_s": 0.0,
+            "freeze_xz_after_xz_target": True,
+            "targets": {
+                "dist_mm": 60.0,
+                "dist_tol_mm": 2.0,
+                "x_mm": 0.0,
+                "x_tol_mm": 9.0,
+                "y_mm": 3.0,
+                "y_tol_mm": 1.0,
+            },
+        }
+
+        with mock.patch.object(follow, "_follow_step2_config", return_value=cfg), mock.patch.object(
+            follow.time,
+            "sleep",
+        ):
+            result = follow._run_step2_seat_sequence(vision, robot)
+
+        self.assertTrue(result["target_met"])
+        self.assertTrue(result["reading"]["xz_frozen"])
+        self.assertEqual(result["reading"]["dist_mm"], 60.0)
+        self.assertEqual(result["reading"]["x_mm"], 0.0)
+        self.assertEqual(result["reading"]["raw_dist_mm"], 105.0)
+        self.assertEqual(result["reading"]["raw_x_mm"], 35.0)
+        self.assertEqual(robot.commands, [("d", 255, 250), ("d", 255, 250)])
+        self.assertEqual(result["precision_counts"]["mast_d"], 2)
+        self.assertEqual(result["precision_counts"]["fwd"], 0)
+        self.assertEqual(result["precision_counts"]["bck"], 0)
+
+    def test_step2_xz_freeze_blocks_visibility_creeps_after_mast_visibility_loss(self):
+        robot = _FakeRobot()
+        vision = _SequenceVision(
+            [
+                (True, 0.0, 60.0, 0.0, 88.0, 8.0, False, False),
+                (False,),
+            ]
+        )
+        cfg = {
+            "seat_mast_cmd": "d",
+            "seat_mast_pwm": 255,
+            "seat_mast_duration_ms": 1700,
+            "seat_drive_cmd": "f",
+            "seat_drive_pwm": 103,
+            "visibility_recovery_creep_enabled": True,
+            "visibility_recovery_creep_pulse_ms": 200,
+            "visibility_recovery_creep_max_attempts": 3,
+            "visibility_recovery_creep_settle_s": 0.0,
+            "precision_settle_enabled": True,
+            "precision_max_attempts": 5,
+            "precision_mast_pulse_ms": 250,
+            "precision_settle_s": 0.0,
+            "freeze_xz_after_xz_target": True,
+            "targets": {
+                "dist_mm": 60.0,
+                "dist_tol_mm": 2.0,
+                "x_mm": 0.0,
+                "x_tol_mm": 9.0,
+                "y_mm": 3.0,
+                "y_tol_mm": 1.0,
+            },
+        }
+
+        with mock.patch.object(follow, "_follow_step2_config", return_value=cfg), mock.patch.object(
+            follow,
+            "_wait_for_visibility_recovery",
+            side_effect=lambda _vision, _robot, reading, **_kwargs: reading,
+        ), mock.patch.object(
+            follow.time,
+            "sleep",
+        ):
+            result = follow._run_step2_seat_sequence(vision, robot)
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["target_met"])
+        self.assertEqual(result["reason"], "step2_unconfirmed_no_final_visibility")
+        self.assertTrue(result["reading"]["xz_frozen"])
+        self.assertEqual(robot.commands, [("d", 255, 1700)])
+        self.assertEqual(result["visibility_recovery_creeps"], 0)
 
     def test_step2_seat_lowers_then_uses_precision_forward_after_visibility(self):
         robot = _FakeRobot()
@@ -1421,7 +2867,7 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [1.7, 0.236])
         self.assertEqual(robot.stops, 2)
 
-    def test_step2_seat_refuses_forward_if_visibility_is_lost_after_mast(self):
+    def test_step2_seat_uses_three_tiny_forward_creeps_if_visibility_is_lost_after_mast(self):
         robot = _FakeRobot()
         vision = _SequenceVision(
             [
@@ -1442,6 +2888,10 @@ class TestFollowTheBrickReset(unittest.TestCase):
             "recovery_creep_pulse_ms": 200,
             "recovery_creep_max_attempts": 0,
             "recovery_creep_settle_s": 0.0,
+            "visibility_recovery_creep_enabled": True,
+            "visibility_recovery_creep_pulse_ms": 200,
+            "visibility_recovery_creep_max_attempts": 3,
+            "visibility_recovery_creep_settle_s": 0.0,
             "targets": {
                 "dist_mm": 45.0,
                 "dist_tol_mm": 10.0,
@@ -1458,15 +2908,18 @@ class TestFollowTheBrickReset(unittest.TestCase):
         ):
             result = follow._run_step2_seat_sequence(vision, robot)
 
-        self.assertFalse(result["success"])
+        self.assertTrue(result["success"])
         self.assertFalse(result["target_met"])
-        self.assertEqual(result["reason"], "brick_not_confident_after_step2_mast_no_forward")
-        self.assertEqual(robot.commands, [("d", 255, 1700)])
+        self.assertEqual(result["reason"], "step2_unconfirmed_no_final_visibility")
+        self.assertEqual(robot.commands, [("d", 255, 1700), ("f", 103, 200), ("f", 103, 200), ("f", 103, 200)])
+        self.assertEqual(result["visibility_recovery_creeps"], 3)
 
         stats = follow._new_game_stats()
         follow._record_step2_stats(stats, result)
         self.assertEqual(stats["step2_confirmed_win_count"], 0)
-        self.assertEqual(stats["step2_unconfirmed_win_count"], 0)
+        self.assertEqual(stats["step2_unconfirmed_win_count"], 1)
+        self.assertEqual(stats["step2_visibility_recovery_creep_count"], 3)
+        self.assertEqual(stats["act_counts"]["STEP2_VISIBILITY_CREEP_FWD"], 3)
 
     def test_step2_creeps_forward_when_visible_and_short_of_dist_target(self):
         robot = _FakeRobot()
@@ -1606,7 +3059,7 @@ class TestFollowTheBrickReset(unittest.TestCase):
         for action in expected_actions:
             row = dict(action)
             scaled_pwm = follow._telemetry_robot.clamp_pwm(round(float(row.get("pwm") or 0) * 1.05))
-            row["pwm"] = max(follow._pwm_floor_for_cmd(row.get("action")), scaled_pwm)
+            row["pwm"] = 0 if int(row.get("pwm") or 0) <= 0 else max(follow._pwm_floor_for_cmd(row.get("action")), scaled_pwm)
             scaled_expected_actions.append(row)
         self.assertEqual(actions, scaled_expected_actions)
 
@@ -1626,9 +3079,12 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual(len(robot.custom_commands), 1)
         _cmd, actions, _duration_ms = robot.custom_commands[0]
         for action in actions:
-            self.assertGreaterEqual(action["pwm"], follow._pwm_floor_for_cmd(action["action"]))
+            if int(action["pwm"]) <= 0:
+                self.assertEqual(action["pwm"], 0)
+            else:
+                self.assertGreaterEqual(action["pwm"], follow._pwm_floor_for_cmd(action["action"]))
 
-    def test_follow_strong_curve_uses_demonstrated_forward_turn_pair(self):
+    def test_empty_follow_strong_curve_holds_inside_tread_still(self):
         robot = _FakeRobot()
         reading = {
             "visible": True,
@@ -1649,25 +3105,36 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual(
             actions,
             [
-                {"target": "l", "action": "b", "pwm": 209},
-                {"target": "r", "action": "f", "pwm": 104},
+                {"target": "l", "action": "b", "pwm": 155},
+                {"target": "r", "action": "f", "pwm": 0},
             ],
         )
 
-    def test_follow_turn_curves_load_six_world_model_values(self):
-        expected_outer = {
-            "gentle": 155,
-            "medium": 181,
-            "strong": 209,
+    def test_empty_follow_turn_curves_load_profile_world_model_values(self):
+        expected = {
+            "gentle": {"inner_pwm": 104, "outer_pwm": 155},
+            "medium": {"inner_pwm": 0, "outer_pwm": 140},
+            "strong": {"inner_pwm": 0, "outer_pwm": 155},
         }
 
         for drive_mode in ("forward", "backward"):
-            for strength, outer_pwm in expected_outer.items():
+            for strength, values in expected.items():
                 curve = follow._turn_curve_for_drive_mode(drive_mode, strength)
                 self.assertEqual(curve["drive_mode"], drive_mode)
                 self.assertEqual(curve["strength"], strength)
-                self.assertEqual(curve["inner_pwm"], 104)
-                self.assertEqual(curve["outer_pwm"], outer_pwm)
+                self.assertEqual(curve["inner_pwm"], values["inner_pwm"])
+                self.assertEqual(curve["outer_pwm"], values["outer_pwm"])
+
+    def test_holding_follow_turn_curves_keep_shared_world_model_values(self):
+        old_profile = getattr(follow, "CURRENT_GAME_PROFILE", "empty")
+        try:
+            follow._set_game_profile("holding")
+            curve = follow._turn_curve_for_drive_mode("forward", "strong")
+        finally:
+            follow._set_game_profile(old_profile)
+
+        self.assertEqual(curve["inner_pwm"], 104)
+        self.assertEqual(curve["outer_pwm"], 209)
 
     def test_x_only_turn_policy_loads_distance_aware_drive_modes(self):
         cfg = follow._follow_motion_config()["x_only_turn"]
@@ -1682,9 +3149,9 @@ class TestFollowTheBrickReset(unittest.TestCase):
         curve = follow._adaptive_turn_curve_for_drive_mode("forward", 14.0)
 
         self.assertEqual(curve["drive_mode"], "forward")
-        self.assertEqual(curve["inner_pwm"], 104)
-        self.assertEqual(curve["outer_pwm"], 146)
-        self.assertAlmostEqual(curve["adaptive_outer_pwm_scale"], 0.75)
+        self.assertEqual(curve["inner_pwm"], 0)
+        self.assertEqual(curve["outer_pwm"], 151)
+        self.assertAlmostEqual(curve["adaptive_outer_pwm_scale"], 1.0)
         self.assertEqual(curve["strength"], "adaptive_14.0mm")
 
     def test_results_table_includes_x_curve_learning_summary(self):
@@ -1743,6 +3210,40 @@ class TestFollowTheBrickReset(unittest.TestCase):
                 {"target": "r", "action": "b", "pwm": 155},
             ],
         )
+
+    def test_send_turn_curve_preserves_all_four_slow_directional_curves(self):
+        reading = {
+            "visible": True,
+            "confident": True,
+            "conf": 88.0,
+            "min_confidence_pct": 75.0,
+            "x_mm": follow._x_target_mm() + 12.0,
+        }
+
+        for drive_mode in ("forward", "backward"):
+            for cmd in ("l", "r"):
+                robot = _FakeRobot()
+                result = follow._send_turn_curve(
+                    robot,
+                    cmd=cmd,
+                    drive_mode=drive_mode,
+                    strength="gentle",
+                    duration_ms=follow.PULSE_MS,
+                    reading=reading,
+                    context="test_all_directional_curves",
+                )
+                expected_curve = follow._turn_curve_for_drive_mode(drive_mode, "gentle")
+
+                self.assertEqual(robot.commands, [])
+                self.assertEqual(len(robot.custom_commands), 1)
+                sent_cmd, actions, duration_ms = robot.custom_commands[0]
+                self.assertEqual(sent_cmd, cmd)
+                self.assertEqual(duration_ms, follow.PULSE_MS)
+                self.assertEqual(
+                    actions,
+                    follow._turn_curve_actions(drive_mode=drive_mode, cmd=cmd, curve=expected_curve),
+                )
+                self.assertEqual(result["duration_ms"], follow.PULSE_MS)
 
     def test_reset_sequence_randomizes_reverse_turn_direction(self):
         robot = _FakeRobot()

@@ -237,7 +237,7 @@ CENTER_SWITCH_MARGIN_PX = 45.0
 CENTER_PARTIAL_PENALTY = 2.0
 CENTER_AXIS_WEIGHT_X = 1.0
 CENTER_AXIS_WEIGHT_Y = 1.0
-MAX_HIGHLIGHTED_BRICKS = 2
+MAX_HIGHLIGHTED_BRICKS = 1
 STACK_CENTER_Y_ROW_FILTER_ENABLED = True
 STACK_CENTER_Y_ROW_MIN_CANDIDATES = 2
 STACK_CENTER_Y_ROW_TOLERANCE_PX = 12.0
@@ -298,6 +298,7 @@ class BrickDetector:
         self.inference_backend = "tensorrt"
         self._init_inference_backend()
         self._trust_detector_boxes = True
+        self._far_suspect_enabled = True
         self.last_geometry_source = "pinhole_size"
         self._depth_source_mode = "auto"
         self._stereo_config_mode = "standard"
@@ -497,6 +498,7 @@ class BrickDetector:
                            hsv_min_area_ratio=None,
                            trust_detector_boxes=None,
                            require_cyan_shape=None,
+                           far_suspect_enabled=None,
                            center_lock_enabled=None,
                            center_lock_radius_px=None,
                            center_switch_margin_px=None,
@@ -686,6 +688,8 @@ class BrickDetector:
             self._trust_detector_boxes = bool(trust_detector_boxes)
         if require_cyan_shape is not None:
             self._require_cyan_shape = bool(require_cyan_shape)
+        if far_suspect_enabled is not None:
+            self._far_suspect_enabled = bool(far_suspect_enabled)
         if center_lock_enabled is not None:
             self._center_lock_enabled = bool(center_lock_enabled)
         if center_lock_radius_px is not None:
@@ -769,6 +773,7 @@ class BrickDetector:
             ),
             "trust_detector_boxes": bool(getattr(self, "_trust_detector_boxes", True)),
             "require_cyan_shape": bool(getattr(self, "_require_cyan_shape", False)),
+            "far_suspect_enabled": bool(getattr(self, "_far_suspect_enabled", True)),
             "center_lock_enabled": bool(self._center_lock_enabled),
             "center_lock_radius_px": (
                 None
@@ -1575,6 +1580,12 @@ class BrickDetector:
             bool(getattr(self, "_trust_detector_boxes", False))
             and not self._is_full_frame_hsv_crop(x1, y1, x2, y2)
         ):
+            trusted_coverage_min = max(
+                cyan_coverage_min,
+                float(BRICK_COLOR_FALLBACK_COVERAGE_MIN),
+            )
+            if cyan_pixels < bbox_area * trusted_coverage_min:
+                return []
             bw = x2 - x1
             bh = y2 - y1
             cx = x1 + bw / 2.0
@@ -2337,7 +2348,7 @@ class BrickDetector:
         return accepted
 
     def _cap_candidates_to_nearest(self, candidates, frame_w, frame_h, max_count=2):
-        """Keep only the max_count HSV candidates nearest to the frame crosshair."""
+        """Keep only the strongest HSV candidates, tie-broken by crosshair distance."""
         candidate_list = [candidate for candidate in candidates if isinstance(candidate, dict)]
         max_count_used = max(0, int(max_count or 0))
         if max_count_used <= 0:
@@ -2350,12 +2361,37 @@ class BrickDetector:
         def _rank(candidate):
             sel_x, sel_y = self._candidate_selection_point(candidate)
             return (
+                -self._candidate_confidence_score(candidate),
                 self._candidate_center_score(candidate, frame_w, frame_h),
                 abs(float(sel_y) - frame_cy),
                 abs(float(sel_x) - frame_cx),
             )
 
         return sorted(candidate_list, key=_rank)[:max_count_used]
+
+    def _candidate_confidence_score(self, candidate) -> float:
+        if not isinstance(candidate, dict):
+            return 0.0
+        values = []
+        for key in ("source_conf", "yolo_conf", "confidence", "conf", "confidence_pct", "conf_pct"):
+            if key not in candidate:
+                continue
+            try:
+                value = float(candidate.get(key))
+            except (TypeError, ValueError):
+                continue
+            if value > 1.0:
+                value = value / 100.0
+            values.append(max(0.0, min(1.0, value)))
+        try:
+            values.append(max(0.0, min(1.0, float(candidate.get("cyan_coverage", 0.0)))))
+        except (TypeError, ValueError):
+            pass
+        if bool(candidate.get("from_slot_detection", False)):
+            values.append(0.95)
+        elif bool(candidate.get("from_color_detection", False)):
+            values.append(0.85)
+        return max(values) if values else 0.0
 
     def _select_center_brick(self, individual_bricks, frame_w, frame_h):
         """
@@ -2488,7 +2524,8 @@ class BrickDetector:
             allowed_indices = list(range(len(candidates)))
 
         scores = [self._candidate_center_score(cand, frame_w, frame_h) for cand in candidates]
-        best_idx = min(allowed_indices, key=lambda i: scores[i])
+        confidences = [self._candidate_confidence_score(cand) for cand in candidates]
+        best_idx = min(allowed_indices, key=lambda i: (-confidences[i], scores[i]))
         chosen_idx = int(best_idx)
 
         lock_enabled = bool(getattr(self, "_center_lock_enabled", True))
@@ -2506,7 +2543,11 @@ class BrickDetector:
                 if dist < near_dist:
                     near_dist = dist
                     near_idx = idx
-            if near_idx is not None and near_dist <= radius:
+            if (
+                near_idx is not None
+                and near_dist <= radius
+                and confidences[near_idx] >= (confidences[best_idx] - 0.02)
+            ):
                 switch_margin = max(
                     0.0,
                     float(
@@ -2775,6 +2816,9 @@ class BrickDetector:
             if bricks:
                 for x1, y1, x2, y2, conf in bricks:
                     individuals = self._segment_bricks_hsv(frame, x1, y1, x2, y2)
+                    for individual in individuals:
+                        if isinstance(individual, dict):
+                            individual["source_conf"] = float(conf)
                     all_hsv_bricks.extend(individuals)
             should_try_full_frame_hsv = (
                 bool(getattr(self, "_closeup_full_frame_hsv_enabled", True))
@@ -2808,7 +2852,10 @@ class BrickDetector:
                     max_count=MAX_HIGHLIGHTED_BRICKS,
                 )
                 hsv_used = True
-            elif self._hsv_enabled:
+            elif (
+                self._hsv_enabled
+                and bool(getattr(self, "_far_suspect_enabled", True))
+            ):
                 far_suspect = self._far_suspect_candidate_from_frame(frame)
                 if far_suspect is not None:
                     suspect_yolo_conf = fallback_conf if bricks else 0.0
@@ -2882,16 +2929,10 @@ class BrickDetector:
                 self.last_primary_confidence = 0.0
                 return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
             conf_pct = min(100.0, combined_conf)
-            # Once the primary has passed the confidence gate, expose only the
-            # nearest already-shape-gated candidates. This keeps stacked bricks
-            # visible without letting the row filter hide the top brick.
-            detected_hsv_bricks = [
-                candidate
-                for candidate in identified_hsv_bricks
-                if isinstance(candidate, dict)
-            ]
-            if not any(candidate is primary for candidate in detected_hsv_bricks):
-                detected_hsv_bricks.insert(0, primary)
+            # Once the primary has passed the confidence gate, expose exactly
+            # one operator-facing target. Extra candidates are only internal
+            # evidence, never alternate stacks on the live view.
+            detected_hsv_bricks = [primary] if isinstance(primary, dict) else []
             primary["_dot_found"] = dot_found
             primary["_dot_cx"] = dot_cx
             primary["_dot_cy"] = dot_cy
