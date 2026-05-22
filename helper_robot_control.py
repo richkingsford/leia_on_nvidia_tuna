@@ -30,6 +30,7 @@ from telemetry_robot import (
 
 VALID_MOTION_COMMANDS = frozenset({"f", "b", "l", "r", "u", "d"})
 UNO_MAX_PERCENT = 100
+MAST_FULL_POWER_KEEPALIVE_MS = 350
 LEIA_UNO_SERIAL_PORT = "/dev/leia-uno"
 DEFAULT_SERIAL_PORT = "/dev/ttyCH341USB0"
 SERIAL_PORT_ENV_VARS = (
@@ -373,6 +374,69 @@ class Robot:
             "wire_text": ",".join(tokens),
         }
 
+    def _mast_wire_action_for_logical_cmd(self, cmd_char):
+        logical_cmd = str(cmd_char or "").strip().lower()
+        actions = UNO_MOTION_MAP.get(logical_cmd)
+        if not actions or len(actions) != 1:
+            return None
+        target, action = actions[0]
+        if target != "m" or action not in ("u", "d"):
+            return None
+        return action
+
+    def _should_python_hold_full_power_mast(self, logical_cmd, payload):
+        if str(logical_cmd or "").strip().lower() not in ("u", "d"):
+            return False
+        if not isinstance(payload, dict):
+            return False
+        try:
+            duration_val = int(round(float(payload.get("duration_ms") or 0)))
+            percent_val = int(round(float(payload.get("percent") or 0)))
+        except (TypeError, ValueError):
+            return False
+        return duration_val > 0 and percent_val >= int(UNO_MAX_PERCENT)
+
+    def _send_full_power_mast_python_held(self, logical_cmd, payload, *, source_fn):
+        """Hold full-power mast movement using short timed keepalive tokens."""
+        action = self._mast_wire_action_for_logical_cmd(logical_cmd)
+        if action is None:
+            return payload
+        duration_ms = int(round(float(payload.get("duration_ms") or 0)))
+        keepalive_ms = int(min(max(1, duration_ms), int(MAST_FULL_POWER_KEEPALIVE_MS)))
+        keepalive_token = self._format_uno_token(
+            "m",
+            action,
+            percent=UNO_MAX_PERCENT,
+            duration_ms=keepalive_ms,
+        )
+        remaining_ms = int(duration_ms)
+        keepalive_sends = 0
+        while remaining_ms > 0:
+            chunk_ms = int(min(int(keepalive_ms), int(remaining_ms)))
+            token = (
+                keepalive_token
+                if chunk_ms == keepalive_ms
+                else self._format_uno_token("m", action, percent=UNO_MAX_PERCENT, duration_ms=chunk_ms)
+            )
+            self._send(f"{token}\n")
+            keepalive_sends += 1
+            time.sleep(float(chunk_ms) / 1000.0)
+            remaining_ms -= int(chunk_ms)
+        for _idx in range(3):
+            self._send("m.s\n")
+            time.sleep(0.02)
+
+        result = dict(payload)
+        result["wire_text"] = f"{keepalive_token} [python-held {duration_ms}ms keepalive {keepalive_ms}ms],m.s"
+        result["python_held"] = True
+        result["keepalive_ms"] = int(keepalive_ms)
+        result["keepalive_sends"] = int(keepalive_sends)
+        result["source_fn"] = str(source_fn or "")
+        # Keep operator-facing last_command aligned with the logical act summary
+        # rather than the final low-level stop token.
+        self.last_command = result["wire_text"]
+        return result
+
     def _build_custom_action_payload(self, cmd_char, *, action_specs, duration_ms):
         logical_cmd = str(cmd_char or "").strip().lower()
         if logical_cmd not in VALID_MOTION_COMMANDS:
@@ -656,6 +720,8 @@ class Robot:
         if payload is None:
             return {"cmd_sent": logical_cmd, "pwm": 0, "power": 0.0, "duration_ms": int(duration)}
         self._validate_minimum_act(logical_cmd, payload["pwm"], duration, source_fn="send_command")
+        if self._should_python_hold_full_power_mast(logical_cmd, payload):
+            return self._send_full_power_mast_python_held(logical_cmd, payload, source_fn="send_command")
         self._send(f"{payload['wire_text']}\n")
         return payload
 
@@ -669,6 +735,8 @@ class Robot:
         if payload is None:
             return {"cmd_sent": logical_cmd, "pwm": 0, "power": 0.0, "duration_ms": int(duration)}
         self._validate_minimum_act(logical_cmd, payload["pwm"], duration, source_fn="send_command_pwm")
+        if self._should_python_hold_full_power_mast(logical_cmd, payload):
+            return self._send_full_power_mast_python_held(logical_cmd, payload, source_fn="send_command_pwm")
         self._send(f"{payload['wire_text']}\n")
         return payload
 

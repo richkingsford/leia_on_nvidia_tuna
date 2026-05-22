@@ -66,6 +66,32 @@ class TestHelperRobotControlWireMap(unittest.TestCase):
         self.assertEqual(mast_stop["wire_text"], "m.s")
         self.assertEqual(robot.last_command, "m.s")
 
+    def test_full_power_mast_duration_is_python_held_with_keepalives(self):
+        robot, dummy_serial = self._make_robot()
+
+        with patch.object(helper_robot_control.time, "sleep", return_value=None):
+            result = robot.send_command_pwm("d", robot.MAX_PWM, duration_ms=1000)
+
+        self.assertEqual(result["cmd_sent"], "d")
+        self.assertEqual(result["percent"], 100)
+        self.assertEqual(result["duration_ms"], 1000)
+        self.assertTrue(result["python_held"])
+        self.assertEqual(result["keepalive_ms"], helper_robot_control.MAST_FULL_POWER_KEEPALIVE_MS)
+        self.assertEqual(
+            dummy_serial.commands,
+            ["m.u.100.350\n", "m.u.100.350\n", "m.u.100.300\n", "m.s\n", "m.s\n", "m.s\n"],
+        )
+        self.assertEqual(robot.last_command, result["wire_text"])
+
+    def test_sub_full_power_mast_duration_still_uses_uno_timed_token(self):
+        robot, dummy_serial = self._make_robot()
+
+        result = robot.send_command_pwm("d", 200, duration_ms=1000)
+
+        self.assertFalse(result.get("python_held", False))
+        self.assertEqual(dummy_serial.commands, ["m.u.79.1000\n"])
+        self.assertEqual(robot.last_command, "m.u.79.1000")
+
     def test_send_custom_actions_pwm_serializes_mixed_tread_commands(self):
         robot, _dummy_serial = self._make_robot()
 
@@ -79,8 +105,8 @@ class TestHelperRobotControlWireMap(unittest.TestCase):
         )
 
         self.assertEqual(result["cmd_sent"], "r")
-        self.assertIn("l.b.100.255", result["wire_text"])
-        self.assertIn("r.f.50.255", result["wire_text"])
+        self.assertIn("l.b.100.200", result["wire_text"])
+        self.assertIn("r.f.50.200", result["wire_text"])
         self.assertEqual(result["pwm"], 255)
         self.assertEqual(robot.last_command, result["wire_text"])
 
@@ -96,8 +122,8 @@ class TestHelperRobotControlWireMap(unittest.TestCase):
             duration_ms=200,
         )
 
-        self.assertEqual(result["wire_text"], "l.s,r.f.100.255")
-        self.assertEqual(robot.last_command, "l.s,r.f.100.255")
+        self.assertEqual(result["wire_text"], "l.s,r.f.100.200")
+        self.assertEqual(robot.last_command, "l.s,r.f.100.200")
 
     def test_send_custom_actions_pwm_converts_zero_percent_directional_steps_to_stop_tokens(self):
         robot, _dummy_serial = self._make_robot()
@@ -126,14 +152,14 @@ class TestHelperRobotControlWireMap(unittest.TestCase):
             duration_ms=200,
         )
 
-        self.assertEqual(result["wire_text"], "l.s,r.f.100.255")
-        self.assertEqual(robot.last_command, "l.s,r.f.100.255")
+        self.assertEqual(result["wire_text"], "l.s,r.f.100.200")
+        self.assertEqual(robot.last_command, "l.s,r.f.100.200")
 
     def test_send_command_pwm_clamps_subfloor_duration_instead_of_sending_invalid(self):
         robot, _dummy_serial = self._make_robot()
 
-        result = robot.send_command_pwm("b", 132, duration_ms=250)
-        self.assertGreaterEqual(int(result["duration_ms"]), 255)
+        result = robot.send_command_pwm("b", 132, duration_ms=120)
+        self.assertGreaterEqual(int(result["duration_ms"]), 200)
         self.assertGreaterEqual(int(result["pwm"]), int(robot._min_floor_for_cmd("b")[0] or 0))
 
     def test_send_custom_actions_pwm_clamps_subfloor_duration_instead_of_sending_invalid(self):
@@ -145,9 +171,9 @@ class TestHelperRobotControlWireMap(unittest.TestCase):
                 {"target": "l", "action": "f", "pwm": 132},
                 {"target": "r", "action": "b", "pwm": 132},
             ],
-            duration_ms=250,
+            duration_ms=120,
         )
-        self.assertIn(".255", result["wire_text"])
+        self.assertIn(".200", result["wire_text"])
         for action in result.get("actions") or []:
             if not isinstance(action, dict):
                 continue
@@ -179,7 +205,7 @@ class TestHelperRobotControlWireMap(unittest.TestCase):
         robot, _dummy_serial = self._make_robot()
 
         with self.assertRaises(RuntimeError) as ctx:
-            robot._validate_minimum_act("b", 132, 250, source_fn="unit_test_sender")
+            robot._validate_minimum_act("b", 132, 120, source_fn="unit_test_sender")
 
         text = str(ctx.exception)
         self.assertIn("sender=unit_test_sender", text)

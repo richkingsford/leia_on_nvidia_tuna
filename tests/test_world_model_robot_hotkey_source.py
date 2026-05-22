@@ -59,8 +59,8 @@ class TestWorldModelRobotHotkeySource(unittest.TestCase):
             telemetry_robot.TURN_BREAKAWAY_TEST_FILE = original_turn_breakaway
 
         self.assertEqual(len(lines), 4)
-        self.assertIn("Forward (R): pwm=103, pwr=0.306, t=255ms", lines[0])
-        self.assertIn("Backward (F): pwm=103, pwr=0.306, t=255ms", lines[1])
+        self.assertIn("Forward (R): pwm=103, pwr=0.306, t=200ms", lines[0])
+        self.assertIn("Backward (F): pwm=103, pwr=0.306, t=200ms", lines[1])
         self.assertIn("Left (Q): pwm=133, pwr=0.443, t=135ms", lines[2])
         self.assertIn("Right (E): pwm=133, pwr=0.443, t=65ms", lines[3])
 

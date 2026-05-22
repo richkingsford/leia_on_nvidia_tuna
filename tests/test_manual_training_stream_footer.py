@@ -27,7 +27,7 @@ class TestManualTrainingStreamFooter(unittest.TestCase):
         self.assertIn("#049397", footer_html)
         self.assertIn("#00898F", footer_html)
         self.assertIn("#017E87", footer_html)
-        self.assertIn("Forward (R): pwm=103, pwr=0.306, t=255ms", footer_html)
+        self.assertIn("Forward (R): pwm=103, pwr=0.306, t=200ms", footer_html)
         self.assertIn("Left (Q): pwm=102, pwr=0.301, t=135ms", footer_html)
 
 
