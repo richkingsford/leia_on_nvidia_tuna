@@ -238,6 +238,7 @@ CENTER_PARTIAL_PENALTY = 2.0
 CENTER_AXIS_WEIGHT_X = 1.0
 CENTER_AXIS_WEIGHT_Y = 1.0
 MAX_HIGHLIGHTED_BRICKS = 1
+CENTER_HSV_SEARCH_WINDOW_RATIOS = (0.58, 0.76)
 STACK_CENTER_Y_ROW_FILTER_ENABLED = True
 STACK_CENTER_Y_ROW_MIN_CANDIDATES = 2
 STACK_CENTER_Y_ROW_TOLERANCE_PX = 12.0
@@ -2348,7 +2349,7 @@ class BrickDetector:
         return accepted
 
     def _cap_candidates_to_nearest(self, candidates, frame_w, frame_h, max_count=2):
-        """Keep only the strongest HSV candidates, tie-broken by crosshair distance."""
+        """Keep the HSV candidates whose face midpoints are nearest the crosshair."""
         candidate_list = [candidate for candidate in candidates if isinstance(candidate, dict)]
         max_count_used = max(0, int(max_count or 0))
         if max_count_used <= 0:
@@ -2361,8 +2362,8 @@ class BrickDetector:
         def _rank(candidate):
             sel_x, sel_y = self._candidate_selection_point(candidate)
             return (
-                -self._candidate_confidence_score(candidate),
                 self._candidate_center_score(candidate, frame_w, frame_h),
+                -self._candidate_confidence_score(candidate),
                 abs(float(sel_y) - frame_cy),
                 abs(float(sel_x) - frame_cx),
             )
@@ -2392,6 +2393,241 @@ class BrickDetector:
         elif bool(candidate.get("from_color_detection", False)):
             values.append(0.85)
         return max(values) if values else 0.0
+
+    def _frame_center_xy(self, frame_w, frame_h):
+        frame_cx = float(frame_w) / 2.0 + float(
+            getattr(self, "camera_center_offset_px", 0.0) or 0.0
+        )
+        frame_cy = float(frame_h) / 2.0
+        return frame_cx, frame_cy
+
+    def _hsv_search_box_key(self, box, frame_w, frame_h):
+        try:
+            x1, y1, x2, y2, conf = box[:5]
+            box_cx = (float(x1) + float(x2)) * 0.5
+            box_cy = (float(y1) + float(y2)) * 0.5
+            conf_val = float(conf)
+        except (TypeError, ValueError, IndexError):
+            return (float("inf"), float("inf"), float("inf"), 0.0)
+        frame_cx, frame_cy = self._frame_center_xy(frame_w, frame_h)
+        dy = abs(float(box_cy) - float(frame_cy))
+        dx = abs(float(box_cx) - float(frame_cx))
+        return (dy, dx, math.hypot(dx, dy), -conf_val)
+
+    def _centered_hsv_search_boxes(self, frame_w, frame_h):
+        frame_cx, frame_cy = self._frame_center_xy(frame_w, frame_h)
+        boxes = []
+        seen = set()
+        for ratio in CENTER_HSV_SEARCH_WINDOW_RATIOS:
+            try:
+                ratio_val = max(0.05, min(1.0, float(ratio)))
+            except (TypeError, ValueError):
+                continue
+            crop_w = max(1, min(int(frame_w), int(round(float(frame_w) * ratio_val))))
+            crop_h = max(1, min(int(frame_h), int(round(float(frame_h) * ratio_val))))
+            x1 = int(round(float(frame_cx) - (float(crop_w) * 0.5)))
+            y1 = int(round(float(frame_cy) - (float(crop_h) * 0.5)))
+            x1 = max(0, min(int(frame_w) - crop_w, x1))
+            y1 = max(0, min(int(frame_h) - crop_h, y1))
+            x2 = min(int(frame_w), x1 + crop_w)
+            y2 = min(int(frame_h), y1 + crop_h)
+            key = (x1, y1, x2, y2)
+            if key in seen:
+                continue
+            seen.add(key)
+            boxes.append((x1, y1, x2, y2, 1.0, "center"))
+        return boxes
+
+    def _detector_hsv_search_boxes(self, bricks, frame_w, frame_h):
+        boxes = []
+        seen = set()
+        for box in sorted(list(bricks or []), key=lambda item: self._hsv_search_box_key(item, frame_w, frame_h)):
+            try:
+                x1, y1, x2, y2, conf = box[:5]
+                x1 = max(0, min(int(frame_w), int(round(float(x1)))))
+                y1 = max(0, min(int(frame_h), int(round(float(y1)))))
+                x2 = max(0, min(int(frame_w), int(round(float(x2)))))
+                y2 = max(0, min(int(frame_h), int(round(float(y2)))))
+                conf_val = float(conf)
+            except (TypeError, ValueError, IndexError):
+                continue
+            if x2 <= x1 or y2 <= y1:
+                continue
+            key = (x1, y1, x2, y2)
+            if key in seen:
+                continue
+            seen.add(key)
+            boxes.append((x1, y1, x2, y2, conf_val, "detector"))
+        return boxes
+
+    def _hsv_search_boxes_center_out(self, bricks, frame_w, frame_h, *, include_center_crops, include_full_frame):
+        search_boxes = []
+        seen = set()
+
+        def _append(box):
+            key = tuple(int(v) for v in box[:4])
+            if key in seen:
+                return
+            seen.add(key)
+            search_boxes.append(box)
+
+        if include_center_crops:
+            for box in self._centered_hsv_search_boxes(frame_w, frame_h):
+                _append(box)
+        for box in self._detector_hsv_search_boxes(bricks, frame_w, frame_h):
+            _append(box)
+        if include_full_frame:
+            _append((0, 0, int(frame_w), int(frame_h), 1.0, "full_frame"))
+        return search_boxes
+
+    def _candidate_stack_groups(self, candidates):
+        candidate_list = [
+            candidate for candidate in list(candidates or []) if isinstance(candidate, dict)
+        ]
+        if len(candidate_list) <= 1:
+            return [list(range(len(candidate_list)))] if candidate_list else []
+
+        parent = list(range(len(candidate_list)))
+
+        def _find(idx):
+            while parent[idx] != idx:
+                parent[idx] = parent[parent[idx]]
+                idx = parent[idx]
+            return idx
+
+        def _union(a, b):
+            root_a = _find(a)
+            root_b = _find(b)
+            if root_a != root_b:
+                parent[root_b] = root_a
+
+        def _same_stack_column(first, second):
+            first_edges = self._candidate_bbox_edges(first)
+            second_edges = self._candidate_bbox_edges(second)
+            if first_edges is None or second_edges is None:
+                first_x, _first_y = self._candidate_selection_point(first)
+                second_x, _second_y = self._candidate_selection_point(second)
+                return abs(float(first_x) - float(second_x)) <= 24.0
+
+            f_x1, _f_y1, f_x2, _f_y2 = first_edges
+            s_x1, _s_y1, s_x2, _s_y2 = second_edges
+            f_w = max(1.0, float(f_x2) - float(f_x1))
+            s_w = max(1.0, float(s_x2) - float(s_x1))
+            f_cx, _f_cy = self._candidate_face_midpoint(first)
+            s_cx, _s_cy = self._candidate_face_midpoint(second)
+            overlap_w = min(float(f_x2), float(s_x2)) - max(float(f_x1), float(s_x1))
+            min_w = min(float(f_w), float(s_w))
+            center_tol = max(14.0, max(float(f_w), float(s_w)) * float(STACK_X_OVERLAP_RATIO))
+            return bool(
+                float(overlap_w) >= max(8.0, float(min_w) * 0.45)
+                or abs(float(f_cx) - float(s_cx)) <= float(center_tol)
+            )
+
+        for i in range(len(candidate_list)):
+            for j in range(i + 1, len(candidate_list)):
+                if _same_stack_column(candidate_list[i], candidate_list[j]):
+                    _union(i, j)
+
+        groups_by_root = {}
+        for idx in range(len(candidate_list)):
+            groups_by_root.setdefault(_find(idx), []).append(idx)
+        return list(groups_by_root.values())
+
+    def _candidate_stack_group_score(self, candidates, indices, frame_w, frame_h):
+        if not indices:
+            return float("inf"), 0.0, 0
+        frame_cx = float(frame_w) / 2.0 + float(getattr(self, "camera_center_offset_px", 0.0) or 0.0)
+        frame_cy = float(frame_h) / 2.0
+        x1_values = []
+        y1_values = []
+        x2_values = []
+        y2_values = []
+        area_sum = 0.0
+        for idx in indices:
+            candidate = candidates[int(idx)]
+            edges = self._candidate_bbox_edges(candidate)
+            if edges is None:
+                cx, cy = self._candidate_selection_point(candidate)
+                x1_values.append(float(cx))
+                x2_values.append(float(cx))
+                y1_values.append(float(cy))
+                y2_values.append(float(cy))
+                continue
+            x1, y1, x2, y2 = edges
+            x1_values.append(float(x1))
+            x2_values.append(float(x2))
+            y1_values.append(float(y1))
+            y2_values.append(float(y2))
+            area_sum += max(0.0, float(x2) - float(x1)) * max(0.0, float(y2) - float(y1))
+        group_cx = (min(x1_values) + max(x2_values)) * 0.5
+        group_cy = (min(y1_values) + max(y2_values)) * 0.5
+        score = math.hypot(float(group_cx) - frame_cx, float(group_cy) - frame_cy)
+        return float(score), float(area_sum), int(len(indices))
+
+    def _filter_candidates_to_center_stack(self, candidates, frame_w, frame_h):
+        candidate_list = [
+            candidate for candidate in list(candidates or []) if isinstance(candidate, dict)
+        ]
+        if len(candidate_list) <= 1:
+            return candidate_list
+
+        groups = self._candidate_stack_groups(candidate_list)
+        if len(groups) <= 1:
+            return candidate_list
+
+        group_stats = [
+            (
+                indices,
+                *self._candidate_stack_group_score(candidate_list, indices, frame_w, frame_h),
+            )
+            for indices in groups
+        ]
+
+        radius = self._center_lock_radius(frame_w, frame_h)
+        multi_groups = [
+            stat for stat in group_stats if int(stat[3]) >= 2 and float(stat[1]) <= radius
+        ]
+        selectable = multi_groups or group_stats
+        best = min(
+            selectable,
+            key=lambda stat: (
+                float(stat[1]),
+                -int(stat[3]),
+                -float(stat[2]),
+            ),
+        )
+
+        lock_enabled = bool(getattr(self, "_center_lock_enabled", True))
+        prev_center = getattr(self, "_center_lock_prev_center", None)
+        if lock_enabled and isinstance(prev_center, tuple) and len(prev_center) == 2:
+            prev_x = float(prev_center[0])
+            prev_y = float(prev_center[1])
+            prev_stat = None
+            prev_dist = float("inf")
+            for stat in group_stats:
+                indices, _score, _area, _size = stat
+                for idx in indices:
+                    cand_x, cand_y = self._candidate_selection_point(candidate_list[int(idx)])
+                    dist = math.hypot(float(cand_x) - prev_x, float(cand_y) - prev_y)
+                    if dist < prev_dist:
+                        prev_dist = dist
+                        prev_stat = stat
+            if prev_stat is not None and prev_dist <= radius:
+                switch_margin = max(
+                    0.0,
+                    float(
+                        getattr(
+                            self,
+                            "_center_switch_margin_px",
+                            CENTER_SWITCH_MARGIN_PX,
+                        )
+                        or CENTER_SWITCH_MARGIN_PX
+                    ),
+                )
+                if (float(prev_stat[1]) - float(best[1])) <= switch_margin:
+                    best = prev_stat
+
+        return [candidate_list[int(idx)] for idx in best[0]]
 
     def _select_center_brick(self, individual_bricks, frame_w, frame_h):
         """
@@ -2515,17 +2751,11 @@ class BrickDetector:
         if not candidates:
             return None
 
-        allowed_indices = self._center_y_row_candidate_indices(
-            candidates,
-            frame_w,
-            frame_h,
-        )
-        if not allowed_indices:
-            allowed_indices = list(range(len(candidates)))
+        allowed_indices = list(range(len(candidates)))
 
         scores = [self._candidate_center_score(cand, frame_w, frame_h) for cand in candidates]
         confidences = [self._candidate_confidence_score(cand) for cand in candidates]
-        best_idx = min(allowed_indices, key=lambda i: (-confidences[i], scores[i]))
+        best_idx = min(allowed_indices, key=lambda i: (scores[i], -confidences[i]))
         chosen_idx = int(best_idx)
 
         lock_enabled = bool(getattr(self, "_center_lock_enabled", True))
@@ -2537,17 +2767,12 @@ class BrickDetector:
             near_idx = None
             near_dist = float("inf")
             for idx in allowed_indices:
-                cand = candidates[idx]
-                cand_x, cand_y = self._candidate_selection_point(cand)
+                cand_x, cand_y = self._candidate_selection_point(candidates[idx])
                 dist = math.hypot(float(cand_x) - prev_x, float(cand_y) - prev_y)
                 if dist < near_dist:
                     near_dist = dist
                     near_idx = idx
-            if (
-                near_idx is not None
-                and near_dist <= radius
-                and confidences[near_idx] >= (confidences[best_idx] - 0.02)
-            ):
+            if near_idx is not None and near_dist <= radius:
                 switch_margin = max(
                     0.0,
                     float(
@@ -2555,7 +2780,8 @@ class BrickDetector:
                             self,
                             "_center_switch_margin_px",
                             CENTER_SWITCH_MARGIN_PX,
-                        ) or CENTER_SWITCH_MARGIN_PX
+                        )
+                        or CENTER_SWITCH_MARGIN_PX
                     ),
                 )
                 if (scores[near_idx] - scores[best_idx]) <= switch_margin:
@@ -2804,22 +3030,16 @@ class BrickDetector:
         h_frame = self.frame_h
         self._clear_far_suspect_state()
 
-        # Sort by confidence (highest first)
-        bricks.sort(key=lambda b: b[4], reverse=True)
-        fallback_conf = float(bricks[0][4]) if bricks else 1.0
+        # Keep confidence for fallback display, but search HSV center-out.
+        bricks = list(bricks or [])
+        fallback_conf = max((float(b[4]) for b in bricks), default=1.0)
+        bricks.sort(key=lambda b: self._hsv_search_box_key(b, w_frame, h_frame))
 
         # Try HSV segmentation on each YOLO box to find individual cyan bricks
         all_hsv_bricks = []
         hsv_used = False
         closeup_hsv_fallback_used = False
         if self._hsv_enabled:
-            if bricks:
-                for x1, y1, x2, y2, conf in bricks:
-                    individuals = self._segment_bricks_hsv(frame, x1, y1, x2, y2)
-                    for individual in individuals:
-                        if isinstance(individual, dict):
-                            individual["source_conf"] = float(conf)
-                    all_hsv_bricks.extend(individuals)
             should_try_full_frame_hsv = (
                 bool(getattr(self, "_closeup_full_frame_hsv_enabled", True))
                 and self._should_try_full_frame_hsv_fallback(
@@ -2828,28 +3048,47 @@ class BrickDetector:
                     h_frame,
                 )
             )
-            if should_try_full_frame_hsv:
-                # Very close bricks can fill most of the frame and fail YOLO/NMS.
-                # They can also be clipped by the frame so the YOLO box misses
-                # the full face geometry. Let the cyan shape gate inspect the
-                # full frame directly before declaring failure.
-                had_box_hsv_bricks = bool(all_hsv_bricks)
-                individuals = self._segment_bricks_hsv(frame, 0, 0, w_frame, h_frame)
+            for x1, y1, x2, y2, conf, search_source in self._hsv_search_boxes_center_out(
+                bricks,
+                w_frame,
+                h_frame,
+                include_center_crops=should_try_full_frame_hsv,
+                include_full_frame=should_try_full_frame_hsv,
+            ):
+                individuals = self._segment_bricks_hsv(frame, x1, y1, x2, y2)
                 if individuals:
+                    # Stop at the first usable green candidates. This keeps
+                    # background stacks from entering the target pool after the
+                    # centered stack has already been found.
+                    closeup_hsv_fallback_used = (
+                        search_source in {"center", "full_frame"}
+                        and (
+                            not bool(bricks)
+                            or not any(
+                                bx1 <= self._candidate_face_midpoint(individual)[0] <= bx2
+                                and by1 <= self._candidate_face_midpoint(individual)[1] <= by2
+                                for individual in individuals
+                                if isinstance(individual, dict)
+                                for bx1, by1, bx2, by2, _bc in bricks
+                            )
+                        )
+                    )
+                    if not bricks and search_source in {"center", "full_frame"}:
+                        bricks = [(x1, y1, x2, y2, float(conf))]
                     all_hsv_bricks.extend(individuals)
-                    closeup_hsv_fallback_used = not bool(bricks) or not had_box_hsv_bricks
-                    if not bricks:
-                        bricks = [(0, 0, w_frame, h_frame, 1.0)]
+                    for individual in all_hsv_bricks:
+                        if isinstance(individual, dict):
+                            individual["source_conf"] = float(conf)
+                    break
             if all_hsv_bricks:
                 all_hsv_bricks = self._dedup_hsv_candidates(all_hsv_bricks)
                 all_hsv_bricks = self._enforce_non_overlapping_candidate_bboxes(
                     all_hsv_bricks
                 )
-                all_hsv_bricks = self._cap_candidates_to_nearest(
+                all_hsv_bricks = self._filter_candidates_to_center_stack(
                     all_hsv_bricks,
                     w_frame,
                     h_frame,
-                    max_count=MAX_HIGHLIGHTED_BRICKS,
                 )
                 hsv_used = True
             elif (
@@ -2872,13 +3111,6 @@ class BrickDetector:
             detected_hsv_bricks = []  # populated after primary is confirmed below
             identified_hsv_bricks = list(all_hsv_bricks)
             selectable_hsv_bricks = list(identified_hsv_bricks)
-            filtered_hsv_bricks = self._filter_candidates_to_center_y_row(
-                identified_hsv_bricks,
-                w_frame,
-                h_frame,
-            )
-            if filtered_hsv_bricks:
-                selectable_hsv_bricks = filtered_hsv_bricks
             # HSV path: center-most brick, contour-based angle, individual distance
             primary = self._select_center_brick(selectable_hsv_bricks, w_frame, h_frame)
             primary_face_cx, primary_face_cy = self._candidate_face_midpoint(primary)
@@ -2886,7 +3118,7 @@ class BrickDetector:
 
             # Use YOLO confidence from the box that contained this brick
             # (find which YOLO box contains the primary brick face midpoint)
-            yolo_conf = bricks[0][4]
+            yolo_conf = float(fallback_conf)
             for x1, y1, x2, y2, conf in bricks:
                 if (x1 <= primary_face_cx <= x2 and
                         y1 <= primary_face_cy <= y2):
@@ -5656,6 +5888,102 @@ class BrickDetector:
                 ]
         return []
 
+    def _tight_hsv_bbox_for_candidate(self, frame, candidate):
+        """Return a frame-space bbox around the green pixels inside one candidate."""
+        if frame is None or not isinstance(candidate, dict):
+            return None
+        bbox = candidate.get("bbox")
+        if not isinstance(bbox, (tuple, list)) or len(bbox) < 4:
+            return None
+        try:
+            bx, by, bw, bh = [int(round(float(v))) for v in bbox[:4]]
+        except (TypeError, ValueError):
+            return None
+        if bw <= 0 or bh <= 0:
+            return None
+
+        frame_h, frame_w = frame.shape[:2]
+        x1 = max(0, bx)
+        y1 = max(0, by)
+        x2 = min(int(frame_w), bx + bw)
+        y2 = min(int(frame_h), by + bh)
+        if x2 <= x1 or y2 <= y1:
+            return None
+
+        crop = frame[y1:y2, x1:x2]
+        if crop.size == 0:
+            return None
+
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        feature_mask = cv2.inRange(
+            hsv,
+            np.array(CYAN_HSV_BALANCED_LOWER, dtype=np.uint8),
+            np.array(CYAN_HSV_BALANCED_UPPER, dtype=np.uint8),
+        )
+        kern_open = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        feature_mask = cv2.morphologyEx(feature_mask, cv2.MORPH_OPEN, kern_open)
+        if feature_mask is None:
+            return None
+
+        points = cv2.findNonZero(feature_mask)
+        if points is None or len(points) <= 0:
+            return None
+        px, py, pw, ph = cv2.boundingRect(points)
+        if pw <= 0 or ph <= 0:
+            return None
+        return int(x1 + px), int(y1 + py), int(x1 + px + pw), int(y1 + py + ph)
+
+    def _hsv_stack_tight_bbox(self, frame, candidates):
+        """Return one tight frame-space bbox around the selected green stack."""
+        if frame is None or not isinstance(candidates, list):
+            return None
+
+        x1_values = []
+        y1_values = []
+        x2_values = []
+        y2_values = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            tight_bbox = self._tight_hsv_bbox_for_candidate(frame, candidate)
+            if tight_bbox is None:
+                edges = self._candidate_bbox_edges(candidate)
+                if edges is None:
+                    continue
+                bx1, by1, bx2, by2 = edges
+            else:
+                bx1, by1, bx2, by2 = tight_bbox
+            x1_values.append(float(bx1))
+            y1_values.append(float(by1))
+            x2_values.append(float(bx2))
+            y2_values.append(float(by2))
+
+        if not x1_values:
+            return None
+        frame_h, frame_w = frame.shape[:2]
+        x1 = max(0, int(math.floor(min(x1_values))))
+        y1 = max(0, int(math.floor(min(y1_values))))
+        x2 = min(int(frame_w), int(math.ceil(max(x2_values))))
+        y2 = min(int(frame_h), int(math.ceil(max(y2_values))))
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return x1, y1, x2, y2
+
+    def _draw_hsv_stack_bbox_outline(self, frame, candidates):
+        bbox = self._hsv_stack_tight_bbox(frame, candidates)
+        if bbox is None:
+            return False
+        x1, y1, x2, y2 = bbox
+        cv2.rectangle(
+            frame,
+            (int(x1), int(y1)),
+            (int(x2), int(y2)),
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+        return True
+
     def _draw_cyan_candidate_outlines(self, frame, candidates):
         if frame is None or not isinstance(candidates, list):
             return
@@ -5722,19 +6050,22 @@ class BrickDetector:
     def _draw_debug_hsv(self, frame, yolo_bricks, hsv_bricks, primary,
                         angle, dist, offset_x, conf):
         """Draw enhanced debug visualization for HSV-segmented bricks."""
-        outline_candidates = hsv_bricks
-        if isinstance(primary, dict) and isinstance(hsv_bricks, list):
-            outline_candidates = [
-                candidate
-                for candidate in hsv_bricks
-                if not self._same_debug_candidate(candidate, primary)
-            ]
-        self._draw_cyan_candidate_outlines(frame, outline_candidates)
+        stack_box_drawn = self._draw_hsv_stack_bbox_outline(frame, hsv_bricks)
+        if not stack_box_drawn:
+            outline_candidates = hsv_bricks
+            if isinstance(primary, dict) and isinstance(hsv_bricks, list):
+                outline_candidates = [
+                    candidate
+                    for candidate in hsv_bricks
+                    if not self._same_debug_candidate(candidate, primary)
+                ]
+            self._draw_cyan_candidate_outlines(frame, outline_candidates)
 
         # Draw primary-only decorations after outlines. Brick IDs are drawn
         # last so the operator can always read them in the face centers.
         if primary:
-            self._draw_primary_face_outline(frame, primary)
+            if not stack_box_drawn:
+                self._draw_primary_face_outline(frame, primary)
             self._draw_pink_dot_on_brick(frame, primary)
             face_cx, face_cy = self._candidate_face_midpoint(primary)
             pcx = int(round(float(face_cx)))
@@ -6003,9 +6334,6 @@ def detect_single_negative_cutout_brick(detector, frame):
             detector.last_status = no_match_status
             detector.last_primary_confidence = 0.0
             return None, []
-        filtered = detector._filter_candidates_to_center_y_row(candidates, frame_w, frame_h)
-        if filtered:
-            candidates = filtered
         primary = detector._select_center_brick(candidates, frame_w, frame_h)
     else:
         candidates = detector._build_negative_cutout_pair_candidates(
@@ -6021,9 +6349,6 @@ def detect_single_negative_cutout_brick(detector, frame):
             detector.last_status = no_match_status
             detector.last_primary_confidence = 0.0
             return None, []
-        filtered = detector._filter_candidates_to_center_y_row(candidates, frame_w, frame_h)
-        if filtered:
-            candidates = filtered
         primary = detector._select_center_brick(candidates, frame_w, frame_h)
     if primary is None:
         detector.last_status = no_match_status

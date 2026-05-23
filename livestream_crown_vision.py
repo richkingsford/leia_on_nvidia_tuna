@@ -24,13 +24,20 @@ from helper_brick_detector_yolo import (
     CYAN_SHADE_HEXES,
 )
 from helper_manual_config import load_manual_training_config
-from helper_holding_brick import (
-    contour_target_result_tuple,
-    detect_holding_brick,
-    detect_masked_target_brick_contour,
-    draw_masked_target_contour,
-    mask_held_brick_for_target_frame,
-)
+from helper_holding_brick import detect_holding_brick
+
+try:
+    from helper_holding_brick import (
+        contour_target_result_tuple,
+        detect_masked_target_brick_contour,
+        draw_masked_target_contour,
+        mask_held_brick_for_target_frame,
+    )
+except ImportError:
+    contour_target_result_tuple = None
+    detect_masked_target_brick_contour = None
+    draw_masked_target_contour = None
+    mask_held_brick_for_target_frame = None
 from helper_stream_server import format_stream_url
 from helper_streaming import start_stream_server
 import helper_xyz_coords
@@ -48,9 +55,9 @@ CROWN_PROFILE_BASE_TUNING = {
     "smoothing_alpha": 0.15,
     "hsv_enabled": True,
     "hsv_erode_iterations": 1,
-    "hsv_lower": list(CYAN_HSV_WIDE_LOWER),
-    "hsv_upper": list(CYAN_HSV_WIDE_UPPER),
-    "hsv_cyan_coverage_min": 0.05,
+    "hsv_lower": list(CYAN_HSV_BALANCED_LOWER),
+    "hsv_upper": list(CYAN_HSV_BALANCED_UPPER),
+    "hsv_cyan_coverage_min": 0.08,
     "full_frame_hsv_cyan_coverage_min": 0.03,
     "hsv_min_area_ratio": 0.03,
     "shape_gate_mode": "shape_match",
@@ -67,9 +74,9 @@ TIGHT_COLOR_TUNING = {
     **CROWN_PROFILE_BASE_TUNING,
     "label": "2 Tight Color",
     "confidence": 0.20,
-    "hsv_lower": list(CYAN_HSV_WIDE_LOWER),
-    "hsv_upper": list(CYAN_HSV_WIDE_UPPER),
-    "hsv_cyan_coverage_min": 0.05,
+    "hsv_lower": list(CYAN_HSV_BALANCED_LOWER),
+    "hsv_upper": list(CYAN_HSV_BALANCED_UPPER),
+    "hsv_cyan_coverage_min": 0.08,
     "hsv_min_area_ratio": 0.03,
     "conf_gate_pct": 50.0,
 }
@@ -352,7 +359,16 @@ class CrownVisionLivestream:
                     "holding": False,
                     "reason": "invalid_holding_result",
                 }
-                if bool(holding_result.get("holding")):
+                holding_target_helpers_available = all(
+                    callable(fn)
+                    for fn in (
+                        mask_held_brick_for_target_frame,
+                        detect_masked_target_brick_contour,
+                        contour_target_result_tuple,
+                        draw_masked_target_contour,
+                    )
+                )
+                if bool(holding_result.get("holding")) and holding_target_helpers_available:
                     masked = mask_held_brick_for_target_frame(raw_frame, holding_result)
                     if masked is not None:
                         contour_result = detect_masked_target_brick_contour(masked, detector=self.vision)

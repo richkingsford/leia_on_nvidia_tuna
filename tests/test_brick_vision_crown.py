@@ -186,8 +186,8 @@ class TestCrownProfileTuning(unittest.TestCase):
 
     def test_default_profile_is_known_good_tight_color(self):
         self.assertEqual(CROWN_PROFILE_KEY, "tight_color")
-        self.assertEqual(CROWN_PROFILE_TUNING["hsv_lower"], list(det.CYAN_HSV_WIDE_LOWER))
-        self.assertEqual(CROWN_PROFILE_TUNING["hsv_upper"], list(det.CYAN_HSV_WIDE_UPPER))
+        self.assertEqual(CROWN_PROFILE_TUNING["hsv_lower"], list(det.CYAN_HSV_BALANCED_LOWER))
+        self.assertEqual(CROWN_PROFILE_TUNING["hsv_upper"], list(det.CYAN_HSV_BALANCED_UPPER))
         self.assertAlmostEqual(CROWN_PROFILE_TUNING["confidence"], 0.20)
         self.assertEqual(CROWN_PROFILE_TUNING["depth_source_mode"], "pinhole")
         self.assertTrue(CROWN_PROFILE_TUNING["trust_detector_boxes"])
@@ -664,7 +664,7 @@ class TestReadFrameCloseupRecovery(unittest.TestCase):
         self.assertFalse(result[0])
         self.assertEqual(d.last_status, "searching")
 
-    def test_read_frame_uses_full_frame_hsv_when_yolo_has_no_boxes(self):
+    def test_read_frame_uses_center_hsv_search_when_yolo_has_no_boxes(self):
         d = _make_stub()
         d.frame_w = 640
         d.frame_h = 480
@@ -697,14 +697,15 @@ class TestReadFrameCloseupRecovery(unittest.TestCase):
 
         def _segment(_frame, x1, y1, x2, y2):
             segment_calls.append((x1, y1, x2, y2))
-            return [primary] if (x1, y1, x2, y2) == (0, 0, 640, 480) else []
+            return [primary] if len(segment_calls) == 1 else []
 
         d._segment_bricks_hsv = _segment
 
         result = det.BrickDetector.read_frame(d, np.zeros((480, 640, 3), dtype=np.uint8))
 
         self.assertTrue(result[0])
-        self.assertEqual(segment_calls, [(0, 0, 640, 480)])
+        self.assertEqual(len(segment_calls), 1)
+        self.assertNotEqual(segment_calls[0], (0, 0, 640, 480))
         self.assertEqual(d.last_status, "target locked (HSV)")
 
     def test_profile_can_disable_full_frame_hsv_recovery(self):

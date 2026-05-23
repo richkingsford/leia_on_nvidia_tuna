@@ -2,11 +2,16 @@ import sys
 import unittest
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from helper_brick_detector_yolo import BrickDetector
+from helper_brick_detector_yolo import (
+    BrickDetector,
+    CYAN_HSV_WIDE_LOWER,
+    CYAN_HSV_WIDE_UPPER,
+)
 
 
 class TestBrickDetectorYoloCenterLock(unittest.TestCase):
@@ -22,6 +27,9 @@ class TestBrickDetectorYoloCenterLock(unittest.TestCase):
         det._prev_offset = None
         det._prev_offset_y = None
         det._hsv_enabled = True
+        det._hsv_lower = np.array(CYAN_HSV_WIDE_LOWER, dtype=np.uint8)
+        det._hsv_upper = np.array(CYAN_HSV_WIDE_UPPER, dtype=np.uint8)
+        det._hsv_erode_iterations = 0
         det._center_lock_enabled = True
         det._center_lock_radius_px = 120.0
         det._center_switch_margin_px = 20.0
@@ -112,20 +120,20 @@ class TestBrickDetectorYoloCenterLock(unittest.TestCase):
         self.assertAlmostEqual(result[3], 80.0, places=6)
         self.assertAlmostEqual(result[5], 100.0, places=6)
 
-    def test_select_center_brick_prefers_highest_candidate_below_midpoint(self):
+    def test_select_center_brick_prefers_closest_midpoint_across_rows(self):
         det = self._detector_stub()
         bricks = [
-            {"center_x": 318.0, "center_y": 252.0, "partial": False},
-            {"center_x": 320.0, "center_y": 332.0, "partial": False},
+            {"center_x": 318.0, "center_y": 294.0, "partial": False},
+            {"center_x": 374.0, "center_y": 246.0, "partial": False},
         ]
         selected = BrickDetector._select_center_brick(det, bricks, 640, 480)
         self.assertIs(selected, bricks[0])
 
-    def test_select_center_brick_uses_lock_hysteresis_when_scores_are_close(self):
+    def test_select_center_brick_keeps_previous_lock_when_midpoints_are_close(self):
         det = self._detector_stub()
         det._center_lock_prev_center = (282.0, 240.0)
-        # Brick[0] is near previous lock but farther from frame center.
-        # Brick[1] is slightly better center score, but not enough to switch.
+        # Brick[0] is near previous lock; Brick[1] is closer to crosshairs,
+        # but not enough to switch away from the locked shrink-wrap target.
         bricks = [
             {"center_x": 284.0, "center_y": 240.0, "partial": False},
             {"center_x": 300.0, "center_y": 240.0, "partial": False},
@@ -142,6 +150,57 @@ class TestBrickDetectorYoloCenterLock(unittest.TestCase):
         ]
         selected = BrickDetector._select_center_brick(det, bricks, 640, 480)
         self.assertIs(selected, bricks[1])
+
+    def test_select_center_brick_prefers_closest_midpoint_over_higher_confidence(self):
+        det = self._detector_stub()
+        bricks = [
+            {"center_x": 220.0, "center_y": 240.0, "source_conf": 0.95, "partial": False},
+            {"center_x": 318.0, "center_y": 242.0, "source_conf": 0.60, "partial": False},
+        ]
+        selected = BrickDetector._select_center_brick(det, bricks, 640, 480)
+        self.assertIs(selected, bricks[1])
+
+    def test_center_stack_filter_discards_center_background_singleton(self):
+        det = self._detector_stub()
+        candidates = [
+            {"center_x": 285.0, "center_y": 210.0, "bbox": (260.0, 190.0, 50.0, 40.0), "partial": False},
+            {"center_x": 285.0, "center_y": 270.0, "bbox": (260.0, 250.0, 50.0, 40.0), "partial": False},
+            {"center_x": 320.0, "center_y": 240.0, "bbox": (310.0, 230.0, 20.0, 20.0), "partial": False},
+        ]
+
+        filtered = BrickDetector._filter_candidates_to_center_stack(det, candidates, 640, 480)
+
+        self.assertEqual(filtered, candidates[:2])
+        selected = BrickDetector._select_center_brick(det, filtered, 640, 480)
+        self.assertIn(selected, candidates[:2])
+
+    def test_center_stack_filter_switches_from_stale_lock_to_center_stack(self):
+        det = self._detector_stub()
+        det._center_lock_prev_center = (285.0, 210.0)
+        candidates = [
+            {"center_x": 285.0, "center_y": 210.0, "bbox": (260.0, 190.0, 50.0, 40.0), "partial": False},
+            {"center_x": 285.0, "center_y": 270.0, "bbox": (260.0, 250.0, 50.0, 40.0), "partial": False},
+            {"center_x": 320.0, "center_y": 220.0, "bbox": (300.0, 200.0, 40.0, 40.0), "partial": False},
+            {"center_x": 320.0, "center_y": 270.0, "bbox": (300.0, 250.0, 40.0, 40.0), "partial": False},
+        ]
+
+        filtered = BrickDetector._filter_candidates_to_center_stack(det, candidates, 640, 480)
+
+        self.assertEqual(filtered, candidates[2:])
+
+    def test_center_stack_filter_keeps_lock_when_stack_is_still_centered(self):
+        det = self._detector_stub()
+        det._center_lock_prev_center = (305.0, 220.0)
+        candidates = [
+            {"center_x": 305.0, "center_y": 220.0, "bbox": (295.0, 200.0, 20.0, 40.0), "partial": False},
+            {"center_x": 305.0, "center_y": 270.0, "bbox": (295.0, 250.0, 20.0, 40.0), "partial": False},
+            {"center_x": 320.0, "center_y": 220.0, "bbox": (310.0, 200.0, 20.0, 40.0), "partial": False},
+            {"center_x": 320.0, "center_y": 270.0, "bbox": (310.0, 250.0, 20.0, 40.0), "partial": False},
+        ]
+
+        filtered = BrickDetector._filter_candidates_to_center_stack(det, candidates, 640, 480)
+
+        self.assertEqual(filtered, candidates[:2])
 
     def test_fallback_path_selects_center_box_not_highest_confidence(self):
         det = self._detector_stub()
@@ -163,6 +222,72 @@ class TestBrickDetectorYoloCenterLock(unittest.TestCase):
         # offset_x should be centered box -> ~0
         self.assertAlmostEqual(result[3], 0.0, places=6)
         self.assertAlmostEqual(result[4], 60.0, places=6)
+
+    def test_hsv_search_stops_after_center_box_finds_candidates(self):
+        det = self._detector_stub()
+        det._conf_gate_pct = 0.0
+        det.last_max_confidence = 1.0
+        det._estimate_distance_from_box = lambda _bbox_w, _bbox_h, _partial_kind=None: 200.0
+        det._prefer_depth_distance = lambda fallback, *_args, **_kwargs: fallback
+        det._refine_angle_for_primary = lambda *_args, **_kwargs: 0.0
+        det._detect_pink_dot_in_brick = lambda *_args, **_kwargs: (False, None, None)
+        det._dist_from_triangle_span = lambda *_args, **_kwargs: None
+
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        calls = []
+        centered_candidate = {
+            "center_x": 320.0,
+            "center_y": 240.0,
+            "bbox": (300.0, 220.0, 40.0, 40.0),
+            "contour": None,
+            "rect": None,
+            "area": 1600.0,
+            "partial": False,
+            "partial_kind": None,
+            "partial_label": None,
+            "partial_edges": {},
+            "shape_profile": "full",
+            "shape_match_score": None,
+            "negative_cutout_polygons": [],
+        }
+
+        def _segment(_frame, x1, y1, x2, y2):
+            calls.append((x1, y1, x2, y2))
+            if (x1, y1, x2, y2) == (295, 210, 345, 270):
+                return [centered_candidate]
+            self.fail("HSV search should stop before scanning the background box")
+
+        det._segment_bricks_hsv = _segment
+
+        bricks = [
+            (40, 200, 100, 260, 0.95),
+            (295, 210, 345, 270, 0.40),
+        ]
+        result = BrickDetector._process_bricks(det, frame, bricks)
+
+        self.assertTrue(result[0])
+        self.assertEqual(calls, [(295, 210, 345, 270)])
+        self.assertAlmostEqual(result[3], 0.0, places=6)
+
+    def test_hsv_stack_bbox_shrink_wraps_green_pixels_inside_loose_candidate(self):
+        det = self._detector_stub()
+        frame = np.zeros((100, 120, 3), dtype=np.uint8)
+        low_sat_green = cv2.cvtColor(
+            np.uint8([[[76, 30, 120]]]),
+            cv2.COLOR_HSV2BGR,
+        )[0, 0].tolist()
+        frame[70:95, 15:110] = low_sat_green
+        cv2.rectangle(frame, (42, 18), (74, 66), (97, 165, 19), thickness=cv2.FILLED)
+        candidate = {
+            "center_x": 60.0,
+            "center_y": 50.0,
+            "bbox": (12.0, 8.0, 96.0, 86.0),
+            "partial": False,
+        }
+
+        bbox = BrickDetector._hsv_stack_tight_bbox(det, frame, [candidate])
+
+        self.assertEqual(bbox, (42, 18, 75, 67))
 
     def test_partial_info_prioritizes_top_and_bottom_edges(self):
         det = self._detector_stub()
