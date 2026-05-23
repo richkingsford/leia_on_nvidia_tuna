@@ -90,6 +90,10 @@ CYAN_SHADE_HEXES = (
     "2B824A",
     "51A276",
     "3D8D62",
+    # Measured 2026-05-23 from far-range camera view
+    "37C16B",
+    "41B86D",
+    "4CC079",
 )
 
 
@@ -185,6 +189,8 @@ HSV_ERODE_ITERATIONS = 2
 HSV_MIN_AREA_RATIO = 0.05       # Min 5% of YOLO bbox area = real brick
 HSV_CYAN_COVERAGE_MIN = 0.08    # Need 8% cyan coverage to engage HSV path
 FULL_FRAME_HSV_CYAN_COVERAGE_MIN = 0.03
+FULL_FRAME_HSV_MIN_AREA_RATIO = 0.02
+CLOSE_RANGE_WIDTH_ONLY_DIST_MM = 100.0
 STACK_X_OVERLAP_RATIO = 0.6     # Same-column tolerance for above/below
 STACK_Y_GAP_RATIO = 0.35        # Vertical gap threshold for above/below
 # Reject cyan candidates whose contour shape is nowhere near expected
@@ -417,6 +423,7 @@ class BrickDetector:
         self._hsv_cyan_coverage_min = float(HSV_CYAN_COVERAGE_MIN)
         self._full_frame_hsv_cyan_coverage_min = float(FULL_FRAME_HSV_CYAN_COVERAGE_MIN)
         self._hsv_min_area_ratio = float(HSV_MIN_AREA_RATIO)
+        self._full_frame_hsv_min_area_ratio = float(FULL_FRAME_HSV_MIN_AREA_RATIO)
         self._require_cyan_shape = False
         self._closeup_full_frame_hsv_enabled = True
 
@@ -497,6 +504,7 @@ class BrickDetector:
                            hsv_cyan_coverage_min=None,
                            full_frame_hsv_cyan_coverage_min=None,
                            hsv_min_area_ratio=None,
+                           full_frame_hsv_min_area_ratio=None,
                            trust_detector_boxes=None,
                            require_cyan_shape=None,
                            far_suspect_enabled=None,
@@ -685,6 +693,14 @@ class BrickDetector:
                 )
             except (TypeError, ValueError):
                 pass
+        if full_frame_hsv_min_area_ratio is not None:
+            try:
+                self._full_frame_hsv_min_area_ratio = max(
+                    0.0,
+                    min(1.0, float(full_frame_hsv_min_area_ratio)),
+                )
+            except (TypeError, ValueError):
+                pass
         if trust_detector_boxes is not None:
             self._trust_detector_boxes = bool(trust_detector_boxes)
         if require_cyan_shape is not None:
@@ -771,6 +787,13 @@ class BrickDetector:
             ),
             "hsv_min_area_ratio": float(
                 getattr(self, "_hsv_min_area_ratio", HSV_MIN_AREA_RATIO)
+            ),
+            "full_frame_hsv_min_area_ratio": float(
+                getattr(
+                    self,
+                    "_full_frame_hsv_min_area_ratio",
+                    FULL_FRAME_HSV_MIN_AREA_RATIO,
+                )
             ),
             "trust_detector_boxes": bool(getattr(self, "_trust_detector_boxes", True)),
             "require_cyan_shape": bool(getattr(self, "_require_cyan_shape", False)),
@@ -985,16 +1008,28 @@ class BrickDetector:
         width_dist = self._estimate_distance_from_width(eff_w) if eff_w > 0 else None
         height_dist = self._estimate_distance(eff_h) if eff_h > 0 else None
         calibrated_dist = self._calibrated_distance_from_height_signal(height_dist)
+        distance_source = "unavailable"
         if width_dist is None and height_dist is None:
             bbox_dist = 999.0
+            distance_source = "fallback"
+        elif width_dist is not None and (
+            (calibrated_dist is not None and float(calibrated_dist) <= CLOSE_RANGE_WIDTH_ONLY_DIST_MM)
+            or float(width_dist) <= CLOSE_RANGE_WIDTH_ONLY_DIST_MM
+        ):
+            bbox_dist = float(width_dist)
+            distance_source = "width_close_range"
         elif calibrated_dist is not None:
             bbox_dist = float(calibrated_dist)
+            distance_source = "height_calibrated"
         elif width_dist is None:
             bbox_dist = float(height_dist)
+            distance_source = "height"
         elif height_dist is None:
             bbox_dist = float(width_dist)
+            distance_source = "width"
         else:
             bbox_dist = float((0.8 * float(width_dist)) + (0.2 * float(height_dist)))
+            distance_source = "width_height_blend"
         return {
             "bbox_w_px": float(bbox_width_px),
             "bbox_h_px": float(bbox_height_px),
@@ -1006,6 +1041,7 @@ class BrickDetector:
                 None if calibrated_dist is None else float(calibrated_dist)
             ),
             "bbox_dist_mm": float(bbox_dist),
+            "distance_source": str(distance_source),
         }
 
     def _record_bbox_distance_components(self, components):
@@ -1019,6 +1055,7 @@ class BrickDetector:
         self.last_bbox_height_dist = components.get("height_dist_mm")
         self.last_bbox_calibrated_height_dist = components.get("calibrated_height_dist_mm")
         self.last_bbox_dist = components.get("bbox_dist_mm")
+        self.last_bbox_distance_source = components.get("distance_source")
 
     def _clear_far_suspect_state(self):
         self.last_suspected_far_brick = False
@@ -1530,6 +1567,19 @@ class BrickDetector:
             return min(base_min, full_frame_min)
         return base_min
 
+    def _hsv_min_area_ratio_for_crop(self, x1, y1, x2, y2) -> float:
+        base_min = float(getattr(self, "_hsv_min_area_ratio", HSV_MIN_AREA_RATIO))
+        if self._is_full_frame_hsv_crop(x1, y1, x2, y2):
+            full_frame_min = float(
+                getattr(
+                    self,
+                    "_full_frame_hsv_min_area_ratio",
+                    FULL_FRAME_HSV_MIN_AREA_RATIO,
+                )
+            )
+            return min(base_min, full_frame_min)
+        return base_min
+
     def _segment_bricks_hsv(self, frame, x1, y1, x2, y2):
         """
         Segment individual cyan bricks within a single YOLO bbox using HSV
@@ -1623,9 +1673,7 @@ class BrickDetector:
         if contours is None:
             contours = []
 
-        min_area = bbox_area * float(
-            getattr(self, "_hsv_min_area_ratio", HSV_MIN_AREA_RATIO)
-        )
+        min_area = bbox_area * float(self._hsv_min_area_ratio_for_crop(x1, y1, x2, y2))
         bricks = []
         for cnt in contours:
             area = cv2.contourArea(cnt)
@@ -6272,6 +6320,7 @@ def build_negative_cutout_shape_detector(
     detector._hsv_cyan_coverage_min = float(HSV_CYAN_COVERAGE_MIN)
     detector._full_frame_hsv_cyan_coverage_min = float(FULL_FRAME_HSV_CYAN_COVERAGE_MIN)
     detector._hsv_min_area_ratio = float(HSV_MIN_AREA_RATIO)
+    detector._full_frame_hsv_min_area_ratio = float(FULL_FRAME_HSV_MIN_AREA_RATIO)
     detector._face_polygon_model = None
     detector._face_cutouts_model = []
     detector._face_lines_model = []

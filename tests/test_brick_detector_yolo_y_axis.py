@@ -74,6 +74,17 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         self.assertAlmostEqual(right, 10.0, places=6)
         self.assertAlmostEqual(left, -10.0, places=6)
 
+    def test_full_frame_hsv_crop_uses_smaller_far_area_threshold(self):
+        det = self._detector_stub()
+        det._hsv_min_area_ratio = 0.03
+        det._full_frame_hsv_min_area_ratio = 0.02
+
+        full_frame = BrickDetector._hsv_min_area_ratio_for_crop(det, 0, 0, 640, 480)
+        local_box = BrickDetector._hsv_min_area_ratio_for_crop(det, 100, 100, 300, 260)
+
+        self.assertAlmostEqual(full_frame, 0.02)
+        self.assertAlmostEqual(local_box, 0.03)
+
     def test_estimate_distance_from_box_uses_live_calibration_samples(self):
         det = self._detector_stub()
         det.focal_px = 497.0
@@ -83,6 +94,16 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
 
         self.assertAlmostEqual(far, 350.0, places=6)
         self.assertAlmostEqual(near, 150.0, places=6)
+
+    def test_estimate_distance_uses_width_only_for_close_range(self):
+        det = self._detector_stub()
+        det.focal_px = 500.0
+
+        components = BrickDetector._distance_components_from_box(det, 300.0, 180.0)
+
+        self.assertAlmostEqual(components["width_dist_mm"], 88.33333333333333)
+        self.assertAlmostEqual(components["bbox_dist_mm"], components["width_dist_mm"])
+        self.assertEqual(components["distance_source"], "width_close_range")
 
     def test_estimate_distance_increases_as_bbox_gets_smaller(self):
         det = self._detector_stub()

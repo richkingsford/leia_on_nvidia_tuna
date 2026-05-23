@@ -11,10 +11,10 @@ from pathlib import Path
 
 import cv2
 
+from helper_brick_detector_native_oak import BrickDetector
 from helper_brick_detector_yolo import (
     BRICK_HEIGHT_MM,
     BRICK_WIDTH_MM,
-    BrickDetector,
     CYAN_HSV_BALANCED_LOWER,
     CYAN_HSV_BALANCED_UPPER,
     CYAN_HSV_TIGHT_LOWER,
@@ -51,7 +51,7 @@ HOLD_FRAMES = 15
 CROWN_PROFILE_KEY = "tight_color"
 
 CROWN_PROFILE_BASE_TUNING = {
-    "confidence": 0.20,
+    "confidence": 0.08,
     "smoothing_alpha": 0.15,
     "hsv_enabled": True,
     "hsv_erode_iterations": 1,
@@ -60,9 +60,10 @@ CROWN_PROFILE_BASE_TUNING = {
     "hsv_cyan_coverage_min": 0.08,
     "full_frame_hsv_cyan_coverage_min": 0.03,
     "hsv_min_area_ratio": 0.03,
+    "full_frame_hsv_min_area_ratio": 0.02,
     "shape_gate_mode": "shape_match",
     "conf_gate_pct": 50.0,
-    "trust_detector_boxes": True,
+    "trust_detector_boxes": False,
     "require_cyan_shape": True,
     "far_suspect_enabled": False,
     "closeup_full_frame_hsv_enabled": True,
@@ -73,7 +74,7 @@ CROWN_PROFILE_BASE_TUNING = {
 TIGHT_COLOR_TUNING = {
     **CROWN_PROFILE_BASE_TUNING,
     "label": "2 Tight Color",
-    "confidence": 0.20,
+    "confidence": 0.08,
     "hsv_lower": list(CYAN_HSV_BALANCED_LOWER),
     "hsv_upper": list(CYAN_HSV_BALANCED_UPPER),
     "hsv_cyan_coverage_min": 0.08,
@@ -91,7 +92,7 @@ CROWN_PROFILE_TUNINGS = {
         "hsv_cyan_coverage_min": 0.05,
         "hsv_min_area_ratio": 0.03,
         "conf_gate_pct": 50.0,
-        "trust_detector_boxes": True,
+        "trust_detector_boxes": False,
         "require_cyan_shape": True,
         "far_suspect_enabled": False,
         "closeup_full_frame_hsv_enabled": True,
@@ -467,6 +468,7 @@ class CrownVisionLivestream:
 
         vision = self.vision
         backend = str(getattr(vision, "inference_backend", "") or "-")
+        native_backend = backend.startswith("native_oak")
         model_path = getattr(vision, "model_path", None)
         model_name = Path(str(model_path)).name if model_path else "-"
         trust = "model" if bool(getattr(vision, "_trust_detector_boxes", False)) else "shape-gate"
@@ -487,6 +489,7 @@ class CrownVisionLivestream:
         bbox_height_dist = getattr(vision, "last_bbox_height_dist", None)
         bbox_cal_dist = getattr(vision, "last_bbox_calibrated_height_dist", None)
         bbox_dist = getattr(vision, "last_bbox_dist", None)
+        bbox_dist_source = str(getattr(vision, "last_bbox_distance_source", "") or "-")
         pre_depth_dist = getattr(vision, "last_pre_depth_dist", None)
         depth_dist = getattr(vision, "last_depth_dist", None)
         raw_dist = getattr(vision, "last_raw_dist", None)
@@ -526,26 +529,30 @@ class CrownVisionLivestream:
 
         lines = [
             {
-                "text": f"[ML] PROFILE: {profile_label} | BACKEND: {backend} | TRUST: {trust} | MODEL: {model_name}",
+                "text": f"[VISION] PROFILE: {profile_label} | BACKEND: {backend} | TRUST: {trust} | MODEL: {model_name}",
                 "color": "#ffffff",
             },
             {
                 "text": (
-                    f"[ML] SEARCH: {status} | RAW:{_int_text(raw_count)} "
-                    f">THR:{_int_text(candidate_count)} NMS:{_int_text(nms_count)}"
+                    f"[VISION] SEARCH: {status} | "
+                    + (
+                        f"CAND:{_int_text(candidate_count)}"
+                        if native_backend
+                        else f"RAW:{_int_text(raw_count)} >THR:{_int_text(candidate_count)} NMS:{_int_text(nms_count)}"
+                    )
                 ),
                 "color": "#ffffff",
             },
             {
                 "text": (
-                    f"[ML] TOP CONF: {_pct(top_conf)} | MAX RAW: {_pct_precise(raw_max_conf)} "
+                    f"[VISION] TOP CONF: {_pct(top_conf)} | MAX RAW: {_pct_precise(raw_max_conf)} "
                     f"| MIN CONF: {_pct_precise(threshold)} | SMOOTH: {float(smooth):.2f} "
                     f"| INPUT: {_int_text(input_size)}px"
                 ),
                 "color": "#ffffff",
             },
             {
-                "text": f"[ML] GEOMETRY: {geometry_source}",
+                "text": f"[VISION] GEOMETRY: {geometry_source}",
                 "color": "#ffffff",
             },
             {
@@ -583,7 +590,7 @@ class CrownVisionLivestream:
                 f"W={_num_text(bbox_width_dist, 0, 'mm')} "
                 f"H={_num_text(bbox_height_dist, 0, 'mm')} "
                 f"cal={_num_text(bbox_cal_dist, 0, 'mm')} "
-                f"used={_num_text(bbox_dist, 0, 'mm')}"
+                f"used={_num_text(bbox_dist, 0, 'mm')} src={bbox_dist_source}"
             )
             span_str = (
                 f"{_num_text(tri_span_px, 0)}px -> {_num_text(tri_span_dist, 0, 'mm')}"

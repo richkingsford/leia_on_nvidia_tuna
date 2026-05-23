@@ -188,9 +188,11 @@ class TestCrownProfileTuning(unittest.TestCase):
         self.assertEqual(CROWN_PROFILE_KEY, "tight_color")
         self.assertEqual(CROWN_PROFILE_TUNING["hsv_lower"], list(det.CYAN_HSV_BALANCED_LOWER))
         self.assertEqual(CROWN_PROFILE_TUNING["hsv_upper"], list(det.CYAN_HSV_BALANCED_UPPER))
-        self.assertAlmostEqual(CROWN_PROFILE_TUNING["confidence"], 0.20)
+        self.assertAlmostEqual(CROWN_PROFILE_TUNING["confidence"], 0.08)
+        self.assertAlmostEqual(CROWN_PROFILE_TUNING["hsv_min_area_ratio"], 0.03)
+        self.assertAlmostEqual(CROWN_PROFILE_TUNING["full_frame_hsv_min_area_ratio"], 0.02)
         self.assertEqual(CROWN_PROFILE_TUNING["depth_source_mode"], "pinhole")
-        self.assertTrue(CROWN_PROFILE_TUNING["trust_detector_boxes"])
+        self.assertFalse(CROWN_PROFILE_TUNING["trust_detector_boxes"])
         self.assertTrue(CROWN_PROFILE_TUNING["require_cyan_shape"])
         self.assertFalse(CROWN_PROFILE_TUNING["far_suspect_enabled"])
 
@@ -220,6 +222,7 @@ class TestCrownProfileTuning(unittest.TestCase):
         d.set_runtime_tuning(**dict(CROWN_PROFILE_TUNING))
         self.assertEqual(d._face_shape_gate_mode, det.BRICK_FACE_GATE_MODE_SHAPE_MATCH)
         self.assertFalse(d._far_suspect_enabled)
+        self.assertAlmostEqual(d._full_frame_hsv_min_area_ratio, 0.02)
 
 
 class TestTrapezoidGate(unittest.TestCase):

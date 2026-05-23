@@ -23,8 +23,8 @@ import sys
 import time
 from pathlib import Path
 
+from helper_brick_detector_native_oak import BrickDetector
 from helper_brick_detector_yolo import (
-    BrickDetector,
     CYAN_HSV_BALANCED_LOWER,
     CYAN_HSV_BALANCED_UPPER,
     CYAN_HSV_WIDE_LOWER,
@@ -317,18 +317,19 @@ VISION_PREFLIGHT_BLOCK_EXIT = 42
 VISION_RECOVERY_RETRIES = 2
 
 CROWN_PROFILE_TUNING = {
-    "confidence": 0.20,
+    "confidence": 0.08,
     "smoothing_alpha": 0.15,
     "hsv_enabled": True,
     "hsv_erode_iterations": 1,
-    "hsv_lower": list(CYAN_HSV_WIDE_LOWER),
-    "hsv_upper": list(CYAN_HSV_WIDE_UPPER),
-    "hsv_cyan_coverage_min": 0.05,
+    "hsv_lower": list(CYAN_HSV_BALANCED_LOWER),
+    "hsv_upper": list(CYAN_HSV_BALANCED_UPPER),
+    "hsv_cyan_coverage_min": 0.08,
     "full_frame_hsv_cyan_coverage_min": 0.03,
     "hsv_min_area_ratio": 0.03,
+    "full_frame_hsv_min_area_ratio": 0.02,
     "shape_gate_mode": "shape_match",
     "conf_gate_pct": 50.0,
-    "trust_detector_boxes": True,
+    "trust_detector_boxes": False,
     "require_cyan_shape": True,
     "far_suspect_enabled": False,
     "closeup_full_frame_hsv_enabled": True,
