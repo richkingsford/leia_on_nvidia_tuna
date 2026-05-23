@@ -409,10 +409,19 @@
     "win_confirmation": {
       "settle_s": 0.25,
       "confirm_frames": 2,
-      "single_win_allowance_s": 9.0,
+      "single_win_allowance_s": 5.0,
       "timeout_y_correction_grace_acts": 2,
       "min_axis_closeness_pct": 0.0,
       "min_confidence_pct": 75.0
+    },
+    "vision_jump_guard": {
+      "enabled": true,
+      "confirm_frames": 2,
+      "max_dist_jump_mm": 22.0,
+      "max_x_jump_mm": 18.0,
+      "max_y_jump_mm": 8.0,
+      "max_vector_jump_mm": 26.0,
+      "confirm_window_mm": 10.0
     },
     "dist_axis": {
       "win_target_mm": 63.882,

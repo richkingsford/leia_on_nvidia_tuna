@@ -314,6 +314,52 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertFalse(reading["confident"])
         self.assertEqual(reading["reason"], "placeholder_500_0_0_rejected")
 
+    def test_temporal_filter_rejects_single_frame_ghost_jump_until_confirmed(self):
+        vision = _FakeVision((False,))
+        cfg = dict(follow.DEFAULT_VISION_JUMP_GUARD_CONFIG)
+        cfg.update(
+            {
+                "enabled": True,
+                "confirm_frames": 2,
+                "max_dist_jump_mm": 20.0,
+                "max_x_jump_mm": 20.0,
+                "max_y_jump_mm": 8.0,
+                "max_vector_jump_mm": 25.0,
+                "confirm_window_mm": 6.0,
+            }
+        )
+        stable = {
+            "visible": True,
+            "confident": True,
+            "dist_mm": 143.0,
+            "x_mm": -1.0,
+            "y_mm": -12.0,
+            "conf": 90.0,
+        }
+        jump = {
+            "visible": True,
+            "confident": True,
+            "dist_mm": 114.0,
+            "x_mm": -1.5,
+            "y_mm": -11.5,
+            "conf": 90.0,
+        }
+        repeat = dict(jump)
+        repeat["dist_mm"] = 115.5
+
+        with mock.patch.object(follow, "_vision_jump_guard_config", return_value=cfg):
+            accepted = follow._temporal_filter_brick_reading(vision, stable, jump_guard=True)
+            rejected = follow._temporal_filter_brick_reading(vision, jump, jump_guard=True)
+            confirmed = follow._temporal_filter_brick_reading(vision, repeat, jump_guard=True)
+
+        self.assertTrue(accepted["confident"])
+        self.assertFalse(rejected["confident"])
+        self.assertEqual(rejected["reason"], "ghost_jump_unconfirmed")
+        self.assertTrue(rejected["ghost_jump_unconfirmed"])
+        self.assertTrue(confirmed["confident"])
+        self.assertTrue(confirmed["jump_confirmed"])
+        self.assertAlmostEqual(confirmed["dist_mm"], 115.5)
+
     def test_wait_for_confident_brick_blocks_without_visibility(self):
         fake_clock = _FakeClock()
 
@@ -1039,7 +1085,7 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual(stats["y_commit_target_hit_count"], 0)
         self.assertGreaterEqual(robot.stops, 1)
 
-    def test_debug_mode_continues_after_full_step1_win_without_step2_or_reset(self):
+    def test_debug_mode_stops_after_full_step1_win_without_step2_or_reset(self):
         robot = _FakeRobot()
         vision = _SequenceVision(
             [
@@ -1090,7 +1136,8 @@ class TestFollowTheBrickReset(unittest.TestCase):
         ) as reset_mock:
             stats = follow._follow_loop(vision, robot, duration_s=2.0, debug_mode=True)
 
-        self.assertFalse(stats.get("debug_mode_terminated", False))
+        self.assertTrue(stats.get("debug_mode_terminated", False))
+        self.assertEqual(stats.get("last_action"), "DEBUG_STEP1_TERMINATE")
         self.assertGreaterEqual(stats["win_count"], 1)
         step2_mock.assert_not_called()
         reset_mock.assert_not_called()

@@ -27,6 +27,8 @@ from helper_brick_detector_yolo import (
     BRICK_HEIGHT_MM,
     BRICK_WIDTH_MM,
     COLOR_ONLY_CONF_PCT,
+    CYAN_HSV_BALANCED_LOWER,
+    CYAN_HSV_BALANCED_UPPER,
     DEFAULT_FRAME_H,
     DEFAULT_FRAME_W,
     FOCAL_PX_REF,
@@ -36,6 +38,21 @@ from helper_brick_detector_yolo import (
     build_negative_cutout_shape_detector,
     detect_single_negative_cutout_brick,
 )
+
+
+NATIVE_RECT_MIN_FILL_RATIO = 0.22
+NATIVE_RECT_MIN_SOLIDITY = 0.30
+NATIVE_RECT_MAX_BBOX_ASPECT = 3.25
+NATIVE_RECT_MAX_MIN_AREA_ASPECT = 4.25
+NATIVE_RECT_STRIP_ASPECT = 2.55
+NATIVE_RECT_STRIP_MAX_HEIGHT_RATIO = 0.12
+NATIVE_RECT_COLUMN_MIN_WIDTH_PX = 6
+NATIVE_RECT_COLUMN_MAX_COUNT_RATIO = 0.28
+NATIVE_RECT_ROW_MAX_COUNT_RATIO = 0.12
+NATIVE_RECT_MIN_EDGE_ROWS = 5
+NATIVE_RECT_MIN_ACTIVE_ROW_RATIO = 0.14
+NATIVE_RECT_MIN_EDGE_STRAIGHTNESS = 0.22
+NATIVE_RECT_MIN_WIDTH_COHERENCE = 0.25
 
 
 class NativeOakBrickDetector:
@@ -274,7 +291,12 @@ class NativeOakBrickDetector:
 
     def _detect_color_rectangle_candidate(self, frame):
         detector = self._detector
-        feature_mask, contour_mask = detector._build_hsv_masks(frame)
+        loose_feature_mask, loose_contour_mask = detector._build_hsv_masks(frame)
+        feature_mask, contour_mask = self._build_native_brick_masks(
+            frame,
+            loose_feature_mask,
+            loose_contour_mask,
+        )
         if feature_mask is None or contour_mask is None:
             return None, []
 
@@ -297,16 +319,49 @@ class NativeOakBrickDetector:
             x, y, w, h = cv2.boundingRect(contour)
             if w < 8 or h < 8:
                 continue
+
+            shrink = self._shrinkwrap_native_rect_bbox(
+                feature_mask,
+                bbox=(int(x), int(y), int(w), int(h)),
+                frame_w=int(frame_w),
+                frame_h=int(frame_h),
+            )
+            if shrink is None:
+                continue
+            x, y, w, h = shrink["bbox"]
+            edge_metrics = shrink["edge_metrics"]
+            if w < 8 or h < 8:
+                continue
+
+            roi_points = cv2.findNonZero(feature_mask[y:y + h, x:x + w])
+            if roi_points is None:
+                continue
+            roi_contour = roi_points.reshape(-1, 1, 2)
+            roi_contour[:, :, 0] += int(x)
+            roi_contour[:, :, 1] += int(y)
+            contour = roi_contour
+            area = float(cv2.countNonZero(feature_mask[y:y + h, x:x + w]))
+            if area < min_area:
+                continue
+
             bbox_area = float(max(1, w * h))
             fill_ratio = area / bbox_area
-            if fill_ratio < 0.16:
-                continue
             rect = cv2.minAreaRect(contour)
             rw, rh = float(rect[1][0]), float(rect[1][1])
             if rw <= 0.0 or rh <= 0.0:
                 continue
             aspect = float(max(rw, rh)) / float(max(1e-6, min(rw, rh)))
-            if aspect > 6.0:
+            ok, geometry = self._native_rect_geometry_ok(
+                contour,
+                bbox=(int(x), int(y), int(w), int(h)),
+                frame_w=int(frame_w),
+                frame_h=int(frame_h),
+                area=float(area),
+                fill_ratio=float(fill_ratio),
+                min_area_aspect=float(aspect),
+                edge_metrics=edge_metrics,
+            )
+            if not ok:
                 continue
 
             roi = feature_mask[y:y + h, x:x + w]
@@ -321,9 +376,19 @@ class NativeOakBrickDetector:
             cx = float(x) + (float(w) * 0.5)
             cy = float(y) + (float(h) * 0.5)
             area_score = min(10.0, area / 1800.0)
+            edge_score = float(edge_metrics.get("edge_score", 0.0))
+            width_coherence = float(edge_metrics.get("width_coherence", 0.0))
             confidence = max(
                 75.0,
-                min(98.0, 62.0 + (coverage * 30.0) + (fill_ratio * 15.0) + area_score),
+                min(
+                    99.0,
+                    56.0
+                    + (coverage * 24.0)
+                    + (fill_ratio * 12.0)
+                    + (edge_score * 18.0)
+                    + (width_coherence * 8.0)
+                    + area_score,
+                ),
             )
             candidates.append(
                 {
@@ -344,8 +409,14 @@ class NativeOakBrickDetector:
                     "selection_anchor_y": cy,
                     "from_color_detection": True,
                     "native_rect_confidence_pct": float(confidence),
+                    "confidence_pct": float(confidence),
                     "cyan_coverage": float(coverage),
                     "fill_ratio": float(fill_ratio),
+                    "bbox_aspect": float(geometry["bbox_aspect"]),
+                    "solidity": float(geometry["solidity"]),
+                    "edge_straightness": float(edge_metrics["edge_straightness"]),
+                    "width_coherence": float(width_coherence),
+                    "active_row_ratio": float(edge_metrics["active_row_ratio"]),
                 }
             )
 
@@ -355,6 +426,7 @@ class NativeOakBrickDetector:
             return None, []
 
         candidates = detector._enforce_non_overlapping_candidate_bboxes(candidates)
+        candidates = detector._filter_candidates_to_center_stack(candidates, frame_w, frame_h)
         selected = detector._select_center_brick(candidates, frame_w, frame_h)
         if selected is None:
             detector.last_status = "native color rectangle mismatch"
@@ -363,6 +435,261 @@ class NativeOakBrickDetector:
         detector.last_status = "target locked (native color+rect)"
         self.last_status = detector.last_status
         return selected, candidates
+
+    def _build_native_brick_masks(self, frame, loose_feature_mask, loose_contour_mask):
+        """Build strict native masks from saturated brick-green pixels.
+
+        The live "max reach" profile may use a permissive HSV range to avoid
+        false negatives at distance.  Candidate discovery should still start
+        from the measured saturated brick colors so low-saturation wall/table
+        pixels cannot become ghost rectangles.
+        """
+        if frame is None or getattr(frame, "size", 0) == 0:
+            return None, None
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        strict_mask = cv2.inRange(
+            hsv,
+            np.array(CYAN_HSV_BALANCED_LOWER, dtype=np.uint8),
+            np.array(CYAN_HSV_BALANCED_UPPER, dtype=np.uint8),
+        )
+        if loose_feature_mask is not None:
+            strict_mask = cv2.bitwise_and(strict_mask, np.asarray(loose_feature_mask, dtype=np.uint8))
+
+        kern_open = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        feature_mask = cv2.morphologyEx(strict_mask, cv2.MORPH_OPEN, kern_open)
+
+        close_w = 7
+        close_h = max(5, int(round(float(frame.shape[0]) * 0.035)))
+        if close_h % 2 == 0:
+            close_h += 1
+        close_h = min(17, close_h)
+        kern_close = cv2.getStructuringElement(cv2.MORPH_RECT, (close_w, close_h))
+        contour_mask = cv2.morphologyEx(feature_mask, cv2.MORPH_CLOSE, kern_close)
+        kern_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        contour_mask = cv2.dilate(contour_mask, kern_dilate, iterations=1)
+
+        if cv2.countNonZero(contour_mask) <= 0 and loose_contour_mask is not None:
+            return feature_mask, np.asarray(loose_contour_mask, dtype=np.uint8)
+        return feature_mask, contour_mask
+
+    def _shrinkwrap_native_rect_bbox(
+        self,
+        feature_mask,
+        *,
+        bbox: tuple[int, int, int, int],
+        frame_w: int,
+        frame_h: int,
+    ):
+        """Return a tight stack bbox from dense, straight-edged green pixels."""
+        if feature_mask is None:
+            return None
+        x, y, w, h = [int(v) for v in bbox[:4]]
+        x1 = max(0, min(int(frame_w), x))
+        y1 = max(0, min(int(frame_h), y))
+        x2 = max(0, min(int(frame_w), x + w))
+        y2 = max(0, min(int(frame_h), y + h))
+        if x2 <= x1 or y2 <= y1:
+            return None
+
+        roi = np.asarray(feature_mask[y1:y2, x1:x2], dtype=np.uint8)
+        if roi.ndim != 2 or roi.size == 0 or cv2.countNonZero(roi) < 4:
+            return None
+
+        close_w = max(3, min(13, int(round(float(roi.shape[1]) * 0.08))))
+        close_h = max(3, min(11, int(round(float(roi.shape[0]) * 0.08))))
+        if close_w % 2 == 0:
+            close_w += 1
+        if close_h % 2 == 0:
+            close_h += 1
+        work = cv2.morphologyEx(
+            roi,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_RECT, (close_w, close_h)),
+        )
+
+        col_counts = np.count_nonzero(work, axis=0).astype(np.float32)
+        if col_counts.size == 0 or float(np.max(col_counts)) <= 0.0:
+            return None
+        col_floor = max(
+            3.0,
+            float(np.max(col_counts)) * float(NATIVE_RECT_COLUMN_MAX_COUNT_RATIO),
+        )
+        active_cols = np.where(col_counts >= col_floor)[0]
+        x_run = self._best_projection_run(
+            active_cols,
+            col_counts,
+            min_width=max(
+                int(NATIVE_RECT_COLUMN_MIN_WIDTH_PX),
+                int(round(float(frame_w) * 0.018)),
+            ),
+        )
+        if x_run is None:
+            return None
+        lx1, lx2 = x_run
+
+        column_slice = work[:, int(lx1):int(lx2)]
+        row_counts = np.count_nonzero(column_slice, axis=1).astype(np.float32)
+        if row_counts.size == 0 or float(np.max(row_counts)) <= 0.0:
+            return None
+        row_floor = max(
+            2.0,
+            float(np.max(row_counts)) * float(NATIVE_RECT_ROW_MAX_COUNT_RATIO),
+        )
+        active_rows = np.where(row_counts >= row_floor)[0]
+        if active_rows.size <= 0:
+            return None
+        ly1 = int(active_rows[0])
+        ly2 = int(active_rows[-1]) + 1
+        if lx2 <= lx1 or ly2 <= ly1:
+            return None
+
+        edge_metrics = self._native_straight_edge_metrics(
+            work[int(ly1):int(ly2), int(lx1):int(lx2)]
+        )
+        if edge_metrics is None:
+            return None
+
+        nx1 = int(x1 + lx1)
+        ny1 = int(y1 + ly1)
+        nx2 = int(x1 + lx2)
+        ny2 = int(y1 + ly2)
+        if nx2 <= nx1 or ny2 <= ny1:
+            return None
+        return {
+            "bbox": (nx1, ny1, int(nx2 - nx1), int(ny2 - ny1)),
+            "edge_metrics": edge_metrics,
+        }
+
+    def _best_projection_run(self, active_indices, counts, *, min_width: int):
+        if active_indices is None or len(active_indices) <= 0:
+            return None
+        idx = [int(v) for v in list(active_indices)]
+        runs = []
+        start = idx[0]
+        prev = idx[0]
+        for value in idx[1:]:
+            if int(value) == int(prev) + 1:
+                prev = int(value)
+                continue
+            runs.append((int(start), int(prev) + 1))
+            start = int(value)
+            prev = int(value)
+        runs.append((int(start), int(prev) + 1))
+
+        viable = [
+            run for run in runs if int(run[1]) - int(run[0]) >= max(1, int(min_width))
+        ]
+        if not viable:
+            return None
+
+        def _score(run):
+            start_idx, end_idx = run
+            width = int(end_idx) - int(start_idx)
+            density = float(np.sum(counts[int(start_idx):int(end_idx)]))
+            return density + (float(width) * max(1.0, float(np.max(counts)) * 0.15))
+
+        return max(viable, key=_score)
+
+    def _native_straight_edge_metrics(self, mask_roi):
+        arr = np.asarray(mask_roi, dtype=np.uint8)
+        if arr.ndim != 2 or arr.size == 0:
+            return None
+        height, width = arr.shape[:2]
+        row_counts = np.count_nonzero(arr, axis=1)
+        active_floor = max(2, int(round(float(width) * 0.12)))
+        active_rows = np.where(row_counts >= active_floor)[0]
+        if int(active_rows.size) < int(NATIVE_RECT_MIN_EDGE_ROWS):
+            return None
+
+        left_edges = []
+        right_edges = []
+        widths = []
+        for row_idx in active_rows:
+            cols = np.flatnonzero(arr[int(row_idx), :])
+            if cols.size <= 0:
+                continue
+            left = int(cols[0])
+            right = int(cols[-1])
+            left_edges.append(float(left))
+            right_edges.append(float(right))
+            widths.append(float(right - left + 1))
+        if len(widths) < int(NATIVE_RECT_MIN_EDGE_ROWS):
+            return None
+
+        width_ref = max(1.0, float(width))
+        left_std = float(np.std(np.asarray(left_edges, dtype=np.float32))) / width_ref
+        right_std = float(np.std(np.asarray(right_edges, dtype=np.float32))) / width_ref
+        mean_width = max(1.0, float(np.mean(np.asarray(widths, dtype=np.float32))))
+        width_cv = float(np.std(np.asarray(widths, dtype=np.float32))) / mean_width
+        edge_straightness = max(0.0, 1.0 - ((left_std + right_std) / 0.42))
+        width_coherence = max(0.0, 1.0 - (width_cv / 0.55))
+        active_row_ratio = float(len(widths)) / max(1.0, float(height))
+        edge_score = (edge_straightness * 0.62) + (width_coherence * 0.38)
+        return {
+            "edge_straightness": float(min(1.0, edge_straightness)),
+            "width_coherence": float(min(1.0, width_coherence)),
+            "active_row_ratio": float(min(1.0, active_row_ratio)),
+            "edge_score": float(min(1.0, edge_score)),
+        }
+
+    def _native_rect_geometry_ok(
+        self,
+        contour,
+        *,
+        bbox: tuple[int, int, int, int],
+        frame_w: int,
+        frame_h: int,
+        area: float,
+        fill_ratio: float,
+        min_area_aspect: float,
+        edge_metrics: dict | None = None,
+    ) -> tuple[bool, dict]:
+        _x, _y, w, h = bbox
+        bbox_aspect = float(max(w, h)) / float(max(1, min(w, h)))
+        hull_area = 0.0
+        try:
+            hull = cv2.convexHull(contour)
+            hull_area = float(cv2.contourArea(hull))
+        except Exception:
+            hull_area = 0.0
+        solidity = float(area) / float(hull_area) if hull_area > 0.0 else float(fill_ratio)
+        metrics = {
+            "bbox_aspect": float(bbox_aspect),
+            "solidity": float(solidity),
+            "reason": "ok",
+        }
+        edge_metrics = edge_metrics if isinstance(edge_metrics, dict) else {}
+        metrics.update(edge_metrics)
+        if float(fill_ratio) < float(NATIVE_RECT_MIN_FILL_RATIO):
+            metrics["reason"] = "low_fill"
+            return False, metrics
+        if float(solidity) < float(NATIVE_RECT_MIN_SOLIDITY):
+            metrics["reason"] = "low_solidity"
+            return False, metrics
+        if float(bbox_aspect) > float(NATIVE_RECT_MAX_BBOX_ASPECT):
+            metrics["reason"] = "implausible_bbox_aspect"
+            return False, metrics
+        if float(min_area_aspect) > float(NATIVE_RECT_MAX_MIN_AREA_ASPECT):
+            metrics["reason"] = "implausible_rect_aspect"
+            return False, metrics
+        horizontal_aspect = float(w) / float(max(1, h))
+        height_ratio = float(h) / float(max(1, frame_h))
+        if (
+            horizontal_aspect > float(NATIVE_RECT_STRIP_ASPECT)
+            and height_ratio < float(NATIVE_RECT_STRIP_MAX_HEIGHT_RATIO)
+        ):
+            metrics["reason"] = "thin_horizontal_strip"
+            return False, metrics
+        if float(edge_metrics.get("active_row_ratio", 0.0)) < float(NATIVE_RECT_MIN_ACTIVE_ROW_RATIO):
+            metrics["reason"] = "too_few_straight_edge_rows"
+            return False, metrics
+        if float(edge_metrics.get("edge_straightness", 0.0)) < float(NATIVE_RECT_MIN_EDGE_STRAIGHTNESS):
+            metrics["reason"] = "unstable_vertical_edges"
+            return False, metrics
+        if float(edge_metrics.get("width_coherence", 0.0)) < float(NATIVE_RECT_MIN_WIDTH_COHERENCE):
+            metrics["reason"] = "unstable_width"
+            return False, metrics
+        return True, metrics
 
     def _sync_frame_shape(self, frame) -> None:
         height, width = frame.shape[:2]

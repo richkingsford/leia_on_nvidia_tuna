@@ -48,7 +48,7 @@ import helper_xyz_coords
 # masking real disappearances.
 HOLD_FRAMES = 15
 
-CROWN_PROFILE_KEY = "tight_color"
+CROWN_PROFILE_KEY = "max_reach"
 
 CROWN_PROFILE_BASE_TUNING = {
     "confidence": 0.08,

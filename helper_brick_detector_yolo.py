@@ -83,9 +83,7 @@ CYAN_SHADE_HEXES = (
     # Measured 2026-05-11 live from OAK camera frame (painted green bricks)
     "13A561",
     "3ABD8D",
-    "0A5839",
     # Measured 2026-05-11 with blinds closed and room lights on
-    "A8B6AA",
     "449868",
     "2B824A",
     "51A276",
@@ -94,6 +92,12 @@ CYAN_SHADE_HEXES = (
     "37C16B",
     "41B86D",
     "4CC079",
+    # Measured 2026-05-23 dark green stack faces / shadows
+    "27832F",
+    "287D3B",
+    "26772F",
+    "0B6023",
+    "2D7A3C",
 )
 
 
@@ -140,7 +144,7 @@ def _cyan_palette_hsv_range(
 # very low-saturation washed highlight sample.
 CYAN_HSV_TIGHT_LOWER: tuple[int, int, int] = (68, 120, 58)
 CYAN_HSV_TIGHT_UPPER: tuple[int, int, int] = (83, 255, 255)
-CYAN_HSV_BALANCED_LOWER: tuple[int, int, int] = (68, 97, 33)
+CYAN_HSV_BALANCED_LOWER: tuple[int, int, int] = (62, 97, 33)
 CYAN_HSV_BALANCED_UPPER: tuple[int, int, int] = (87, 255, 255)
 CYAN_HSV_WIDE_LOWER: tuple[int, int, int] = (60, 15, 8)
 CYAN_HSV_WIDE_UPPER: tuple[int, int, int] = (93, 255, 255)

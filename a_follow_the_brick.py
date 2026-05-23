@@ -268,7 +268,7 @@ DEFAULT_TOO_CLOSE_ESCAPE_POLICY = {
 DEFAULT_WIN_CONFIRMATION_CONFIG = {
     "settle_s": 0.25,
     "confirm_frames": 2,
-    "single_win_allowance_s": 9.0,
+    "single_win_allowance_s": 5.0,
     "timeout_y_correction_grace_acts": 2,
     "min_axis_closeness_pct": 0.0,
     "min_confidence_pct": 75.0,
@@ -277,6 +277,15 @@ DEFAULT_CAUTIOUS_VISIBILITY_CONFIG = {
     "motion_min_confidence_pct": 50.0,
     "pregame_sample_frames": 8,
     "pregame_required_frames": 3,
+}
+DEFAULT_VISION_JUMP_GUARD_CONFIG = {
+    "enabled": True,
+    "confirm_frames": 2,
+    "max_dist_jump_mm": 22.0,
+    "max_x_jump_mm": 18.0,
+    "max_y_jump_mm": 8.0,
+    "max_vector_jump_mm": 26.0,
+    "confirm_window_mm": 10.0,
 }
 DEFAULT_FOLLOW_Y_AXIS_CONFIG = {
     "enabled": True,
@@ -321,9 +330,9 @@ CROWN_PROFILE_TUNING = {
     "smoothing_alpha": 0.15,
     "hsv_enabled": True,
     "hsv_erode_iterations": 1,
-    "hsv_lower": list(CYAN_HSV_BALANCED_LOWER),
-    "hsv_upper": list(CYAN_HSV_BALANCED_UPPER),
-    "hsv_cyan_coverage_min": 0.08,
+    "hsv_lower": list(CYAN_HSV_WIDE_LOWER),
+    "hsv_upper": list(CYAN_HSV_WIDE_UPPER),
+    "hsv_cyan_coverage_min": 0.05,
     "full_frame_hsv_cyan_coverage_min": 0.03,
     "hsv_min_area_ratio": 0.03,
     "full_frame_hsv_min_area_ratio": 0.02,
@@ -748,6 +757,7 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         "x_only_turn": dict(DEFAULT_X_ONLY_TURN_POLICY),
         "too_close_escape": dict(DEFAULT_TOO_CLOSE_ESCAPE_POLICY),
         "cautious_visibility": dict(DEFAULT_CAUTIOUS_VISIBILITY_CONFIG),
+        "vision_jump_guard": dict(DEFAULT_VISION_JUMP_GUARD_CONFIG),
         "visibility_recovery": dict(DEFAULT_VISIBILITY_RECOVERY_CONFIG),
         "holding_target_vision": dict(DEFAULT_HOLDING_TARGET_VISION_CONFIG),
         "act_stall_guard": dict(DEFAULT_ACT_STALL_GUARD_CONFIG),
@@ -1130,6 +1140,27 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         minimum=1,
         maximum=60,
     )
+    raw_jump_guard = raw.get("vision_jump_guard") if isinstance(raw.get("vision_jump_guard"), dict) else {}
+    cfg["vision_jump_guard"]["enabled"] = bool(raw_jump_guard.get("enabled", DEFAULT_VISION_JUMP_GUARD_CONFIG["enabled"]))
+    cfg["vision_jump_guard"]["confirm_frames"] = _coerce_int(
+        raw_jump_guard.get("confirm_frames"),
+        DEFAULT_VISION_JUMP_GUARD_CONFIG["confirm_frames"],
+        minimum=1,
+        maximum=10,
+    )
+    for key in (
+        "max_dist_jump_mm",
+        "max_x_jump_mm",
+        "max_y_jump_mm",
+        "max_vector_jump_mm",
+        "confirm_window_mm",
+    ):
+        cfg["vision_jump_guard"][key] = _coerce_float(
+            raw_jump_guard.get(key),
+            DEFAULT_VISION_JUMP_GUARD_CONFIG[key],
+            minimum=0.0,
+            maximum=500.0,
+        )
     raw_dist_axis = raw.get("dist_axis") if isinstance(raw.get("dist_axis"), dict) else {}
     cfg["dist_axis"]["win_target_mm"] = _coerce_float(
         raw_dist_axis.get("win_target_mm"),
@@ -4543,6 +4574,7 @@ def _wait_for_visibility_recovery(
     timeout_s: float | None = None,
     sample_s: float | None = None,
     context: str = "visibility_recovery",
+    jump_guard: bool = False,
 ) -> dict:
     current = reading if isinstance(reading, dict) else brick_motion_measurement_from_result(None)
     if bool(current.get("confident")):
@@ -4557,7 +4589,7 @@ def _wait_for_visibility_recovery(
     deadline = time.monotonic() + float(wait_s)
     while time.monotonic() < deadline and not bool(current.get("confident")):
         time.sleep(min(float(poll_s), max(0.0, deadline - time.monotonic())))
-        current = _read_brick_measurement(vision)
+        current = _read_brick_measurement(vision, jump_guard=jump_guard)
     if bool(current.get("confident")):
         try:
             print(
@@ -4673,10 +4705,92 @@ def _reading_median(rows: list[dict]) -> dict:
     return out
 
 
-def _temporal_filter_brick_reading(vision: BrickDetector, reading: dict) -> dict:
-    """Small 3-frame median/outlier guard around the existing detector."""
+def _reading_jump_values(reading: dict | None) -> tuple[float, float, float | None] | None:
+    if not isinstance(reading, dict):
+        return None
+    try:
+        dist_mm = float(reading.get("dist_mm"))
+        x_mm = float(reading.get("x_mm"))
+    except (TypeError, ValueError):
+        return None
+    y_mm = None
+    try:
+        raw_y = reading.get("y_mm")
+        if raw_y is not None:
+            y_mm = float(raw_y)
+    except (TypeError, ValueError):
+        y_mm = None
+    return float(dist_mm), float(x_mm), y_mm
+
+
+def _reading_jump_delta(previous: dict | None, current: dict | None) -> dict | None:
+    prev_values = _reading_jump_values(previous)
+    cur_values = _reading_jump_values(current)
+    if prev_values is None or cur_values is None:
+        return None
+    prev_dist, prev_x, prev_y = prev_values
+    cur_dist, cur_x, cur_y = cur_values
+    delta = {
+        "dist": abs(float(cur_dist) - float(prev_dist)),
+        "x": abs(float(cur_x) - float(prev_x)),
+    }
+    vector_terms = [float(delta["dist"]) ** 2, float(delta["x"]) ** 2]
+    if prev_y is not None and cur_y is not None:
+        delta["y"] = abs(float(cur_y) - float(prev_y))
+        vector_terms.append(float(delta["y"]) ** 2)
+    else:
+        delta["y"] = None
+    delta["vector"] = float(sum(vector_terms) ** 0.5)
+    return delta
+
+
+def _reading_jump_suspicious(previous: dict | None, current: dict | None, cfg: dict) -> tuple[bool, dict | None]:
+    delta = _reading_jump_delta(previous, current)
+    if delta is None:
+        return False, None
+    checks = (
+        ("dist", "max_dist_jump_mm"),
+        ("x", "max_x_jump_mm"),
+        ("y", "max_y_jump_mm"),
+        ("vector", "max_vector_jump_mm"),
+    )
+    for delta_key, cfg_key in checks:
+        value = delta.get(delta_key)
+        if value is None:
+            continue
+        limit = float(cfg.get(cfg_key, 0.0) or 0.0)
+        if limit > 0.0 and float(value) > limit:
+            return True, delta
+    return False, delta
+
+
+def _readings_close_for_jump_confirmation(first: dict | None, second: dict | None, *, window_mm: float) -> bool:
+    delta = _reading_jump_delta(first, second)
+    if delta is None:
+        return False
+    limit = max(0.0, float(window_mm))
+    return bool(
+        float(delta.get("dist", 0.0)) <= limit
+        and float(delta.get("x", 0.0)) <= limit
+        and (
+            delta.get("y") is None
+            or float(delta.get("y", 0.0)) <= limit
+        )
+    )
+
+
+def _set_follow_last_stable_reading(vision: BrickDetector, reading: dict) -> None:
+    try:
+        setattr(vision, "_follow_last_stable_reading", dict(reading))
+    except Exception:
+        pass
+
+
+def _temporal_filter_brick_reading(vision: BrickDetector, reading: dict, jump_guard: bool = False) -> dict:
+    """Small 3-frame median plus jump-confirm guard around the detector."""
     if not isinstance(reading, dict):
         return reading
+    jump_guard = bool(jump_guard or getattr(vision, "_follow_jump_guard_requested", False))
     history = getattr(vision, "_follow_reading_history", None)
     if history is None:
         history = deque(maxlen=3)
@@ -4693,17 +4807,98 @@ def _temporal_filter_brick_reading(vision: BrickDetector, reading: dict) -> dict
             history.clear()
         except Exception:
             pass
+        try:
+            setattr(vision, "_follow_jump_candidate", None)
+        except Exception:
+            pass
         return reading
     if bool(reading.get("confident")):
+        jump_cfg = _vision_jump_guard_config()
+        stable = getattr(vision, "_follow_last_stable_reading", None)
+        suspicious, delta = (
+            _reading_jump_suspicious(stable, reading, jump_cfg)
+            if bool(jump_guard) and bool(jump_cfg.get("enabled"))
+            else (False, None)
+        )
+        if suspicious:
+            candidate = getattr(vision, "_follow_jump_candidate", None)
+            candidate_reading = candidate.get("reading") if isinstance(candidate, dict) else None
+            if _readings_close_for_jump_confirmation(
+                candidate_reading,
+                reading,
+                window_mm=float(jump_cfg.get("confirm_window_mm", 10.0)),
+            ):
+                count = int(candidate.get("count", 1) if isinstance(candidate, dict) else 1) + 1
+            else:
+                count = 1
+            confirm_frames = int(jump_cfg.get("confirm_frames", 2) or 2)
+            if count < confirm_frames:
+                rejected = dict(reading)
+                rejected["confident"] = False
+                rejected["reason"] = "ghost_jump_unconfirmed"
+                rejected["ghost_jump_unconfirmed"] = True
+                if delta is not None:
+                    rejected["ghost_jump_delta"] = dict(delta)
+                try:
+                    setattr(vision, "_follow_jump_candidate", {"reading": dict(reading), "count": int(count)})
+                except Exception:
+                    pass
+                return rejected
+            try:
+                setattr(vision, "_follow_jump_candidate", None)
+                history.clear()
+            except Exception:
+                pass
+            reading = dict(reading)
+            reading["jump_confirmed"] = True
+            if delta is not None:
+                reading["ghost_jump_delta"] = dict(delta)
+        else:
+            try:
+                setattr(vision, "_follow_jump_candidate", None)
+            except Exception:
+                pass
         history.append(dict(reading))
         if len(history) >= 3:
             filtered = _reading_median([dict(row) for row in list(history)])
             filtered["reason"] = str(reading.get("reason") or "confident_visible")
+            _set_follow_last_stable_reading(vision, filtered)
             return filtered
+        _set_follow_last_stable_reading(vision, reading)
     return reading
 
 
+def _apply_temporal_filter_brick_reading(
+    vision: BrickDetector,
+    reading: dict,
+    *,
+    jump_guard: bool = False,
+) -> dict:
+    if not bool(jump_guard):
+        return _temporal_filter_brick_reading(vision, reading)
+    sentinel = object()
+    previous = getattr(vision, "_follow_jump_guard_requested", sentinel)
+    try:
+        setattr(vision, "_follow_jump_guard_requested", True)
+    except Exception:
+        pass
+    try:
+        return _temporal_filter_brick_reading(vision, reading)
+    finally:
+        try:
+            if previous is sentinel:
+                delattr(vision, "_follow_jump_guard_requested")
+            else:
+                setattr(vision, "_follow_jump_guard_requested", previous)
+        except Exception:
+            pass
+
+
 def _reset_follow_reading_history(vision: BrickDetector) -> None:
+    try:
+        setattr(vision, "_follow_jump_candidate", None)
+    except Exception:
+        pass
     history = getattr(vision, "_follow_reading_history", None)
     clear = getattr(history, "clear", None)
     if callable(clear):
@@ -4722,7 +4917,7 @@ def _send_result_blocked(send_result) -> bool:
     return bool(isinstance(send_result, dict) and send_result.get("blocked"))
 
 
-def _read_brick_measurement(vision: BrickDetector) -> dict:
+def _read_brick_measurement(vision: BrickDetector, *, jump_guard: bool = False) -> dict:
     """Return a fresh brick reading, masking held bricks out of target vision."""
     try:
         result = vision.read()
@@ -4738,7 +4933,7 @@ def _read_brick_measurement(vision: BrickDetector) -> dict:
     reading["holding"] = bool(holding_result.get("holding"))
     reading["holding_reason"] = holding_result.get("reason")
     if not bool(holding_result.get("holding")):
-        return _temporal_filter_brick_reading(vision, reading)
+        return _apply_temporal_filter_brick_reading(vision, reading, jump_guard=jump_guard)
     masked = _mask_held_brick_for_target_frame(frame, holding_result)
     if masked is None:
         reading["target_masked_for_holding"] = False
@@ -4760,7 +4955,7 @@ def _read_brick_measurement(vision: BrickDetector) -> dict:
             vision.raw_frame = frame.copy()
         except Exception:
             pass
-        return _temporal_filter_brick_reading(vision, contour_reading)
+        return _apply_temporal_filter_brick_reading(vision, contour_reading, jump_guard=jump_guard)
 
     try:
         set_tuning = getattr(vision, "set_runtime_tuning", None)
@@ -4794,7 +4989,7 @@ def _read_brick_measurement(vision: BrickDetector) -> dict:
         vision.raw_frame = frame.copy()
     except Exception:
         pass
-    return _temporal_filter_brick_reading(vision, masked_reading)
+    return _apply_temporal_filter_brick_reading(vision, masked_reading, jump_guard=jump_guard)
 
 
 def _follow_combined_gap_policy() -> dict:
@@ -5126,6 +5321,33 @@ def _cautious_visibility_config() -> dict:
         "pregame_sample_frames": sample_frames,
         "pregame_required_frames": required_frames,
     }
+
+
+def _vision_jump_guard_config() -> dict:
+    cfg = _follow_motion_config()
+    raw = cfg.get("vision_jump_guard") if isinstance(cfg.get("vision_jump_guard"), dict) else {}
+    out = dict(DEFAULT_VISION_JUMP_GUARD_CONFIG)
+    out["enabled"] = bool(raw.get("enabled", out["enabled"]))
+    out["confirm_frames"] = _coerce_int(
+        raw.get("confirm_frames"),
+        DEFAULT_VISION_JUMP_GUARD_CONFIG["confirm_frames"],
+        minimum=1,
+        maximum=10,
+    )
+    for key in (
+        "max_dist_jump_mm",
+        "max_x_jump_mm",
+        "max_y_jump_mm",
+        "max_vector_jump_mm",
+        "confirm_window_mm",
+    ):
+        out[key] = _coerce_float(
+            raw.get(key),
+            DEFAULT_VISION_JUMP_GUARD_CONFIG[key],
+            minimum=0.0,
+            maximum=500.0,
+        )
+    return out
 
 
 def _follow_y_axis_config() -> dict:
@@ -7366,7 +7588,7 @@ def _confirm_stopped_happy(
     while sample_count < max_confirmation_samples and (first_sample or time.monotonic() <= deadline):
         first_sample = False
         sample_count += 1
-        reading = _read_brick_measurement(vision)
+        reading = _read_brick_measurement(vision, jump_guard=True)
         last_reading = reading
         stats["sample_count"] = int(stats.get("sample_count", 0)) + 1
         if not bool(reading.get("confident")):
@@ -7488,16 +7710,27 @@ def _follow_loop(
         loop_start = time.monotonic()
         loop_wait_s = float(LOOP_S)
 
-        reading = _read_brick_measurement(vision)
+        reading = _read_brick_measurement(vision, jump_guard=True)
         stats["sample_count"] = int(stats.get("sample_count", 0)) + 1
         found = bool(reading.get("confident"))
 
         if not found:
+            if str(reading.get("reason") or "") == "ghost_jump_unconfirmed":
+                _bump_stat_count(stats, "miss_reasons", "ghost_jump_unconfirmed")
+                delta = reading.get("ghost_jump_delta") if isinstance(reading.get("ghost_jump_delta"), dict) else {}
+                print(
+                    "[FOLLOW] GHOST_JUMP? "
+                    f"dist={float(delta.get('dist', 0.0)):.1f}mm "
+                    f"x={float(delta.get('x', 0.0)):.1f}mm "
+                    f"y={float(delta.get('y', 0.0) or 0.0):.1f}mm; confirming before motion.",
+                    flush=True,
+                )
             reading = _wait_for_visibility_recovery(
                 vision,
                 robot,
                 reading,
                 context="follow_loop",
+                jump_guard=True,
             )
             found = bool(reading.get("confident"))
 
@@ -7746,17 +7979,10 @@ def _follow_loop(
                 dist_err, x_err, y_text, conf = _record_and_print_step1_win(stats, reading, plan)
                 if bool(debug_mode):
                     _stop_robot(robot)
-                    step1_started_at = time.monotonic()
-                    _prepare_next_step1_attempt(stats)
-                    last_action = "DEBUG_STEP1_CONTINUE"
-                    print(
-                        "[DEBUG] Step 1 win confirmed; continuing from current pose without Step 2 or reset.",
-                        flush=True,
-                    )
-                    elapsed = time.monotonic() - loop_start
-                    if (remaining := LOOP_S - elapsed) > 0:
-                        time.sleep(remaining)
-                    continue
+                    stats["debug_mode_terminated"] = True
+                    stats["last_action"] = "DEBUG_STEP1_TERMINATE"
+                    print("[DEBUG] Step 1 win confirmed; stopping for operator confirmation.", flush=True)
+                    return stats
                 last_action = "HAPPY"
                 stats["stop_after_win_triggered"] = True
                 break
@@ -7833,10 +8059,20 @@ def _follow_loop(
                     )
                     return stats
                 if bool(debug_mode):
+                    _stop_robot(robot)
+                    stats["happy_reject_terminated"] = True
+                    stats["debug_mode_terminated"] = True
+                    stats["debug_stop_reading"] = (
+                        dict(confirmed_reading)
+                        if isinstance(confirmed_reading, dict)
+                        else confirmed_reading
+                    )
+                    stats["last_action"] = "DEBUG_STEP1_HAPPY_REJECT_TERMINATE"
                     print(
-                        "[FOLLOW] Happy rejected in debug mode; continuing until win or guardrail.",
+                        "[FOLLOW] Robot stopped after live Step 1 happy failed stopped confirmation in debug mode.",
                         flush=True,
                     )
+                    return stats
                 elapsed = time.monotonic() - loop_start
                 if (remaining := LOOP_S - elapsed) > 0:
                     time.sleep(remaining)
@@ -7846,17 +8082,10 @@ def _follow_loop(
             dist_err, x_err, y_text, conf = _record_and_print_step1_win(stats, reading, plan)
             if bool(debug_mode):
                 _stop_robot(robot)
-                step1_started_at = time.monotonic()
-                _prepare_next_step1_attempt(stats)
-                last_action = "DEBUG_STEP1_CONTINUE"
-                print(
-                    "[DEBUG] Step 1 win confirmed; continuing from current pose without Step 2 or reset.",
-                    flush=True,
-                )
-                elapsed = time.monotonic() - loop_start
-                if (remaining := LOOP_S - elapsed) > 0:
-                    time.sleep(remaining)
-                continue
+                stats["debug_mode_terminated"] = True
+                stats["last_action"] = "DEBUG_STEP1_TERMINATE"
+                print("[DEBUG] Step 1 win confirmed; stopping for operator confirmation.", flush=True)
+                return stats
             if bool(stop_after_win):
                 last_action = "HAPPY"
                 stats["stop_after_win_triggered"] = True
