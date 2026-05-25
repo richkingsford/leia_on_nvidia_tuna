@@ -14,9 +14,12 @@ from a_follow_the_brick import _follow_y_axis_config, _scaled_pwm_for_cmd
 from helper_robot_control import Robot
 
 
-MAX_SINGLE_DIRECTION_MS = 3000
-DEFAULT_PULSE_MS = 1000
-DEFAULT_CYCLES = 2
+MAX_SINGLE_DIRECTION_MS = 500
+MAX_FULL_POWER_MS = 500
+MAX_HALF_POWER_MS = 500
+DEFAULT_MAX_PWM_PERCENT = 100
+DEFAULT_PULSE_MS = 130
+DEFAULT_CYCLES = 7
 DEFAULT_SETTLE_S = 0.45
 DEFAULT_SAMPLE_COUNT = 7
 DEFAULT_SAMPLE_INTERVAL_S = 0.08
@@ -24,6 +27,16 @@ DEFAULT_MIN_CONFIDENCE_PCT = 40.0
 DEFAULT_STREAM_URL = "http://127.0.0.1:5000"
 DEFAULT_MAX_DIST_DRIFT_MM = 35.0
 DEFAULT_MAX_X_DRIFT_MM = 35.0
+DEFAULT_MAX_Y_EXCURSION_MM = 8.0
+DEFAULT_TARGET_Y_MM = float(_follow_y_axis_config().get("win_target_mm", -36.0))
+DEFAULT_TARGET_Y_BAND_MM = 5.0
+DEFAULT_CENTERING_PULSE_MS = 400
+DEFAULT_RECOVERY_PULSE_MS = 500
+DEFAULT_RECOVERY_PWM = 153
+DEFAULT_RECOVERY_MAX_ATTEMPTS = 8
+DEFAULT_CENTERING_MAX_ATTEMPTS = 3
+PHYSICAL_MAST_UP_CMD = "d"
+PHYSICAL_MAST_DOWN_CMD = "u"
 
 
 @dataclass(frozen=True)
@@ -96,8 +109,11 @@ def _profile_from_spec(spec: str, fallback_cycles: int) -> YProfile:
         down_pwm = int(round(float(parts[2])))
         pulse_ms = int(round(float(parts[3])))
         cycles = int(round(float(parts[4])))
-    if pulse_ms <= 0 or pulse_ms > MAX_SINGLE_DIRECTION_MS:
-        raise ValueError(f"profile {name!r} pulse_ms must be 1..{MAX_SINGLE_DIRECTION_MS}")
+    up_pwm = _cap_calibration_pwm(up_pwm)
+    down_pwm = _cap_calibration_pwm(down_pwm)
+    pulse_cap_ms = _max_pulse_ms_for_pwm(max(up_pwm, down_pwm))
+    if pulse_ms <= 0 or pulse_ms > pulse_cap_ms:
+        raise ValueError(f"profile {name!r} pulse_ms must be 1..{pulse_cap_ms} for pwm={max(up_pwm, down_pwm)}")
     if cycles <= 0:
         raise ValueError(f"profile {name!r} cycles must be positive")
     return YProfile(
@@ -110,15 +126,11 @@ def _profile_from_spec(spec: str, fallback_cycles: int) -> YProfile:
 
 
 def _default_profiles(y_cfg: dict, fallback_cycles: int) -> list[YProfile]:
-    fast_pwm = int(_scaled_pwm_for_cmd("u", y_cfg.get("mast_pwm", 255)))
+    fast_pwm = _cap_calibration_pwm(int(_scaled_pwm_for_cmd("u", y_cfg.get("mast_pwm", 255))))
+    cycles = max(1, int(fallback_cycles))
     return [
-        YProfile("precision", 40, 40, 1000, 1),
-        YProfile("slow", 80, 80, 800, 1),
-        YProfile("medium", 140, 140, 700, 1),
-        YProfile("down_precision_140", 80, 140, 700, 1),
-        YProfile("down_precision_180", 80, 180, 600, 1),
-        YProfile("down_precision_220", 80, 220, 500, 1),
-        YProfile("fast", fast_pwm, fast_pwm, 1000, max(1, int(fallback_cycles))),
+        YProfile(f"small_{pulse_ms}ms", fast_pwm, fast_pwm, pulse_ms, cycles)
+        for pulse_ms in (80, 100, 120, 130, 150, 180, 220, 280, 360, 500)
     ]
 
 
@@ -131,6 +143,8 @@ def _profiles_for_args(args, y_cfg: dict) -> list[YProfile]:
             raise ValueError(f"--pulse-ms must be 1..{MAX_SINGLE_DIRECTION_MS}")
         up_pwm = int(args.up_pwm) if args.up_pwm is not None else int(_scaled_pwm_for_cmd("u", y_cfg.get("mast_pwm", 255)))
         down_pwm = int(args.down_pwm) if args.down_pwm is not None else int(_scaled_pwm_for_cmd("d", y_cfg.get("mast_pwm", 255)))
+        up_pwm = _cap_calibration_pwm(up_pwm)
+        down_pwm = _cap_calibration_pwm(down_pwm)
         return [
             YProfile(
                 "single",
@@ -213,6 +227,37 @@ def _rate(delta_mm: float | None, pulse_ms: int) -> float | None:
     return float(delta_mm) * 100.0 / float(pulse_ms)
 
 
+def _max_pulse_ms_for_pwm(pwm: int) -> int:
+    percent = max(1, min(100, int(round(float(pwm) * 100.0 / 255.0))))
+    if percent >= 100:
+        return MAX_FULL_POWER_MS
+    if percent >= 50:
+        return MAX_HALF_POWER_MS
+    return MAX_SINGLE_DIRECTION_MS
+
+
+def _cap_calibration_pwm(pwm: int) -> int:
+    max_pwm = int(round(255.0 * float(DEFAULT_MAX_PWM_PERCENT) / 100.0))
+    return max(1, min(max_pwm, int(round(float(pwm)))))
+
+
+def _y_in_target_band(sample: YSample, args) -> bool:
+    if not sample.found or sample.y_mm is None:
+        return False
+    return abs(float(sample.y_mm) - float(args.target_y_mm)) <= float(args.target_y_band_mm)
+
+
+def _centering_cmd_for_y(sample: YSample, args) -> str | None:
+    if not sample.found or sample.y_mm is None:
+        return None
+    # Observed on Leia: logical U lowers the y reading; logical D raises it.
+    if float(sample.y_mm) < float(args.target_y_mm) - float(args.target_y_band_mm):
+        return PHYSICAL_MAST_UP_CMD
+    if float(sample.y_mm) > float(args.target_y_mm) + float(args.target_y_band_mm):
+        return PHYSICAL_MAST_DOWN_CMD
+    return None
+
+
 def _sample_drift(a: YSample, b: YSample, attr: str) -> float | None:
     if not a.found or not b.found:
         return None
@@ -228,11 +273,14 @@ def _cycle_quality(args, before: YSample, after_up: YSample, after_down: YSample
         return False, "missing_sample"
     max_dist = float(args.max_dist_drift_mm)
     max_x = float(args.max_x_drift_mm)
+    max_y = float(args.max_y_excursion_mm)
     checks = (
         ("dist_up", _sample_drift(before, after_up, "dist_mm"), max_dist),
         ("dist_down", _sample_drift(after_up, after_down, "dist_mm"), max_dist),
         ("x_up", _sample_drift(before, after_up, "x_mm"), max_x),
         ("x_down", _sample_drift(after_up, after_down, "x_mm"), max_x),
+        ("y_up", _sample_drift(before, after_up, "y_mm"), max_y),
+        ("y_return", _sample_drift(before, after_down, "y_mm"), max_y),
     )
     bad = [
         f"{name}={value:.1f}>{limit:.1f}"
@@ -245,11 +293,144 @@ def _cycle_quality(args, before: YSample, after_up: YSample, after_down: YSample
 
 
 def _send_mast(robot: Robot, cmd: str, pwm: int, pulse_ms: int) -> None:
-    if int(pulse_ms) > MAX_SINGLE_DIRECTION_MS:
-        raise ValueError(f"pulse_ms {pulse_ms} exceeds {MAX_SINGLE_DIRECTION_MS}ms safety cap")
+    max_ms = _max_pulse_ms_for_pwm(int(pwm))
+    if int(pulse_ms) > max_ms:
+        raise ValueError(f"pulse_ms {pulse_ms} exceeds {max_ms}ms safety cap for pwm={pwm}")
     robot.send_command_pwm(str(cmd), int(pwm), duration_ms=int(pulse_ms))
     time.sleep(float(pulse_ms) / 1000.0)
     robot.stop()
+
+
+def _opposite_mast_cmd(cmd: str | None) -> str | None:
+    logical = str(cmd or "").strip().lower()
+    if logical == "u":
+        return "d"
+    if logical == "d":
+        return "u"
+    return None
+
+
+def _recovery_sequence(last_cmd: str | None, max_attempts: int) -> list[str]:
+    attempts = max(0, int(max_attempts))
+    if attempts <= 0:
+        return []
+    first = _opposite_mast_cmd(last_cmd) or "u"
+    second = _opposite_mast_cmd(first) or "d"
+    base = [first, second]
+    return [base[idx % len(base)] for idx in range(attempts)]
+
+
+def _sample_y_with_recovery(
+    read_fn,
+    robot: Robot,
+    args,
+    *,
+    label: str,
+    last_cmd: str | None = None,
+) -> tuple[YSample, list[dict]]:
+    sample = _sample_y(
+        read_fn,
+        count=args.samples,
+        interval_s=args.sample_interval_s,
+        min_confidence_pct=args.min_confidence_pct,
+    )
+    if sample.found or not bool(args.recover_visibility):
+        return sample, []
+
+    recovery_steps: list[dict] = []
+    pwm = _cap_calibration_pwm(args.recovery_pwm)
+    pulse_ms = min(max(1, int(args.recovery_pulse_ms)), _max_pulse_ms_for_pwm(pwm))
+    same_cmd_ms = 0
+    previous_cmd = None
+    for attempt, cmd in enumerate(_recovery_sequence(last_cmd, args.recovery_max_attempts), start=1):
+        if cmd == previous_cmd:
+            same_cmd_ms += pulse_ms
+        else:
+            same_cmd_ms = pulse_ms
+            previous_cmd = cmd
+        if same_cmd_ms > MAX_SINGLE_DIRECTION_MS:
+            print(
+                f"[Y-CAL] {label} recovery stop: {cmd} would exceed "
+                f"{MAX_SINGLE_DIRECTION_MS}ms same-direction cap",
+                flush=True,
+            )
+            break
+
+        print(
+            f"[Y-CAL] {label} recovery {attempt}: {cmd.upper()} "
+            f"{pulse_ms}ms pwm={pwm}",
+            flush=True,
+        )
+        _send_mast(robot, cmd, pwm, pulse_ms)
+        time.sleep(max(0.0, float(args.settle_s)))
+        sample = _sample_y(
+            read_fn,
+            count=args.samples,
+            interval_s=args.sample_interval_s,
+            min_confidence_pct=args.min_confidence_pct,
+        )
+        recovery_steps.append(
+            {
+                "attempt": int(attempt),
+                "cmd": str(cmd),
+                "pwm": int(pwm),
+                "pulse_ms": int(pulse_ms),
+                "found": bool(sample.found),
+                "y_mm": sample.y_mm,
+                "confidence_pct": sample.confidence_pct,
+            }
+        )
+        print(f"[Y-CAL] {label} recovery {attempt} sample {_fmt_sample(sample)}", flush=True)
+        if sample.found:
+            break
+    return sample, recovery_steps
+
+
+def _sample_y_in_target_zone(read_fn, robot: Robot, args, *, label: str) -> tuple[YSample, list[dict]]:
+    sample, recoveries = _sample_y_with_recovery(read_fn, robot, args, label=label)
+    if not sample.found or _y_in_target_band(sample, args):
+        return sample, recoveries
+
+    pwm = _cap_calibration_pwm(args.recovery_pwm)
+    pulse_ms = min(max(1, int(args.centering_pulse_ms)), _max_pulse_ms_for_pwm(pwm))
+    same_cmd_ms = 0
+    previous_cmd = None
+    attempts = max(1, int(args.centering_max_attempts))
+    for attempt in range(1, attempts + 1):
+        cmd = _centering_cmd_for_y(sample, args)
+        if not cmd:
+            return sample, recoveries
+        if cmd == previous_cmd:
+            same_cmd_ms += int(pulse_ms)
+        else:
+            same_cmd_ms = int(pulse_ms)
+            previous_cmd = cmd
+        if same_cmd_ms > MAX_SINGLE_DIRECTION_MS:
+            print(
+                f"[Y-CAL] {label} target-zone stop: {cmd.upper()} would exceed "
+                f"{MAX_SINGLE_DIRECTION_MS}ms same-direction cap",
+                flush=True,
+            )
+            return sample, recoveries
+        print(
+            f"[Y-CAL] {label} target-zone nudge {attempt}/{attempts}: {cmd.upper()} {pulse_ms}ms "
+            f"pwm={pwm} target={float(args.target_y_mm):+.1f}±{float(args.target_y_band_mm):.1f}",
+            flush=True,
+        )
+        _send_mast(robot, cmd, pwm, pulse_ms)
+        time.sleep(max(0.0, float(args.settle_s)))
+        sample, more_recoveries = _sample_y_with_recovery(
+            read_fn,
+            robot,
+            args,
+            label=f"{label} after target-zone nudge {attempt}",
+            last_cmd=cmd,
+        )
+        recoveries.extend(more_recoveries)
+        print(f"[Y-CAL] {label} target-zone sample {_fmt_sample(sample)}", flush=True)
+        if not sample.found or _y_in_target_band(sample, args):
+            return sample, recoveries
+    return sample, recoveries
 
 
 def _run(args) -> dict:
@@ -267,13 +448,15 @@ def _run(args) -> dict:
     read_fn, close_reader, source_used = _make_reader(args)
     robot = Robot(exit_on_failure=False, serial_port=args.serial_port)
     records: list[YCycle] = []
+    recovery_records: list[dict] = []
     unmatched_up_ms = 0
     cleanup_down_pwm = profiles[0].down_pwm
 
     try:
         print(
             f"[Y-CAL] source={source_used} profiles={len(profiles)} "
-            f"max_one_direction={MAX_SINGLE_DIRECTION_MS}ms",
+        f"max_one_direction={MAX_SINGLE_DIRECTION_MS}ms "
+        f"max_100pct={MAX_FULL_POWER_MS}ms max_50pct={MAX_HALF_POWER_MS}ms",
             flush=True,
         )
         robot.stop()
@@ -286,42 +469,95 @@ def _run(args) -> dict:
                 flush=True,
             )
             for cycle in range(1, int(profile.cycles) + 1):
-                before = _sample_y(
+                before, recoveries = _sample_y_in_target_zone(
                     read_fn,
-                    count=args.samples,
-                    interval_s=args.sample_interval_s,
-                    min_confidence_pct=args.min_confidence_pct,
+                    robot,
+                    args,
+                    label=f"{profile.name} cycle {cycle} before",
                 )
+                recovery_records.extend(recoveries)
                 print(f"[Y-CAL] {profile.name} cycle {cycle} before   {_fmt_sample(before)}", flush=True)
+                if not before.found:
+                    print("[Y-CAL] aborting: brick missing before mast motion", flush=True)
+                    return {
+                        "ok": False,
+                        "dry_run": False,
+                        "source": source_used,
+                        "reason": "missing_before_motion",
+                        "cycles": [asdict(r) for r in records],
+                        "recoveries": recovery_records,
+                    }
+                if not _y_in_target_band(before, args):
+                    print("[Y-CAL] aborting: y outside target zone before mast motion", flush=True)
+                    return {
+                        "ok": False,
+                        "dry_run": False,
+                        "source": source_used,
+                        "reason": "y_target_guard",
+                        "cycles": [asdict(r) for r in records],
+                        "recoveries": recovery_records,
+                    }
 
                 print(f"[Y-CAL] {profile.name} cycle {cycle} UP {profile.pulse_ms}ms", flush=True)
                 cleanup_down_pwm = int(profile.down_pwm)
-                _send_mast(robot, "u", profile.up_pwm, profile.pulse_ms)
+                _send_mast(robot, PHYSICAL_MAST_UP_CMD, profile.up_pwm, profile.pulse_ms)
                 unmatched_up_ms += int(profile.pulse_ms)
                 time.sleep(max(0.0, float(args.settle_s)))
-                after_up = _sample_y(
+                after_up, recoveries = _sample_y_with_recovery(
                     read_fn,
-                    count=args.samples,
-                    interval_s=args.sample_interval_s,
-                    min_confidence_pct=args.min_confidence_pct,
+                    robot,
+                    args,
+                    label=f"{profile.name} cycle {cycle} after up",
+                    last_cmd=PHYSICAL_MAST_UP_CMD,
                 )
+                recovery_records.extend(recoveries)
                 print(f"[Y-CAL] {profile.name} cycle {cycle} after up {_fmt_sample(after_up)}", flush=True)
 
                 print(f"[Y-CAL] {profile.name} cycle {cycle} DOWN {profile.pulse_ms}ms", flush=True)
-                _send_mast(robot, "d", profile.down_pwm, profile.pulse_ms)
+                _send_mast(robot, PHYSICAL_MAST_DOWN_CMD, profile.down_pwm, profile.pulse_ms)
                 unmatched_up_ms -= int(profile.pulse_ms)
                 time.sleep(max(0.0, float(args.settle_s)))
-                after_down = _sample_y(
+                after_down, recoveries = _sample_y_with_recovery(
                     read_fn,
-                    count=args.samples,
-                    interval_s=args.sample_interval_s,
-                    min_confidence_pct=args.min_confidence_pct,
+                    robot,
+                    args,
+                    label=f"{profile.name} cycle {cycle} after dn",
+                    last_cmd=PHYSICAL_MAST_DOWN_CMD,
                 )
+                recovery_records.extend(recoveries)
                 print(f"[Y-CAL] {profile.name} cycle {cycle} after dn {_fmt_sample(after_down)}", flush=True)
 
                 up_delta = _delta(before, after_up)
                 down_delta = _delta(after_up, after_down)
                 quality_ok, quality_reason = _cycle_quality(args, before, after_up, after_down)
+                if "y_up=" in str(quality_reason) or "y_return=" in str(quality_reason):
+                    print(f"[Y-CAL] aborting: y safety guard tripped ({quality_reason})", flush=True)
+                    records.append(
+                        YCycle(
+                            profile=profile.name,
+                            cycle=cycle,
+                            pulse_ms=profile.pulse_ms,
+                            up_pwm=profile.up_pwm,
+                            down_pwm=profile.down_pwm,
+                            before=before,
+                            after_up=after_up,
+                            after_down=after_down,
+                            up_delta_mm=up_delta,
+                            down_delta_mm=down_delta,
+                            up_mm_per_100ms=_rate(up_delta, profile.pulse_ms),
+                            down_mm_per_100ms=_rate(down_delta, profile.pulse_ms),
+                            quality_ok=False,
+                            quality_reason=str(quality_reason),
+                        )
+                    )
+                    return {
+                        "ok": False,
+                        "dry_run": False,
+                        "source": source_used,
+                        "reason": "y_safety_guard",
+                        "cycles": [asdict(r) for r in records],
+                        "recoveries": recovery_records,
+                    }
                 record = YCycle(
                     profile=profile.name,
                     cycle=cycle,
@@ -353,7 +589,7 @@ def _run(args) -> dict:
             try:
                 safe_ms = min(int(unmatched_up_ms), MAX_SINGLE_DIRECTION_MS)
                 print(f"[Y-CAL] cleanup matching DOWN {safe_ms}ms for unmatched UP", flush=True)
-                _send_mast(robot, "d", cleanup_down_pwm, safe_ms)
+                _send_mast(robot, PHYSICAL_MAST_DOWN_CMD, cleanup_down_pwm, safe_ms)
             except Exception:
                 pass
         try:
@@ -389,6 +625,7 @@ def _run(args) -> dict:
         "dry_run": False,
         "source": source_used,
         "cycles": [asdict(r) for r in records],
+        "recoveries": recovery_records,
         "summaries": summaries,
     }
 
@@ -406,6 +643,15 @@ def main() -> int:
     parser.add_argument("--min-confidence-pct", type=float, default=DEFAULT_MIN_CONFIDENCE_PCT)
     parser.add_argument("--max-dist-drift-mm", type=float, default=DEFAULT_MAX_DIST_DRIFT_MM)
     parser.add_argument("--max-x-drift-mm", type=float, default=DEFAULT_MAX_X_DRIFT_MM)
+    parser.add_argument("--max-y-excursion-mm", type=float, default=DEFAULT_MAX_Y_EXCURSION_MM)
+    parser.add_argument("--target-y-mm", type=float, default=DEFAULT_TARGET_Y_MM)
+    parser.add_argument("--target-y-band-mm", type=float, default=DEFAULT_TARGET_Y_BAND_MM)
+    parser.add_argument("--centering-pulse-ms", type=int, default=DEFAULT_CENTERING_PULSE_MS)
+    parser.add_argument("--centering-max-attempts", type=int, default=DEFAULT_CENTERING_MAX_ATTEMPTS)
+    parser.add_argument("--recover-visibility", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--recovery-pulse-ms", type=int, default=DEFAULT_RECOVERY_PULSE_MS)
+    parser.add_argument("--recovery-pwm", type=int, default=DEFAULT_RECOVERY_PWM)
+    parser.add_argument("--recovery-max-attempts", type=int, default=DEFAULT_RECOVERY_MAX_ATTEMPTS)
     parser.add_argument("--up-pwm", type=int, default=None)
     parser.add_argument("--down-pwm", type=int, default=None)
     parser.add_argument(

@@ -53,14 +53,14 @@
       "score": 1,
       "pwm": 40,
       "power": 0.2,
-      "duration_ms": 300
+      "duration_ms": 80
     },
     "k": {
       "cmd": "d",
       "score": 1,
       "pwm": 40,
       "power": 0.2,
-      "duration_ms": 260
+      "duration_ms": 80
     },
     "u": {
       "cmd": "u",
@@ -145,13 +145,13 @@
       "target_abs_x_mm": 15.0,
       "holding_pulse_scale": 0.5,
       "dist_target_mm": 111.7935,
-      "dist_tol_mm": 9.0,
+      "dist_tol_mm": 30.0,
       "y_target_mm": -5.0,
       "y_tol_mm": 9.0,
       "confirm_frames": 2,
       "sharp_finish": {
         "enabled": true,
-        "duration_ms": 270,
+        "duration_ms": 135,
         "mode": "faster_wheel_only"
       },
       "low_x_extra_sharp_turn": {
@@ -169,7 +169,7 @@
       "x_goal_curve": {
         "enabled": true,
         "target_fraction": 0.8,
-        "max_duration_ms": 1000,
+        "max_duration_ms": 500,
         "chunk_ms": 100,
         "settle_s": 0.12,
         "inner_pwm": 0,
@@ -220,13 +220,13 @@
           "target_abs_x_mm": 15.0,
           "holding_pulse_scale": 1.0,
           "dist_target_mm": 111.7935,
-          "dist_tol_mm": 9.0,
+          "dist_tol_mm": 30.0,
           "y_target_mm": -5.0,
           "y_tol_mm": 9.0,
           "confirm_frames": 2,
           "sharp_finish": {
             "enabled": true,
-            "duration_ms": 270,
+            "duration_ms": 135,
             "mode": "faster_wheel_only"
           },
           "low_x_extra_sharp_turn": {
@@ -286,13 +286,13 @@
           "target_abs_x_mm": 17.7225,
           "holding_pulse_scale": 0.5,
           "dist_target_mm": 105.9495,
-          "dist_tol_mm": 9.0,
+          "dist_tol_mm": 30.0,
           "y_target_mm": -13.716072095906299,
           "y_tol_mm": 9.0,
           "confirm_frames": 2,
           "sharp_finish": {
             "enabled": true,
-            "duration_ms": 270,
+            "duration_ms": 135,
             "mode": "faster_wheel_only"
           },
           "low_x_extra_sharp_turn": {
@@ -348,6 +348,7 @@
       "min_duration_ms": 350,
       "max_duration_ms": 600,
       "pwm": 255,
+      "cmd": "d",
       "settle_s": 0.1
     }
   },
@@ -368,7 +369,7 @@
       "require_y_ok_before_dist": false,
       "min_forward_pulse_ms": 200,
       "max_forward_pulse_ms": 300,
-      "full_forward_gap_mm": 100.0,
+      "full_forward_gap_mm": 70.0,
       "near_target_creep_band_mm": 30.0,
       "near_target_min_pulse_ms": 200,
       "near_target_max_pulse_ms": 210,
@@ -411,7 +412,7 @@
     "win_confirmation": {
       "settle_s": 0.25,
       "confirm_frames": 2,
-      "single_win_allowance_s": 20.0,
+      "single_win_allowance_s": 10.0,
       "timeout_y_correction_grace_acts": 2,
       "min_axis_closeness_pct": 0.0,
       "min_confidence_pct": 40.0
@@ -467,25 +468,28 @@
       "lock_on_mast_pwm": 255,
       "lock_on_pulse_ms": 400,
       "mast_pwm": 255,
-      "mast_up_pwm": 145,
-      "mast_down_pwm": 95,
-      "mast_pulse_ms": 120,
-      "mast_min_pulse_ms": 35,
-      "mast_max_pulse_ms": 60,
+      "mast_up_pwm": 255,
+      "mast_down_pwm": 255,
+      "mast_pulse_ms": 90,
+      "mast_min_pulse_ms": 80,
+      "mast_max_pulse_ms": 100,
       "finish_mast_pwm": 255,
-      "finish_mast_up_pwm": 40,
-      "finish_mast_down_pwm": 40,
-      "finish_mast_pulse_ms": 80,
-      "finish_mast_min_pulse_ms": 10,
-      "finish_mast_max_pulse_ms": 25,
-      "mast_mm_per_100ms": 2.5,
-      "mast_up_mm_per_100ms": 1.48,
-      "mast_down_mm_per_100ms": 1.39,
-      "mast_correction_fraction": 0.16,
-      "mast_coast_settle_s": 0.2,
+      "finish_mast_up_pwm": 255,
+      "finish_mast_down_pwm": 255,
+      "finish_mast_pulse_ms": 90,
+      "finish_mast_min_pulse_ms": 80,
+      "finish_mast_max_pulse_ms": 100,
+      "mast_mm_per_100ms": 2.0,
+      "mast_up_mm_per_100ms": 1.0,
+      "mast_down_mm_per_100ms": 2.2,
+      "mast_correction_fraction": 0.45,
+      "mast_duration_uses_tolerance_gap": true,
+      "mast_coast_settle_s": 0.45,
+      "mast_min_effect_mm": 0.0,
+      "mast_overshoot_guard_margin_mm": 0.0,
       "tiny_y_no_observed_wait_s": 0.8,
       "tiny_y_no_observed_abs_err_mm": 16.0,
-      "attach_y_min_abs_err_mm": 12.0
+      "attach_y_min_abs_err_mm": 5.0
     },
     "turn_bias_curves": {
       "forward": {
@@ -583,6 +587,7 @@
       "seat_drive_pwm": 103,
       "seat_drive_duration_ms": 0,
       "post_seat_pause_s": 0.25,
+      "step_timeout_s": 10.0,
       "recovery_creep_enabled": false,
       "recovery_creep_pulse_ms": 200,
       "recovery_creep_max_attempts": 0,
@@ -628,6 +633,7 @@
       "seat_drive_pwm": 103,
       "seat_drive_duration_ms": 0,
       "post_seat_pause_s": 0.25,
+      "step_timeout_s": 10.0,
       "recovery_creep_enabled": true,
       "recovery_creep_pulse_ms": 200,
       "recovery_creep_max_attempts": 7,
@@ -670,6 +676,7 @@
       "lift_pulse_ms": 1800,
       "lift_settle_s": 0.25,
       "max_lift_attempts": 1,
+      "step_timeout_s": 10.0,
       "initial_lift_before_gate": true,
       "no_visibility_fallback_enabled": true,
       "no_visibility_fallback_mast_cmd": "u",
@@ -686,38 +693,41 @@
         "nickname": "align x/dist",
         "holding": false,
         "dist_axis": {
-          "win_target_mm": 151.23551791647205,
+          "win_target_mm": 162.7,
           "win_tol_mm": 8.0
         },
         "x_axis": {
-          "win_target_mm": -0.8462156212848165,
+          "win_target_mm": 1.0,
           "win_tol_mm": 4.0,
           "positive_error_turn_cmd": "r"
         },
         "y_axis": {
           "enabled": true,
-          "win_target_mm": -35.95285059058148,
+          "win_target_mm": -19.4,
           "win_tol_mm": 4.0,
           "approach_high_factor": 1.0,
           "lock_on_enabled": false,
-          "mast_up_pwm": 145,
-          "mast_down_pwm": 95,
-          "mast_pulse_ms": 120,
-          "mast_min_pulse_ms": 35,
-          "mast_max_pulse_ms": 60,
-          "finish_mast_up_pwm": 40,
-          "finish_mast_down_pwm": 40,
-          "finish_mast_pulse_ms": 80,
-          "finish_mast_min_pulse_ms": 10,
-          "finish_mast_max_pulse_ms": 25,
-          "mast_mm_per_100ms": 2.5,
-          "mast_up_mm_per_100ms": 1.48,
-          "mast_down_mm_per_100ms": 1.39,
-          "mast_correction_fraction": 0.16,
-          "mast_coast_settle_s": 0.2,
+          "mast_up_pwm": 255,
+          "mast_down_pwm": 255,
+          "mast_pulse_ms": 90,
+          "mast_min_pulse_ms": 80,
+          "mast_max_pulse_ms": 100,
+          "finish_mast_up_pwm": 255,
+          "finish_mast_down_pwm": 255,
+          "finish_mast_pulse_ms": 90,
+          "finish_mast_min_pulse_ms": 80,
+          "finish_mast_max_pulse_ms": 100,
+          "mast_mm_per_100ms": 2.0,
+          "mast_up_mm_per_100ms": 1.0,
+          "mast_down_mm_per_100ms": 2.2,
+          "mast_correction_fraction": 0.45,
+          "mast_duration_uses_tolerance_gap": true,
+          "mast_coast_settle_s": 0.45,
+          "mast_min_effect_mm": 0.0,
+          "mast_overshoot_guard_margin_mm": 0.0,
           "tiny_y_no_observed_wait_s": 0.8,
           "tiny_y_no_observed_abs_err_mm": 12.0,
-          "attach_y_min_abs_err_mm": 12.0
+          "attach_y_min_abs_err_mm": 5.0
         },
         "curve_strength_abs_x_err_mm": {
           "medium": 8.0,
@@ -801,10 +811,15 @@
         "step2": {
           "nickname": "align y",
           "seat_mast_duration_ms": 0,
+          "step_timeout_s": 10.0,
           "recovery_creep_enabled": false,
           "recovery_creep_max_attempts": 0,
           "visibility_recovery_creep_enabled": false,
           "visibility_recovery_creep_max_attempts": 0,
+          "precision_mast_small_gap_max_mm": 5.0,
+          "precision_mast_small_gap_pwm_scale": 0.5,
+          "precision_mast_small_gap_min_pulse_ms": 150,
+          "precision_mast_small_gap_max_pulse_ms": 275,
           "semi_happy_targets": {
             "dist_mm": 81.0,
             "dist_tol_mm": 5.0,
@@ -819,17 +834,20 @@
             "x_mm": null,
             "x_tol_mm": null,
             "y_mm": -18.75903222112372,
-            "y_tol_mm": 0.5
+            "y_tol_mm": 4.0
           }
         },
         "step3": {
           "nickname": "seat",
           "seat_mast_duration_ms": 0,
+          "step_timeout_s": 10.0,
           "recovery_creep_enabled": true,
           "recovery_creep_max_attempts": 7,
           "visibility_recovery_creep_enabled": false,
           "visibility_recovery_creep_max_attempts": 0,
           "post_precision_recovery_cycles": 6,
+          "precision_drive_min_pulse_ms": 64,
+          "precision_drive_max_pulse_ms": 160,
           "semi_happy_targets": {
             "dist_mm": 81.0,
             "dist_tol_mm": 5.0,
@@ -848,10 +866,12 @@
           }
         },
         "step4": {
-          "lift_mast_cmd": "u",
-          "lift_pulse_ms": 1800,
+          "lift_mast_cmd": "d",
+          "no_visibility_fallback_mast_cmd": "d",
+          "lift_pulse_ms": 1100,
           "lift_settle_s": 0.25,
           "max_lift_attempts": 1,
+          "step_timeout_s": 10.0,
           "initial_lift_before_gate": true,
           "targets": {
             "y_mm": 1.751941067049,
@@ -874,28 +894,66 @@
         "x_priority_policy": {
           "simultaneous_x_abs_max_mm": 80.0,
           "x_first_turn_strength": "adaptive",
-          "adaptive_outer_pwm_scale": 1.0,
+          "adaptive_outer_pwm_scale": 0.75,
           "turn_settle_s": 0.25,
           "attach_y_to_turns": true
+        },
+        "x_dist_curve_policy": {
+          "combined_bias_max_pulse_ms": 200
+        },
+        "turn_curves": {
+          "inner_pwm": 104,
+          "forward": {
+            "gentle": {
+              "inner_pwm": 104,
+              "outer_pwm": 145
+            },
+            "medium": {
+              "inner_pwm": 104,
+              "outer_pwm": 165
+            },
+            "strong": {
+              "inner_pwm": 104,
+              "outer_pwm": 185
+            }
+          },
+          "backward": {
+            "gentle": {
+              "inner_pwm": 104,
+              "outer_pwm": 145
+            },
+            "medium": {
+              "inner_pwm": 104,
+              "outer_pwm": 165
+            },
+            "strong": {
+              "inner_pwm": 104,
+              "outer_pwm": 185
+            }
+          }
         },
         "y_axis": {
           "enabled": true,
           "lock_on_enabled": false,
           "win_target_mm": 5.250551859537761,
           "win_tol_mm": 4.5,
-          "finish_mast_pwm": 40,
-          "finish_mast_pulse_ms": 260,
-          "attach_y_min_abs_err_mm": 0.0
+          "finish_mast_pwm": 255,
+          "finish_mast_pulse_ms": 130,
+          "finish_mast_min_pulse_ms": 130,
+          "finish_mast_max_pulse_ms": 130,
+          "attach_y_min_abs_err_mm": 8.0
         },
         "step2": {
           "nickname": "place",
           "seat_mast_duration_ms": 600,
+          "step_timeout_s": 10.0,
           "freeze_xz_after_xz_target": false,
           "recovery_creep_enabled": false,
           "recovery_creep_max_attempts": 0,
           "visibility_recovery_creep_enabled": false,
           "visibility_recovery_creep_max_attempts": 0,
           "precision_max_attempts": 7,
+          "precision_mast_pulse_ms": 300,
           "post_precision_recovery_cycles": 0,
           "semi_happy_targets": {
             "dist_mm": 81.0,
@@ -916,6 +974,7 @@
         },
         "step4": {
           "lift_mast_cmd": "d",
+          "step_timeout_s": 10.0,
           "targets": {
             "y_mm": 3.0088939736803805,
             "y_tol_mm": 1.0
@@ -1024,19 +1083,19 @@
     "100": 0.3
   },
   "speed_score_seconds_mast_up": {
-    "1": 0.3,
+    "1": 0.08,
     "20": 0.34,
     "100": 0.4
   },
   "speed_score_seconds_mast_down": {
-    "1": 0.26,
+    "1": 0.08,
     "20": 0.3,
     "100": 0.36
   },
   "mast_intensity_posts_mast_up": {
     "4.0": {
       "pwm": 40,
-      "duration_ms": 240
+      "duration_ms": 80
     },
     "8.0": {
       "pwm": 40,
@@ -1074,7 +1133,7 @@
     },
     "4.0": {
       "pwm": 39,
-      "duration_ms": 250
+      "duration_ms": 80
     },
     "8.0": {
       "pwm": 40,
