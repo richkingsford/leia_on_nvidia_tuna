@@ -262,6 +262,129 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertAlmostEqual(follow.RESET_DIST_TARGET_MM, follow.TARGET_DIST_MM * 1.75)
         self.assertAlmostEqual(follow.RESET_DIST_TOL_MM, 9.0)
 
+    def test_holding_step2_is_place_and_hands_off_to_empty_after_reset(self):
+        follow._set_game_profile("holding")
+        cfg = follow._follow_motion_config()
+        self.assertTrue(cfg["complete_after_step2"])
+        self.assertEqual(cfg["step2"]["nickname"], "place")
+
+        robot = _FakeRobot()
+        vision = _SequenceVision(
+            [
+                (
+                    True,
+                    0.0,
+                    follow._dist_target_mm(),
+                    follow._x_target_mm(),
+                    88.0,
+                    follow._y_win_target_mm(),
+                    False,
+                    False,
+                ),
+                (
+                    True,
+                    0.0,
+                    follow._dist_target_mm(),
+                    follow._x_target_mm(),
+                    88.0,
+                    follow._y_win_target_mm(),
+                    False,
+                    False,
+                ),
+                (
+                    True,
+                    0.0,
+                    follow._dist_target_mm(),
+                    follow._x_target_mm(),
+                    88.0,
+                    follow._y_win_target_mm(),
+                    False,
+                    False,
+                ),
+            ]
+        )
+        fake_clock = _FakeClock()
+        step2_result = {
+            "success": True,
+            "target_met": True,
+            "reason": "step2_targets_scored",
+            "reading": {"confident": True, "dist_mm": 82.0, "x_mm": -2.0, "y_mm": -10.0},
+        }
+        reset_result = {
+            "success": True,
+            "phase": "reverse_turn",
+            "reason": "x_offset_confirmed",
+            "turn_cmd": "l",
+            "mast_up_sent": True,
+            "reading": _configured_reset_target_reading(),
+            "target_met": True,
+        }
+
+        with mock.patch.object(follow, "_run_step2_seat_sequence", return_value=step2_result), mock.patch.object(
+            follow,
+            "_run_step3_seat_sequence",
+        ) as step3_mock, mock.patch.object(
+            follow,
+            "_run_reset_sequence",
+            return_value=reset_result,
+        ) as reset_mock, mock.patch.object(
+            follow.time,
+            "monotonic",
+            side_effect=fake_clock.monotonic,
+        ), mock.patch.object(
+            follow.time,
+            "sleep",
+            side_effect=fake_clock.sleep,
+        ):
+            stats = follow._follow_loop(vision, robot, duration_s=0.26)
+
+        reset_mock.assert_called_once_with(vision, robot)
+        step3_mock.assert_not_called()
+        self.assertEqual(follow._active_game_profile(), "empty")
+        self.assertEqual(stats["reset_count"], 1)
+
+    def test_holding_large_three_gap_uses_simultaneous_bias_with_mast(self):
+        old_profile = getattr(follow, "CURRENT_GAME_PROFILE", "empty")
+        try:
+            follow._set_game_profile("holding")
+            plan = follow._follow_action_plan(
+                {
+                    "visible": True,
+                    "confident": True,
+                    "dist_mm": 221.5,
+                    "x_mm": 46.0,
+                    "y_mm": -11.5,
+                }
+            )
+        finally:
+            follow._set_game_profile(old_profile)
+
+        self.assertEqual(plan["kind"], "drive_bias")
+        self.assertEqual(plan["action"], "BIAS_R_ADAPTIVE_MAST_D")
+        self.assertEqual(plan["reason"], "x_polish_while_creeping_dist")
+        self.assertEqual(plan["strength"], "adaptive")
+        self.assertEqual(plan["mast_cmd"], "d")
+
+    def test_negative_y_error_moves_mast_down_toward_holding_step1_target(self):
+        old_profile = getattr(follow, "CURRENT_GAME_PROFILE", "empty")
+        try:
+            follow._set_game_profile("holding")
+            plan = follow._follow_action_plan(
+                {
+                    "visible": True,
+                    "confident": True,
+                    "dist_mm": follow._dist_target_mm(),
+                    "x_mm": follow._x_target_mm(),
+                    "y_mm": -11.5,
+                }
+            )
+        finally:
+            follow._set_game_profile(old_profile)
+
+        self.assertEqual(plan["kind"], "mast")
+        self.assertEqual(plan["cmd"], "d")
+        self.assertEqual(plan["action"], "MAST_D")
+
     def test_reset_x_offset_ready_uses_configured_min_abs_offset(self):
         cfg = {"x_offset_min_mm": 25.0, "x_offset_max_mm": 45.0}
 
@@ -679,10 +802,40 @@ class TestFollowTheBrickReset(unittest.TestCase):
         finally:
             follow._set_game_profile(old_profile)
         self.assertAlmostEqual(holding_reset["dist_target_mm"], 105.9495, places=3)
-        self.assertAlmostEqual(holding_reset["target_abs_x_mm"], 35.445, places=3)
+        self.assertAlmostEqual(holding_reset["target_abs_x_mm"], 17.7225, places=3)
         self.assertAlmostEqual(holding_reset["y_target_mm"], -13.716072095906299, places=3)
-        self.assertAlmostEqual(holding_reset["x_offset_min_mm"], 32.4, places=3)
-        self.assertAlmostEqual(holding_reset["x_offset_max_mm"], 38.4, places=3)
+        self.assertAlmostEqual(holding_reset["x_offset_min_mm"], 16.2, places=3)
+        self.assertAlmostEqual(holding_reset["x_offset_max_mm"], 19.2, places=3)
+        self.assertAlmostEqual(holding_reset["straight_back_first"]["mast_up_delay_fraction"], 0.5, places=3)
+
+    def test_holding_reset_delays_mast_up_until_halfway_through_straight_back(self):
+        old_profile = getattr(follow, "CURRENT_GAME_PROFILE", "empty")
+        try:
+            follow._set_game_profile("holding")
+            robot = _FakeRobot()
+            reading = {
+                "visible": True,
+                "confident": True,
+                "conf": 88.0,
+                "min_confidence_pct": 75.0,
+                "x_mm": 0.0,
+            }
+
+            result = follow._reset_reverse_turn(robot, "l", reading, rng=_FakeRng("l", uniform_value=500.0))
+        finally:
+            follow._set_game_profile(old_profile)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(len(robot.custom_commands), 2)
+        first_cmd, first_actions, first_duration_ms = robot.custom_commands[0]
+        second_cmd, second_actions, second_duration_ms = robot.custom_commands[1]
+        self.assertEqual(first_cmd, "b")
+        self.assertEqual(second_cmd, "b")
+        self.assertEqual(first_duration_ms, 1000)
+        self.assertEqual(second_duration_ms, 1000)
+        self.assertFalse(any(action.get("target") == "m" for action in first_actions))
+        self.assertTrue(any(action.get("action") == "b" for action in first_actions))
+        self.assertTrue(any(action.get("target") == "m" and action.get("duration_ms") == 500 for action in second_actions))
 
     def test_follow_loop_stops_on_first_missing_frame_without_stale_motion(self):
         robot = _FakeRobot()
@@ -2277,6 +2430,48 @@ class TestFollowTheBrickReset(unittest.TestCase):
         self.assertEqual(plan["turn_cmd"], "r")
         self.assertEqual(plan["reason"], "x_polish_while_creeping_dist")
         self.assertNotIn("mast_cmd", plan)
+
+    def test_empty_step1_follow_uses_short_slow_adaptive_curve_budget(self):
+        self.assertLessEqual(follow._max_act_ms(), 300)
+        self.assertLessEqual(follow._follow_dist_approach_policy()["max_forward_pulse_ms"], 300)
+        self.assertLessEqual(follow._too_close_escape_policy()["pulse_ms"], 220)
+
+        gentle_curve = follow._turn_bias_curve_for_drive_mode("forward", "gentle")
+        strong_curve = follow._turn_bias_curve_for_drive_mode("forward", "strong")
+
+        self.assertEqual(gentle_curve["inner_pwm"], 103)
+        self.assertLessEqual(gentle_curve["outer_pwm"], 112)
+        self.assertLessEqual(strong_curve["outer_pwm"], 125)
+
+    def test_three_gap_step1_plan_uses_short_adaptive_bias_with_mast(self):
+        plan = follow._follow_action_plan(
+            {
+                "visible": True,
+                "confident": True,
+                "dist_mm": 192.3,
+                "x_mm": -7.4,
+                "y_mm": -6.6,
+            }
+        )
+
+        self.assertEqual(plan["kind"], "drive_bias")
+        self.assertEqual(plan["cmd"], "f")
+        self.assertEqual(plan["turn_cmd"], "l")
+        self.assertEqual(plan["strength"], "adaptive")
+        self.assertLessEqual(plan["duration_ms"], 300)
+        self.assertEqual(plan["mast_cmd"], "d")
+        self.assertLessEqual(plan["mast_duration_ms"], 120)
+
+    def test_y_mast_duration_scales_down_near_happy_target(self):
+        y_cfg = follow._follow_y_axis_config()
+
+        far_duration = follow._adaptive_y_mast_duration_ms(6.0, y_cfg, near_end=False)
+        finish_duration = follow._adaptive_y_mast_duration_ms(1.0, y_cfg, near_end=True)
+
+        self.assertGreaterEqual(far_duration, 35)
+        self.assertLessEqual(far_duration, 80)
+        self.assertGreaterEqual(finish_duration, 10)
+        self.assertLessEqual(finish_duration, 25)
 
     def test_follow_plan_keeps_current_stuck_pose_moving_instead_of_turn_stalling(self):
         plan = follow._follow_action_plan(

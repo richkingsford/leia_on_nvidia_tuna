@@ -86,6 +86,7 @@ DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG = {
     "enabled": True,
     "duration_ms": 1000,
     "pwm": 103,
+    "mast_up_delay_fraction": 0.0,
 }
 DEFAULT_RESET_X_GOAL_CURVE_CONFIG = {
     "enabled": True,
@@ -155,6 +156,7 @@ DEFAULT_X_DIST_CURVE_POLICY = {
     "large_dist_gap_mm": 60.0,
     "small_x_gap_mm": 6.0,
     "large_dist_small_x_strength": "gentle",
+    "combined_x_dist_strength": "adaptive",
     "near_dist_gap_mm": 12.0,
     "wide_x_gap_mm": 9.0,
     "near_wide_x_strength": "strong",
@@ -281,6 +283,7 @@ DEFAULT_CAUTIOUS_VISIBILITY_CONFIG = {
 DEFAULT_VISION_JUMP_GUARD_CONFIG = {
     "enabled": True,
     "confirm_frames": 2,
+    "max_abs_dist_mm": 320.0,
     "max_dist_jump_mm": 22.0,
     "max_x_jump_mm": 18.0,
     "max_y_jump_mm": 8.0,
@@ -310,9 +313,25 @@ DEFAULT_FOLLOW_Y_AXIS_CONFIG = {
     "lock_on_mast_pwm": 255,
     "lock_on_pulse_ms": 400,
     "mast_pwm": 255,
+    "mast_up_pwm": 145,
+    "mast_down_pwm": 95,
     "mast_pulse_ms": 220,
+    "mast_min_pulse_ms": 35,
+    "mast_max_pulse_ms": 60,
     "finish_mast_pwm": 255,
+    "finish_mast_up_pwm": 40,
+    "finish_mast_down_pwm": 40,
     "finish_mast_pulse_ms": 300,
+    "finish_mast_min_pulse_ms": 10,
+    "finish_mast_max_pulse_ms": 25,
+    "mast_mm_per_100ms": 2.5,
+    "mast_up_mm_per_100ms": 1.48,
+    "mast_down_mm_per_100ms": 1.39,
+    "mast_correction_fraction": 0.16,
+    "mast_coast_settle_s": 0.2,
+    "tiny_y_no_observed_wait_s": 0.8,
+    "tiny_y_no_observed_abs_err_mm": 16.0,
+    "attach_y_min_abs_err_mm": 12.0,
 }
 DEFAULT_TURN_BIAS_CURVES = {
     "micro": {"inner_pwm": 103, "outer_pwm": 106},
@@ -722,6 +741,33 @@ def _merge_profile_turning_overrides(cfg: dict, raw_profile: dict) -> None:
     if "attach_y_to_turns" in raw_x_priority:
         cfg["x_priority_policy"]["attach_y_to_turns"] = bool(raw_x_priority.get("attach_y_to_turns"))
 
+    raw_x_dist = (
+        raw_profile.get("x_dist_curve_policy")
+        if isinstance(raw_profile.get("x_dist_curve_policy"), dict)
+        else {}
+    )
+    for key in ("large_dist_gap_mm", "small_x_gap_mm", "near_dist_gap_mm", "wide_x_gap_mm"):
+        if key in raw_x_dist:
+            cfg["x_dist_curve_policy"][key] = _coerce_float(
+                raw_x_dist.get(key),
+                cfg["x_dist_curve_policy"].get(key, DEFAULT_X_DIST_CURVE_POLICY[key]),
+                minimum=0.0,
+            )
+    for key in ("large_dist_small_x_strength", "combined_x_dist_strength", "near_wide_x_strength"):
+        if key in raw_x_dist:
+            cfg["x_dist_curve_policy"][key] = _coerce_curve_strength(
+                raw_x_dist.get(key),
+                cfg["x_dist_curve_policy"].get(key, DEFAULT_X_DIST_CURVE_POLICY[key]),
+            )
+    if cfg["x_dist_curve_policy"].get("near_wide_x_strength") == "adaptive":
+        cfg["x_dist_curve_policy"]["near_wide_x_strength"] = "strong"
+    if cfg["x_dist_curve_policy"].get("large_dist_small_x_strength") == "adaptive":
+        cfg["x_dist_curve_policy"]["large_dist_small_x_strength"] = "gentle"
+    if "too_close_wide_x_drive_mode" in raw_x_dist:
+        drive_mode = str(raw_x_dist.get("too_close_wide_x_drive_mode") or "").strip().lower()
+        if drive_mode in {"forward", "backward"}:
+            cfg["x_dist_curve_policy"]["too_close_wide_x_drive_mode"] = drive_mode
+
 
 def _load_follow_motion_config(path: Path | None = None) -> dict:
     model_path = path if isinstance(path, Path) else ROBOT_MODEL_FILE
@@ -1027,6 +1073,10 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         raw_x_dist.get("large_dist_small_x_strength"),
         DEFAULT_X_DIST_CURVE_POLICY["large_dist_small_x_strength"],
     )
+    cfg["x_dist_curve_policy"]["combined_x_dist_strength"] = _coerce_curve_strength(
+        raw_x_dist.get("combined_x_dist_strength"),
+        DEFAULT_X_DIST_CURVE_POLICY["combined_x_dist_strength"],
+    )
     cfg["x_dist_curve_policy"]["near_wide_x_strength"] = _coerce_curve_strength(
         raw_x_dist.get("near_wide_x_strength"),
         DEFAULT_X_DIST_CURVE_POLICY["near_wide_x_strength"],
@@ -1153,6 +1203,7 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         "max_x_jump_mm",
         "max_y_jump_mm",
         "max_vector_jump_mm",
+        "max_abs_dist_mm",
         "confirm_window_mm",
     ):
         cfg["vision_jump_guard"][key] = _coerce_float(
@@ -1196,7 +1247,7 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
     for key, fallback in DEFAULT_FOLLOW_Y_AXIS_CONFIG.items():
         if key == "enabled":
             continue
-        if key == "protect_requires_brick_below":
+        if key in {"protect_requires_brick_below", "lock_on_enabled"}:
             cfg["y_axis"][key] = bool(raw_y_axis.get(key, fallback))
             continue
         minimum = 0.0 if key not in {"win_target_mm", "reset_target_mm"} else None
@@ -1896,6 +1947,12 @@ def _load_reset_motion_config(path: Path | None = None) -> dict:
             DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG["pwm"],
             minimum=1,
             maximum=255,
+        ),
+        "mast_up_delay_fraction": _coerce_float(
+            raw_straight_back.get("mast_up_delay_fraction"),
+            DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG["mast_up_delay_fraction"],
+            minimum=0.0,
+            maximum=0.95,
         ),
     }
     raw_x_goal_curve = (
@@ -3298,8 +3355,8 @@ def _step2_precision_drive_duration_ms(dist_gap_mm: float, step2_cfg: dict) -> i
 
 
 def _step2_precision_mast_cmd(y_err: float) -> str:
-    # Same y semantics as the main follow planner: positive y error is corrected by mast down.
-    return "d" if float(y_err) > 0.0 else "u"
+    # Same y semantics as the main follow planner: negative y error needs mast down.
+    return "u" if float(y_err) > 0.0 else "d"
 
 
 def _step2_precision_dist_cmd(dist_err: float, step2_cfg: dict) -> str:
@@ -4022,6 +4079,12 @@ def _reset_straight_back_first_config(reset_cfg: dict | None = None) -> dict:
             minimum=1,
             maximum=255,
         ),
+        "mast_up_delay_fraction": _coerce_float(
+            raw.get("mast_up_delay_fraction"),
+            DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG["mast_up_delay_fraction"],
+            minimum=0.0,
+            maximum=0.95,
+        ),
     }
 
 
@@ -4093,13 +4156,46 @@ def _reset_reverse_turn(
         action["duration_ms"] = int(duration_ms)
     scaled_actions = _scaled_actions(actions)
     mast_action, mast_up_ms, mast_settle_s = _reset_mast_up_action_spec(rng=rng)
+    delay_fraction = _coerce_float(
+        straight_cfg.get("mast_up_delay_fraction"),
+        DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG["mast_up_delay_fraction"],
+        minimum=0.0,
+        maximum=0.95,
+    )
+    delayed_actions = []
+    second_duration_ms = int(duration_ms)
+    total_duration_ms = int(duration_ms)
+    if mast_action is not None and delay_fraction > 0.0:
+        delay_ms = max(1, min(int(duration_ms) - 1, int(round(float(duration_ms) * float(delay_fraction)))))
+        remaining_ms = max(1, int(duration_ms) - int(delay_ms))
+        second_duration_ms = int(max(int(remaining_ms), int(mast_up_ms)))
+        total_duration_ms = int(delay_ms) + int(second_duration_ms)
+        first_actions = _straight_drive_actions("b", drive_pwm)
+        for action in first_actions:
+            action["duration_ms"] = int(delay_ms)
+        first_scaled = _scaled_actions(first_actions)
+        first_result = guarded_send_custom_actions_pwm(
+            robot,
+            "b",
+            first_scaled,
+            duration_ms=delay_ms,
+            reading=reading,
+            context="reset_straight_back_first_delay",
+        )
+        if isinstance(first_result, dict) and bool(first_result.get("blocked")):
+            return None
+        actions = _straight_drive_actions("b", drive_pwm)
+        for action in actions:
+            action["duration_ms"] = int(remaining_ms)
+        scaled_actions = _scaled_actions(actions)
+        delayed_actions = [dict(action) for action in first_scaled]
     if mast_action is not None:
         scaled_actions.append(mast_action)
     send_result = guarded_send_custom_actions_pwm(
         robot,
         "b",
         scaled_actions,
-        duration_ms=duration_ms,
+        duration_ms=max(int(second_duration_ms), int(mast_up_ms)),
         reading=reading,
         context="reset_straight_back_first",
     )
@@ -4112,8 +4208,8 @@ def _reset_reverse_turn(
         "sharp_finish_ms": 0,
         "mast_up_ms": int(mast_up_ms),
         "mast_settle_s": float(mast_settle_s),
-        "duration_ms": int(max(int(duration_ms), int(mast_up_ms))),
-        "actions": [dict(action) for action in scaled_actions],
+        "duration_ms": int(max(int(total_duration_ms), int(mast_up_ms))),
+        "actions": [dict(action) for action in delayed_actions + scaled_actions],
         "curve": {
             "drive_mode": "backward",
             "strength": "straight_back_first",
@@ -4814,6 +4910,17 @@ def _temporal_filter_brick_reading(vision: BrickDetector, reading: dict, jump_gu
         return reading
     if bool(reading.get("confident")):
         jump_cfg = _vision_jump_guard_config()
+        max_abs_dist = float(jump_cfg.get("max_abs_dist_mm", 0.0) or 0.0)
+        if max_abs_dist > 0.0:
+            try:
+                if float(reading.get("dist_mm")) > max_abs_dist:
+                    rejected = dict(reading)
+                    rejected["confident"] = False
+                    rejected["reason"] = "ghost_dist_implausible"
+                    rejected["ghost_dist_implausible"] = True
+                    return rejected
+            except (TypeError, ValueError):
+                pass
         stable = getattr(vision, "_follow_last_stable_reading", None)
         suspicious, delta = (
             _reading_jump_suspicious(stable, reading, jump_cfg)
@@ -5189,6 +5296,10 @@ def _follow_x_dist_curve_policy() -> dict:
         raw.get("large_dist_small_x_strength"),
         DEFAULT_X_DIST_CURVE_POLICY["large_dist_small_x_strength"],
     )
+    out["combined_x_dist_strength"] = _coerce_curve_strength(
+        raw.get("combined_x_dist_strength"),
+        DEFAULT_X_DIST_CURVE_POLICY["combined_x_dist_strength"],
+    )
     out["near_wide_x_strength"] = _coerce_curve_strength(
         raw.get("near_wide_x_strength"),
         DEFAULT_X_DIST_CURVE_POLICY["near_wide_x_strength"],
@@ -5339,6 +5450,7 @@ def _vision_jump_guard_config() -> dict:
         "max_x_jump_mm",
         "max_y_jump_mm",
         "max_vector_jump_mm",
+        "max_abs_dist_mm",
         "confirm_window_mm",
     ):
         out[key] = _coerce_float(
@@ -5617,7 +5729,8 @@ def _success_gate_summary_lines() -> list[str]:
             f"{str(step4.get('no_visibility_fallback_mast_cmd', 'u')).upper()} "
             f"{int(step4.get('no_visibility_fallback_duration_ms', 0) or 0)}ms"
         )
-    return [
+    step2_label = str(step2.get("nickname") or "align y").strip().upper()
+    lines = [
         f"[GATES] Active a_follow_the_brick.py success gates for {profile} game:",
         (
             "[GATES] Step 1 / HAPPY: visible+confident, "
@@ -5640,10 +5753,15 @@ def _success_gate_summary_lines() -> list[str]:
             "is logged only, not a reset hit gate"
         ),
         (
-            "[GATES] Step 2 / ALIGN Y: "
+            f"[GATES] Step 2 / {step2_label}: "
             f"{_step2_gate_text(step2)}; semi-happy={_step2_semi_happy_text(step2)}; "
             f"freeze_xz_after_xz_target={bool(step2.get('freeze_xz_after_xz_target'))}"
         ),
+    ]
+    if _game_complete_after_step2():
+        lines.append("[GATES] After Step 2 / PLACE: reset, then next game profile is empty.")
+        return lines
+    lines.extend([
         (
             "[GATES] Step 3 / SEAT: "
             f"{_step2_gate_text(step3)}; semi-happy={_step2_semi_happy_text(step3)}; "
@@ -5654,7 +5772,8 @@ def _success_gate_summary_lines() -> list[str]:
             f"{_step3_gate_text(step4)}; mast_cmd="
             f"{str(step4.get('lift_mast_cmd', 'u')).upper()}{fallback_text}"
         ),
-    ]
+    ])
+    return lines
 
 
 def _print_active_success_gates() -> None:
@@ -5689,6 +5808,9 @@ def _bias_strength_for_dist_x(*, dist_err: float, x_err: float, x_outside_mm: fl
         and abs(float(x_err)) <= float(policy.get("small_x_gap_mm", DEFAULT_X_DIST_CURVE_POLICY["small_x_gap_mm"]))
     ):
         return str(policy.get("large_dist_small_x_strength", "gentle"))
+    combined_strength = str(policy.get("combined_x_dist_strength") or "").strip().lower()
+    if combined_strength in {"adaptive", "gentle", "medium", "strong"}:
+        return combined_strength
     return _bias_strength_for_x_outside(x_outside_mm)
 
 
@@ -5978,8 +6100,9 @@ def _y_commit_action_plan(reading: dict, *, dist_err: float, x_err: float) -> di
             "y_err": None,
             "y_target_mm": float(target),
             "reason": "missing_y_after_commit",
-        }
-    cmd = "d" if float(y_err) > 0.0 else "u"
+    }
+    cmd = "u" if float(y_err) > 0.0 else "d"
+    duration_ms = _adaptive_y_mast_duration_ms(float(y_err), y_cfg, near_end=True, cmd=cmd)
     return {
         "kind": "mast",
         "cmd": cmd,
@@ -5989,12 +6112,108 @@ def _y_commit_action_plan(reading: dict, *, dist_err: float, x_err: float) -> di
         "y_err": float(y_err),
         "y_mm": (reading or {}).get("y_mm"),
         "y_target_mm": float(target),
-        "pwm": int(_coerce_int(y_cfg.get("finish_mast_pwm"), y_cfg.get("mast_pwm", 40), minimum=1, maximum=255)),
-        "duration_ms": int(
-            _bounded_act_duration_ms(y_cfg.get("finish_mast_pulse_ms", y_cfg.get("mast_pulse_ms", 220)))
-        ),
+        "pwm": _y_mast_pwm(y_cfg, cmd=cmd, near_end=True),
+        "duration_ms": int(duration_ms),
         "reason": "y_commit_final_y",
     }
+
+
+def _y_mast_rate_mm_per_100ms(y_cfg: dict | None, *, cmd: str | None) -> float:
+    cfg = y_cfg if isinstance(y_cfg, dict) else _follow_y_axis_config()
+    cmd_key = str(cmd or "").strip().lower()
+    direction_key = "mast_down_mm_per_100ms" if cmd_key == "d" else "mast_up_mm_per_100ms"
+    fallback = cfg.get("mast_mm_per_100ms", DEFAULT_FOLLOW_Y_AXIS_CONFIG["mast_mm_per_100ms"])
+    return _coerce_float(
+        cfg.get(direction_key),
+        fallback,
+        minimum=0.1,
+        maximum=100.0,
+    )
+
+
+def _y_mast_pwm(y_cfg: dict | None, *, cmd: str | None, near_end: bool) -> int:
+    cfg = y_cfg if isinstance(y_cfg, dict) else _follow_y_axis_config()
+    cmd_key = str(cmd or "").strip().lower()
+    prefix = "finish_mast" if bool(near_end) else "mast"
+    direction_key = f"{prefix}_{'down' if cmd_key == 'd' else 'up'}_pwm"
+    fallback_key = f"{prefix}_pwm"
+    fallback = cfg.get(fallback_key, cfg.get("mast_pwm", 40))
+    return int(_coerce_int(cfg.get(direction_key), fallback, minimum=1, maximum=255))
+
+
+def _adaptive_y_mast_duration_ms(
+    y_err: float,
+    y_cfg: dict | None = None,
+    *,
+    near_end: bool,
+    cmd: str | None = None,
+) -> int:
+    cfg = y_cfg if isinstance(y_cfg, dict) else _follow_y_axis_config()
+    prefix = "finish_mast" if bool(near_end) else "mast"
+    fallback_ms = cfg.get(f"{prefix}_pulse_ms", cfg.get("mast_pulse_ms", 220))
+    min_ms = _coerce_int(
+        cfg.get(f"{prefix}_min_pulse_ms"),
+        min(int(fallback_ms), 80 if near_end else 100),
+        minimum=1,
+        maximum=_max_act_ms(),
+    )
+    max_ms = _coerce_int(
+        cfg.get(f"{prefix}_max_pulse_ms"),
+        fallback_ms,
+        minimum=1,
+        maximum=_max_act_ms(),
+    )
+    if min_ms > max_ms:
+        min_ms, max_ms = max_ms, min_ms
+    mm_per_100ms = _y_mast_rate_mm_per_100ms(cfg, cmd=cmd)
+    correction_fraction = _coerce_float(
+        cfg.get("mast_correction_fraction"),
+        DEFAULT_FOLLOW_Y_AXIS_CONFIG["mast_correction_fraction"],
+        minimum=0.05,
+        maximum=1.0,
+    )
+    desired_ms = (abs(float(y_err)) * float(correction_fraction) * 100.0) / float(mm_per_100ms)
+    clamped = max(int(min_ms), min(int(max_ms), int(round(desired_ms))))
+    return int(_bounded_act_duration_ms(clamped))
+
+
+def _y_motion_coast_settle_s(y_cfg: dict | None = None) -> float:
+    cfg = y_cfg if isinstance(y_cfg, dict) else _follow_y_axis_config()
+    return _coerce_float(
+        cfg.get("mast_coast_settle_s"),
+        DEFAULT_FOLLOW_Y_AXIS_CONFIG["mast_coast_settle_s"],
+        minimum=0.0,
+        maximum=1.0,
+    )
+
+
+def _tiny_y_no_observed_wait_s(y_cfg: dict | None = None) -> float:
+    cfg = y_cfg if isinstance(y_cfg, dict) else _follow_y_axis_config()
+    return _coerce_float(
+        cfg.get("tiny_y_no_observed_wait_s"),
+        DEFAULT_FOLLOW_Y_AXIS_CONFIG["tiny_y_no_observed_wait_s"],
+        minimum=0.0,
+        maximum=1.0,
+    )
+
+
+def _should_wait_after_tiny_y_no_observed(detail: dict | None, y_cfg: dict | None = None) -> bool:
+    if not isinstance(detail, dict) or bool(detail.get("observed")):
+        return False
+    if not _pending_action_is_y_action(str(detail.get("action") or "")):
+        return False
+    try:
+        y_err = abs(float(detail.get("y_err")))
+    except (TypeError, ValueError):
+        return False
+    cfg = y_cfg if isinstance(y_cfg, dict) else _follow_y_axis_config()
+    threshold = _coerce_float(
+        cfg.get("tiny_y_no_observed_abs_err_mm"),
+        DEFAULT_FOLLOW_Y_AXIS_CONFIG["tiny_y_no_observed_abs_err_mm"],
+        minimum=0.0,
+        maximum=100.0,
+    )
+    return threshold > 0.0 and y_err <= threshold
 
 
 def _plan_commits_y_lowering(plan: dict | None) -> bool:
@@ -6056,9 +6275,8 @@ def _y_axis_action_plan(reading: dict, *, dist_err: float, x_err: float) -> dict
     y_err = y_mm - active_target
     if abs(y_err) <= active_tol:
         return None
-    cmd = "d" if y_err > 0.0 else "u"
-    pwm_key = "finish_mast_pwm" if near_end else "mast_pwm"
-    pulse_key = "finish_mast_pulse_ms" if near_end else "mast_pulse_ms"
+    cmd = "u" if y_err > 0.0 else "d"
+    duration_ms = _adaptive_y_mast_duration_ms(float(y_err), y_cfg, near_end=near_end, cmd=cmd)
     return {
         "kind": "mast",
         "cmd": cmd,
@@ -6068,8 +6286,8 @@ def _y_axis_action_plan(reading: dict, *, dist_err: float, x_err: float) -> dict
         "y_err": float(y_err),
         "y_mm": float(y_mm),
         "y_target_mm": float(active_target),
-        "pwm": int(_coerce_int(y_cfg.get(pwm_key), y_cfg.get("mast_pwm", 40), minimum=1, maximum=255)),
-        "duration_ms": int(_bounded_act_duration_ms(y_cfg.get(pulse_key, y_cfg.get("mast_pulse_ms", 220)))),
+        "pwm": _y_mast_pwm(y_cfg, cmd=cmd, near_end=near_end),
+        "duration_ms": int(duration_ms),
         "reason": "final_y" if near_end else "approach_high_y",
     }
 
@@ -6094,7 +6312,7 @@ def _y_plan_closes_win_y(y_plan: dict | None) -> bool:
     final_y_err = float(y_mm) - float(target)
     if _win_axis_ok(final_y_err, tol):
         return False
-    return (final_y_err > 0.0 and cmd == "d") or (final_y_err < 0.0 and cmd == "u")
+    return (final_y_err > 0.0 and cmd == "u") or (final_y_err < 0.0 and cmd == "d")
 
 
 def _plan_mast_cmd(plan: dict | None) -> str | None:
@@ -6122,7 +6340,7 @@ def _plan_closes_win_y_now(plan: dict | None, reading: dict | None) -> bool:
         return False
     if _win_axis_ok(y_err, tol):
         return False
-    return (y_err > 0.0 and cmd == "d") or (y_err < 0.0 and cmd == "u")
+    return (y_err > 0.0 and cmd == "u") or (y_err < 0.0 and cmd == "d")
 
 
 def _should_grace_step1_timeout_for_y(stats: dict, plan: dict, reading: dict) -> bool:
@@ -6162,6 +6380,19 @@ def _attach_mast_to_plan(plan: dict, y_plan: dict | None) -> dict:
         return plan
     if y_reason != "protect_lower_edge" and not _y_plan_closes_win_y(y_plan):
         return plan
+    if y_reason != "protect_lower_edge":
+        y_cfg = _follow_y_axis_config()
+        attach_min_abs_err = _coerce_float(
+            y_cfg.get("attach_y_min_abs_err_mm"),
+            DEFAULT_FOLLOW_Y_AXIS_CONFIG["attach_y_min_abs_err_mm"],
+            minimum=0.0,
+            maximum=100.0,
+        )
+        try:
+            if abs(float(y_plan.get("y_err"))) < float(attach_min_abs_err):
+                return plan
+        except (TypeError, ValueError):
+            return plan
     cmd = str(y_plan.get("cmd") or "").strip().lower()
     if cmd not in {"u", "d"}:
         return plan
@@ -6516,18 +6747,20 @@ def _post_action_wait_s(plan: dict, send_result) -> float:
     if not isinstance(plan, dict):
         return float(LOOP_S)
     duration_s = _sent_motion_duration_ms(plan, send_result) / 1000.0
+    has_mast = str(plan.get("kind") or "").strip().lower() == "mast" or bool(plan.get("mast_cmd"))
+    coast_s = _y_motion_coast_settle_s() if has_mast else 0.0
     if not bool(plan.get("distance_creep")):
         if str(plan.get("kind") or "").strip().lower() == "turn":
             turn_settle_s = float(_follow_x_priority_policy().get("turn_settle_s", 0.0))
-            return max(float(LOOP_S), float(duration_s) + max(0.0, turn_settle_s))
-        return max(float(LOOP_S), float(duration_s))
+            return max(float(LOOP_S), float(duration_s) + max(0.0, turn_settle_s), float(duration_s) + float(coast_s))
+        return max(float(LOOP_S), float(duration_s) + float(coast_s))
     policy = _follow_dist_approach_policy()
     shots = float(policy.get("closure_shots", DEFAULT_DIST_APPROACH_POLICY["closure_shots"]))
     settle_s = float(policy.get("settle_after_act_s", DEFAULT_DIST_APPROACH_POLICY["settle_after_act_s"]))
     readback_spacing_s = max(0.0, float(shots) - 1.0) * float(LOOP_S)
     return max(
         float(LOOP_S),
-        float(duration_s) + max(0.0, settle_s) + readback_spacing_s,
+        float(duration_s) + max(0.0, settle_s) + readback_spacing_s + float(coast_s),
     )
 
 
@@ -6809,6 +7042,7 @@ def _new_game_stats() -> dict:
         "stall_guard_reason": "",
         "stall_guard_detail": {},
         "x_curve_samples": [],
+        "gap_closure_samples": [],
         "miss_reasons": {},
         "non_win_dist_target_closeness_pct": [],
         "non_win_x_target_closeness_pct": [],
@@ -7180,14 +7414,86 @@ def _record_observed_after_pending_act(stats: dict, reading: dict) -> dict | Non
             "duration_ms": int(pending.get("duration_ms", 0) or 0),
         }
         stats.setdefault("x_curve_samples", []).append(sample)
+    _record_gap_closure_sample(stats, pending, reading, action=action)
     return {
         "action": action,
         "observed": bool(observed),
         "delta_dist_mm": float(delta_dist),
         "delta_x_mm": float(delta_x),
         "delta_y_mm": float(delta_y),
+        "y_err": pending.get("y_err"),
         "streak": int(stats.get("no_observed_change_streak_count", 0) or 0),
     }
+
+
+def _axis_error_sample(pending: dict, reading: dict, *, axis: str) -> dict | None:
+    value_key = f"{axis}_mm"
+    target_key = f"{axis}_target_mm"
+    before_key = f"{axis}_err"
+    target = pending.get(target_key)
+    if target is None:
+        if axis == "dist":
+            target = _dist_target_mm()
+        elif axis == "x":
+            target = _x_target_mm()
+        elif axis == "y":
+            target = pending.get("mast_y_target_mm", pending.get("y_target_mm", _y_win_target_mm()))
+    try:
+        before_value = float(pending.get(value_key))
+        after_value = float((reading or {}).get(value_key))
+        target_value = float(target)
+    except (TypeError, ValueError):
+        return None
+    try:
+        before_err = float(pending.get(before_key))
+    except (TypeError, ValueError):
+        before_err = float(before_value - target_value)
+    after_err = float(after_value - target_value)
+    before_abs = abs(before_err)
+    after_abs = abs(after_err)
+    tol = _dist_tol_mm() if axis == "dist" else (_x_tol_mm() if axis == "x" else _y_win_tol_mm())
+    overshot = bool(before_err and after_err and (before_err > 0.0) != (after_err > 0.0))
+    return {
+        "axis": axis,
+        "before_err": float(before_err),
+        "after_err": float(after_err),
+        "before_abs": float(before_abs),
+        "after_abs": float(after_abs),
+        "reduction": float(before_abs - after_abs),
+        "overshot": bool(overshot),
+        "overshot_within_tolerance": bool(overshot and after_abs <= float(tol)),
+        "tol": float(tol),
+    }
+
+
+def _record_gap_closure_sample(stats: dict, pending: dict, reading: dict, *, action: str) -> None:
+    if not isinstance(stats, dict) or not isinstance(pending, dict) or not isinstance(reading, dict):
+        return
+    axes = []
+    text = str(action or "").upper()
+    cmd = str(pending.get("cmd") or "").strip().lower()
+    mast_cmd = str(pending.get("mast_cmd") or "").strip().lower()
+    if cmd in {"f", "b"} or text.startswith(("FWD", "BCK")) or pending.get("dist_err") is not None:
+        axes.append("dist")
+    if cmd in {"l", "r"} or "TURN" in text or "BIAS" in text or "NUDGE" in text or pending.get("x_err") is not None:
+        axes.append("x")
+    if (
+        mast_cmd in {"u", "d"}
+        or _pending_action_is_y_action(text)
+        or pending.get("y_err") is not None
+        or pending.get("mast_y_err") is not None
+    ):
+        axes.append("y")
+    seen = set()
+    for axis in axes:
+        if axis in seen:
+            continue
+        seen.add(axis)
+        sample = _axis_error_sample(pending, reading, axis=axis)
+        if sample is None:
+            continue
+        sample.update({"action": str(action or "UNKNOWN"), "duration_ms": int(pending.get("duration_ms", 0) or 0)})
+        stats.setdefault("gap_closure_samples", []).append(sample)
 
 
 def _reset_closeness_from_reading(reading: dict, reset_cfg: dict | None = None) -> tuple[float, float, float | None, float] | None:
@@ -7443,6 +7749,48 @@ def _format_x_curve_learning(samples: list | None) -> list[str]:
     return rows
 
 
+def _format_gap_closure_learning(samples: list | None) -> list[str]:
+    rows = [
+        "",
+        "| Gap Closure Learning | Value |",
+        "|---|---:|",
+    ]
+    if not isinstance(samples, list) or not samples:
+        rows.append("| Samples | 0 |")
+        return rows
+    valid = [s for s in samples if isinstance(s, dict)]
+    rows.append(f"| Samples | {len(valid)} |")
+    for axis in ("dist", "x", "y"):
+        axis_samples = [s for s in valid if str(s.get("axis")) == axis]
+        if not axis_samples:
+            rows.append(f"| {axis} samples | 0 |")
+            continue
+        reductions = [float(s.get("reduction", 0.0)) for s in axis_samples]
+        improved = sum(1 for value in reductions if value > 0.0)
+        overshoots = sum(1 for s in axis_samples if bool(s.get("overshot")))
+        meaningful_overshoots = sum(
+            1
+            for s in axis_samples
+            if bool(s.get("overshot")) and not bool(s.get("overshot_within_tolerance"))
+        )
+        undershoots = sum(1 for value in reductions if value <= 0.0)
+        latest = axis_samples[-1]
+        rows.extend(
+            [
+                f"| {axis} improved | {improved}/{len(axis_samples)} |",
+                f"| {axis} undershot/no-close | {undershoots}/{len(axis_samples)} |",
+                f"| {axis} overshot | {overshoots}/{len(axis_samples)} |",
+                f"| {axis} meaningful overshot | {meaningful_overshoots}/{len(axis_samples)} |",
+                f"| {axis} avg reduction | {_fmt_mm(_avg(reductions))} |",
+                (
+                    f"| {axis} last | {latest.get('action')} "
+                    f"{float(latest.get('before_err', 0.0)):+.1f}->{float(latest.get('after_err', 0.0)):+.1f}mm |"
+                ),
+            ]
+        )
+    return rows
+
+
 def _format_game_results_table(stats: dict) -> str:
     avg_x = _avg_reset_abs_x_after_mm(stats)
     avg_dist = _avg_reset_dist_after_mm(stats)
@@ -7548,6 +7896,7 @@ def _format_game_results_table(stats: dict) -> str:
             f"| Last non-win | {last_non_win} |",
         ]
     rows.extend(_format_x_curve_learning(stats.get("x_curve_samples")))
+    rows.extend(_format_gap_closure_learning(stats.get("gap_closure_samples")))
     return "\n".join(rows)
 
 
@@ -7748,7 +8097,7 @@ def _follow_loop(
             continue
 
         stats["confident_sample_count"] = int(stats.get("confident_sample_count", 0)) + 1
-        _record_observed_after_pending_act(stats, reading)
+        observed_detail = _record_observed_after_pending_act(stats, reading)
         if bool(stats.get("stall_guard_triggered")):
             detail = stats.get("stall_guard_detail") if isinstance(stats.get("stall_guard_detail"), dict) else {}
             _stop_robot(robot)
@@ -7849,6 +8198,8 @@ def _follow_loop(
                     "x_mm": x_mm,
                     "y_mm": y_mm,
                     "cmd": plan.get("cmd"),
+                    "dist_err": dist_err_now,
+                    "x_err": x_err_now,
                     "y_target_mm": plan.get("y_target_mm"),
                     "y_err": plan.get("y_err"),
                 }
@@ -7918,6 +8269,17 @@ def _follow_loop(
         dist_err = float(plan["dist_err"])
         x_err = float(plan["x_err"])
         action = str(plan.get("action") or "HOLD")
+        if (
+            _should_wait_after_tiny_y_no_observed(observed_detail)
+            and str(plan.get("kind") or "").strip().lower() != "hold"
+        ):
+            _stop_robot(robot)
+            wait_s = _tiny_y_no_observed_wait_s()
+            _bump_stat_count(stats, "miss_reasons", "tiny_y_coast_observe")
+            if wait_s > 0.0:
+                time.sleep(wait_s)
+            last_action = "Y_COAST_OBSERVE"
+            continue
         if (
             float(step1_attempt_limit_s) > 0.0
             and str(plan.get("kind") or "").strip().lower() != "hold"
@@ -8142,6 +8504,8 @@ def _follow_loop(
                             flush=True,
                         )
                         break
+                    _set_game_profile("empty")
+                    print("[PROFILE] Holding place complete; reset done; next game profile is empty.", flush=True)
                     step1_started_at = time.monotonic()
                     last_action = "RESET"
                     stats["y_lock_on_armed"] = True
@@ -8287,6 +8651,8 @@ def _follow_loop(
                     "y_mm": y_mm,
                     "cmd": plan.get("cmd"),
                     "mast_cmd": plan.get("mast_cmd"),
+                    "dist_err": plan.get("dist_err", dist_err),
+                    "x_err": plan.get("x_err", x_err),
                     "y_target_mm": plan.get("y_target_mm", plan.get("mast_y_target_mm")),
                     "y_err": plan.get("y_err", plan.get("mast_y_err")),
                 }

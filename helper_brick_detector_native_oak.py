@@ -53,6 +53,12 @@ NATIVE_RECT_MIN_EDGE_ROWS = 5
 NATIVE_RECT_MIN_ACTIVE_ROW_RATIO = 0.14
 NATIVE_RECT_MIN_EDGE_STRAIGHTNESS = 0.22
 NATIVE_RECT_MIN_WIDTH_COHERENCE = 0.25
+NATIVE_RECT_MAX_DIST_STEP_MM = 8.0
+NATIVE_RECT_MAX_CENTER_STEP_PX = 140.0
+NATIVE_RECT_MAX_WIDTH_RATIO_JUMP = 0.42
+NATIVE_RECT_PREFERRED_LOCK_DIST_MM = 170.0
+NATIVE_RECT_MAX_INITIAL_ABS_Y_MM = 75.0
+NATIVE_RECT_MAX_INITIAL_ABS_X_MM = 120.0
 
 
 class NativeOakBrickDetector:
@@ -88,6 +94,8 @@ class NativeOakBrickDetector:
         self._detector.log = self.log
         self._detector._trust_detector_boxes = False
         self._detector._require_cyan_shape = True
+        self._detector._center_lock_radius_px = 36.0
+        self._detector._center_switch_margin_px = 12.0
         self._detector.conf_threshold = float(self.conf_threshold)
         self._detector.nms_threshold = float(self.nms_threshold)
         self._detector.input_size = int(YOLO_INPUT_SIZE)
@@ -97,9 +105,14 @@ class NativeOakBrickDetector:
             else FOCAL_PX_REF * (float(self.frame_w) / float(FOCAL_REF_WIDTH))
         )
         self._detector._smooth_alpha = 0.15
+        self._detector._native_rect_max_dist_step_mm = float(NATIVE_RECT_MAX_DIST_STEP_MM)
         self._detector._depth_source_mode = "pinhole"
         self._detector._stereo_config_mode = "standard"
         self._detector.cap = None
+        self._native_last_good_dist = None
+        self._native_last_good_center = None
+        self._native_last_good_width_px = None
+        self._native_miss_count = 0
         self._reset_detector_tracking()
         self._clear_detection_metadata()
         self._camera_index_preference = camera_index
@@ -273,8 +286,6 @@ class NativeOakBrickDetector:
         self._sync_frame_shape(frame)
 
         primary, candidates = self._detect_color_rectangle_candidate(frame)
-        if primary is None:
-            primary, candidates = detect_single_negative_cutout_brick(self._detector, frame)
         self._detector.last_raw_prediction_count = int(len(candidates))
         self._detector.last_candidate_count = int(len(candidates))
         self._detector.last_nms_count = int(len(candidates))
@@ -375,6 +386,24 @@ class NativeOakBrickDetector:
 
             cx = float(x) + (float(w) * 0.5)
             cy = float(y) + (float(h) * 0.5)
+            try:
+                proxy_dist = detector._estimate_distance_from_width(max(1.0, float(w)))
+            except Exception:
+                proxy_dist = None
+            proxy_x = proxy_y = None
+            if proxy_dist is not None:
+                try:
+                    proxy_x = detector._estimate_offset_x_mm(cx, proxy_dist)
+                    proxy_y = detector._estimate_cam_height(cy, proxy_dist)
+                except Exception:
+                    proxy_x = proxy_y = None
+            try:
+                if proxy_y is not None and abs(float(proxy_y)) > float(NATIVE_RECT_MAX_INITIAL_ABS_Y_MM):
+                    continue
+                if proxy_x is not None and abs(float(proxy_x)) > float(NATIVE_RECT_MAX_INITIAL_ABS_X_MM):
+                    continue
+            except (TypeError, ValueError):
+                pass
             area_score = min(10.0, area / 1800.0)
             edge_score = float(edge_metrics.get("edge_score", 0.0))
             width_coherence = float(edge_metrics.get("width_coherence", 0.0))
@@ -417,6 +446,9 @@ class NativeOakBrickDetector:
                     "edge_straightness": float(edge_metrics["edge_straightness"]),
                     "width_coherence": float(width_coherence),
                     "active_row_ratio": float(edge_metrics["active_row_ratio"]),
+                    "native_width_dist_mm": None if proxy_dist is None else float(proxy_dist),
+                    "native_proxy_x_mm": None if proxy_x is None else float(proxy_x),
+                    "native_proxy_y_mm": None if proxy_y is None else float(proxy_y),
                 }
             )
 
@@ -426,8 +458,7 @@ class NativeOakBrickDetector:
             return None, []
 
         candidates = detector._enforce_non_overlapping_candidate_bboxes(candidates)
-        candidates = detector._filter_candidates_to_center_stack(candidates, frame_w, frame_h)
-        selected = detector._select_center_brick(candidates, frame_w, frame_h)
+        selected = self._select_native_rect_candidate(candidates, frame_w, frame_h)
         if selected is None:
             detector.last_status = "native color rectangle mismatch"
             self.last_status = detector.last_status
@@ -705,6 +736,7 @@ class NativeOakBrickDetector:
         self._detector.last_primary_confidence = 0.0
         self._detector.last_max_confidence = 0.0
         self._detector._clear_partial_state()
+        self._native_miss_count = min(12, int(getattr(self, "_native_miss_count", 0) or 0) + 1)
 
     def _result_from_candidate(self, frame, primary: dict, candidates: list[dict]):
         detector = self._detector
@@ -713,6 +745,9 @@ class NativeOakBrickDetector:
         detector._prev_angle = angle
 
         anchor_cx, anchor_cy = detector._candidate_face_midpoint(primary)
+        if self._native_rect_center_jump_rejected(primary, anchor_cx, anchor_cy):
+            self._mark_not_found("native center jump rejected")
+            return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         bbox = primary.get("bbox", (0, 0, 1, 1))
         if str(primary.get("shape_profile") or "") == "native_rect":
             _bx, _by, bbox_w, bbox_h = bbox[:4]
@@ -728,23 +763,40 @@ class NativeOakBrickDetector:
             primary.get("partial_kind"),
         )
         detector._record_bbox_distance_components(components)
-        raw_dist = detector._estimate_distance_from_box(
-            bbox_w,
-            bbox_h,
-            primary.get("partial_kind"),
-        )
-        tri_span_dist = detector._dist_from_triangle_span(primary.get("negative_cutout_polygons"))
-        if tri_span_dist is not None:
-            raw_dist = tri_span_dist
-        raw_dist = detector._prefer_depth_distance(
-            raw_dist,
-            anchor_cx,
-            anchor_cy,
-            bbox=primary.get("bbox"),
-        )
+        if str(primary.get("shape_profile") or "") == "native_rect":
+            raw_dist = components.get("width_dist_mm")
+            detector.last_bbox_dist = raw_dist
+            detector.last_bbox_distance_source = "native_rect_width"
+            detector.last_pre_depth_dist = raw_dist
+            detector.last_depth_dist = None
+            detector.last_depth_stats = {}
+            detector.last_geometry_source = "native_rect_width"
+        else:
+            raw_dist = detector._estimate_distance_from_box(
+                bbox_w,
+                bbox_h,
+                primary.get("partial_kind"),
+            )
+            tri_span_dist = detector._dist_from_triangle_span(primary.get("negative_cutout_polygons"))
+            if tri_span_dist is not None:
+                raw_dist = tri_span_dist
+            raw_dist = detector._prefer_depth_distance(
+                raw_dist,
+                anchor_cx,
+                anchor_cy,
+                bbox=primary.get("bbox"),
+            )
         detector.last_raw_dist = raw_dist
-        dist = detector._smooth(raw_dist, detector._prev_dist)
+        prev_for_dist = detector._prev_dist
+        if prev_for_dist is None:
+            prev_for_dist = self._native_last_good_dist
+        dist = self._native_rect_distance_from_raw(raw_dist, prev_for_dist, primary)
         detector._prev_dist = dist
+        if str(primary.get("shape_profile") or "") == "native_rect":
+            self._native_last_good_dist = float(dist)
+            self._native_last_good_center = (float(anchor_cx), float(anchor_cy))
+            self._native_last_good_width_px = float(bbox_w)
+            self._native_miss_count = 0
         detector.last_final_dist = dist
 
         raw_offset_x = detector._estimate_offset_x_mm(anchor_cx, dist)
@@ -796,6 +848,138 @@ class NativeOakBrickDetector:
             bool(brick_above),
             bool(brick_below),
         )
+
+    def _select_native_rect_candidate(self, candidates, frame_w: int, frame_h: int):
+        candidate_list = [
+            candidate for candidate in list(candidates or []) if isinstance(candidate, dict)
+        ]
+        if not candidate_list:
+            return None
+        frame_cx = float(frame_w) * 0.5 + float(getattr(self, "camera_center_offset_px", 0.0) or 0.0)
+        frame_cy = float(frame_h) * 0.5
+        previous_center = self._native_last_good_center
+        previous_width = self._native_last_good_width_px
+        has_previous = isinstance(previous_center, tuple) and len(previous_center) == 2
+        miss_count = int(getattr(self, "_native_miss_count", 0) or 0)
+
+        def _candidate_values(candidate):
+            cx, cy = self._detector._candidate_face_midpoint(candidate)
+            bbox = candidate.get("bbox") if isinstance(candidate, dict) else None
+            if isinstance(bbox, (tuple, list)) and len(bbox) >= 4:
+                try:
+                    _x, _y, bw, bh = [float(v) for v in bbox[:4]]
+                except (TypeError, ValueError):
+                    bw, bh = 1.0, 1.0
+            else:
+                bw, bh = 1.0, 1.0
+            return float(cx), float(cy), max(1.0, float(bw)), max(1.0, float(bh))
+
+        scored = []
+        for idx, candidate in enumerate(candidate_list):
+            cx, cy, bw, bh = _candidate_values(candidate)
+            edge_score = float(candidate.get("edge_score", 0.0) or 0.0)
+            width_coherence = float(candidate.get("width_coherence", 0.0) or 0.0)
+            conf = float(candidate.get("native_rect_confidence_pct", candidate.get("confidence_pct", 0.0)) or 0.0)
+            proxy_dist = candidate.get("native_width_dist_mm")
+            try:
+                dist_preference = abs(float(proxy_dist) - float(NATIVE_RECT_PREFERRED_LOCK_DIST_MM))
+            except (TypeError, ValueError):
+                dist_preference = 0.0
+            screen_dist = float(((cx - frame_cx) ** 2 + (cy - frame_cy) ** 2) ** 0.5)
+            continuity_dist = screen_dist
+            width_ratio = 0.0
+            if has_previous:
+                px, py = float(previous_center[0]), float(previous_center[1])
+                continuity_dist = float(((cx - px) ** 2 + (cy - py) ** 2) ** 0.5)
+                try:
+                    prev_w = max(1.0, float(previous_width))
+                    width_ratio = abs(float(bw) - prev_w) / prev_w
+                except (TypeError, ValueError):
+                    width_ratio = 0.0
+            score = (
+                (continuity_dist * (1.0 if has_previous else 0.35))
+                + (screen_dist * (0.12 if has_previous else 1.0))
+                + (width_ratio * 90.0)
+                + (dist_preference * (0.08 if has_previous else 0.65))
+                - (edge_score * 12.0)
+                - (width_coherence * 10.0)
+                - (conf * 0.03)
+            )
+            scored.append((float(score), int(idx), continuity_dist, width_ratio, screen_dist))
+
+        scored.sort(key=lambda row: (row[0], row[4]))
+        best_score, best_idx, continuity_dist, width_ratio, _screen_dist = scored[0]
+        if has_previous:
+            max_center_step = float(NATIVE_RECT_MAX_CENTER_STEP_PX) + (float(miss_count) * 12.0)
+            max_width_ratio = float(NATIVE_RECT_MAX_WIDTH_RATIO_JUMP) + (float(miss_count) * 0.04)
+            if float(continuity_dist) > max_center_step and float(width_ratio) > max_width_ratio:
+                self.last_status = "native color rectangle continuity reject"
+                self._detector.last_status = self.last_status
+                return None
+        selected = candidate_list[int(best_idx)]
+        try:
+            selected["native_tracker_score"] = float(best_score)
+            selected["native_tracker_center_delta_px"] = float(continuity_dist)
+            selected["native_tracker_width_ratio_delta"] = float(width_ratio)
+        except Exception:
+            pass
+        return selected
+
+    def _native_rect_center_jump_rejected(self, primary: dict | None, center_x, center_y) -> bool:
+        if str((primary or {}).get("shape_profile") or "") != "native_rect":
+            return False
+        previous = self._native_last_good_center
+        if not isinstance(previous, tuple) or len(previous) != 2:
+            return False
+        try:
+            px = float(previous[0])
+            py = float(previous[1])
+            cx = float(center_x)
+            cy = float(center_y)
+        except (TypeError, ValueError):
+            return False
+        max_step = float(NATIVE_RECT_MAX_CENTER_STEP_PX)
+        center_step = float(((cx - px) ** 2 + (cy - py) ** 2) ** 0.5)
+        if center_step <= max_step:
+            return False
+        bbox = (primary or {}).get("bbox")
+        try:
+            _x, _y, width_px, _h = [float(v) for v in bbox[:4]]
+            prev_w = max(1.0, float(self._native_last_good_width_px))
+            width_ratio = abs(float(width_px) - prev_w) / prev_w
+        except (TypeError, ValueError):
+            width_ratio = 0.0
+        return bool(width_ratio > float(NATIVE_RECT_MAX_WIDTH_RATIO_JUMP))
+
+    def _native_rect_distance_from_raw(self, raw_dist, prev_dist, primary: dict | None) -> float:
+        try:
+            raw_val = float(raw_dist)
+        except (TypeError, ValueError):
+            raw_val = 999.0
+        if str((primary or {}).get("shape_profile") or "") != "native_rect":
+            return float(self._detector._smooth(raw_val, prev_dist))
+        if prev_dist is None:
+            return float(raw_val)
+        try:
+            prev_val = float(prev_dist)
+        except (TypeError, ValueError):
+            return float(raw_val)
+        max_step = float(
+            getattr(
+                self._detector,
+                "_native_rect_max_dist_step_mm",
+                NATIVE_RECT_MAX_DIST_STEP_MM,
+            )
+            or NATIVE_RECT_MAX_DIST_STEP_MM
+        )
+        if max_step <= 0.0:
+            return float(raw_val)
+        delta = float(raw_val) - float(prev_val)
+        if abs(delta) <= max_step:
+            return float(raw_val)
+        clamped = float(prev_val) + (max_step if delta > 0.0 else -max_step)
+        self._detector.last_geometry_source = "native_rect_width_step_clamped"
+        return float(clamped)
 
     def _draw_debug_frame(self, frame, primary, candidates, result) -> None:
         debug_frame = frame.copy()
