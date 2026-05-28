@@ -11,6 +11,8 @@ follow-the-brick:
 from __future__ import annotations
 
 import logging
+import statistics
+from collections import deque
 from typing import Optional
 
 import cv2
@@ -43,6 +45,7 @@ from helper_brick_detector_yolo import (
 NATIVE_RECT_MIN_FILL_RATIO = 0.22
 NATIVE_RECT_MIN_SOLIDITY = 0.30
 NATIVE_RECT_MAX_BBOX_ASPECT = 3.25
+NATIVE_RECT_MAX_BBOX_WIDTH_RATIO = 0.55
 NATIVE_RECT_MAX_MIN_AREA_ASPECT = 4.25
 NATIVE_RECT_STRIP_ASPECT = 2.55
 NATIVE_RECT_STRIP_MAX_HEIGHT_RATIO = 0.12
@@ -54,11 +57,18 @@ NATIVE_RECT_MIN_ACTIVE_ROW_RATIO = 0.14
 NATIVE_RECT_MIN_EDGE_STRAIGHTNESS = 0.22
 NATIVE_RECT_MIN_WIDTH_COHERENCE = 0.25
 NATIVE_RECT_MAX_DIST_STEP_MM = 8.0
+NATIVE_RECT_DIST_HISTORY_LEN = 7
+NATIVE_RECT_DIST_MIN_INLIERS = 3
+NATIVE_RECT_DIST_STABLE_SPREAD_MM = 5.0
+NATIVE_RECT_DIST_OUTLIER_BAND_MM = 12.0
+NATIVE_RECT_DIST_MAX_PUBLISH_STEP_MM = 5.0
+NATIVE_RECT_DIST_RESET_CENTER_STEP_PX = 80.0
+NATIVE_RECT_DIST_RESET_WIDTH_RATIO = 0.25
 NATIVE_RECT_MAX_CENTER_STEP_PX = 140.0
 NATIVE_RECT_MAX_WIDTH_RATIO_JUMP = 0.42
 NATIVE_RECT_PREFERRED_LOCK_DIST_MM = 170.0
 NATIVE_RECT_MAX_INITIAL_ABS_Y_MM = 75.0
-NATIVE_RECT_MAX_INITIAL_ABS_X_MM = 120.0
+NATIVE_RECT_MAX_INITIAL_ABS_X_MM = 260.0
 
 
 class NativeOakBrickDetector:
@@ -112,6 +122,8 @@ class NativeOakBrickDetector:
         self._native_last_good_dist = None
         self._native_last_good_center = None
         self._native_last_good_width_px = None
+        self._native_dist_history = deque(maxlen=int(NATIVE_RECT_DIST_HISTORY_LEN))
+        self._native_last_stable_dist = None
         self._native_miss_count = 0
         self._reset_detector_tracking()
         self._clear_detection_metadata()
@@ -129,6 +141,13 @@ class NativeOakBrickDetector:
         self._detector._prev_offset = None
         self._detector._prev_offset_y = None
         self._detector._center_lock_prev_center = None
+        self._reset_native_dist_filter()
+
+    def _reset_native_dist_filter(self) -> None:
+        history = getattr(self, "_native_dist_history", None)
+        if history is not None:
+            history.clear()
+        self._native_last_stable_dist = None
 
     def _clear_detection_metadata(self) -> None:
         detector = self._detector
@@ -153,6 +172,12 @@ class NativeOakBrickDetector:
         detector.last_bbox_distance_source = None
         detector.last_raw_dist = None
         detector.last_final_dist = None
+        detector.last_stable_dist_sample_count = 0
+        detector.last_stable_dist_inlier_count = 0
+        detector.last_stable_dist_spread_mm = None
+        detector.last_stable_dist_unlimited_mm = None
+        detector.last_stable_dist_published_mm = None
+        detector.last_stable_dist_publish_limited = False
         detector.last_pre_depth_dist = None
         detector.last_depth_dist = None
         detector.last_depth_stats = {}
@@ -677,6 +702,7 @@ class NativeOakBrickDetector:
     ) -> tuple[bool, dict]:
         _x, _y, w, h = bbox
         bbox_aspect = float(max(w, h)) / float(max(1, min(w, h)))
+        bbox_width_ratio = float(w) / float(max(1, frame_w))
         hull_area = 0.0
         try:
             hull = cv2.convexHull(contour)
@@ -686,6 +712,7 @@ class NativeOakBrickDetector:
         solidity = float(area) / float(hull_area) if hull_area > 0.0 else float(fill_ratio)
         metrics = {
             "bbox_aspect": float(bbox_aspect),
+            "bbox_width_ratio": float(bbox_width_ratio),
             "solidity": float(solidity),
             "reason": "ok",
         }
@@ -699,6 +726,9 @@ class NativeOakBrickDetector:
             return False, metrics
         if float(bbox_aspect) > float(NATIVE_RECT_MAX_BBOX_ASPECT):
             metrics["reason"] = "implausible_bbox_aspect"
+            return False, metrics
+        if float(bbox_width_ratio) > float(NATIVE_RECT_MAX_BBOX_WIDTH_RATIO):
+            metrics["reason"] = "implausible_bbox_width_ratio"
             return False, metrics
         if float(min_area_aspect) > float(NATIVE_RECT_MAX_MIN_AREA_ASPECT):
             metrics["reason"] = "implausible_rect_aspect"
@@ -730,13 +760,14 @@ class NativeOakBrickDetector:
         self._detector.frame_h = int(height)
 
     def _mark_not_found(self, status: str) -> None:
-        self._reset_detector_tracking()
+        self._native_miss_count = min(12, int(getattr(self, "_native_miss_count", 0) or 0) + 1)
+        if int(self._native_miss_count) > 3:
+            self._reset_detector_tracking()
         self._detector.last_status = str(status or "shape mismatch")
         self.last_status = self._detector.last_status
         self._detector.last_primary_confidence = 0.0
         self._detector.last_max_confidence = 0.0
         self._detector._clear_partial_state()
-        self._native_miss_count = min(12, int(getattr(self, "_native_miss_count", 0) or 0) + 1)
 
     def _result_from_candidate(self, frame, primary: dict, candidates: list[dict]):
         detector = self._detector
@@ -787,17 +818,29 @@ class NativeOakBrickDetector:
                 bbox=primary.get("bbox"),
             )
         detector.last_raw_dist = raw_dist
+        if str(primary.get("shape_profile") or "") == "native_rect":
+            self._maybe_reset_dist_filter_for_native_candidate(primary)
         prev_for_dist = detector._prev_dist
         if prev_for_dist is None:
             prev_for_dist = self._native_last_good_dist
         dist = self._native_rect_distance_from_raw(raw_dist, prev_for_dist, primary)
         detector._prev_dist = dist
+        detector.last_final_dist = dist
+        if (
+            str(primary.get("shape_profile") or "") == "native_rect"
+            and not str(getattr(detector, "last_geometry_source", "") or "").startswith("native_rect_width_stable_avg")
+        ):
+            detector.last_status = (
+                f"target locked (native robust median warming "
+                f"({int(getattr(detector, 'last_stable_dist_inlier_count', 0) or 0)} "
+                f"samples, spread={float(getattr(detector, 'last_stable_dist_spread_mm', 0.0) or 0.0):.1f}mm))"
+            )
+            self.last_status = detector.last_status
         if str(primary.get("shape_profile") or "") == "native_rect":
             self._native_last_good_dist = float(dist)
             self._native_last_good_center = (float(anchor_cx), float(anchor_cy))
             self._native_last_good_width_px = float(bbox_w)
             self._native_miss_count = 0
-        detector.last_final_dist = dist
 
         raw_offset_x = detector._estimate_offset_x_mm(anchor_cx, dist)
         offset_x = detector._smooth(raw_offset_x, detector._prev_offset)
@@ -830,11 +873,15 @@ class NativeOakBrickDetector:
             conf_pct = max(conf_pct, float(COLOR_ONLY_CONF_PCT))
         detector.last_primary_confidence = conf_pct / 100.0
         detector.last_max_confidence = conf_pct / 100.0
-        detector.last_status = (
-            "target locked (native color+rect)"
-            if str(primary.get("shape_profile") or "") == "native_rect"
-            else "target locked (native color+shape)"
-        )
+        if not (
+            str(primary.get("shape_profile") or "") == "native_rect"
+            and "native robust median warming" in str(getattr(detector, "last_status", ""))
+        ):
+            detector.last_status = (
+                "target locked (native color+rect)"
+                if str(primary.get("shape_profile") or "") == "native_rect"
+                else "target locked (native color+shape)"
+            )
         self.last_status = detector.last_status
         detector.last_suspected_far_brick = False
         detector.last_distance_display_text = None
@@ -921,6 +968,7 @@ class NativeOakBrickDetector:
             selected["native_tracker_score"] = float(best_score)
             selected["native_tracker_center_delta_px"] = float(continuity_dist)
             selected["native_tracker_width_ratio_delta"] = float(width_ratio)
+            selected["native_tracker_has_previous"] = bool(has_previous)
         except Exception:
             pass
         return selected
@@ -942,6 +990,12 @@ class NativeOakBrickDetector:
         center_step = float(((cx - px) ** 2 + (cy - py) ** 2) ** 0.5)
         if center_step <= max_step:
             return False
+        frame_cx = float(self.frame_w) * 0.5 + float(getattr(self, "camera_center_offset_px", 0.0) or 0.0)
+        frame_cy = float(self.frame_h) * 0.5
+        previous_screen_dist = float(((px - frame_cx) ** 2 + (py - frame_cy) ** 2) ** 0.5)
+        current_screen_dist = float(((cx - frame_cx) ** 2 + (cy - frame_cy) ** 2) ** 0.5)
+        if current_screen_dist + 35.0 < previous_screen_dist:
+            return False
         bbox = (primary or {}).get("bbox")
         try:
             _x, _y, width_px, _h = [float(v) for v in bbox[:4]]
@@ -951,6 +1005,34 @@ class NativeOakBrickDetector:
             width_ratio = 0.0
         return bool(width_ratio > float(NATIVE_RECT_MAX_WIDTH_RATIO_JUMP))
 
+    def _maybe_reset_dist_filter_for_native_candidate(self, primary: dict | None) -> None:
+        if str((primary or {}).get("shape_profile") or "") != "native_rect":
+            return
+        if not bool((primary or {}).get("native_tracker_has_previous")):
+            return
+        try:
+            center_delta = float((primary or {}).get("native_tracker_center_delta_px") or 0.0)
+        except (TypeError, ValueError):
+            center_delta = 0.0
+        try:
+            width_ratio = float((primary or {}).get("native_tracker_width_ratio_delta") or 0.0)
+        except (TypeError, ValueError):
+            width_ratio = 0.0
+        if (
+            center_delta > float(NATIVE_RECT_DIST_RESET_CENTER_STEP_PX)
+            or width_ratio > float(NATIVE_RECT_DIST_RESET_WIDTH_RATIO)
+        ):
+            self._reset_native_dist_filter()
+
+    @staticmethod
+    def _trimmed_mean(values: list[float]) -> float:
+        cleaned = sorted(float(v) for v in values)
+        if len(cleaned) >= 5:
+            cleaned = cleaned[1:-1]
+        if not cleaned:
+            return 0.0
+        return float(statistics.mean(cleaned))
+
     def _native_rect_distance_from_raw(self, raw_dist, prev_dist, primary: dict | None) -> float:
         try:
             raw_val = float(raw_dist)
@@ -958,28 +1040,63 @@ class NativeOakBrickDetector:
             raw_val = 999.0
         if str((primary or {}).get("shape_profile") or "") != "native_rect":
             return float(self._detector._smooth(raw_val, prev_dist))
-        if prev_dist is None:
-            return float(raw_val)
-        try:
-            prev_val = float(prev_dist)
-        except (TypeError, ValueError):
-            return float(raw_val)
-        max_step = float(
-            getattr(
-                self._detector,
-                "_native_rect_max_dist_step_mm",
-                NATIVE_RECT_MAX_DIST_STEP_MM,
-            )
-            or NATIVE_RECT_MAX_DIST_STEP_MM
-        )
-        if max_step <= 0.0:
-            return float(raw_val)
-        delta = float(raw_val) - float(prev_val)
-        if abs(delta) <= max_step:
-            return float(raw_val)
-        clamped = float(prev_val) + (max_step if delta > 0.0 else -max_step)
-        self._detector.last_geometry_source = "native_rect_width_step_clamped"
-        return float(clamped)
+        history = getattr(self, "_native_dist_history", None)
+        if history is None:
+            self._native_dist_history = deque(maxlen=int(NATIVE_RECT_DIST_HISTORY_LEN))
+            history = self._native_dist_history
+        history.append(float(raw_val))
+        values = [float(value) for value in list(history)]
+        median = float(statistics.median(values))
+        inliers = [
+            float(value)
+            for value in values
+            if abs(float(value) - float(median)) <= float(NATIVE_RECT_DIST_OUTLIER_BAND_MM)
+        ]
+        if not inliers:
+            inliers = [float(median)]
+        spread = float(max(inliers) - min(inliers)) if len(inliers) > 1 else 0.0
+        sample_count = len(values)
+        inlier_count = len(inliers)
+        self._detector.last_stable_dist_sample_count = int(sample_count)
+        self._detector.last_stable_dist_inlier_count = int(inlier_count)
+        self._detector.last_stable_dist_spread_mm = float(spread)
+        self._detector.last_stable_dist_unlimited_mm = None
+        self._detector.last_stable_dist_published_mm = None
+        self._detector.last_stable_dist_publish_limited = False
+
+        if (
+            inlier_count >= int(NATIVE_RECT_DIST_MIN_INLIERS)
+            and spread <= float(NATIVE_RECT_DIST_STABLE_SPREAD_MM)
+        ):
+            stable_unlimited = float(self._trimmed_mean(inliers))
+            stable = float(stable_unlimited)
+            publish_limited = False
+            try:
+                previous_published = float(self._native_last_good_dist)
+            except (TypeError, ValueError):
+                previous_published = None
+            if previous_published is not None:
+                delta = float(stable) - float(previous_published)
+                max_step = float(NATIVE_RECT_DIST_MAX_PUBLISH_STEP_MM)
+                if max_step > 0.0 and abs(delta) > max_step:
+                    stable = float(previous_published) + (max_step if delta > 0.0 else -max_step)
+                    publish_limited = True
+                    self._detector.last_geometry_source = "native_rect_width_stable_avg_step_limited"
+                else:
+                    self._detector.last_geometry_source = "native_rect_width_stable_avg"
+            else:
+                self._detector.last_geometry_source = "native_rect_width_stable_avg"
+            self._detector.last_stable_dist_unlimited_mm = float(stable_unlimited)
+            self._detector.last_stable_dist_published_mm = float(stable)
+            self._detector.last_stable_dist_publish_limited = bool(publish_limited)
+            self._native_last_stable_dist = float(stable)
+            return float(stable)
+
+        # While the window is warming or contains a rejected transition, use a
+        # robust median. This avoids the old artificial 8mm/frame staircase.
+        robust = float(statistics.median(inliers))
+        self._detector.last_geometry_source = "native_rect_width_robust_median"
+        return float(robust)
 
     def _draw_debug_frame(self, frame, primary, candidates, result) -> None:
         debug_frame = frame.copy()

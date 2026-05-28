@@ -21,6 +21,7 @@ DEFAULT_CURVE_FILE = Path(__file__).resolve().parent / "world_model_left_right_c
 DEFAULT_Y_CURVE_FILE = Path(__file__).resolve().parent / "world_model_up_down_curve.json"
 DEFAULT_DIST_CURVE_FILE = Path(__file__).resolve().parent / "world_model_forward_backward_curve.json"
 DEFAULT_TURN_DRIVE_TRIALS_DIR = Path(__file__).resolve().parent / "trials"
+TURN_DURATION_PRODUCTION_CURVES_NAME = "turn_duration_production_curves.json"
 DEFAULT_CURVE_BINS_MM = (
     0.5,
     1.0,
@@ -393,6 +394,127 @@ def _turn_drive_profile_override_from_manifest(
     return int(base_pwm), profile_override
 
 
+def _turn_duration_phase_key(*, cmd: str, drive_mode: str) -> str:
+    cmd_key = str(cmd or "").strip().lower()
+    drive_mode_key = str(drive_mode or "").strip().lower()
+    if cmd_key == "l":
+        side = "left"
+    elif cmd_key == "r":
+        side = "right"
+    else:
+        return ""
+    if drive_mode_key == "forward":
+        return f"forward_{side}"
+    if drive_mode_key == "backward":
+        return f"back_{side}"
+    return ""
+
+
+def _production_turn_duration_curve_plan(
+    *,
+    cmd: str,
+    drive_mode: str,
+    x_err_mm: float,
+    trials_dir: Optional[Path] = None,
+) -> Optional[dict]:
+    root = Path(trials_dir) if trials_dir is not None else DEFAULT_TURN_DRIVE_TRIALS_DIR
+    payload = _load_json_payload(root / TURN_DURATION_PRODUCTION_CURVES_NAME)
+    if not isinstance(payload, dict):
+        return None
+    if str(payload.get("file_type") or "").strip().lower() != "turn_drive_duration_curves":
+        return None
+    if not bool(payload.get("production")):
+        return None
+
+    phase_key = _turn_duration_phase_key(cmd=cmd, drive_mode=drive_mode)
+    phase_curves = payload.get("phase_curves") if isinstance(payload.get("phase_curves"), dict) else {}
+    curve = phase_curves.get(phase_key) if isinstance(phase_curves.get(phase_key), dict) else None
+    if not isinstance(curve, dict) or not bool(curve.get("production_ready")):
+        return None
+
+    x_gap_needed = _float_or_none(x_err_mm)
+    if x_gap_needed is None:
+        return None
+    x_gap_needed = abs(float(x_gap_needed))
+    if x_gap_needed <= 0.0:
+        return None
+
+    candidates = []
+    for row in list(curve.get("points") or []):
+        if not isinstance(row, dict):
+            continue
+        duration_ms = _float_or_none(row.get("duration_ms"))
+        x_traveled_mm = _float_or_none(row.get("median_x_traveled_mm"))
+        if duration_ms is None or x_traveled_mm is None:
+            continue
+        if float(duration_ms) <= 0.0 or float(x_traveled_mm) <= 0.0:
+            continue
+        candidates.append(
+            {
+                "duration_ms": int(round(float(duration_ms))),
+                "x_traveled_mm": float(x_traveled_mm),
+                "samples": int(round(float(row.get("samples") or 0))),
+            }
+        )
+    if not candidates:
+        return None
+
+    def _candidate_key(item: dict) -> tuple[float, float, float, float]:
+        traveled = float(item.get("x_traveled_mm") or 0.0)
+        covers_gap = traveled >= float(x_gap_needed)
+        if covers_gap:
+            return (
+                0.0,
+                float(traveled - float(x_gap_needed)),
+                float(item.get("duration_ms") or 0.0),
+                -float(item.get("samples") or 0.0),
+            )
+        return (
+            1.0,
+            abs(float(x_gap_needed) - float(traveled)),
+            -float(traveled),
+            float(item.get("duration_ms") or 0.0),
+        )
+
+    chosen = min(candidates, key=_candidate_key)
+    score_val = _float_or_none(curve.get("score_pct"))
+    pwm_override = _float_or_none(curve.get("pwm_override"))
+    profile_override = (
+        dict(curve.get("profile_override"))
+        if isinstance(curve.get("profile_override"), dict)
+        else {}
+    )
+    profile_name = str(curve.get("profile_name") or "").strip()
+    if profile_name:
+        profile_override.setdefault("profile_name", profile_name)
+    profile_override.setdefault("drive_mode", str(drive_mode or "").strip().lower())
+    profile_override.setdefault("inner_ratio", 0.7)
+    profile_override.setdefault("outer_ratio", 1.0)
+    profile_override.setdefault("duration_mode", "max_turn_drive")
+    profile_override.setdefault(
+        "action_note",
+        "TURN+FWD" if str(drive_mode or "").strip().lower() == "forward" else "TURN+BWD",
+    )
+    label = str(curve.get("label") or phase_key).strip() or phase_key
+    curve_name = (
+        f"turn-duration {label} {int(chosen['duration_ms'])}ms "
+        f"(x_traveled={float(chosen['x_traveled_mm']):.3f}mm)"
+    )
+    return {
+        "manifest_name": str(payload.get("name") or TURN_DURATION_PRODUCTION_CURVES_NAME),
+        "phase": str(phase_key),
+        "trial": None,
+        "score": int(round(float(score_val))) if score_val is not None else 1,
+        "duration_override_ms": int(chosen["duration_ms"]),
+        "x_gap_closed_mm": float(chosen["x_traveled_mm"]),
+        "pwm_override": int(round(float(pwm_override))) if pwm_override is not None and float(pwm_override) > 0.0 else None,
+        "profile_override": dict(profile_override),
+        "curve_name": str(curve_name),
+        "curve_value_mm": float(chosen["x_traveled_mm"]),
+        "source": "turn_drive_duration_curves",
+    }
+
+
 def _production_turn_drive_forward_from_paired_trials(
     cmd: str,
     x_err_mm: float,
@@ -559,6 +681,15 @@ def production_turn_drive_curve_plan(
     drive_mode_key = str(drive_mode or "").strip().lower()
     if cmd_key not in {"l", "r"} or drive_mode_key not in {"forward", "backward"}:
         return None
+
+    duration_curve_plan = _production_turn_duration_curve_plan(
+        cmd=cmd_key,
+        drive_mode=drive_mode_key,
+        x_err_mm=x_err_mm,
+        trials_dir=trials_dir,
+    )
+    if isinstance(duration_curve_plan, dict):
+        return duration_curve_plan
 
     if drive_mode_key == "forward":
         # Prefer x-gap-matched duration from paired trials; fall back to fixed setup_phase.

@@ -10,6 +10,54 @@ import helper_close_gaps
 
 
 class TestHelperCloseGapsTurnDriveTrials(unittest.TestCase):
+    def test_turn_duration_curve_plan_preferred_when_production_ready(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trials_dir = Path(tmp_dir)
+            payload = {
+                "production": True,
+                "file_type": "turn_drive_duration_curves",
+                "phase_curves": {
+                    "forward_left": {
+                        "label": "FORWARD+LEFT",
+                        "production_ready": True,
+                        "score_pct": 1,
+                        "pwm_override": 133,
+                        "profile_name": "forward_arc_gentle_02",
+                        "profile_override": {
+                            "profile_name": "forward_arc_gentle_02",
+                            "drive_mode": "forward",
+                            "inner_ratio": 0.7,
+                            "outer_ratio": 1.0,
+                            "duration_mode": "max_turn_drive",
+                            "action_note": "TURN+FWD",
+                        },
+                        "points": [
+                            {"duration_ms": 150, "median_x_traveled_mm": 1.5, "samples": 3},
+                            {"duration_ms": 250, "median_x_traveled_mm": 3.0, "samples": 3},
+                        ],
+                    }
+                },
+            }
+            (trials_dir / "turn_duration_production_curves.json").write_text(json.dumps(payload))
+
+            plan = helper_close_gaps.production_turn_drive_curve_plan(
+                cmd="l",
+                drive_mode="forward",
+                current_dist_mm=120.0,
+                x_err_mm=2.0,
+                trials_dir=trials_dir,
+            )
+
+            self.assertIsInstance(plan, dict)
+            self.assertEqual(plan["source"], "turn_drive_duration_curves")
+            self.assertEqual(plan["phase"], "forward_left")
+            self.assertEqual(plan["duration_override_ms"], 250)
+            self.assertEqual(plan["pwm_override"], 133)
+            self.assertEqual(plan["score"], 1)
+            self.assertAlmostEqual(plan["curve_value_mm"], 3.0)
+            self.assertEqual(plan["profile_override"]["profile_name"], "forward_arc_gentle_02")
+            self.assertEqual(plan["profile_override"]["duration_mode"], "max_turn_drive")
+
     def test_production_turn_drive_curve_plan_skips_excluded_outlier(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             trials_dir = Path(tmp_dir)

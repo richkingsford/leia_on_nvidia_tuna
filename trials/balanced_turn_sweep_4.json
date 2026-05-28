@@ -1,0 +1,61 @@
+{
+  "file_type": "turn_drive_trials",
+  "schema_version": 2,
+  "name": "balanced_turn_sweep_4",
+  "curve": {
+    "trial_format": "sequence",
+    "sequence_style": "balanced_mirrored_turn_sweep",
+    "phase": "forward_left",
+    "label": "BALANCED TURN SWEEP",
+    "turn_family": "gentle",
+    "turn_families": [
+      "gentle"
+    ],
+    "trial_count": 4,
+    "score_pct": 1,
+    "measured_phase_duration_ms": 300,
+    "mirror_rule": "Run mirrored adjacent pairs: forward+left then back+right, forward+right then back+left.",
+    "phase_order": [
+      "forward_left",
+      "back_right",
+      "forward_right",
+      "back_left"
+    ]
+  },
+  "distribution": {},
+  "checks": {
+    "all_four_turn_types_present": true,
+    "mirrored_adjacent_pairs": true,
+    "turning_whenever_moving_every_trial": true,
+    "single_measured_act_every_trial": true
+  },
+  "run_status": {
+    "status": "completed",
+    "trials_requested": 4,
+    "trials_completed": 4,
+    "stop_reason": "completed",
+    "usable_trials": 4,
+    "last_started_ts": 1779811999.164,
+    "last_completed_ts": 1779812005.564,
+    "seconds": 11.126
+  },
+  "curve_stats": {
+    "consistency_score_pct": 75.0,
+    "x_gap_close_rate_pct": 75.0,
+    "median_x_axis_change_mm": 0.859,
+    "median_dist_change_mm": 20.468,
+    "median_dist_traveled_mm": 20.468,
+    "median_x_gap_closed_mm": 0.859,
+    "median_start_confidence_pct": 85.0,
+    "median_end_confidence_pct": 85.0,
+    "median_confidence_delta_pct": 0.0,
+    "usable_trials": 4,
+    "production_worthy": true
+  },
+  "trials": [
+    {"trial": 1, "setupDurationMs": "___", "measuredDurationMs": 300, "measuredProfile": "forward_arc_gentle_02", "measuredScore": 1, "curvePair": "FORWARD+LEFT", "leftMotorPwr": 93, "rightMotorPwr": 133, "setupLeftMotorPwr": "___", "setupRightMotorPwr": "___", "measuredLeftMotorPwr": 93, "measuredRightMotorPwr": 133, "startDist": 77.0, "distDelta": 0.0, "xDelta": 0.0, "xGapClosed": 0.0, "startConf": 97.5, "endConf": 85.0, "usable": true, "status": "completed", "stopReason": "completed", "moves": [{"stage": "balanced_measured_turn", "phase": "forward_left", "label": "FORWARD+LEFT", "cmd": "l", "drive_mode": "forward", "turning": true, "duration_ms": 300, "score_pct": 1, "profile_name": "forward_arc_gentle_02", "action_note": "TURN+FWD", "motor_pair": {"left_motor_pwm": 93, "left_motor_action": "b", "right_motor_pwm": 133, "right_motor_action": "f", "display": "leftMotor=93(B) rightMotor=133(F)"}, "pwm_override": 133}], "balancedFamily": "gentle", "balancedRound": 1, "plannedPhase": "forward_left"},
+    {"trial": 2, "setupDurationMs": "___", "measuredDurationMs": 300, "measuredProfile": "backward_arc_gentle_02", "measuredScore": 1, "curvePair": "BACK+RIGHT", "leftMotorPwr": 133, "rightMotorPwr": 93, "setupLeftMotorPwr": "___", "setupRightMotorPwr": "___", "measuredLeftMotorPwr": 133, "measuredRightMotorPwr": 93, "startDist": 77.0, "distDelta": 16.888, "xDelta": 0.318, "xGapClosed": 0.318, "startConf": 85.0, "endConf": 85.0, "usable": true, "status": "completed", "stopReason": "completed", "moves": [{"stage": "balanced_measured_turn", "phase": "back_right", "label": "BACK+RIGHT", "cmd": "r", "drive_mode": "backward", "turning": true, "duration_ms": 300, "score_pct": 1, "profile_name": "backward_arc_gentle_02", "action_note": "TURN+BWD", "motor_pair": {"left_motor_pwm": 133, "left_motor_action": "f", "right_motor_pwm": 93, "right_motor_action": "b", "display": "leftMotor=133(F) rightMotor=93(B)"}, "pwm_override": 133}], "balancedFamily": "gentle", "balancedRound": 1, "plannedPhase": "back_right"},
+    {"trial": 3, "setupDurationMs": "___", "measuredDurationMs": 300, "measuredProfile": "forward_arc_gentle_02", "measuredScore": 1, "curvePair": "FORWARD+RIGHT", "leftMotorPwr": 133, "rightMotorPwr": 93, "setupLeftMotorPwr": "___", "setupRightMotorPwr": "___", "measuredLeftMotorPwr": 133, "measuredRightMotorPwr": 93, "startDist": 93.889, "distDelta": 26.988, "xDelta": 1.4, "xGapClosed": 1.4, "startConf": 85.0, "endConf": 85.0, "usable": true, "status": "completed", "stopReason": "completed", "moves": [{"stage": "balanced_measured_turn", "phase": "forward_right", "label": "FORWARD+RIGHT", "cmd": "r", "drive_mode": "forward", "turning": true, "duration_ms": 300, "score_pct": 1, "profile_name": "forward_arc_gentle_02", "action_note": "TURN+FWD", "motor_pair": {"left_motor_pwm": 133, "left_motor_action": "b", "right_motor_pwm": 93, "right_motor_action": "f", "display": "leftMotor=133(B) rightMotor=93(F)"}, "pwm_override": 133}], "balancedFamily": "gentle", "balancedRound": 1, "plannedPhase": "forward_right"},
+    {"trial": 4, "setupDurationMs": "___", "measuredDurationMs": 300, "measuredProfile": "backward_arc_gentle_02", "measuredScore": 1, "curvePair": "BACK+LEFT", "leftMotorPwr": 93, "rightMotorPwr": 133, "setupLeftMotorPwr": "___", "setupRightMotorPwr": "___", "measuredLeftMotorPwr": 93, "measuredRightMotorPwr": 133, "startDist": 120.877, "distDelta": 24.048, "xDelta": 1.54, "xGapClosed": 1.54, "startConf": 85.0, "endConf": 85.0, "usable": true, "status": "completed", "stopReason": "completed", "moves": [{"stage": "balanced_measured_turn", "phase": "back_left", "label": "BACK+LEFT", "cmd": "l", "drive_mode": "backward", "turning": true, "duration_ms": 300, "score_pct": 1, "profile_name": "backward_arc_gentle_02", "action_note": "TURN+BWD", "motor_pair": {"left_motor_pwm": 93, "left_motor_action": "f", "right_motor_pwm": 133, "right_motor_action": "b", "display": "leftMotor=93(F) rightMotor=133(B)"}, "pwm_override": 133}], "balancedFamily": "gentle", "balancedRound": 1, "plannedPhase": "back_left"}
+  ]
+}

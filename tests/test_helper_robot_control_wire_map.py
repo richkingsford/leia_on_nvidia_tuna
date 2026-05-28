@@ -70,9 +70,9 @@ class TestHelperRobotControlWireMap(unittest.TestCase):
         robot, dummy_serial = self._make_robot()
 
         with patch.object(helper_robot_control.time, "sleep", return_value=None):
-            result = robot.send_command_pwm("d", robot.MAX_PWM, duration_ms=1000)
+            result = robot.send_command_pwm("u", robot.MAX_PWM, duration_ms=1000)
 
-        self.assertEqual(result["cmd_sent"], "d")
+        self.assertEqual(result["cmd_sent"], "u")
         self.assertEqual(result["percent"], 100)
         self.assertEqual(result["duration_ms"], 1000)
         self.assertTrue(result["python_held"])
@@ -86,7 +86,7 @@ class TestHelperRobotControlWireMap(unittest.TestCase):
     def test_sub_full_power_mast_duration_still_uses_uno_timed_token(self):
         robot, dummy_serial = self._make_robot()
 
-        result = robot.send_command_pwm("d", 200, duration_ms=1000)
+        result = robot.send_command_pwm("u", 200, duration_ms=1000)
 
         self.assertFalse(result.get("python_held", False))
         self.assertEqual(dummy_serial.commands, ["m.u.79.1000\n"])

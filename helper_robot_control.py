@@ -48,14 +48,14 @@ SERIAL_PORT_GLOB_PATTERNS = (
     "/dev/cu.usbmodem*",
 )
 # The current robot has the left tread polarity inverted relative to the right
-# tread, while the mast actuator remains inverted relative to logical up/down.
+# tread. Mast commands are operator/logical directions: U raises, D lowers.
 UNO_MOTION_MAP = {
     "f": (("l", "b"), ("r", "f")),
     "b": (("l", "f"), ("r", "b")),
     "l": (("l", "f"), ("r", "f")),
     "r": (("l", "b"), ("r", "b")),
-    "u": (("m", "d"),),
-    "d": (("m", "u"),),
+    "u": (("m", "u"),),
+    "d": (("m", "d"),),
 }
 UNO_STOP_TARGETS = {
     "f": ("l", "r"),

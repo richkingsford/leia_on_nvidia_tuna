@@ -114,6 +114,9 @@ RUN_DIR_CYAN = Path("Runs - cyan")
 BRICK_DISTANCE_SOURCE = "vision.dist"
 BRICK_DISTANCE_DEFINITION = "Camera-to-brick distance reported by vision at observation time (mm)."
 DISTANCE_DIRECTION_VERIFY_MIN_DELTA_MM = 0.1
+STATIONARY_DIST_JUMP_ABORT_MM = 75.0
+WRONG_WAY_ABORT_MIN_TRIALS = 6
+WRONG_WAY_ABORT_RATIO = 0.35
 FAST_ALIGN_TIME_BUDGET_S = 1.5
 PLOT_TITLE_FONT_SIZE = 10
 PLOT_LABEL_FONT_SIZE = 9
@@ -1192,7 +1195,19 @@ def _send_fixed_score_command(
         speed=0.0,
         speed_score=int(score),
         duration_override_ms=int(duration_override_ms),
+        ease_in_out_enabled=False,
     )
+
+
+def _wrong_way_abort_reason(trial_rows: list[TrialResult]) -> str | None:
+    rows = [row for row in list(trial_rows or []) if isinstance(row, TrialResult)]
+    if len(rows) < int(WRONG_WAY_ABORT_MIN_TRIALS):
+        return None
+    wrong_count = sum(1 for row in rows if bool(row.wrong_way))
+    ratio = float(wrong_count) / float(len(rows))
+    if ratio >= float(WRONG_WAY_ABORT_RATIO):
+        return f"wrong_way_rate_{wrong_count}_of_{len(rows)}"
+    return None
 
 
 def _recovery_plan_step_line(step: dict, *, idx: int, total: int) -> str:
@@ -2218,6 +2233,44 @@ def main() -> int:
                     log_line(f"[CALIBRATE_DIST] {trial_label}: recovery failed before command selection. Aborting.")
                     break
                 curr_dist = float(pre_pose.get("dist") or 0.0)
+                if trial_rows:
+                    previous_dist = _coerce_finite_float(trial_rows[-1].post_dist_mm)
+                    if previous_dist is not None and abs(float(curr_dist) - float(previous_dist)) > float(STATIONARY_DIST_JUMP_ABORT_MM):
+                        jump_mm = abs(float(curr_dist) - float(previous_dist))
+                        log_line(
+                            f"[CALIBRATE_DIST] {trial_label}: observed stationary dist jump "
+                            f"{jump_mm:.2f}mm (> {float(STATIONARY_DIST_JUMP_ABORT_MM):.2f}mm). Re-observing before acting."
+                        )
+                        re_pose, re_meta = _observe_pose_with_reobserve(
+                            vision=vision,
+                            world=world,
+                            samples=observe_samples,
+                            timeout_s=observe_timeout_s,
+                            on_vision_update=_live_refresh,
+                        )
+                        if re_pose is None:
+                            status = "aborted"
+                            abort_reason = f"stationary_dist_jump_reobserve_failed_trial_{trial_idx}"
+                            log_line(f"[CALIBRATE_DIST] {trial_label}: re-observe failed after stationary jump. Aborting.")
+                            break
+                        re_dist = _coerce_finite_float(re_pose.get("dist"))
+                        if re_dist is None:
+                            status = "aborted"
+                            abort_reason = f"stationary_dist_jump_reobserve_missing_dist_trial_{trial_idx}"
+                            log_line(f"[CALIBRATE_DIST] {trial_label}: re-observe had no distance after stationary jump. Aborting.")
+                            break
+                        re_jump_mm = abs(float(re_dist) - float(previous_dist))
+                        if re_jump_mm > float(STATIONARY_DIST_JUMP_ABORT_MM):
+                            status = "aborted"
+                            abort_reason = f"stationary_dist_jump_{re_jump_mm:.1f}mm_trial_{trial_idx}"
+                            log_line(
+                                f"[CALIBRATE_DIST] {trial_label}: confirmed stationary dist jump "
+                                f"{re_jump_mm:.2f}mm. Treating this as ghost/noisy brick data and aborting."
+                            )
+                            break
+                        pre_pose = dict(re_pose)
+                        pre_obs_meta = dict(re_meta)
+                        curr_dist = float(re_dist)
                 cmd = _auto_cmd_for_dist(
                     curr_dist,
                     target_dist_mm=float(target_dist_mm),
@@ -2268,6 +2321,15 @@ def main() -> int:
                 if bool(row.wrong_way):
                     log_line(f"[CALIBRATE_DIST] ⚠️  Trial {trial_idx}: wrong_way detected. Plotting it anyway.")
                 trial_rows.append(row)
+                wrong_way_abort_reason = _wrong_way_abort_reason(trial_rows)
+                if wrong_way_abort_reason is not None:
+                    status = "aborted"
+                    abort_reason = wrong_way_abort_reason
+                    log_line(
+                        f"[CALIBRATE_DIST] Aborting: repeated wrong-way readings "
+                        f"({wrong_way_abort_reason}). Distance observations are not safe to train from."
+                    )
+                    break
                 _live_refresh(
                     [
                         f"Trial {int(trial_idx)}/{int(trials_planned)}",

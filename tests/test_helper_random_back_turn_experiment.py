@@ -1,3 +1,4 @@
+import json
 import random
 import sys
 import tempfile
@@ -11,6 +12,122 @@ import helper_random_back_turn_experiment as experiment
 
 
 class TestHelperRandomBackTurnExperiment(unittest.TestCase):
+    def test_balanced_turn_sweep_manifest_runs_one_gentle_round(self):
+        manifest = experiment.build_balanced_turn_sweep_trials_manifest(
+            trials=4,
+            turn_family="gentle",
+            phase_duration_ms=300,
+            score=1,
+        )
+
+        rows = experiment._trial_manifest_trials_list(manifest)
+        self.assertEqual([row["plannedPhase"] for row in rows], [
+            "forward_left",
+            "back_right",
+            "forward_right",
+            "back_left",
+        ])
+        self.assertTrue(manifest["checks"]["all_four_turn_types_present"])
+        self.assertTrue(manifest["checks"]["mirrored_adjacent_pairs"])
+        self.assertEqual(rows[0]["moves"][0]["profile_name"], "forward_arc_gentle_02")
+        self.assertEqual(rows[1]["moves"][0]["profile_name"], "backward_arc_gentle_02")
+
+        reset_manifest = experiment._reset_trial_manifest_for_run(json.loads(json.dumps(manifest)))
+        reset_rows = experiment._trial_manifest_trials_list(reset_manifest)
+        self.assertIn("trials", reset_manifest)
+        self.assertNotIn("trials_forward", reset_manifest)
+        self.assertEqual(reset_rows[2]["moves"][0]["phase"], "forward_right")
+
+    def test_balanced_turn_sweep_manifest_can_run_sharp_round(self):
+        manifest = experiment.build_balanced_turn_sweep_trials_manifest(
+            trials=4,
+            turn_family="sharp",
+            phase_duration_ms=300,
+            score=1,
+        )
+
+        rows = experiment._trial_manifest_trials_list(manifest)
+        self.assertEqual([row["moves"][0]["profile_name"] for row in rows], [
+            "forward_pivot",
+            "backward_pivot",
+            "forward_pivot",
+            "backward_pivot",
+        ])
+        self.assertEqual([row["plannedPhase"] for row in rows], [
+            "forward_left",
+            "back_right",
+            "forward_right",
+            "back_left",
+        ])
+
+    def test_balanced_turn_sweep_ranges_duration_by_mirrored_pair(self):
+        manifest = experiment.build_balanced_turn_sweep_trials_manifest(
+            trials=8,
+            turn_family="gentle",
+            phase_duration_ms=None,
+            duration_range_ms=(150, 350),
+            score=1,
+        )
+
+        rows = experiment._trial_manifest_trials_list(manifest)
+        self.assertEqual([row["plannedPhase"] for row in rows], [
+            "forward_left",
+            "back_right",
+            "forward_right",
+            "back_left",
+            "forward_left",
+            "back_right",
+            "forward_right",
+            "back_left",
+        ])
+        self.assertEqual([row["measuredDurationMs"] for row in rows], [
+            150,
+            150,
+            150,
+            150,
+            350,
+            350,
+            350,
+            350,
+        ])
+        self.assertEqual(rows[2]["plannedPhase"], "forward_right")
+        self.assertEqual(rows[3]["plannedPhase"], "back_left")
+        self.assertEqual(rows[2]["measuredDurationMs"], rows[3]["measuredDurationMs"])
+        self.assertEqual(manifest["curve"]["duration_policy"], "full_cycle_even_duration_sweep")
+        self.assertTrue(manifest["checks"]["mirrored_adjacent_pairs"])
+        self.assertTrue(manifest["checks"]["mirror_pair_durations_match"])
+        self.assertTrue(manifest["checks"]["full_cycle_durations_match"])
+        self.assertTrue(manifest["checks"]["duration_range_covered"])
+
+    def test_balanced_turn_sweep_repeats_each_full_cycle_duration(self):
+        manifest = experiment.build_balanced_turn_sweep_trials_manifest(
+            turn_family="gentle",
+            phase_duration_ms=None,
+            duration_range_ms=(150, 350),
+            duration_points=3,
+            repeats_per_duration=2,
+            focus_phases="back_right,back_left",
+            score=1,
+        )
+
+        rows = experiment._trial_manifest_trials_list(manifest)
+        self.assertEqual(len(rows), 24)
+        self.assertEqual([row["plannedPhase"] for row in rows[:8]], [
+            "back_right",
+            "forward_left",
+            "back_left",
+            "forward_right",
+            "back_right",
+            "forward_left",
+            "back_left",
+            "forward_right",
+        ])
+        self.assertEqual([row["measuredDurationMs"] for row in rows[:8]], [150] * 8)
+        self.assertEqual([row["measuredDurationMs"] for row in rows[8:16]], [250] * 8)
+        self.assertEqual([row["measuredDurationMs"] for row in rows[16:24]], [350] * 8)
+        self.assertEqual(manifest["curve"]["focus_phases"], ["back_left", "back_right"])
+        self.assertTrue(manifest["checks"]["full_cycle_durations_match"])
+
     def test_choose_random_plan_uses_requested_ranges(self):
         plan = experiment.choose_random_back_turn_plan(
             rng=random.Random(7),

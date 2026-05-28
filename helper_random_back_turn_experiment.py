@@ -105,19 +105,44 @@ DEFAULT_CLOSE_DIST_X_AXIS_ONE_ACT_DURATION_MS = 300
 DEFAULT_CLOSE_DIST_X_AXIS_ONE_ACT_PHASE = "back_left"
 DEFAULT_CLOSE_DIST_X_AXIS_ONE_ACT_SETUP_FORWARD_RANGE_MS = (300, 1000)
 DEFAULT_CURVE_PRODUCTION_WORTHY_THRESHOLD_PCT = 75.0
+DEFAULT_BALANCED_TURN_SWEEP_TRIALS = 4
+DEFAULT_BALANCED_TURN_SWEEP_FAMILY = "gentle"
+DEFAULT_BALANCED_TURN_SWEEP_DURATION_RANGE_MS = (150, 350)
+DEFAULT_BALANCED_TURN_SWEEP_DIST_ZONE_GUARD_MM = 30.0
+BALANCED_TURN_SWEEP_FAMILIES = ("gentle", "sharp")
+BALANCED_TURN_SWEEP_PHASE_ORDER = (
+    {"drive_mode": "forward", "turn_dir": "left"},
+    {"drive_mode": "backward", "turn_dir": "right"},
+    {"drive_mode": "forward", "turn_dir": "right"},
+    {"drive_mode": "backward", "turn_dir": "left"},
+)
+BALANCED_TURN_SWEEP_MIRROR_PHASE_PAIRS = (
+    ("forward_left", "back_right"),
+    ("forward_right", "back_left"),
+)
+BALANCED_TURN_SWEEP_PROFILES = {
+    "gentle": {
+        "forward": "forward_arc_gentle_02",
+        "backward": "backward_arc_gentle_02",
+    },
+    "sharp": {
+        "forward": "forward_pivot",
+        "backward": "backward_pivot",
+    },
+}
 TRIAL_RESULT_TBD = "___"
 TRIAL_TURN_SELECTION_ADAPTIVE_BY_X_AXIS = "adaptive_by_x_axis_sign"
 TRIAL_DISTANCE_HOLD_ADAPTIVE_BY_RUN_START_DIST = "adaptive_by_run_start_dist"
 ALTERNATING_TURN_DRIVE_STRENGTH_PROFILES = {
     "forward": {
         "strong": "forward_pivot",
-        "medium": "forward_arc_medium",
-        "light": "forward_arc_light",
+        "medium": "forward_pivot_min_inner",
+        "light": "forward_arc_gentle_02",
     },
     "backward": {
         "strong": "backward_pivot",
-        "medium": "backward_arc_medium",
-        "light": "backward_arc_light",
+        "medium": "backward_pivot_min_inner",
+        "light": "backward_arc_gentle_02",
     },
 }
 DEFAULT_ALTERNATING_TURN_DRIVE_SEQUENCE = (
@@ -960,6 +985,120 @@ def _normalize_turn_drive_strength(value) -> str:
     return str(DEFAULT_ALTERNATING_TURN_DRIVE_STRENGTH)
 
 
+def _normalize_balanced_turn_family(value) -> str:
+    family = str(value or "").strip().lower()
+    if family in BALANCED_TURN_SWEEP_FAMILIES:
+        return family
+    if family in {"both", "all"}:
+        return "both"
+    return str(DEFAULT_BALANCED_TURN_SWEEP_FAMILY)
+
+
+def _balanced_turn_family_list(value) -> list[str]:
+    family = _normalize_balanced_turn_family(value)
+    if family == "both":
+        return [str(item) for item in BALANCED_TURN_SWEEP_FAMILIES]
+    return [str(family)]
+
+
+def _balanced_turn_default_trial_count(turn_family: str | None) -> int:
+    return int(len(_balanced_turn_family_list(turn_family)) * len(BALANCED_TURN_SWEEP_PHASE_ORDER))
+
+
+def _balanced_turn_profile_name(*, family: str, drive_mode: str) -> str | None:
+    family_key = str(family or "").strip().lower()
+    drive_key = str(drive_mode or "").strip().lower()
+    family_profiles = BALANCED_TURN_SWEEP_PROFILES.get(family_key)
+    if not isinstance(family_profiles, dict):
+        return None
+    profile_name = str(family_profiles.get(drive_key) or "").strip()
+    return profile_name or None
+
+
+def _balanced_turn_sequence_for_families(families) -> list[dict]:
+    sequence_rows = []
+    seen = set()
+    if isinstance(families, (list, tuple, set)):
+        family_list = []
+        for item in families:
+            family = _normalize_balanced_turn_family(item)
+            if family == "both":
+                family_list.extend(_balanced_turn_family_list("both"))
+            else:
+                family_list.append(str(family))
+    else:
+        family_list = _balanced_turn_family_list(families)
+    for family in family_list:
+        for phase in BALANCED_TURN_SWEEP_PHASE_ORDER:
+            drive_mode = str((phase or {}).get("drive_mode") or "")
+            turn_dir = str((phase or {}).get("turn_dir") or "")
+            profile_name = _balanced_turn_profile_name(
+                family=str(family),
+                drive_mode=str(drive_mode),
+            )
+            spec = _adaptive_turn_drive_phase_spec(
+                drive_mode=str(drive_mode),
+                strength=("light" if str(family) == "gentle" else "strong"),
+                turn_dir=str(turn_dir),
+                profile_name=str(profile_name or ""),
+            )
+            if not isinstance(spec, dict):
+                continue
+            key = (str(spec.get("phase") or ""), str(family))
+            if key in seen:
+                continue
+            seen.add(key)
+            spec["family"] = str(family)
+            spec["label"] = f"{str(family).upper()} {str(spec.get('label') or '')}".strip()
+            sequence_rows.append(spec)
+    return sequence_rows
+
+
+def _balanced_turn_focus_phase_set(value) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        raw_items = value.replace(";", ",").split(",")
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        raw_items = [value]
+    focus = set()
+    for item in raw_items:
+        phase = str(item or "").strip().lower().replace("+", "_")
+        phase = phase.replace("forward_", "forward_").replace("backward_", "back_")
+        phase = phase.replace("fwd_", "forward_").replace("bwd_", "back_")
+        phase = phase.replace("backward", "back").replace(" ", "_").replace("-", "_")
+        if phase in {"forward_left", "forward_right", "back_left", "back_right"}:
+            focus.add(str(phase))
+    return focus
+
+
+def _balanced_turn_sequence_for_focus(sequence_rows: list[dict], focus_phases=None) -> list[dict]:
+    focus = _balanced_turn_focus_phase_set(focus_phases)
+    if not focus:
+        return [dict(row) for row in list(sequence_rows or []) if isinstance(row, dict)]
+    by_phase = {
+        str(row.get("phase") or ""): dict(row)
+        for row in list(sequence_rows or [])
+        if isinstance(row, dict)
+    }
+    selected_phase_order = []
+    for pair in BALANCED_TURN_SWEEP_MIRROR_PHASE_PAIRS:
+        if not any(str(phase) in focus for phase in pair):
+            continue
+        first, second = str(pair[0]), str(pair[1])
+        if second in focus and first not in focus:
+            selected_phase_order.extend([second, first])
+        else:
+            selected_phase_order.extend([first, second])
+    return [
+        dict(by_phase[phase])
+        for phase in selected_phase_order
+        if phase in by_phase
+    ]
+
+
 def _turn_drive_profile_name_for_strength(
     *,
     drive_mode: str,
@@ -1656,6 +1795,40 @@ def _trial_manifest_curve_config(manifest: dict | None) -> dict:
     return dict(manifest)
 
 
+def _dist_zone_guard_details(
+    pose: dict | None,
+    *,
+    reference_dist_mm,
+    guard_mm,
+) -> dict:
+    current_dist = _coerce_float((pose or {}).get("dist"), None)
+    reference_dist = _coerce_float(reference_dist_mm, None)
+    guard_val = _coerce_float(guard_mm, None)
+    if current_dist is None or reference_dist is None or guard_val is None or float(guard_val) <= 0.0:
+        return {
+            "enabled": False,
+            "breached": False,
+            "reference_dist_mm": _round_triplet(reference_dist),
+            "current_dist_mm": _round_triplet(current_dist),
+            "delta_mm": None,
+            "guard_mm": _round_triplet(guard_val),
+        }
+    delta_mm = abs(float(current_dist) - float(reference_dist))
+    return {
+        "enabled": True,
+        "breached": bool(float(delta_mm) > float(guard_val)),
+        "reference_dist_mm": _round_triplet(reference_dist),
+        "current_dist_mm": _round_triplet(current_dist),
+        "delta_mm": _round_triplet(delta_mm),
+        "guard_mm": _round_triplet(guard_val),
+    }
+
+
+def _trial_manifest_uses_sequence_rows(manifest: dict | None) -> bool:
+    curve_cfg = _trial_manifest_curve_config(manifest)
+    return str(curve_cfg.get("trial_format") or "").strip().lower() == "sequence"
+
+
 def _trial_manifest_merge_trial_blocks(
     trials_forward: list[dict] | None,
     trials_backwards: list[dict] | None,
@@ -1778,6 +1951,11 @@ def _trial_manifest_split_trial_blocks(trial_rows: list[dict] | None) -> tuple[l
 def _trial_manifest_assign_trial_blocks(manifest: dict | None, trial_rows: list[dict] | None) -> dict | None:
     if not isinstance(manifest, dict):
         return manifest
+    if _trial_manifest_uses_sequence_rows(manifest):
+        manifest["trials"] = [dict(row) for row in list(trial_rows or []) if isinstance(row, dict)]
+        manifest.pop("trials_forward", None)
+        manifest.pop("trials_backwards", None)
+        return manifest
     forward_rows, backward_rows = _trial_manifest_split_trial_blocks(trial_rows)
     manifest["trials_forward"] = list(forward_rows)
     manifest["trials_backwards"] = list(backward_rows)
@@ -1854,6 +2032,9 @@ def _trial_manifest_measured_segment(
     *,
     manifest: dict | None = None,
 ) -> dict | None:
+    sequence = _trial_manifest_sequence_from_row(row)
+    if _trial_manifest_uses_sequence_rows(manifest):
+        return dict(sequence[-1]) if sequence else None
     for segment in _trial_manifest_sequence_from_row(row):
         if str(segment.get("drive_mode") or "").strip().lower() == "backward":
             return dict(segment)
@@ -1885,7 +2066,6 @@ def _trial_manifest_measured_segment(
         if measured_dur_val is not None and measured_dur_val > 0:
             template_used["duration_ms"] = int(round(float(measured_dur_val)))
         return _trial_manifest_segment_from_template(template_used)
-    sequence = _trial_manifest_sequence_from_row(row)
     return dict(sequence[-1]) if sequence else None
 
 
@@ -2025,7 +2205,7 @@ def _trial_manifest_normalize_row(
         if bool(keep_results)
         else _trial_manifest_compact_results_placeholder()
     )
-    return _trial_manifest_compact_trial_row(
+    normalized_row = _trial_manifest_compact_trial_row(
         trial_index=int(trial_index),
         duration_ms=(int(round(float(duration_val))) if duration_val is not None else 0),
         setup_profile=setup_profile,
@@ -2044,6 +2224,13 @@ def _trial_manifest_normalize_row(
         right_motor_pwr=right_motor_pwr,
         result_values=result_values,
     )
+    moves = (row or {}).get("moves") if isinstance(row, dict) else None
+    if isinstance(moves, list):
+        normalized_row["moves"] = [dict(item) for item in moves if isinstance(item, dict)]
+    for key in ("balancedFamily", "balancedRound", "plannedPhase"):
+        if isinstance(row, dict) and key in row:
+            normalized_row[key] = _trial_manifest_placeholder_normalize(row.get(key))
+    return normalized_row
 
 
 def _build_turn_drive_plan_from_manifest_segment(
@@ -2117,6 +2304,258 @@ def _trial_manifest_segment_for_drive_mode(
         ):
             return dict(segment)
     return None
+
+
+def build_balanced_turn_sweep_trials_manifest(
+    *,
+    trials: int = DEFAULT_BALANCED_TURN_SWEEP_TRIALS,
+    turn_family: str = DEFAULT_BALANCED_TURN_SWEEP_FAMILY,
+    phase_duration_ms: int | None = None,
+    duration_range_ms=DEFAULT_BALANCED_TURN_SWEEP_DURATION_RANGE_MS,
+    duration_points: int | None = None,
+    repeats_per_duration: int = 1,
+    focus_phases=None,
+    dist_zone_guard_mm: float | None = DEFAULT_BALANCED_TURN_SWEEP_DIST_ZONE_GUARD_MM,
+    score: int = DEFAULT_SCORE,
+    name: str | None = None,
+) -> dict:
+    families = _balanced_turn_family_list(turn_family)
+    phase_specs_by_family = {
+        str(family): _balanced_turn_sequence_for_focus(
+            _balanced_turn_sequence_for_families([str(family)]),
+            focus_phases=focus_phases,
+        )
+        for family in families
+    }
+    ordered_specs = []
+    for family in families:
+        for phase_spec in list(phase_specs_by_family.get(str(family)) or []):
+            ordered_specs.append((str(family), dict(phase_spec)))
+    if not ordered_specs:
+        for family in families:
+            for phase_spec in list(_balanced_turn_sequence_for_families([str(family)]) or []):
+                ordered_specs.append((str(family), dict(phase_spec)))
+    sequence_len = max(1, len(ordered_specs))
+    requested_trial_count = max(1, int(trials))
+    try:
+        repeats_used = max(1, int(repeats_per_duration))
+    except (TypeError, ValueError):
+        repeats_used = 1
+    duration_points_used = None
+    if duration_points is not None:
+        try:
+            duration_points_used = max(1, int(duration_points))
+        except (TypeError, ValueError):
+            duration_points_used = None
+    if duration_points_used is not None:
+        cycle_count = int(duration_points_used) * int(repeats_used)
+        trial_count = int(cycle_count) * int(sequence_len)
+    else:
+        trial_count = int(requested_trial_count)
+        remainder = int(trial_count) % int(sequence_len)
+        if remainder:
+            trial_count += int(sequence_len) - int(remainder)
+        cycle_count = max(1, int(trial_count) // int(sequence_len))
+    try:
+        score_used = int(round(float(score)))
+    except (TypeError, ValueError):
+        score_used = int(DEFAULT_SCORE)
+    score_used = max(1, min(100, int(score_used)))
+    fixed_duration_ms = None
+    if phase_duration_ms is not None:
+        try:
+            fixed_duration_ms = max(1, int(round(float(phase_duration_ms))))
+        except (TypeError, ValueError):
+            fixed_duration_ms = None
+    duration_range_cfg = _duration_range_snapshot(duration_range_ms)
+    if fixed_duration_ms is None and not isinstance(duration_range_cfg, dict):
+        duration_range_cfg = _duration_range_snapshot(DEFAULT_BALANCED_TURN_SWEEP_DURATION_RANGE_MS)
+    if fixed_duration_ms is not None:
+        cycle_durations_ms = [int(fixed_duration_ms)] * int(cycle_count)
+        representative_duration_ms = int(fixed_duration_ms)
+        duration_policy = "fixed"
+        duration_range_cfg = {"min_ms": int(fixed_duration_ms), "max_ms": int(fixed_duration_ms)}
+    else:
+        duration_point_count = int(duration_points_used or cycle_count)
+        base_durations_ms = _evenly_distributed_durations_ms(
+            duration_range_ms=duration_range_cfg,
+            count=int(duration_point_count),
+        )
+        if not base_durations_ms:
+            base_durations_ms = [int(DEFAULT_CLOSE_DIST_X_AXIS_ONE_ACT_DURATION_MS)] * int(duration_point_count)
+        cycle_durations_ms = []
+        for duration_ms in base_durations_ms:
+            for _repeat_index in range(int(repeats_used)):
+                cycle_durations_ms.append(int(duration_ms))
+        if len(cycle_durations_ms) < int(cycle_count):
+            cycle_durations_ms.extend([int(cycle_durations_ms[-1])] * (int(cycle_count) - len(cycle_durations_ms)))
+        cycle_durations_ms = cycle_durations_ms[:int(cycle_count)]
+        representative_duration_ms = int(
+            round(
+                (
+                    float((duration_range_cfg or {}).get("min_ms") or cycle_durations_ms[0])
+                    + float((duration_range_cfg or {}).get("max_ms") or cycle_durations_ms[-1])
+                )
+                / 2.0
+            )
+        )
+        duration_policy = "full_cycle_even_duration_sweep"
+    dist_guard_val = _coerce_float(dist_zone_guard_mm, None)
+    manifest = {
+        "file_type": "turn_drive_trials",
+        "schema_version": 2,
+        "name": _trial_file_name_from_manifest(None, fallback=name or "balanced_turn_sweep"),
+        "curve": {
+            "trial_format": "sequence",
+            "sequence_style": "balanced_mirrored_turn_sweep",
+            "phase": "forward_left",
+            "label": "BALANCED TURN SWEEP",
+            "turn_family": str(_normalize_balanced_turn_family(turn_family)),
+            "turn_families": list(families),
+            "trial_count": int(trial_count),
+            "requested_trial_count": int(requested_trial_count),
+            "sequence_trial_count": int(sequence_len),
+            "score_pct": int(score_used),
+            "measured_phase_duration_ms": int(representative_duration_ms),
+            "measured_phase_duration_range_ms": (
+                dict(duration_range_cfg) if isinstance(duration_range_cfg, dict) else None
+            ),
+            "duration_policy": str(duration_policy),
+            "duration_points": int(duration_points_used or len(set(cycle_durations_ms))),
+            "repeats_per_duration": int(repeats_used),
+            "mirror_rule": "Run each selected turn phase adjacent to its mirrored partner.",
+            "mirror_pair_duration_rule": "Each full mirrored phase cycle shares the same measured act duration.",
+            "focus_phases": sorted(_balanced_turn_focus_phase_set(focus_phases)),
+            "dist_zone_guard_mm": (
+                _round_triplet(dist_guard_val)
+                if dist_guard_val is not None and float(dist_guard_val) > 0.0
+                else None
+            ),
+            "dist_zone_reference_policy": "run_start_dist",
+            "stop_on_lost_pose": True,
+            "lost_pose_policy": "stop_without_inverse_recovery",
+            "phase_order": [
+                str((phase_spec or {}).get("phase") or "")
+                for _family, phase_spec in ordered_specs
+            ],
+        },
+        "distribution": {},
+        "checks": {
+            "all_four_turn_types_present": False,
+            "mirrored_adjacent_pairs": False,
+            "mirror_pair_durations_match": False,
+            "duration_range_covered": False,
+            "turning_whenever_moving_every_trial": False,
+            "single_measured_act_every_trial": False,
+        },
+        "run_status": _trial_manifest_run_status_placeholder(trial_count=int(trial_count)),
+        "curve_stats": _trial_manifest_curve_stats_placeholder(),
+        "trials": [],
+    }
+    trial_rows = []
+    phase_keys_seen = set()
+    mirror_pair_checks = []
+    for trial_index in range(1, int(trial_count) + 1):
+        if not ordered_specs:
+            continue
+        ordered_index = (int(trial_index) - 1) % len(ordered_specs)
+        family, phase_spec = ordered_specs[ordered_index]
+        cycle_index = (int(trial_index) - 1) // int(sequence_len)
+        duration_used_ms = int(cycle_durations_ms[min(int(cycle_index), len(cycle_durations_ms) - 1)])
+        plan = _build_turn_drive_plan_for_phase_spec(
+            phase_spec=phase_spec,
+            score=int(score_used),
+            duration_ms=int(duration_used_ms),
+            metadata={
+                "trial": int(trial_index),
+                "stage": "balanced_turn_sweep",
+                "family": str(family),
+            },
+        )
+        segment = _trial_manifest_segment(
+            plan=plan,
+            duration_ms=int(duration_used_ms),
+            stage="balanced_measured_turn",
+        )
+        phase_key = str((segment or {}).get("phase") or phase_spec.get("phase") or "")
+        phase_keys_seen.add(phase_key)
+        mirror_pair_checks.append(
+            phase_key
+            in {"forward_left", "back_right", "forward_right", "back_left"}
+        )
+        motor_pair = dict((segment or {}).get("motor_pair") or {})
+        trial_rows.append(
+            {
+                "trial": int(trial_index),
+                "setupDurationMs": 0,
+                "measuredDurationMs": int(duration_used_ms),
+                "curvePair": f"{str(family).upper()} {str((segment or {}).get('label') or phase_key).strip()}",
+                "leftMotorPwr": _trial_manifest_motor_value(motor_pair.get("left_motor_pwm")),
+                "rightMotorPwr": _trial_manifest_motor_value(motor_pair.get("right_motor_pwm")),
+                "measuredLeftMotorPwr": _trial_manifest_motor_value(motor_pair.get("left_motor_pwm")),
+                "measuredRightMotorPwr": _trial_manifest_motor_value(motor_pair.get("right_motor_pwm")),
+                "measuredProfile": str((segment or {}).get("profile_name") or ""),
+                "measuredScore": int(score_used),
+                "balancedFamily": str(family),
+                "balancedRound": int(((int(trial_index) - 1) // max(1, len(ordered_specs))) + 1),
+                "plannedPhase": str(phase_key),
+                "moves": [dict(segment)] if isinstance(segment, dict) else [],
+                **_trial_manifest_compact_results_placeholder(),
+            }
+        )
+    manifest["trials"] = list(trial_rows)
+    expected_phase_keys = {"forward_left", "forward_right", "back_right", "back_left"}
+    selected_phase_keys = {str((phase_spec or {}).get("phase") or "") for _family, phase_spec in ordered_specs}
+    expected_order = [str((phase_spec or {}).get("phase") or "") for _family, phase_spec in ordered_specs]
+    observed_order = [str(row.get("plannedPhase") or "") for row in trial_rows]
+    mirrored_order_ok = all(
+        phase == expected_order[index % len(expected_order)]
+        for index, phase in enumerate(observed_order)
+    )
+    full_cycle_duration_ok = bool(trial_rows) and all(
+        len({
+            int(row.get("measuredDurationMs") or 0)
+            for row in trial_rows[index:index + int(sequence_len)]
+        }) == 1
+        for index in range(0, len(trial_rows), int(sequence_len))
+    )
+    adjacent_pair_count = len(trial_rows) // 2
+    mirror_pair_duration_ok = bool(trial_rows) and all(
+        int(trial_rows[index].get("measuredDurationMs") or 0)
+        == int(trial_rows[index + 1].get("measuredDurationMs") or 0)
+        for index in range(0, int(adjacent_pair_count) * 2, 2)
+    )
+    mirror_pair_family_ok = bool(trial_rows) and all(
+        str(trial_rows[index].get("balancedFamily") or "")
+        == str(trial_rows[index + 1].get("balancedFamily") or "")
+        for index in range(0, int(adjacent_pair_count) * 2, 2)
+    )
+    actual_durations = [
+        int(row.get("measuredDurationMs") or 0)
+        for row in trial_rows
+        if int(row.get("measuredDurationMs") or 0) > 0
+    ]
+    duration_range_covered = False
+    if actual_durations and isinstance(duration_range_cfg, dict):
+        duration_range_covered = (
+            min(actual_durations) <= int(duration_range_cfg.get("min_ms") or 0)
+            and max(actual_durations) >= int(duration_range_cfg.get("max_ms") or 0)
+        )
+    manifest["checks"] = {
+        "all_four_turn_types_present": expected_phase_keys.issubset(phase_keys_seen),
+        "selected_turn_types_present": selected_phase_keys.issubset(phase_keys_seen),
+        "mirrored_adjacent_pairs": all(bool(value) for value in mirror_pair_checks)
+        and bool(mirrored_order_ok)
+        and bool(mirror_pair_family_ok),
+        "mirror_pair_durations_match": bool(mirror_pair_duration_ok),
+        "full_cycle_durations_match": bool(full_cycle_duration_ok),
+        "duration_range_covered": bool(duration_range_covered),
+        "turning_whenever_moving_every_trial": bool(trial_rows)
+        and all(bool(((row.get("moves") or [{}])[0]).get("turning")) for row in trial_rows),
+        "single_measured_act_every_trial": bool(trial_rows)
+        and all(len(row.get("moves") or []) == 1 for row in trial_rows),
+    }
+    return manifest
 
 
 def build_close_dist_x_axis_one_act_trials_manifest(
@@ -2446,6 +2885,7 @@ def _normalize_close_dist_trial_manifest(
         normalized = json.loads(json.dumps(manifest))
         normalized["name"] = _trial_file_name_from_manifest(normalized, fallback=fallback_name)
         curve_cfg = _trial_manifest_curve_config(normalized)
+        sequence_trial_format = _trial_manifest_uses_sequence_rows(normalized)
         curve_row = dict(normalized.get("curve") or {})
         curve_row.pop("measured_phase_duration_s", None)
         curve_row.pop("setup_turn_duration_range_s", None)
@@ -2457,11 +2897,11 @@ def _normalize_close_dist_trial_manifest(
                 phase_copy.pop("duration_s", None)
                 curve_row[phase_key] = phase_copy
         sample_trial = (_trial_manifest_trials_list(normalized) or [{}])[0]
-        if not isinstance(curve_cfg.get("setup_phase"), dict):
+        if not bool(sequence_trial_format) and not isinstance(curve_cfg.get("setup_phase"), dict):
             curve_row["setup_phase"] = _trial_manifest_phase_template_from_segment(
                 _trial_manifest_setup_segment(sample_trial, manifest=normalized),
             )
-        if not isinstance(curve_cfg.get("measured_phase"), dict):
+        if not bool(sequence_trial_format) and not isinstance(curve_cfg.get("measured_phase"), dict):
             curve_row["measured_phase"] = _trial_manifest_phase_template_from_segment(
                 _trial_manifest_measured_segment(sample_trial, manifest=normalized),
                 include_duration=True,
@@ -2486,7 +2926,7 @@ def _normalize_close_dist_trial_manifest(
                     if _trial_manifest_uses_adaptive_turn_selection(normalized)
                     else "distance_hold_then_backward_turn"
                 )
-        curve_row["trial_format"] = "compact"
+        curve_row["trial_format"] = "sequence" if bool(sequence_trial_format) else "compact"
         normalized["curve"] = curve_row
         normalized["distribution"] = {}
         normalized["run_status"] = _trial_manifest_merge_defaults(
@@ -2817,7 +3257,8 @@ def _finalize_trial_manifest_after_run(
     )
     run_status["trials_completed"] = int(completed_total)
     run_status["stop_reason"] = str(stop_reason)
-    run_status["usable_trials"] = int(computed_curve_stats.get("usable_trials") or 0)
+    usable_trials_val = _coerce_float(computed_curve_stats.get("usable_trials"), 0.0)
+    run_status["usable_trials"] = int(usable_trials_val or 0)
     run_status["last_completed_ts"] = _round_triplet(time.time())
     run_status["seconds"] = _trial_result_number(result_dict.get("seconds"))
     manifest["run_status"] = run_status
@@ -2935,10 +3376,15 @@ def _normalize_turn_drive_sequence(sequence, *, strength: str | None = None) -> 
         cmd = str(entry.get("cmd") or "").strip().lower()
         drive_mode = str(entry.get("drive_mode") or "").strip().lower()
         requested_strength = override_strength or _normalize_turn_drive_strength(entry.get("strength"))
-        profile_name = _turn_drive_profile_name_for_strength(
-            drive_mode=str(drive_mode),
-            strength=str(requested_strength),
-            fallback_profile_name=str(entry.get("profile_name") or ""),
+        explicit_profile_name = str(entry.get("profile_name") or "").strip()
+        profile_name = (
+            str(explicit_profile_name)
+            if explicit_profile_name and override_strength is None
+            else _turn_drive_profile_name_for_strength(
+                drive_mode=str(drive_mode),
+                strength=str(requested_strength),
+                fallback_profile_name=str(explicit_profile_name),
+            )
         )
         if cmd not in {"l", "r"} or drive_mode not in {"forward", "backward"} or not profile_name:
             continue
@@ -3158,6 +3604,8 @@ def _summarize_alternating_phase_curve_reference(
     usable_rows = []
     for row in list(phase_rows or []):
         if not isinstance(row, dict):
+            continue
+        if row.get("observation_usable") is False:
             continue
         curve_capture = row.get("curve_capture") if isinstance(row.get("curve_capture"), dict) else {}
         start_dist_mm = _coerce_float(curve_capture.get("start_dist_mm"), None)
@@ -5898,6 +6346,9 @@ def run_close_dist_x_axis_one_act_experiment(
         )
     adaptive_turn_selection = _trial_manifest_uses_adaptive_turn_selection(trial_manifest_used)
     distance_hold_enabled = bool(setup_forward_enabled) and _trial_manifest_uses_distance_hold(trial_manifest_used)
+    curve_cfg_for_run = _trial_manifest_curve_config(trial_manifest_used)
+    stop_on_lost_pose = bool(curve_cfg_for_run.get("stop_on_lost_pose"))
+    dist_zone_guard_mm = _coerce_float(curve_cfg_for_run.get("dist_zone_guard_mm"), None)
     if bool(adaptive_turn_selection):
         curve_cfg_used = _trial_manifest_curve_config(trial_manifest_used)
         measured_drive_mode = str(
@@ -5922,6 +6373,11 @@ def run_close_dist_x_axis_one_act_experiment(
         logger("[CLOSE X+DIST] Turn selection: if x_axis<0 turn RIGHT; otherwise turn LEFT.")
     if trials_manifest_path is not None:
         logger(f"[CLOSE X+DIST] Trial plan written to {str(trials_manifest_path)}.")
+    if dist_zone_guard_mm is not None and float(dist_zone_guard_mm) > 0.0:
+        logger(
+            "[CLOSE X+DIST] Distance-zone guard: stop if dist drifts "
+            f">{float(dist_zone_guard_mm):.1f}mm from run-start dist."
+        )
     if bool(setup_forward_enabled):
         setup_label = (
             _adaptive_turn_label_for_drive_mode("forward")
@@ -5976,6 +6432,20 @@ def run_close_dist_x_axis_one_act_experiment(
             pulse_rows = []
             planned_trials = list(_trial_manifest_trials_list(trial_manifest_used) or [])
             for trial_index in range(1, int(trial_count) + 1):
+                pre_guard = _dist_zone_guard_details(
+                    current_pose,
+                    reference_dist_mm=run_start_dist_mm,
+                    guard_mm=dist_zone_guard_mm,
+                )
+                if bool(pre_guard.get("breached")):
+                    stop_reason = f"dist_zone_guard_before_trial_{int(trial_index)}"
+                    logger(
+                        "[CLOSE X+DIST] Distance-zone guard before trial "
+                        f"{int(trial_index)}: current dist={pre_guard['current_dist_mm']}mm, "
+                        f"run-start={pre_guard['reference_dist_mm']}mm, "
+                        f"delta={pre_guard['delta_mm']}mm > guard={pre_guard['guard_mm']}mm. Stopping."
+                    )
+                    break
                 planned_trial = (
                     dict(planned_trials[int(trial_index) - 1])
                     if int(trial_index) <= len(planned_trials)
@@ -6454,6 +6924,16 @@ def run_close_dist_x_axis_one_act_experiment(
                 trial_row["analysis"] = _mm_payload_non_negative(dict(trial_analysis or {}))
                 trial_row["next_suggestion"] = dict(next_suggestion or {})
                 trial_row["observation_usable"] = bool((trial_analysis or {}).get("observation_usable"))
+                post_guard = _dist_zone_guard_details(
+                    post_pose,
+                    reference_dist_mm=run_start_dist_mm,
+                    guard_mm=dist_zone_guard_mm,
+                )
+                trial_row["dist_zone_guard"] = dict(post_guard)
+                dist_zone_guard_breached = bool(post_guard.get("breached"))
+                if bool(dist_zone_guard_breached):
+                    trial_row["observation_usable"] = False
+                    stop_reason = f"dist_zone_guard_after_trial_{int(trial_index)}"
                 trial_rows.append(trial_row)
                 trial_manifest_used = _update_trial_manifest_trial_result(
                     trial_manifest_used,
@@ -6475,7 +6955,32 @@ def run_close_dist_x_axis_one_act_experiment(
                     f"start_dist={trial_row['curve_capture']['start_dist_mm']}mm."
                 )
 
+                if bool(dist_zone_guard_breached):
+                    logger(
+                        "[CLOSE X+DIST] Distance-zone guard after trial "
+                        f"{int(trial_index)}: current dist={post_guard['current_dist_mm']}mm, "
+                        f"run-start={post_guard['reference_dist_mm']}mm, "
+                        f"delta={post_guard['delta_mm']}mm > guard={post_guard['guard_mm']}mm. Stopping."
+                    )
+                    final_pose = post_pose
+                    final_meta = dict(post_meta or {})
+                    break
+
                 if post_pose is None:
+                    if bool(stop_on_lost_pose):
+                        stop_reason = f"lost_pose_after_trial_{int(trial_index)}"
+                        final_pose = None
+                        final_meta = dict(post_meta or {})
+                        trial_manifest_used = _update_trial_manifest_trial_result(
+                            trial_manifest_used,
+                            trial_row,
+                            stop_reason=stop_reason,
+                        )
+                        _write_trials_manifest(trials_path, trial_manifest_used)
+                        logger(
+                            f"[CLOSE X+DIST] Trial {int(trial_index)} lost pose; stopping without inverse recovery."
+                        )
+                        break
                     recovery_row, recovered_pose, recovered_meta = _run_inverse_turn_drive_recovery(
                         robot=robot,
                         world=world,
@@ -6659,7 +7164,9 @@ def run_close_dist_x_axis_one_act_experiment(
             else {}
         )
         result["curve_assessment"]["consistency_pct"] = manifest_curve_stats.get("consistency_score_pct")
-        result["curve_assessment"]["usable_runs"] = int(manifest_curve_stats.get("usable_trials") or 0)
+        result["curve_assessment"]["usable_runs"] = int(
+            _coerce_float(manifest_curve_stats.get("usable_trials"), 0.0) or 0
+        )
         result["curve_assessment"]["production_worthy"] = (
             bool(manifest_curve_stats.get("production_worthy"))
             if manifest_curve_stats.get("production_worthy") in (True, False)
@@ -7454,6 +7961,7 @@ def main() -> int:
         description=(
             "Run the single-goal x-axis zero experiment by default. "
             "Use --close-dist-x-axis-one-act to repeat one combined act and discover an x+dist closure curve. "
+            "Use --balanced-turn-sweep for mirrored forward/back + left/right turn-drive calibration. "
             "Use --alternating-turn-drive for repeated backward-left / forward-right consistency probes. "
             "Use --x-lock-tracking for the older targeted x-axis lock experiment. "
             "Use --observe-while-moving for timed F/B motion sampling. "
@@ -7526,6 +8034,65 @@ def main() -> int:
         "--close-dist-x-axis-one-act",
         action="store_true",
         help="Run a single-family one-act x+dist closure curve study.",
+    )
+    parser.add_argument(
+        "--balanced-turn-sweep",
+        action="store_true",
+        help="Run mirrored forward-left/back-right/forward-right/back-left turn-drive calibration trials.",
+    )
+    parser.add_argument(
+        "--balanced-turn-family",
+        type=str,
+        default=DEFAULT_BALANCED_TURN_SWEEP_FAMILY,
+        help="Balanced sweep family: gentle, sharp, or both. Default: gentle.",
+    )
+    parser.add_argument(
+        "--balanced-turn-trials",
+        type=int,
+        default=None,
+        help="Number of balanced sweep trials. Default is one full round: 4 for one family, 8 for both.",
+    )
+    parser.add_argument(
+        "--balanced-turn-duration-ms",
+        type=int,
+        default=None,
+        help="Fixed duration per balanced turn-drive trial in ms. If omitted, sweep the duration range.",
+    )
+    parser.add_argument(
+        "--balanced-turn-duration-min-ms",
+        type=int,
+        default=int(DEFAULT_BALANCED_TURN_SWEEP_DURATION_RANGE_MS[0]),
+        help="Minimum balanced turn-drive duration in ms when sweeping. Default: 150.",
+    )
+    parser.add_argument(
+        "--balanced-turn-duration-max-ms",
+        type=int,
+        default=int(DEFAULT_BALANCED_TURN_SWEEP_DURATION_RANGE_MS[1]),
+        help="Maximum balanced turn-drive duration in ms when sweeping. Default: 350.",
+    )
+    parser.add_argument(
+        "--balanced-turn-duration-points",
+        type=int,
+        default=None,
+        help="Number of distinct durations to sweep. If omitted, spread durations across the requested trial count.",
+    )
+    parser.add_argument(
+        "--balanced-turn-repeats-per-duration",
+        type=int,
+        default=1,
+        help="Repeat each distinct duration this many full mirrored cycles so outliers can be rejected.",
+    )
+    parser.add_argument(
+        "--balanced-turn-focus-phases",
+        type=str,
+        default="",
+        help="Comma-separated phases to focus; their mirror partners are included automatically.",
+    )
+    parser.add_argument(
+        "--balanced-turn-dist-zone-guard-mm",
+        type=float,
+        default=DEFAULT_BALANCED_TURN_SWEEP_DIST_ZONE_GUARD_MM,
+        help="Stop balanced sweep if dist drifts this many mm from run-start dist. Use 0 to disable.",
     )
     parser.add_argument("--alternating-cycles", type=int, default=DEFAULT_ALTERNATING_TURN_DRIVE_CYCLES)
     parser.add_argument(
@@ -7617,15 +8184,128 @@ def main() -> int:
         default=str(TRIALS_FILE_DEFAULT),
         help="Path to write the explicit per-trial motion schedule JSON.",
     )
+    parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="Build and print the trial schedule without connecting to or moving the robot.",
+    )
     parser.add_argument("--log", type=str, default=str(RUN_LOG_FILE_DEFAULT))
     args = parser.parse_args()
 
     rng = random.Random(args.seed) if args.seed is not None else None
+    balanced_duration_range_arg = _duration_range_snapshot(
+        (
+            int(args.balanced_turn_duration_min_ms),
+            int(args.balanced_turn_duration_max_ms),
+        )
+    )
+    balanced_fixed_duration_arg = (
+        int(args.balanced_turn_duration_ms)
+        if args.balanced_turn_duration_ms is not None
+        else None
+    )
+    balanced_runner_duration_ms = int(
+        balanced_fixed_duration_arg
+        if balanced_fixed_duration_arg is not None
+        else round(
+            (
+                float(
+                    (balanced_duration_range_arg or {}).get("min_ms")
+                    or DEFAULT_BALANCED_TURN_SWEEP_DURATION_RANGE_MS[0]
+                )
+                + float(
+                    (balanced_duration_range_arg or {}).get("max_ms")
+                    or DEFAULT_BALANCED_TURN_SWEEP_DURATION_RANGE_MS[1]
+                )
+            )
+            / 2.0
+        )
+    )
+    if bool(args.balanced_turn_sweep) and bool(args.plan_only):
+        balanced_trial_count = (
+            int(args.balanced_turn_trials)
+            if args.balanced_turn_trials is not None
+            else _balanced_turn_default_trial_count(args.balanced_turn_family)
+        )
+        manifest = build_balanced_turn_sweep_trials_manifest(
+            trials=int(balanced_trial_count),
+            turn_family=str(args.balanced_turn_family),
+            phase_duration_ms=balanced_fixed_duration_arg,
+            duration_range_ms=balanced_duration_range_arg,
+            duration_points=args.balanced_turn_duration_points,
+            repeats_per_duration=int(args.balanced_turn_repeats_per_duration),
+            focus_phases=str(args.balanced_turn_focus_phases or ""),
+            dist_zone_guard_mm=float(args.balanced_turn_dist_zone_guard_mm),
+            score=int(args.score),
+            name=(Path(args.trials_file).stem if str(args.trials_file or "").strip() else "balanced_turn_sweep"),
+        )
+        trials_path = _write_trials_manifest(
+            Path(args.trials_file) if str(args.trials_file or "").strip() else None,
+            manifest,
+        )
+        result = {
+            "ok": True,
+            "mode": "plan_only",
+            "experiment_type": "balanced_turn_sweep",
+            "trials_requested": int(balanced_trial_count),
+            "trials_path": str(trials_path or ""),
+            "trial_manifest": manifest,
+        }
+        print(json.dumps(result, indent=2))
+        return 0
+
     robot = Robot()
     world = WorldModel()
     world.step_state = StepState.ALIGN_BRICK
     try:
-        if bool(args.close_dist_x_axis_one_act):
+        if bool(args.balanced_turn_sweep):
+            observe_timeout_s = (
+                float(args.observe_timeout_s)
+                if args.observe_timeout_s is not None
+                else float(DEFAULT_OBSERVE_TIMEOUT_S)
+            )
+            relaxed_timeout_s = (
+                float(args.relaxed_timeout_s)
+                if args.relaxed_timeout_s is not None
+                else float(DEFAULT_RELAXED_TIMEOUT_S)
+            )
+            balanced_trial_count = (
+                int(args.balanced_turn_trials)
+                if args.balanced_turn_trials is not None
+                else _balanced_turn_default_trial_count(args.balanced_turn_family)
+            )
+            balanced_manifest = build_balanced_turn_sweep_trials_manifest(
+                trials=int(balanced_trial_count),
+                turn_family=str(args.balanced_turn_family),
+                phase_duration_ms=balanced_fixed_duration_arg,
+                duration_range_ms=balanced_duration_range_arg,
+                duration_points=args.balanced_turn_duration_points,
+                repeats_per_duration=int(args.balanced_turn_repeats_per_duration),
+                focus_phases=str(args.balanced_turn_focus_phases or ""),
+                dist_zone_guard_mm=float(args.balanced_turn_dist_zone_guard_mm),
+                score=int(args.score),
+                name=(Path(args.trials_file).stem if str(args.trials_file or "").strip() else "balanced_turn_sweep"),
+            )
+            result = run_close_dist_x_axis_one_act_experiment(
+                robot=robot,
+                world=world,
+                vision_mode=args.vision,
+                score=int(args.score),
+                trials=int(balanced_trial_count),
+                phase_duration_ms=int(balanced_runner_duration_ms),
+                phase="forward_left",
+                strength="",
+                sequence=_balanced_turn_sequence_for_families(_balanced_turn_family_list(args.balanced_turn_family)),
+                distance_band_mm=float(args.one_act_dist_band_mm),
+                observe_timeout_s=float(observe_timeout_s),
+                relaxed_timeout_s=float(relaxed_timeout_s),
+                setup_forward_range_ms=None,
+                rng=rng,
+                trial_manifest=balanced_manifest,
+                trials_path=(Path(args.trials_file) if str(args.trials_file or "").strip() else None),
+                log_path=Path(args.log),
+            )
+        elif bool(args.close_dist_x_axis_one_act):
             observe_timeout_s = (
                 float(args.observe_timeout_s)
                 if args.observe_timeout_s is not None
