@@ -171,6 +171,49 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         )
         self.assertEqual(send_result["x_curve"]["recovery_boost_scale"], 1.1)
 
+    def test_mast_wrong_way_motion_marks_spool_unreliable(self):
+        stats = follow._new_game_stats()
+        stats["pending_observation"] = {
+            "action": "MAST_U",
+            "cmd": "u",
+            "dist_mm": follow._dist_target_mm(),
+            "x_mm": follow._x_target_mm(),
+            "y_mm": -10.0,
+            "y_target_mm": 0.0,
+            "duration_ms": 600,
+        }
+
+        result = follow._record_observed_after_pending_act(
+            stats,
+            {"dist_mm": follow._dist_target_mm(), "x_mm": follow._x_target_mm(), "y_mm": -14.0},
+        )
+
+        self.assertFalse(result["observed"])
+        self.assertGreater(stats["mast_spool_unreliable_countdown"], 0)
+        self.assertEqual(
+            stats["mast_spool_last_unreliable_detail"]["status"],
+            "target_regressed",
+        )
+
+    def test_unreliable_spool_caps_next_mast_plan(self):
+        stats = follow._new_game_stats()
+        stats["mast_spool_unreliable_countdown"] = 2
+        plan = {
+            "kind": "mast",
+            "cmd": "u",
+            "action": "MAST_U",
+            "duration_ms": 900,
+            "reason": "final_y",
+        }
+
+        capped = follow._cap_mast_plan_for_unreliable_spool(stats, plan)
+
+        self.assertTrue(capped["spool_unreliable_capped"])
+        self.assertLessEqual(
+            capped["duration_ms"],
+            follow._follow_y_axis_config()["spool_reversal_mast_max_ms"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

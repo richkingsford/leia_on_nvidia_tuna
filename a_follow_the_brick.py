@@ -42,6 +42,7 @@ from helper_holding_brick import (
     detect_masked_target_brick_contour,
     mask_held_brick_for_target_frame,
 )
+from helper_mast_direction_guard import classify_mast_y_effect, mast_effect_is_reversal
 from helper_robot_control import Robot
 import telemetry_robot as _telemetry_robot
 
@@ -92,6 +93,7 @@ DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG = {
 DEFAULT_RESET_X_GOAL_CURVE_CONFIG = {
     "enabled": True,
     "target_fraction": 0.8,
+    "min_duration_ms": 0,
     "max_duration_ms": 500,
     "chunk_ms": 100,
     "settle_s": 0.12,
@@ -186,6 +188,7 @@ DEFAULT_FOLLOW_X_AXIS_CONFIG = {
 DEFAULT_FOLLOW_DIST_AXIS_CONFIG = {
     "win_target_mm": TARGET_DIST_MM,
     "win_tol_mm": DIST_TOL_MM,
+    "positive_error_cmd": "f",
 }
 DEFAULT_VISIBILITY_RECOVERY_CONFIG = {
     "wait_s": 3.0,
@@ -307,6 +310,7 @@ DEFAULT_WIN_CONFIRMATION_CONFIG = {
     "timeout_y_correction_grace_acts": 2,
     "min_axis_closeness_pct": 0.0,
     "min_confidence_pct": 75.0,
+    "accept_live_happy_after_stop": False,
 }
 DEFAULT_CAUTIOUS_VISIBILITY_CONFIG = {
     "motion_min_confidence_pct": 50.0,
@@ -384,6 +388,8 @@ DEFAULT_FOLLOW_Y_AXIS_CONFIG = {
     "mast_overshoot_guard_margin_mm": 4.0,
     "tiny_y_no_observed_wait_s": 0.8,
     "tiny_y_no_observed_abs_err_mm": 16.0,
+    "spool_reversal_short_act_count": 4,
+    "spool_reversal_mast_max_ms": 220,
     "attach_y_min_abs_err_mm": 12.0,
     "attach_y_max_abs_dist_err_mm": 0.0,
 }
@@ -1477,6 +1483,15 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         DEFAULT_FOLLOW_DIST_AXIS_CONFIG["win_tol_mm"],
         minimum=0.0,
     )
+    positive_dist_cmd = str(
+        raw_dist_axis.get(
+            "positive_error_cmd",
+            DEFAULT_FOLLOW_DIST_AXIS_CONFIG["positive_error_cmd"],
+        )
+    ).strip().lower()
+    cfg["dist_axis"]["positive_error_cmd"] = (
+        positive_dist_cmd if positive_dist_cmd in {"f", "b"} else DEFAULT_FOLLOW_DIST_AXIS_CONFIG["positive_error_cmd"]
+    )
     raw_x_axis = raw.get("x_axis") if isinstance(raw.get("x_axis"), dict) else {}
     cfg["x_axis"]["win_target_mm"] = _coerce_float(
         raw_x_axis.get("win_target_mm"),
@@ -1794,6 +1809,11 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
     raw_profile_dist_axis = raw_profile.get("dist_axis") if isinstance(raw_profile.get("dist_axis"), dict) else {}
     for key, fallback in DEFAULT_FOLLOW_DIST_AXIS_CONFIG.items():
         if key in raw_profile_dist_axis:
+            if key == "positive_error_cmd":
+                profile_dist_cmd = str(raw_profile_dist_axis.get(key) or "").strip().lower()
+                if profile_dist_cmd in {"f", "b"}:
+                    cfg["dist_axis"][key] = profile_dist_cmd
+                continue
             cfg["dist_axis"][key] = _coerce_float(
                 raw_profile_dist_axis.get(key),
                 cfg["dist_axis"].get(key, fallback),
@@ -2262,6 +2282,18 @@ def _load_reset_motion_config(path: Path | None = None) -> dict:
             minimum=1,
             maximum=5000,
         ),
+        "duration_min_ms": _coerce_int(
+            raw_straight_back.get("duration_min_ms"),
+            0,
+            minimum=0,
+            maximum=5000,
+        ),
+        "duration_max_ms": _coerce_int(
+            raw_straight_back.get("duration_max_ms"),
+            0,
+            minimum=0,
+            maximum=5000,
+        ),
         "pwm": _coerce_int(
             raw_straight_back.get("pwm"),
             DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG["pwm"],
@@ -2292,6 +2324,12 @@ def _load_reset_motion_config(path: Path | None = None) -> dict:
             raw_x_goal_curve.get("max_duration_ms"),
             DEFAULT_RESET_X_GOAL_CURVE_CONFIG["max_duration_ms"],
             minimum=1,
+            maximum=3000,
+        ),
+        "min_duration_ms": _coerce_int(
+            raw_x_goal_curve.get("min_duration_ms"),
+            DEFAULT_RESET_X_GOAL_CURVE_CONFIG["min_duration_ms"],
+            minimum=0,
             maximum=3000,
         ),
         "chunk_ms": _coerce_int(
@@ -3087,7 +3125,7 @@ def _send_turn_curve(
     if production_curve is not None:
         curve, production_duration_ms = production_curve
         if production_duration_ms is not None:
-            duration_ms = int(production_duration_ms)
+            duration_ms = int(max(int(duration_ms), int(production_duration_ms), int(_min_motion_duration_ms(cmd))))
     else:
         curve = (
             _adaptive_turn_curve_for_drive_mode(drive_mode, x_abs)
@@ -5070,6 +5108,18 @@ def _reset_straight_back_first_config(reset_cfg: dict | None = None) -> dict:
             minimum=1,
             maximum=5000,
         ),
+        "duration_min_ms": _coerce_int(
+            raw.get("duration_min_ms"),
+            0,
+            minimum=0,
+            maximum=5000,
+        ),
+        "duration_max_ms": _coerce_int(
+            raw.get("duration_max_ms"),
+            0,
+            minimum=0,
+            maximum=5000,
+        ),
         "pwm": _coerce_int(
             raw.get("pwm"),
             DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG["pwm"],
@@ -5101,6 +5151,12 @@ def _reset_x_goal_curve_config(reset_cfg: dict | None = None) -> dict:
             raw.get("max_duration_ms"),
             DEFAULT_RESET_X_GOAL_CURVE_CONFIG["max_duration_ms"],
             minimum=1,
+            maximum=3000,
+        ),
+        "min_duration_ms": _coerce_int(
+            raw.get("min_duration_ms"),
+            DEFAULT_RESET_X_GOAL_CURVE_CONFIG["min_duration_ms"],
+            minimum=0,
             maximum=3000,
         ),
         "chunk_ms": _coerce_int(
@@ -5145,8 +5201,30 @@ def _reset_reverse_turn(
     reset_cfg = cfg if isinstance(cfg, dict) else {}
     straight_cfg = _reset_straight_back_first_config(reset_cfg)
     if not bool(straight_cfg.get("enabled", True)):
-        return None
-    duration_ms = _coerce_int(straight_cfg.get("duration_ms"), DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG["duration_ms"], minimum=1)
+        return {
+            "wheel_ms": 0,
+            "straight_back_ms": 0,
+            "gentle_ms": 0,
+            "sharp_finish_ms": 0,
+            "mast_up_ms": 0,
+            "mast_settle_s": 0.0,
+            "duration_ms": 0,
+            "actions": [],
+            "curve": {
+                "drive_mode": "none",
+                "strength": "straight_back_first_disabled",
+                "inner_pwm": 0,
+                "outer_pwm": 0,
+                "turn_cmd": str(turn_cmd),
+            },
+        }
+    min_duration_ms = _coerce_int(straight_cfg.get("duration_min_ms"), 0, minimum=0, maximum=5000)
+    max_duration_ms = _coerce_int(straight_cfg.get("duration_max_ms"), 0, minimum=0, maximum=5000)
+    if min_duration_ms > 0 and max_duration_ms >= min_duration_ms:
+        random_source = rng if rng is not None else random
+        duration_ms = int(round(float(random_source.uniform(float(min_duration_ms), float(max_duration_ms)))))
+    else:
+        duration_ms = _coerce_int(straight_cfg.get("duration_ms"), DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG["duration_ms"], minimum=1)
     drive_pwm = _clamp_to_approved_straight_drive_pwm("b", straight_cfg.get("pwm"))
     actions = _straight_drive_actions("b", drive_pwm)
     for action in actions:
@@ -5368,6 +5446,10 @@ def _reset_curve_until_x_goal_fraction(
     target_fraction = float(curve_cfg.get("target_fraction", DEFAULT_RESET_X_GOAL_CURVE_CONFIG["target_fraction"]))
     x_goal = max(0.0, float(target_abs_x_mm) * max(0.0, min(1.0, target_fraction)))
     max_ms = int(curve_cfg.get("max_duration_ms", DEFAULT_RESET_X_GOAL_CURVE_CONFIG["max_duration_ms"]))
+    min_ms = min(
+        int(curve_cfg.get("min_duration_ms", DEFAULT_RESET_X_GOAL_CURVE_CONFIG["min_duration_ms"])),
+        int(max_ms),
+    )
     chunk_ms = min(int(curve_cfg.get("chunk_ms", DEFAULT_RESET_X_GOAL_CURVE_CONFIG["chunk_ms"])), max_ms)
     settle_s = float(curve_cfg.get("settle_s", DEFAULT_RESET_X_GOAL_CURVE_CONFIG["settle_s"]))
     turn_cmd = str(direction or "").strip().lower()
@@ -5375,6 +5457,25 @@ def _reset_curve_until_x_goal_fraction(
         return current, {"enabled": False, "reason": "invalid_turn_direction"}
     if not bool(curve_cfg.get("enabled", True)) or max_ms <= 0 or chunk_ms <= 0 or x_goal <= 0.0:
         return current, {"enabled": False, "reason": "disabled_or_no_goal", "x_goal_mm": float(x_goal)}
+
+    try:
+        x_min = _coerce_float(reset_cfg.get("x_offset_min_mm"), RESET_X_OFFSET_MIN_MM, minimum=0.0)
+        x_max = _coerce_float(reset_cfg.get("x_offset_max_mm"), RESET_X_OFFSET_MAX_MM, minimum=0.0)
+        current_abs_x = abs(float(current.get("x_mm")))
+        if x_min > x_max:
+            x_min, x_max = x_max, x_min
+        ready_floor = min(float(x_max), float(x_min) + 2.0)
+        if ready_floor <= current_abs_x <= x_max:
+            return current, {
+                "enabled": True,
+                "reason": "x_target_already_ready",
+                "attempts": 0,
+                "elapsed_ms": 0,
+                "x_goal_mm": float(x_goal),
+                "abs_x_mm": float(current_abs_x),
+            }
+    except (TypeError, ValueError):
+        pass
 
     elapsed_ms = 0
     attempts = 0
@@ -5384,7 +5485,7 @@ def _reset_curve_until_x_goal_fraction(
             last_abs_x = abs(float(current.get("x_mm")))
         except (TypeError, ValueError):
             break
-        if last_abs_x >= x_goal:
+        if last_abs_x >= x_goal and elapsed_ms >= min_ms:
             return current, {
                 "enabled": True,
                 "reason": "x_goal_fraction_hit",
@@ -5394,6 +5495,8 @@ def _reset_curve_until_x_goal_fraction(
                 "abs_x_mm": float(last_abs_x),
             }
         this_ms = min(int(chunk_ms), int(max_ms) - int(elapsed_ms))
+        if elapsed_ms < min_ms:
+            this_ms = min(max(int(this_ms), int(min_ms) - int(elapsed_ms)), int(max_ms) - int(elapsed_ms))
         curve = {
             "inner_pwm": int(curve_cfg.get("inner_pwm", DEFAULT_RESET_X_GOAL_CURVE_CONFIG["inner_pwm"])),
             "outer_pwm": int(curve_cfg.get("outer_pwm", DEFAULT_RESET_X_GOAL_CURVE_CONFIG["outer_pwm"])),
@@ -6208,6 +6311,11 @@ def _reset_follow_reading_history(
         setattr(vision, "_follow_allow_large_dist_reacquire", bool(allow_large_dist_jump))
     except Exception:
         pass
+    if bool(allow_large_dist_jump):
+        try:
+            setattr(vision, "_follow_last_stable_reading", None)
+        except Exception:
+            pass
     try:
         jump_cfg = _vision_jump_guard_config()
         setattr(
@@ -6691,6 +6799,12 @@ def _win_confirmation_config() -> dict:
             minimum=0.0,
             maximum=100.0,
         ),
+        "accept_live_happy_after_stop": bool(
+            raw.get(
+                "accept_live_happy_after_stop",
+                DEFAULT_WIN_CONFIRMATION_CONFIG["accept_live_happy_after_stop"],
+            )
+        ),
     }
 
 
@@ -6842,6 +6956,8 @@ def _follow_dist_axis_config() -> dict:
     out = dict(DEFAULT_FOLLOW_DIST_AXIS_CONFIG)
     out["win_target_mm"] = _coerce_float(raw.get("win_target_mm"), out["win_target_mm"], minimum=0.0)
     out["win_tol_mm"] = _coerce_float(raw.get("win_tol_mm"), out["win_tol_mm"], minimum=0.0)
+    positive_cmd = str(raw.get("positive_error_cmd", out.get("positive_error_cmd", "f"))).strip().lower()
+    out["positive_error_cmd"] = positive_cmd if positive_cmd in {"f", "b"} else "f"
     return out
 
 
@@ -6851,6 +6967,21 @@ def _dist_target_mm() -> float:
 
 def _dist_tol_mm() -> float:
     return float(_follow_dist_axis_config().get("win_tol_mm", DIST_TOL_MM))
+
+
+def _dist_positive_error_cmd() -> str:
+    cmd = str(_follow_dist_axis_config().get("positive_error_cmd", "f")).strip().lower()
+    return cmd if cmd in {"f", "b"} else "f"
+
+
+def _dist_cmd_for_error(dist_err: float) -> str:
+    positive_cmd = _dist_positive_error_cmd()
+    negative_cmd = "b" if positive_cmd == "f" else "f"
+    return positive_cmd if float(dist_err) >= 0.0 else negative_cmd
+
+
+def _drive_mode_for_dist_error(dist_err: float) -> str:
+    return "forward" if _dist_cmd_for_error(dist_err) == "f" else "backward"
 
 
 def _x_target_mm() -> float:
@@ -7264,7 +7395,7 @@ def _near_target_distance_creep_duration_ms(dist_err: float, policy: dict | None
 
 def _distance_creep_duration_ms(dist_err: float) -> int:
     policy = _follow_dist_approach_policy()
-    cmd = "b" if float(dist_err) < 0.0 else "f"
+    cmd = _dist_cmd_for_error(dist_err)
     floor_ms = int(_min_effective_drive_duration_ms(cmd))
     near_duration = _near_target_distance_creep_duration_ms(dist_err, policy)
     if near_duration is not None:
@@ -7322,7 +7453,7 @@ def _combined_drive_bias_duration_ms(dist_err: float, *, drive_mode: str = "forw
 
 def _distance_correction_duration_ms(dist_err: float) -> int:
     policy = _follow_dist_approach_policy()
-    cmd = "b" if float(dist_err) < 0.0 else "f"
+    cmd = _dist_cmd_for_error(dist_err)
     floor_ms = int(_min_effective_drive_duration_ms(cmd))
     near_duration = _near_target_distance_creep_duration_ms(dist_err, policy)
     if near_duration is not None:
@@ -7839,7 +7970,7 @@ def _y_axis_action_plan(reading: dict, *, dist_err: float, x_err: float) -> dict
             "duration_ms": 0,
             "reason": "y_min_act_would_overshoot",
         }
-    cmd = "u" if y_err > 0.0 else "d"
+    cmd = "d" if y_err > 0.0 else "u"
     hard_floor_raw = y_cfg.get("hard_floor_y_mm")
     hard_floor_y = None
     try:
@@ -7847,7 +7978,7 @@ def _y_axis_action_plan(reading: dict, *, dist_err: float, x_err: float) -> dict
             hard_floor_y = float(hard_floor_raw)
     except (TypeError, ValueError):
         hard_floor_y = None
-    if hard_floor_y is not None and cmd == "u" and float(y_mm) <= hard_floor_y:
+    if hard_floor_y is not None and cmd == "d" and float(y_mm) <= hard_floor_y:
         return {
             "kind": "wait",
             "action": "Y_HARD_FLOOR_WAIT",
@@ -7867,11 +7998,11 @@ def _y_axis_action_plan(reading: dict, *, dist_err: float, x_err: float) -> dict
         cmd=cmd,
         duration_err=duration_err,
     )
-    if hard_floor_y is not None and cmd == "u":
-        min_up_mm = _min_y_curve_closes_mm(y_cfg, cmd="u")
-        if min_up_mm is None:
-            min_up_mm = min_effect_mm
-        if float(y_mm) - float(min_up_mm) <= hard_floor_y:
+    if hard_floor_y is not None and cmd == "d":
+        min_down_mm = _min_y_curve_closes_mm(y_cfg, cmd="d")
+        if min_down_mm is None:
+            min_down_mm = min_effect_mm
+        if float(y_mm) - float(min_down_mm) <= hard_floor_y:
             return {
                 "kind": "wait",
                 "action": "Y_HARD_FLOOR_WAIT",
@@ -7918,7 +8049,7 @@ def _y_plan_closes_win_y(y_plan: dict | None) -> bool:
     final_y_err = float(y_mm) - float(target)
     if _win_axis_ok(final_y_err, tol):
         return False
-    return (final_y_err > 0.0 and cmd == "u") or (final_y_err < 0.0 and cmd == "d")
+    return (final_y_err > 0.0 and cmd == "d") or (final_y_err < 0.0 and cmd == "u")
 
 
 def _plan_mast_cmd(plan: dict | None) -> str | None:
@@ -8178,7 +8309,7 @@ def _x_only_turn_plan(
         "x_err": float(x_err),
         "x_outside_mm": float(x_outside),
         "dist_outside_mm": float(dist_outside),
-        "duration_ms": int(PULSE_MS),
+        "duration_ms": int(max(300, int(PULSE_MS), int(_min_motion_duration_ms(turn_cmd)))),
         "reason": str(reason),
     }
     if bool(use_production_curve):
@@ -8192,7 +8323,7 @@ def _x_only_turn_plan(
         if isinstance(production_curve, tuple):
             curve, production_duration_ms = production_curve
             if production_duration_ms is not None:
-                plan["duration_ms"] = _bounded_act_duration_ms(production_duration_ms)
+                plan["duration_ms"] = int(max(300, _bounded_act_duration_ms(production_duration_ms)))
             plan["production_curve_name"] = curve.get("curve_name")
             plan["production_curve_value_mm"] = curve.get("curve_value_mm")
     return _attach_mast_to_plan(plan, y_plan)
@@ -8235,8 +8366,8 @@ def _follow_action_plan(reading: dict) -> dict:
                     return micro_plan
                 return _attach_mast_to_plan({
                     "kind": "drive",
-                    "cmd": "b",
-                    "action": "BCK",
+                    "cmd": _dist_cmd_for_error(dist_err),
+                    "action": "BCK" if _dist_cmd_for_error(dist_err) == "b" else "FWD",
                     "dist_err": dist_err,
                     "x_err": x_err,
                     "x_outside_mm": float(x_outside),
@@ -8248,7 +8379,7 @@ def _follow_action_plan(reading: dict) -> dict:
             if not _sharp_x_only_turn_allowed(dist_err):
                 return _x_dist_drive_bias_plan(
                     turn_cmd=turn_cmd,
-                    drive_mode="backward",
+                    drive_mode=_drive_mode_for_dist_error(dist_err),
                     dist_err=dist_err,
                     x_err=x_err,
                     x_outside=x_outside,
@@ -8274,8 +8405,8 @@ def _follow_action_plan(reading: dict) -> dict:
             return nudge_plan
         return {
             "kind": "drive",
-            "cmd": "b",
-            "action": "BCK",
+            "cmd": _dist_cmd_for_error(dist_err),
+            "action": "BCK" if _dist_cmd_for_error(dist_err) == "b" else "FWD",
             "dist_err": dist_err,
             "x_err": x_err,
             "duration_ms": _distance_correction_duration_ms(dist_err),
@@ -8436,7 +8567,7 @@ def _follow_action_plan(reading: dict) -> dict:
                 )
             return _x_dist_drive_bias_plan(
                 turn_cmd=turn_cmd,
-                drive_mode="forward",
+                drive_mode=_drive_mode_for_dist_error(dist_err),
                 dist_err=dist_err,
                 x_err=x_err,
                 x_outside=x_outside,
@@ -8458,7 +8589,7 @@ def _follow_action_plan(reading: dict) -> dict:
             use_production_curve=bool(sharp_x_only_allowed),
         )
 
-    dist_cmd = "b" if dist_err < 0.0 else "f"
+    dist_cmd = _dist_cmd_for_error(dist_err)
     nudge_plan = _distance_micro_nudge_plan(reading, dist_err=dist_err, x_err=x_err, y_plan=y_plan)
     if nudge_plan is not None:
         return nudge_plan
@@ -8646,7 +8777,10 @@ def _distance_bearing_plan(plan: dict | None) -> bool:
 
 
 def _plan_allows_large_dist_reacquire(plan: dict | None) -> bool:
-    return False
+    if not isinstance(plan, dict):
+        return False
+    kind = str(plan.get("kind") or "").strip().lower()
+    return kind in {"drive", "drive_bias", "drive_nudge", "mast"}
 
 
 def _record_distance_act_state(stats: dict, action: str, plan: dict) -> None:
@@ -9283,43 +9417,67 @@ def _y_action_observed_progress(
     min_delta_mm: float,
 ) -> tuple[bool, dict]:
     """For mast moves, progress means y moved toward its y target, not x/dist jitter."""
-    detail: dict = {"mode": "y_delta"}
-    try:
-        prev_y = float(pending.get("y_mm"))
-        now_y = float((reading or {}).get("y_mm"))
-    except (TypeError, ValueError):
-        return False, {"mode": "missing_y"}
-    delta_y_signed = float(now_y - prev_y)
-    delta_y = abs(delta_y_signed)
-    try:
-        target_y = float(pending.get("y_target_mm"))
-    except (TypeError, ValueError):
-        target_y = None
-    if target_y is not None:
-        prev_err = abs(prev_y - target_y)
-        now_err = abs(now_y - target_y)
-        improvement = float(prev_err - now_err)
-        detail.update(
-            {
-                "mode": "target_error",
-                "y_target_mm": float(target_y),
-                "prev_y_error_mm": float(prev_err),
-                "now_y_error_mm": float(now_err),
-                "y_error_improvement_mm": float(improvement),
-            }
-        )
-        return bool(improvement >= float(min_delta_mm)), detail
+    detail = classify_mast_y_effect(
+        before_y_mm=pending.get("y_mm"),
+        after_y_mm=(reading or {}).get("y_mm"),
+        cmd=pending.get("cmd") or pending.get("mast_cmd"),
+        target_y_mm=pending.get("y_target_mm"),
+        min_delta_mm=float(min_delta_mm),
+    )
+    return bool(detail.get("observed")), detail
 
-    cmd = str(pending.get("cmd") or pending.get("mast_cmd") or "").strip().lower()
-    if cmd == "d":
-        observed = delta_y_signed <= -float(min_delta_mm)
-        detail.update({"mode": "cmd_direction", "cmd": cmd, "delta_y_signed_mm": delta_y_signed})
-        return bool(observed), detail
-    if cmd == "u":
-        observed = delta_y_signed >= float(min_delta_mm)
-        detail.update({"mode": "cmd_direction", "cmd": cmd, "delta_y_signed_mm": delta_y_signed})
-        return bool(observed), detail
-    return bool(delta_y >= float(min_delta_mm)), detail
+
+def _mark_mast_spool_unreliable(stats: dict, detail: dict) -> None:
+    if not isinstance(stats, dict):
+        return
+    y_cfg = _follow_y_axis_config()
+    count = _coerce_int(
+        y_cfg.get("spool_reversal_short_act_count"),
+        DEFAULT_FOLLOW_Y_AXIS_CONFIG["spool_reversal_short_act_count"],
+        minimum=0,
+        maximum=20,
+    )
+    stats["mast_spool_unreliable_countdown"] = int(count)
+    stats["mast_spool_last_unreliable_detail"] = dict(detail or {})
+    _bump_stat_count(stats, "miss_reasons", "mast_spool_direction_unreliable")
+
+
+def _cap_mast_plan_for_unreliable_spool(stats: dict, plan: dict) -> dict:
+    if not isinstance(stats, dict) or not isinstance(plan, dict):
+        return plan
+    if int(stats.get("mast_spool_unreliable_countdown", 0) or 0) <= 0:
+        return plan
+    if str(plan.get("kind") or "").strip().lower() != "mast":
+        return plan
+    cmd = str(plan.get("cmd") or plan.get("mast_cmd") or "").strip().lower()
+    if cmd not in {"u", "d"}:
+        return plan
+    y_cfg = _follow_y_axis_config()
+    max_ms = _coerce_int(
+        y_cfg.get("spool_reversal_mast_max_ms"),
+        DEFAULT_FOLLOW_Y_AXIS_CONFIG["spool_reversal_mast_max_ms"],
+        minimum=1,
+        maximum=2000,
+    )
+    out = dict(plan)
+    try:
+        duration_ms = int(round(float(out.get("duration_ms", max_ms))))
+    except (TypeError, ValueError):
+        duration_ms = int(max_ms)
+    if duration_ms > int(max_ms):
+        out["duration_ms"] = int(max_ms)
+        out["spool_unreliable_capped"] = True
+        out["reason"] = f"{out.get('reason', 'mast')}_spool_unreliable_probe"
+    return out
+
+
+def _consume_unreliable_spool_probe(stats: dict, plan: dict) -> None:
+    if not isinstance(stats, dict) or not isinstance(plan, dict):
+        return
+    if not bool(plan.get("spool_unreliable_capped")):
+        return
+    remaining = int(stats.get("mast_spool_unreliable_countdown", 0) or 0)
+    stats["mast_spool_unreliable_countdown"] = max(0, remaining - 1)
 
 
 def _reset_motion_was_sent(reset_result: dict) -> bool:
@@ -9458,6 +9616,9 @@ def _record_observed_after_pending_act(stats: dict, reading: dict) -> dict | Non
     else:
         _bump_stat_count(stats, "no_observed_after_act_counts", action)
         _bump_stat_count(stats, "miss_reasons", "no_observed_change_after_act")
+        if is_y_action and mast_effect_is_reversal(y_progress_detail):
+            _mark_mast_spool_unreliable(stats, y_progress_detail)
+            _bump_stat_count(stats, "miss_reasons", str(y_progress_detail.get("status") or "mast_spool_reversal"))
         if stats.get("no_observed_change_streak_action") == action:
             streak = int(stats.get("no_observed_change_streak_count", 0)) + 1
             streak_duration_ms = int(stats.get("no_observed_change_streak_duration_ms", 0)) + max(0, pending_duration_ms)
@@ -10602,6 +10763,7 @@ def _follow_loop(
                     time.sleep(remaining)
                 continue
 
+            plan = _cap_mast_plan_for_unreliable_spool(stats, plan)
             plan = _cap_mast_up_plan_to_budget(stats, plan)
             action = str(plan.get("action") or action)
             exceeded, used_up_ms, planned_up_ms, max_up_ms = _mast_up_budget_exceeded(stats, plan)
@@ -10627,6 +10789,7 @@ def _follow_loop(
             if not _send_result_blocked(send_result):
                 if _plan_commits_y_lowering(plan):
                     stats["y_commit_active"] = True
+                _consume_unreliable_spool_probe(stats, plan)
                 _reset_follow_reading_history(
                     vision,
                     allow_large_dist_jump=_plan_allows_large_dist_reacquire(plan),
@@ -10841,6 +11004,19 @@ def _follow_loop(
 
         if str(plan.get("kind")) == "hold":
             action = "HAPPY"
+            if bool(_win_confirmation_config().get("accept_live_happy_after_stop", False)):
+                _stop_robot(robot)
+                dist_err, x_err, y_text, conf = _record_and_print_step1_win(stats, reading, plan)
+                if bool(debug_mode):
+                    stats["debug_mode_terminated"] = True
+                    stats["last_action"] = "DEBUG_STEP1_TERMINATE"
+                    print("[DEBUG] Step 1 win accepted from live happy; stopping for operator confirmation.", flush=True)
+                    return stats
+                if bool(stop_after_win):
+                    last_action = "HAPPY"
+                    stats["stop_after_win_triggered"] = True
+                    break
+                continue
             confirmed, confirm_reason, confirmed_reading, confirmed_plan = _confirm_stopped_happy(
                 vision,
                 robot,
@@ -11126,6 +11302,7 @@ def _follow_loop(
             continue
         else:
             plan = _apply_stall_recovery_boost(stats, plan)
+            plan = _cap_mast_plan_for_unreliable_spool(stats, plan)
             plan = _cap_mast_up_plan_to_budget(stats, plan)
             action = str(plan.get("action") or action)
             exceeded, used_up_ms, planned_up_ms, max_up_ms = _mast_up_budget_exceeded(stats, plan)
@@ -11146,6 +11323,7 @@ def _follow_loop(
             _record_send_result(stats, action, send_result)
             if not _send_result_blocked(send_result):
                 _record_mast_up_budget(stats, plan, send_result)
+                _consume_unreliable_spool_probe(stats, plan)
             duration_text = _sent_motion_duration_text(plan, send_result)
             if not _send_result_blocked(send_result):
                 _reset_follow_reading_history(
