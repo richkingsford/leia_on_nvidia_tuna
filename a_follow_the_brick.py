@@ -215,6 +215,9 @@ DEFAULT_ACT_STALL_GUARD_CONFIG = {
     "enabled": True,
     "max_no_change_tries": 6,
     "min_axis_delta_mm": 1.0,
+    "close_trap_enabled": True,
+    "close_trap_min_abs_dist_err_mm": 25.0,
+    "close_trap_max_no_change_tries": 1,
     "y_max_no_change_tries": 59,
     "y_max_no_change_duration_ms": 7800,
     "recovery_boost_enabled": True,
@@ -2520,6 +2523,21 @@ def _act_stall_guard_config() -> dict:
             DEFAULT_ACT_STALL_GUARD_CONFIG["min_axis_delta_mm"],
             minimum=0.0,
             maximum=100.0,
+        ),
+        "close_trap_enabled": bool(
+            cfg.get("close_trap_enabled", DEFAULT_ACT_STALL_GUARD_CONFIG["close_trap_enabled"])
+        ),
+        "close_trap_min_abs_dist_err_mm": _coerce_float(
+            cfg.get("close_trap_min_abs_dist_err_mm"),
+            DEFAULT_ACT_STALL_GUARD_CONFIG["close_trap_min_abs_dist_err_mm"],
+            minimum=0.0,
+            maximum=300.0,
+        ),
+        "close_trap_max_no_change_tries": _coerce_int(
+            cfg.get("close_trap_max_no_change_tries"),
+            DEFAULT_ACT_STALL_GUARD_CONFIG["close_trap_max_no_change_tries"],
+            minimum=1,
+            maximum=10,
         ),
         "y_max_no_change_tries": _coerce_int(
             cfg.get("y_max_no_change_tries"),
@@ -9735,6 +9753,33 @@ def _stall_recovery_boost_available(pending: dict, guard_cfg: dict, *, is_y_acti
     return float(current_scale) < float(max_scale) - 1e-6
 
 
+def _close_trap_stall_limit(pending: dict, guard_cfg: dict, *, is_y_action: bool) -> int | None:
+    if bool(is_y_action) or not bool(guard_cfg.get("close_trap_enabled", True)):
+        return None
+    action = str((pending or {}).get("action") or "").strip().upper()
+    cmd = str((pending or {}).get("cmd") or "").strip().lower()
+    if cmd != "b" and not action.startswith("BCK"):
+        return None
+    try:
+        dist_err = float((pending or {}).get("dist_err"))
+    except (TypeError, ValueError):
+        return None
+    min_abs = _coerce_float(
+        guard_cfg.get("close_trap_min_abs_dist_err_mm"),
+        DEFAULT_ACT_STALL_GUARD_CONFIG["close_trap_min_abs_dist_err_mm"],
+        minimum=0.0,
+        maximum=300.0,
+    )
+    if float(dist_err) > -float(min_abs):
+        return None
+    return _coerce_int(
+        guard_cfg.get("close_trap_max_no_change_tries"),
+        DEFAULT_ACT_STALL_GUARD_CONFIG["close_trap_max_no_change_tries"],
+        minimum=1,
+        maximum=10,
+    )
+
+
 def _arm_stall_recovery_boost(stats: dict, pending: dict, guard_cfg: dict) -> None:
     if not isinstance(stats, dict) or not isinstance(pending, dict):
         return
@@ -9850,12 +9895,20 @@ def _record_observed_after_pending_act(stats: dict, reading: dict) -> dict | Non
         else:
             max_tries = int(guard_cfg.get("max_no_change_tries", DEFAULT_ACT_STALL_GUARD_CONFIG["max_no_change_tries"]))
             max_duration_ms = None
+            close_trap_limit = _close_trap_stall_limit(pending, guard_cfg, is_y_action=bool(is_y_action))
+            close_trap_limited = close_trap_limit is not None
+            if close_trap_limited:
+                max_tries = min(int(max_tries), int(close_trap_limit))
             stalled = int(streak) >= int(max_tries)
-        recovery_boost_available = _stall_recovery_boost_available(
-            pending,
-            guard_cfg,
-            is_y_action=bool(is_y_action),
-        )
+        if bool(is_y_action):
+            close_trap_limited = False
+        recovery_boost_available = False
+        if not bool(close_trap_limited):
+            recovery_boost_available = _stall_recovery_boost_available(
+                pending,
+                guard_cfg,
+                is_y_action=bool(is_y_action),
+            )
         if bool(recovery_boost_available):
             _arm_stall_recovery_boost(stats, pending, guard_cfg)
             stalled = False
@@ -9873,6 +9926,7 @@ def _record_observed_after_pending_act(stats: dict, reading: dict) -> dict | Non
                 "delta_x_mm": float(delta_x),
                 "delta_y_mm": float(delta_y),
                 "observed_mode": y_progress_detail.get("mode", "any_axis_delta" if not is_y_action else "y_progress"),
+                "close_trap_limited": bool(close_trap_limited),
                 "y_progress_detail": dict(y_progress_detail),
                 "before": {
                     "dist_mm": float(prev_dist),
