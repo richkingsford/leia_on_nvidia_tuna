@@ -385,6 +385,103 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertFalse(ready)
         self.assertEqual(reason, "step2_raw_dist_too_close")
 
+    def test_step2_target_rejects_pickup_suspect_with_raw_frozen_distance(self):
+        step2 = {
+            "targets": {
+                "dist_mm": 149.0,
+                "dist_tol_mm": 10.0,
+                "x_mm": 4.0,
+                "x_tol_mm": 9.0,
+                "y_mm": -36.2,
+                "y_tol_mm": 3.0,
+            },
+        }
+        reading = {
+            "confident": True,
+            "xz_frozen": True,
+            "dist_mm": 149.0,
+            "raw_dist_mm": 301.0,
+            "x_mm": 4.0,
+            "raw_x_mm": 4.0,
+            "y_mm": -79.0,
+        }
+
+        ready, reason, _closeness = follow._step2_targets_ready(reading, step2)
+
+        self.assertTrue(follow._pickup_suspected_reading(reading))
+        self.assertFalse(ready)
+        self.assertEqual(reason, "pickup_suspected_far_low")
+
+    def test_step2_precision_stops_without_motion_on_pickup_suspect(self):
+        step2 = {
+            "precision_settle_enabled": True,
+            "precision_max_attempts": 3,
+            "precision_hard_max_attempts": 5,
+            "precision_settle_s": 0.0,
+            "freeze_xz_after_xz_target": False,
+            "targets": {
+                "dist_mm": 149.0,
+                "dist_tol_mm": 10.0,
+                "x_mm": 4.0,
+                "x_tol_mm": 9.0,
+                "y_mm": -36.2,
+                "y_tol_mm": 3.0,
+            },
+        }
+        reading = {
+            "visible": True,
+            "confident": True,
+            "conf": 99.0,
+            "dist_mm": 301.0,
+            "x_mm": 4.0,
+            "y_mm": -79.0,
+        }
+        robot = _FakeRobot()
+
+        final, counts = follow._step2_precision_settle_to_targets(object(), robot, reading, step2)
+
+        self.assertEqual(final["dist_mm"], 301.0)
+        self.assertEqual(counts["pickup_suspected_stop"], 1)
+        self.assertEqual(len(robot.commands), 0)
+        self.assertEqual(len(robot.custom_commands), 0)
+        self.assertGreaterEqual(robot.stops, 1)
+
+    def test_step2_seat_sequence_skips_all_motion_on_pickup_suspect_start(self):
+        step2 = {
+            "precision_settle_enabled": True,
+            "targets": {
+                "dist_mm": 149.0,
+                "dist_tol_mm": 10.0,
+                "x_mm": 4.0,
+                "x_tol_mm": 9.0,
+                "y_mm": -36.2,
+                "y_tol_mm": 3.0,
+            },
+        }
+        reading = {
+            "visible": True,
+            "confident": True,
+            "conf": 99.0,
+            "dist_mm": 301.0,
+            "x_mm": 4.0,
+            "y_mm": -79.0,
+        }
+        old_read = follow._read_brick_measurement
+        try:
+            follow._read_brick_measurement = lambda _vision: reading
+            robot = _FakeRobot()
+
+            result = follow._run_step2_seat_sequence(object(), robot, step_cfg=step2)
+        finally:
+            follow._read_brick_measurement = old_read
+
+        self.assertFalse(result["target_met"])
+        self.assertEqual(result["reason"], "step2_pickup_suspected_far_low")
+        self.assertEqual(result["precision_counts"]["pickup_suspected_stop"], 1)
+        self.assertEqual(len(robot.commands), 0)
+        self.assertEqual(len(robot.custom_commands), 0)
+        self.assertGreaterEqual(robot.stops, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

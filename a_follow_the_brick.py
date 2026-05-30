@@ -3880,6 +3880,8 @@ def _step2_targets_ready(reading: dict, step2_cfg: dict | None = None) -> tuple[
     closeness = _step2_target_closeness_from_reading(reading, step2_cfg)
     if not isinstance(closeness, dict):
         return False, "invalid_step2_reading", None
+    if _pickup_suspected_reading(reading):
+        return False, "pickup_suspected_far_low", closeness
     targets = _configured_step2_targets(step2_cfg)
     if bool((reading or {}).get("xz_frozen")) and targets.get("dist_mm") is not None and targets.get("dist_tol_mm") is not None:
         try:
@@ -4015,6 +4017,8 @@ def _step2_result_freezes_xz(step2_result: dict | None) -> bool:
 
 def _step2_should_creep_forward(reading: dict, step2_cfg: dict | None = None) -> bool:
     if not isinstance(reading, dict) or not bool(reading.get("confident")):
+        return False
+    if _pickup_suspected_reading(reading):
         return False
     if bool(reading.get("xz_frozen")):
         return False
@@ -4193,6 +4197,11 @@ def _step2_precision_settle_to_targets(
             if xz_lock_reading is not None:
                 current = _step2_freeze_xz_reading(current, xz_lock_reading)
             break
+        if _pickup_suspected_reading(current):
+            _stop_robot(robot)
+            counts["pickup_suspected_stop"] = int(counts.get("pickup_suspected_stop", 0)) + 1
+            counts["target_hit_reason"] = "pickup_suspected_far_low"
+            break
         if bool(xz_freeze_enabled):
             if xz_lock_reading is None:
                 xz_ready, _xz_reason = _step2_xz_targets_ready(current, step2_cfg)
@@ -4351,6 +4360,11 @@ def _step2_precision_settle_to_targets(
         _stop_robot(robot)
         _reset_follow_reading_history(vision)
         current = _read_brick_measurement(vision)
+        if _pickup_suspected_reading(current):
+            _stop_robot(robot)
+            counts["pickup_suspected_stop"] = int(counts.get("pickup_suspected_stop", 0)) + 1
+            counts["target_hit_reason"] = "pickup_suspected_far_low"
+            break
         gap_after = None
         if bool(current.get("confident")):
             try:
@@ -4603,6 +4617,24 @@ def _run_step2_seat_sequence(
             "before": before,
             "reading": before,
         }
+    if _pickup_suspected_reading(before):
+        _stop_robot(robot)
+        return {
+            "success": True,
+            "target_met": False,
+            "reason": f"{label}_pickup_suspected_far_low",
+            "send_result": {"skipped": True, "reason": "pickup_suspected_far_low"},
+            "mast_result": {"skipped": True, "reason": "pickup_suspected_far_low"},
+            "before": before,
+            "reading": before,
+            "duration_ms": 0,
+            "mast_duration_ms": 0,
+            "drive_duration_ms": 0,
+            "creep_attempts": 0,
+            "visibility_recovery_creeps": 0,
+            "precision_counts": {"pickup_suspected_stop": 1},
+            "closeness": _step2_target_closeness_from_reading(before, step2),
+        }
     if _deadline_expired(deadline):
         _stop_robot(robot)
         return {
@@ -4683,6 +4715,25 @@ def _run_step2_seat_sequence(
         after_mast = _read_brick_measurement(vision)
     else:
         after_mast = before
+    if _pickup_suspected_reading(after_mast):
+        _stop_robot(robot)
+        return {
+            "success": True,
+            "target_met": False,
+            "reason": f"{label}_pickup_suspected_far_low",
+            "send_result": {"skipped": True, "reason": "pickup_suspected_far_low"},
+            "mast_result": mast_result,
+            "before": before,
+            "after_mast": after_mast,
+            "reading": after_mast,
+            "duration_ms": int(mast_duration_ms),
+            "mast_duration_ms": int(mast_duration_ms),
+            "drive_duration_ms": 0,
+            "creep_attempts": 0,
+            "visibility_recovery_creeps": 0,
+            "precision_counts": {"pickup_suspected_stop": 1},
+            "closeness": _step2_target_closeness_from_reading(after_mast, step2),
+        }
     if _deadline_expired(deadline):
         _stop_robot(robot)
         return {
@@ -4748,6 +4799,25 @@ def _run_step2_seat_sequence(
                     deadline=deadline,
                 )
                 creep_attempts = int((precision_counts or {}).get("fwd", 0))
+            if bool((precision_counts or {}).get("pickup_suspected_stop")) or _pickup_suspected_reading(after):
+                _stop_robot(robot)
+                return {
+                    "success": True,
+                    "target_met": False,
+                    "reason": f"{label}_pickup_suspected_far_low",
+                    "send_result": {"skipped": True, "reason": f"no_blind_{label}_drive"},
+                    "mast_result": mast_result,
+                    "before": before,
+                    "after_mast": after_mast,
+                    "reading": after,
+                    "duration_ms": int(mast_duration_ms),
+                    "mast_duration_ms": int(mast_duration_ms),
+                    "drive_duration_ms": 0,
+                    "creep_attempts": int(creep_attempts),
+                    "visibility_recovery_creeps": int(visibility_recovery_creeps),
+                    "precision_counts": dict(precision_counts or {}),
+                    "closeness": _step2_target_closeness_from_reading(after, step2),
+                }
             target_met, target_reason, closeness = _step2_targets_ready(after, step2)
             if bool((precision_counts or {}).get("target_hit_confirm_failed")):
                 target_reason = str((precision_counts or {}).get("target_hit_reason") or target_reason)
@@ -4801,6 +4871,25 @@ def _run_step2_seat_sequence(
     else:
         after, creep_attempts = _step2_creep_forward_if_short(vision, robot, after_mast, step2)
         precision_counts = {"fwd": int(creep_attempts), "bck": 0, "mast_u": 0, "mast_d": 0, "blocked": 0}
+    if bool((precision_counts or {}).get("pickup_suspected_stop")) or _pickup_suspected_reading(after):
+        _stop_robot(robot)
+        return {
+            "success": True,
+            "target_met": False,
+            "reason": f"{label}_pickup_suspected_far_low",
+            "send_result": {"skipped": True, "reason": f"no_blind_{label}_drive"},
+            "mast_result": mast_result,
+            "before": before,
+            "after_mast": after_mast,
+            "reading": after,
+            "duration_ms": int(mast_duration_ms),
+            "mast_duration_ms": int(mast_duration_ms),
+            "drive_duration_ms": 0,
+            "creep_attempts": int(creep_attempts),
+            "visibility_recovery_creeps": 0,
+            "precision_counts": dict(precision_counts or {}),
+            "closeness": _step2_target_closeness_from_reading(after, step2),
+        }
     target_met = False
     target_reason = f"{label}_targets_scored"
     closeness = None
@@ -4823,6 +4912,11 @@ def _run_step2_seat_sequence(
             target_reason = f"{label}_step_timeout"
             break
         if bool(after.get("confident")):
+            if _pickup_suspected_reading(after):
+                _stop_robot(robot)
+                target_met = False
+                target_reason = f"{label}_pickup_suspected_far_low"
+                break
             target_met, target_reason, closeness = _step2_targets_ready(after, step2)
             if bool(target_met):
                 precision_already_latched = bool(
@@ -7131,7 +7225,7 @@ def _pickup_suspected_reading(reading: dict | None) -> bool:
     if not isinstance(reading, dict) or not bool(reading.get("confident")):
         return False
     try:
-        dist_mm = float(reading.get("dist_mm"))
+        dist_mm = float(reading.get("raw_dist_mm") if reading.get("raw_dist_mm") is not None else reading.get("dist_mm"))
         y_mm = float(reading.get("y_mm"))
     except (TypeError, ValueError):
         return False
