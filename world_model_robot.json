@@ -942,7 +942,7 @@
             "y_tol_mm": 1.0
           },
           "targets": {
-            "dist_mm": 139.0,
+            "dist_mm": 149.0,
             "dist_tol_mm": 5.0,
             "x_mm": 4.0,
             "x_tol_mm": 9.0,

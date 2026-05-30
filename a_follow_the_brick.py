@@ -4100,7 +4100,16 @@ def _step2_precision_settle_to_targets(
     deadline: float | None = None,
 ) -> tuple[dict, dict]:
     current = reading if isinstance(reading, dict) else {}
-    counts = {"fwd": 0, "bck": 0, "mast_u": 0, "mast_d": 0, "blocked": 0, "gap_closure_samples": []}
+    counts = {
+        "fwd": 0,
+        "bck": 0,
+        "turn_l": 0,
+        "turn_r": 0,
+        "mast_u": 0,
+        "mast_d": 0,
+        "blocked": 0,
+        "gap_closure_samples": [],
+    }
     if not bool(step2_cfg.get("precision_settle_enabled", True)):
         return current, counts
     missing_targets = _step2_missing_target_keys(step2_cfg)
@@ -4126,6 +4135,7 @@ def _step2_precision_settle_to_targets(
     )
     targets = _configured_step2_targets(step2_cfg)
     dist_axis_configured = targets.get("dist_mm") is not None and targets.get("dist_tol_mm") is not None
+    x_axis_configured = targets.get("x_mm") is not None and targets.get("x_tol_mm") is not None
     y_axis_configured = targets.get("y_mm") is not None and targets.get("y_tol_mm") is not None
     prev_dist_err = None
     xz_freeze_enabled = _step2_xz_freeze_enabled(step2_cfg)
@@ -4189,8 +4199,8 @@ def _step2_precision_settle_to_targets(
                 counts["target_hit_confirm_failed"] = int(counts.get("target_hit_confirm_failed", 0)) + 1
             counts["target_hit_reason"] = str(confirm_reason)
             break
-        dist_err = y_err = 0.0
-        dist_gap = y_gap = 0.0
+        dist_err = x_err = y_err = 0.0
+        dist_gap = x_gap = y_gap = 0.0
         if dist_axis_configured:
             try:
                 dist_err = float(current.get("dist_mm")) - float(targets.get("dist_mm"))
@@ -4198,6 +4208,13 @@ def _step2_precision_settle_to_targets(
             except (TypeError, ValueError):
                 break
             dist_gap = max(0.0, abs(float(dist_err)) - float(dist_tol))
+        if x_axis_configured:
+            try:
+                x_err = float(current.get("x_mm")) - float(targets.get("x_mm"))
+                x_tol = float(targets.get("x_tol_mm"))
+            except (TypeError, ValueError):
+                break
+            x_gap = max(0.0, abs(float(x_err)) - float(x_tol))
         if y_axis_configured:
             try:
                 y_err = float(current.get("y_mm")) - float(targets.get("y_mm"))
@@ -4205,9 +4222,10 @@ def _step2_precision_settle_to_targets(
             except (TypeError, ValueError):
                 break
             y_gap = max(0.0, abs(float(y_err)) - float(y_tol))
-        if dist_gap <= 0.0 and y_gap <= 0.0:
+        if dist_gap <= 0.0 and x_gap <= 0.0 and y_gap <= 0.0:
             break
-        if y_axis_configured and y_gap > 0.0 and (dist_gap <= 0.0 or y_gap >= dist_gap):
+        x_turn_plan = None
+        if y_axis_configured and y_gap > 0.0 and y_gap >= max(float(dist_gap), float(x_gap)):
             cmd = _step2_precision_mast_cmd(y_err)
             pwm = _step2_precision_mast_pwm(cmd, y_gap, step2_cfg)
             duration_ms = _step2_precision_mast_duration_ms(y_gap, step2_cfg)
@@ -4239,7 +4257,7 @@ def _step2_precision_settle_to_targets(
             progress_axis = "y"
             before_err_for_sample = float(y_err)
             tol_for_sample = float(targets.get("y_tol_mm"))
-        elif dist_axis_configured and dist_gap > 0.0:
+        elif dist_axis_configured and dist_gap > 0.0 and dist_gap >= float(x_gap):
             cmd = _step2_precision_dist_cmd(dist_err, step2_cfg)
             pwm = _clamp_to_approved_straight_drive_pwm(
                 cmd,
@@ -4255,16 +4273,44 @@ def _step2_precision_settle_to_targets(
             progress_axis = "dist"
             before_err_for_sample = float(dist_err)
             tol_for_sample = float(targets.get("dist_tol_mm"))
+        elif x_axis_configured and x_gap > 0.0:
+            cmd = _turn_cmd_to_close_x_gap(float(x_err))
+            if cmd not in {"l", "r"}:
+                break
+            x_turn_plan = _x_only_turn_plan(
+                reading=current,
+                turn_cmd=cmd,
+                drive_mode=_x_only_turn_drive_mode_for_dist(float(dist_err)),
+                strength="micro",
+                dist_err=float(dist_err),
+                x_err=float(x_err),
+                x_outside=float(x_gap),
+                dist_outside=float(dist_gap),
+                y_plan=None,
+                reason="step2_precision_x_polish",
+                use_production_curve=True,
+            )
+            pwm = 0
+            duration_ms = int(x_turn_plan.get("duration_ms", PULSE_MS))
+            action_key = "turn_l" if cmd == "l" else "turn_r"
+            display_action = "STEP2_PRECISION_TURN_L" if cmd == "l" else "STEP2_PRECISION_TURN_R"
+            gap_before = float(x_gap)
+            progress_axis = "x"
+            before_err_for_sample = float(x_err)
+            tol_for_sample = float(targets.get("x_tol_mm"))
         else:
             break
-        send_result = guarded_send_command_pwm(
-            robot,
-            cmd,
-            pwm,
-            duration_ms=duration_ms,
-            reading=current,
-            context="follow_step2_precision_settle",
-        )
+        if x_turn_plan is not None:
+            send_result = _execute_follow_action(robot, x_turn_plan, current)
+        else:
+            send_result = guarded_send_command_pwm(
+                robot,
+                cmd,
+                pwm,
+                duration_ms=duration_ms,
+                reading=current,
+                context="follow_step2_precision_settle",
+            )
         if isinstance(send_result, dict) and bool(send_result.get("blocked")):
             counts["blocked"] = int(counts.get("blocked", 0)) + 1
             break
@@ -4291,6 +4337,13 @@ def _step2_precision_settle_to_targets(
                         abs(float(after_err_for_sample))
                         - float(tol_for_sample),
                 )
+                elif progress_axis == "x":
+                    after_err_for_sample = float(current.get("x_mm")) - float(targets.get("x_mm"))
+                    gap_after = max(
+                        0.0,
+                        abs(float(after_err_for_sample))
+                        - float(tol_for_sample),
+                    )
                 before_abs = abs(float(before_err_for_sample))
                 after_abs = abs(float(after_err_for_sample))
                 regression = float(after_abs - before_abs)
@@ -4358,6 +4411,14 @@ def _step2_precision_settle_to_targets(
                 break
             if after_dist_err is not None and abs(float(after_dist_err)) > abs(float(dist_err)) + float(progress_min_mm):
                 counts["dist_wrong_way_stop"] = int(counts.get("dist_wrong_way_stop", 0)) + 1
+                break
+        if progress_axis == "x" and bool(current.get("confident")):
+            try:
+                after_x_err = float(current.get("x_mm")) - float(targets.get("x_mm"))
+            except (TypeError, ValueError):
+                after_x_err = None
+            if after_x_err is not None and abs(float(after_x_err)) > abs(float(x_err)) + float(progress_min_mm):
+                counts["x_wrong_way_stop"] = int(counts.get("x_wrong_way_stop", 0)) + 1
                 break
     counts["precision_total_attempts"] = int(total_attempts)
     counts["precision_no_progress_attempts"] = int(no_progress_attempts)
