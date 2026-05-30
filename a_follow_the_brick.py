@@ -197,7 +197,10 @@ DEFAULT_FOLLOW_DIST_AXIS_CONFIG = {
 DEFAULT_VISIBILITY_RECOVERY_CONFIG = {
     "wait_s": 3.0,
     "poll_s": 0.15,
+    "mast_down_duration_ms": 2500,
+    "mast_down_pwm": 255,
 }
+MAST_RAISE_CEILING_ABOVE_TARGET_MM = 5.0
 DEFAULT_HOLDING_TARGET_VISION_CONFIG = {
     "min_confidence_pct": 40.0,
     "confidence": 0.12,
@@ -276,9 +279,9 @@ DEFAULT_STEP3_CONFIG = {
     "step_timeout_s": 15.0,
     "initial_lift_before_gate": False,
     "no_visibility_fallback_enabled": True,
-    "no_visibility_fallback_mast_cmd": "u",
+    "no_visibility_fallback_mast_cmd": "d",
     "no_visibility_fallback_mast_pwm": 255,
-    "no_visibility_fallback_duration_ms": 3000,
+    "no_visibility_fallback_duration_ms": 2500,
     "no_visibility_fallback_settle_s": 0.15,
     "targets": {
         "y_mm": -3.5,
@@ -1106,6 +1109,18 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         DEFAULT_VISIBILITY_RECOVERY_CONFIG["poll_s"],
         minimum=0.01,
         maximum=2.0,
+    )
+    cfg["visibility_recovery"]["mast_down_duration_ms"] = _coerce_int(
+        raw_visibility_recovery.get("mast_down_duration_ms"),
+        DEFAULT_VISIBILITY_RECOVERY_CONFIG["mast_down_duration_ms"],
+        minimum=0,
+        maximum=5000,
+    )
+    cfg["visibility_recovery"]["mast_down_pwm"] = _coerce_int(
+        raw_visibility_recovery.get("mast_down_pwm"),
+        DEFAULT_VISIBILITY_RECOVERY_CONFIG["mast_down_pwm"],
+        minimum=1,
+        maximum=255,
     )
     raw_holding_target = (
         raw.get("holding_target_vision") if isinstance(raw.get("holding_target_vision"), dict) else {}
@@ -2447,6 +2462,18 @@ def _visibility_recovery_config() -> dict:
             DEFAULT_VISIBILITY_RECOVERY_CONFIG["poll_s"],
             minimum=0.01,
             maximum=2.0,
+        ),
+        "mast_down_duration_ms": _coerce_int(
+            cfg.get("mast_down_duration_ms"),
+            DEFAULT_VISIBILITY_RECOVERY_CONFIG["mast_down_duration_ms"],
+            minimum=0,
+            maximum=5000,
+        ),
+        "mast_down_pwm": _coerce_int(
+            cfg.get("mast_down_pwm"),
+            DEFAULT_VISIBILITY_RECOVERY_CONFIG["mast_down_pwm"],
+            minimum=1,
+            maximum=255,
         ),
     }
 
@@ -3974,9 +4001,9 @@ def _step2_precision_drive_duration_ms(dist_gap_mm: float, step2_cfg: dict) -> i
 
 
 def _step2_precision_mast_cmd(y_err: float) -> str:
-    # Positive y error means the observed brick is above the target in our
-    # signed screen metric; U moves that reading back toward target on this rig.
-    return "u" if float(y_err) > 0.0 else "d"
+    # Positive y error means the observed stack is above the target; D is the
+    # only allowed recovery direction from that high-mast/visibility-risk side.
+    return "d" if float(y_err) > 0.0 else "u"
 
 
 def _step2_precision_mast_pwm(cmd: str, y_gap_mm: float, step2_cfg: dict) -> int:
@@ -4166,6 +4193,28 @@ def _step2_precision_settle_to_targets(
             cmd = _step2_precision_mast_cmd(y_err)
             pwm = _step2_precision_mast_pwm(cmd, y_gap, step2_cfg)
             duration_ms = _step2_precision_mast_duration_ms(y_gap, step2_cfg)
+            if cmd == "u":
+                blocked, cap_ms, y_now, ceiling = _mast_up_ceiling_status(
+                    current,
+                    target_mm=float(targets.get("y_mm")),
+                )
+                if blocked:
+                    counts["mast_up_ceiling_blocked"] = int(counts.get("mast_up_ceiling_blocked", 0)) + 1
+                    try:
+                        print(
+                            "[STEP2] Mast-up blocked by y ceiling: "
+                            f"y={float(y_now):+.1f}mm ceiling={float(ceiling):+.1f}mm.",
+                            flush=True,
+                        )
+                    except (TypeError, ValueError):
+                        print("[STEP2] Mast-up blocked by y ceiling.", flush=True)
+                    break
+                if cap_ms is not None and int(duration_ms) > int(cap_ms):
+                    if int(cap_ms) <= 0:
+                        counts["mast_up_ceiling_blocked"] = int(counts.get("mast_up_ceiling_blocked", 0)) + 1
+                        break
+                    counts["mast_up_ceiling_capped"] = int(counts.get("mast_up_ceiling_capped", 0)) + 1
+                    duration_ms = int(cap_ms)
             action_key = "mast_d" if cmd == "d" else "mast_u"
             display_action = "STEP2_PRECISION_MAST_D" if cmd == "d" else "STEP2_PRECISION_MAST_U"
             gap_before = float(y_gap)
@@ -4398,41 +4447,7 @@ def _step2_recover_visibility_with_forward_creeps(
             sample_s=poll_s,
             context="step2_visibility",
         )
-        if bool(current.get("confident")):
-            return current, 0
-    if not bool(step2_cfg.get("visibility_recovery_creep_enabled", True)):
-        return current, 0
-    drive_pwm = _clamp_to_approved_straight_drive_pwm(
-        "f",
-        step2_cfg.get("seat_drive_pwm", DEFAULT_STEP2_CONFIG["seat_drive_pwm"]),
-    )
-    pulse_ms = _coerce_int(
-        step2_cfg.get("visibility_recovery_creep_pulse_ms"),
-        DEFAULT_STEP2_CONFIG["visibility_recovery_creep_pulse_ms"],
-        minimum=1,
-        maximum=400,
-    )
-    max_attempts = _coerce_int(
-        step2_cfg.get("visibility_recovery_creep_max_attempts"),
-        DEFAULT_STEP2_CONFIG["visibility_recovery_creep_max_attempts"],
-        minimum=0,
-        maximum=10,
-    )
-    settle_s = _coerce_float(
-        step2_cfg.get("visibility_recovery_creep_settle_s"),
-        DEFAULT_STEP2_CONFIG["visibility_recovery_creep_settle_s"],
-        minimum=0.0,
-        maximum=2.0,
-    )
-    attempts = 0
-    while attempts < int(max_attempts) and not bool(current.get("confident")):
-        robot.send_command_pwm("f", drive_pwm, duration_ms=pulse_ms)
-        attempts += 1
-        time.sleep((float(pulse_ms) / 1000.0) + float(settle_s))
-        _stop_robot(robot)
-        _reset_follow_reading_history(vision)
-        current = _read_brick_measurement(vision)
-    return current, int(attempts)
+    return current, 0
 
 
 def _run_step2_seat_sequence(
@@ -5789,6 +5804,41 @@ def _wait_for_visibility_recovery(
         return current
     if robot is not None:
         _stop_robot(robot)
+        down_ms = _coerce_int(
+            cfg.get("mast_down_duration_ms"),
+            DEFAULT_VISIBILITY_RECOVERY_CONFIG["mast_down_duration_ms"],
+            minimum=0,
+            maximum=5000,
+        )
+        if down_ms > 0:
+            down_pwm = _coerce_int(
+                cfg.get("mast_down_pwm"),
+                DEFAULT_VISIBILITY_RECOVERY_CONFIG["mast_down_pwm"],
+                minimum=1,
+                maximum=255,
+            )
+            print(
+                f"[FOLLOW] Visibility not confident after {context}; "
+                f"recovering with mast D for {int(down_ms)}ms, no wheel motion.",
+                flush=True,
+            )
+            robot.send_command_pwm("d", down_pwm, duration_ms=down_ms)
+            time.sleep(float(down_ms) / 1000.0)
+            _stop_robot(robot)
+            _reset_follow_reading_history(vision, allow_large_dist_jump=True)
+            current = _read_brick_measurement(vision, jump_guard=jump_guard)
+            if bool(current.get("confident")):
+                try:
+                    print(
+                        f"[FOLLOW] Visibility recovered after mast D: "
+                        f"dist={float(current.get('dist_mm')):.1f}mm "
+                        f"x={float(current.get('x_mm')):+.1f}mm "
+                        f"y={float(current.get('y_mm')):+.1f}mm",
+                        flush=True,
+                    )
+                except (TypeError, ValueError):
+                    print("[FOLLOW] Visibility recovered after mast D.", flush=True)
+                return current
     deadline = time.monotonic() + float(wait_s)
     while time.monotonic() < deadline and not bool(current.get("confident")):
         time.sleep(min(float(poll_s), max(0.0, deadline - time.monotonic())))
@@ -8091,6 +8141,112 @@ def _plan_mast_duration_ms(plan: dict | None) -> int:
     kind = str(plan.get("kind") or "").strip().lower()
     raw = plan.get("duration_ms") if kind == "mast" else plan.get("mast_duration_ms")
     return _coerce_int(raw, 0, minimum=0, maximum=2000)
+
+
+def _mast_raise_ceiling_target_from_plan(plan: dict | None) -> float:
+    if isinstance(plan, dict):
+        for key in ("y_target_mm", "mast_y_target_mm"):
+            try:
+                return float(plan.get(key))
+            except (TypeError, ValueError):
+                pass
+    return _y_win_target_mm()
+
+
+def _mast_raise_ceiling_margin_mm() -> float:
+    return float(MAST_RAISE_CEILING_ABOVE_TARGET_MM)
+
+
+def _mast_up_ceiling_status(
+    reading: dict | None,
+    *,
+    target_mm: float,
+) -> tuple[bool, int | None, float | None, float]:
+    try:
+        y_mm = float((reading or {}).get("y_mm"))
+        target = float(target_mm)
+    except (TypeError, ValueError):
+        fallback_target = _y_win_target_mm()
+        return False, None, None, float(fallback_target) + _mast_raise_ceiling_margin_mm()
+    ceiling = float(target) + _mast_raise_ceiling_margin_mm()
+    if y_mm >= ceiling:
+        return True, 0, y_mm, ceiling
+    remaining_mm = max(0.0, float(ceiling) - float(y_mm))
+    y_cfg = _follow_y_axis_config()
+    rate = _coerce_float(
+        y_cfg.get("mast_up_mm_per_100ms"),
+        DEFAULT_FOLLOW_Y_AXIS_CONFIG["mast_up_mm_per_100ms"],
+        minimum=0.01,
+        maximum=100.0,
+    )
+    cap_ms = int(max(0, round((remaining_mm / float(rate)) * 100.0)))
+    return False, cap_ms, y_mm, ceiling
+
+
+def _mast_up_ceiling_wait_plan(plan: dict, *, y_mm: float | None, target_mm: float, ceiling_mm: float) -> dict:
+    out = {
+        "kind": "wait",
+        "action": "MAST_UP_CEILING_WAIT",
+        "duration_ms": 0,
+        "reason": "mast_up_ceiling",
+        "y_target_mm": float(target_mm),
+        "mast_up_ceiling_y_mm": y_mm,
+        "mast_up_ceiling_mm": float(ceiling_mm),
+    }
+    for key in ("dist_err", "x_err", "y_err"):
+        if key in plan:
+            out[key] = plan.get(key)
+    return out
+
+
+def _cap_mast_up_plan_to_y_ceiling(plan: dict | None, reading: dict | None) -> dict | None:
+    if not isinstance(plan, dict) or _plan_mast_cmd(plan) != "u":
+        return plan
+    target = _mast_raise_ceiling_target_from_plan(plan)
+    blocked, cap_ms, y_mm, ceiling = _mast_up_ceiling_status(reading, target_mm=target)
+    kind = str(plan.get("kind") or "").strip().lower()
+    if blocked:
+        if kind == "mast":
+            return _mast_up_ceiling_wait_plan(plan, y_mm=y_mm, target_mm=target, ceiling_mm=ceiling)
+        out = dict(plan)
+        for key in ("mast_cmd", "mast_pwm", "mast_duration_ms", "mast_reason", "mast_y_err", "mast_y_target_mm"):
+            out.pop(key, None)
+        out["mast_up_ceiling_blocked"] = True
+        out["mast_up_ceiling_y_mm"] = y_mm
+        out["mast_up_ceiling_mm"] = float(ceiling)
+        action = str(out.get("action") or "").strip()
+        out["action"] = f"{action}_NO_MAST_U_CEILING" if action else "NO_MAST_U_CEILING"
+        return out
+    planned_ms = _plan_mast_duration_ms(plan)
+    if cap_ms is None or planned_ms <= int(cap_ms):
+        return plan
+    y_cfg = _follow_y_axis_config()
+    min_up_ms = _coerce_int(
+        y_cfg.get("mast_min_pulse_ms"),
+        DEFAULT_FOLLOW_Y_AXIS_CONFIG["mast_min_pulse_ms"],
+        minimum=1,
+        maximum=2000,
+    )
+    if int(cap_ms) < int(min_up_ms):
+        if kind == "mast":
+            return _mast_up_ceiling_wait_plan(plan, y_mm=y_mm, target_mm=target, ceiling_mm=ceiling)
+        out = dict(plan)
+        for key in ("mast_cmd", "mast_pwm", "mast_duration_ms", "mast_reason", "mast_y_err", "mast_y_target_mm"):
+            out.pop(key, None)
+        out["mast_up_ceiling_blocked"] = True
+        out["mast_up_ceiling_cap_ms"] = int(cap_ms)
+        action = str(out.get("action") or "").strip()
+        out["action"] = f"{action}_NO_MAST_U_CEILING" if action else "NO_MAST_U_CEILING"
+        return out
+    capped = dict(plan)
+    key = "duration_ms" if kind == "mast" else "mast_duration_ms"
+    capped[key] = int(cap_ms)
+    capped["mast_up_ceiling_capped"] = True
+    capped["mast_up_ceiling_original_ms"] = int(planned_ms)
+    capped["mast_up_ceiling_cap_ms"] = int(cap_ms)
+    capped["mast_up_ceiling_y_mm"] = y_mm
+    capped["mast_up_ceiling_mm"] = float(ceiling)
+    return capped
 
 
 def _mast_up_budget_exceeded(stats: dict, plan: dict | None) -> tuple[bool, int, int, int]:
@@ -10803,6 +10959,7 @@ def _follow_loop(
                 continue
 
             plan = _cap_mast_plan_for_unreliable_spool(stats, plan)
+            plan = _cap_mast_up_plan_to_y_ceiling(plan, reading)
             plan = _cap_mast_up_plan_to_budget(stats, plan)
             action = str(plan.get("action") or action)
             exceeded, used_up_ms, planned_up_ms, max_up_ms = _mast_up_budget_exceeded(stats, plan)
@@ -11371,6 +11528,7 @@ def _follow_loop(
         else:
             plan = _apply_stall_recovery_boost(stats, plan)
             plan = _cap_mast_plan_for_unreliable_spool(stats, plan)
+            plan = _cap_mast_up_plan_to_y_ceiling(plan, reading)
             plan = _cap_mast_up_plan_to_budget(stats, plan)
             action = str(plan.get("action") or action)
             exceeded, used_up_ms, planned_up_ms, max_up_ms = _mast_up_budget_exceeded(stats, plan)
