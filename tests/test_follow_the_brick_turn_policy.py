@@ -55,6 +55,22 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertEqual(plan["action"], "PICKUP_SUSPECT_STOP")
         self.assertEqual(plan["reason"], "pickup_suspected_far_low")
 
+    def test_shifted_live_far_low_reading_is_pickup_suspect_stop(self):
+        reading = {
+            "visible": True,
+            "confident": True,
+            "dist_mm": 299.5,
+            "x_mm": follow._x_target_mm(),
+            "y_mm": -56.7,
+            "conf": 99.0,
+        }
+
+        plan = follow._follow_action_plan(reading)
+
+        self.assertTrue(follow._pickup_suspected_reading(reading))
+        self.assertEqual(plan["kind"], "wait")
+        self.assertEqual(plan["reason"], "pickup_suspected_far_low")
+
     def test_normal_far_start_is_not_pickup_suspect(self):
         reading = {
             "visible": True,

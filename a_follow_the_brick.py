@@ -203,7 +203,7 @@ DEFAULT_VISIBILITY_RECOVERY_CONFIG = {
 DEFAULT_PICKUP_SUSPECT_CONFIG = {
     "enabled": True,
     "min_dist_mm": 260.0,
-    "max_y_mm": -70.0,
+    "max_y_mm": -50.0,
 }
 MAST_RAISE_CEILING_ABOVE_TARGET_MM = 5.0
 DEFAULT_HOLDING_TARGET_VISION_CONFIG = {

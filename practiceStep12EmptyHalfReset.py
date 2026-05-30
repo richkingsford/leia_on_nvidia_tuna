@@ -434,7 +434,7 @@ def main() -> int:
     parser.add_argument("--pregame-timeout-s", type=float, default=8.0)
     parser.add_argument("--min-win-rate", type=float, default=0.85)
     parser.add_argument("--pickup-suspect-min-dist-mm", type=float, default=260.0)
-    parser.add_argument("--pickup-suspect-max-y-mm", type=float, default=-70.0)
+    parser.add_argument("--pickup-suspect-max-y-mm", type=float, default=-50.0)
     parser.add_argument("--disable-pickup-suspect-guard", action="store_true")
     parser.add_argument("--out", default=str(OUT_PATH))
     parser.add_argument(

@@ -15,7 +15,18 @@ class TestStep12PracticeSafety(unittest.TestCase):
             step12._pregame_pickup_suspected(
                 reading,
                 min_dist_mm=260.0,
-                max_y_mm=-70.0,
+                max_y_mm=-50.0,
+            )
+        )
+
+    def test_shifted_live_far_low_reading_is_pickup_suspect(self):
+        reading = {"confident": True, "dist_mm": 299.5, "y_mm": -56.7}
+
+        self.assertTrue(
+            step12._pregame_pickup_suspected(
+                reading,
+                min_dist_mm=260.0,
+                max_y_mm=-50.0,
             )
         )
 
@@ -26,7 +37,7 @@ class TestStep12PracticeSafety(unittest.TestCase):
             step12._pregame_pickup_suspected(
                 reading,
                 min_dist_mm=260.0,
-                max_y_mm=-70.0,
+                max_y_mm=-50.0,
             )
         )
 
@@ -37,7 +48,7 @@ class TestStep12PracticeSafety(unittest.TestCase):
             step12._pregame_pickup_suspected(
                 reading,
                 min_dist_mm=260.0,
-                max_y_mm=-70.0,
+                max_y_mm=-50.0,
             )
         )
 
