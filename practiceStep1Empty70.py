@@ -33,7 +33,10 @@ LOST_BRICK_BACKUP_RECOVERY_MS = 1000
 LOST_BRICK_BACKUP_RECOVERY_PWM = 103
 LOST_BRICK_BACKUP_RECHECK_S = 1.0
 START_Y_RECOVERY_ABS_ERR_MM = 10.0
-START_Y_RECOVERY_MAX_ACTS = 6
+# Mast-down is ~0.2mm/100ms (much slower than up), so when y starts too high it
+# needs many small down acts to reach the start band. Allow enough acts to grind
+# it down; the "worsening" guard still bails out if the mast isn't helping.
+START_Y_RECOVERY_MAX_ACTS = 20
 START_Y_RECOVERY_SAMPLE_S = 0.15
 PRACTICE_RESET_STRAIGHT_SCALE = 1.0
 PRACTICE_RESET_STRAIGHT_MIN_MS = 800
@@ -1044,7 +1047,7 @@ def main() -> int:
                             _print_step1_diagnosis(record)
                             out.write(json.dumps(record, sort_keys=True) + "\n")
                             out.flush()
-                            if not _reset_target_met(reset_result):
+                            if not _reset_target_met(reset_result) and not bool(args.continue_on_miss):
                                 print(
                                     "[PRACTICE] reset after miss was not honest; stopping before the next counted attempt.",
                                     flush=True,
@@ -1105,7 +1108,7 @@ def main() -> int:
                                 _print_step1_diagnosis(record)
                                 out.write(json.dumps(record, sort_keys=True) + "\n")
                                 out.flush()
-                                if not _reset_target_met(reset_result):
+                                if not _reset_target_met(reset_result) and not bool(args.continue_on_miss):
                                     print(
                                         "[PRACTICE] reset recovery failed to reach honest reset band; stopping before next counted attempt.",
                                         flush=True,
@@ -1125,16 +1128,21 @@ def main() -> int:
                             flush=True,
                         )
                     if reset_result is not None and not _reset_target_met(reset_result):
-                        record = _step1_record(trial, stats, reset_result)
-                        record["reset_not_honest_stop"] = True
-                        _print_step1_diagnosis(record)
-                        out.write(json.dumps(record, sort_keys=True) + "\n")
-                        out.flush()
+                        if not bool(args.continue_on_miss):
+                            record = _step1_record(trial, stats, reset_result)
+                            record["reset_not_honest_stop"] = True
+                            _print_step1_diagnosis(record)
+                            out.write(json.dumps(record, sort_keys=True) + "\n")
+                            out.flush()
+                            print(
+                                "[PRACTICE] reset after win was not honest; stopping before the next counted attempt.",
+                                flush=True,
+                            )
+                            return 8
                         print(
-                            "[PRACTICE] reset after win was not honest; stopping before the next counted attempt.",
+                            "[PRACTICE] reset after win was not honest; continue-on-miss: proceeding to next trial.",
                             flush=True,
                         )
-                        return 8
                     time.sleep(0.0)
                 record = _step1_record(trial, stats, reset_result)
                 _print_step1_diagnosis(record)
