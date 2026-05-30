@@ -7979,6 +7979,21 @@ def _y_axis_action_plan(reading: dict, *, dist_err: float, x_err: float) -> dict
             "reason": "y_min_act_would_overshoot",
         }
     cmd = "d" if y_err > 0.0 else "u"
+    # Hard ceiling: never raise y above the win zone (win target + win tol). There is
+    # no reason to take y higher than the step-1 win, and over-raising wrecks the pose.
+    win_ceiling_y = float(target) + float(tol)
+    if cmd == "u" and float(y_mm) >= win_ceiling_y:
+        return {
+            "kind": "wait",
+            "action": "Y_HARD_CEILING_WAIT",
+            "dist_err": float(dist_err),
+            "x_err": float(x_err),
+            "y_err": float(y_err),
+            "y_mm": float(y_mm),
+            "y_target_mm": float(active_target),
+            "duration_ms": 0,
+            "reason": "y_hard_ceiling",
+        }
     hard_floor_raw = y_cfg.get("hard_floor_y_mm")
     hard_floor_y = None
     try:

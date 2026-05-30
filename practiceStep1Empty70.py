@@ -845,6 +845,25 @@ def _recover_start_y_zone(vision: BrickDetector, robot: Robot) -> bool:
     except (TypeError, ValueError):
         return True
     ready_abs_err = max(START_Y_RECOVERY_ABS_ERR_MM, float(tol) * 2.0)
+    # Do NOT home y while the robot is far: y_mm is distance-coupled (a projection),
+    # so correcting y at the pregame (far) distance over-raises the physical mast,
+    # which then reads as a huge positive y as the robot drives in. Only home y once
+    # dist is >=80% closed (same rule the follow loop uses), where the mast->y gain
+    # is correct. If far, skip and let the close-range endgame handle y.
+    try:
+        reading0 = follow._read_brick_measurement(vision, jump_guard=True)
+        dist_err0 = float(reading0.get("dist_mm")) - float(follow._dist_target_mm())
+        if follow._target_closeness_pct(dist_err0, follow._dist_tol_mm()) < float(
+            follow.Y_GATE_MIN_DIST_CLOSENESS_PCT
+        ):
+            print(
+                "[PRACTICE] y pre-recovery skipped: dist not yet >=80% closed "
+                "(y is distance-coupled; homing y far over-raises the mast).",
+                flush=True,
+            )
+            return True
+    except (TypeError, ValueError, AttributeError):
+        pass
     last_err = None
     previous_abs_err = None
     worsening_count = 0
