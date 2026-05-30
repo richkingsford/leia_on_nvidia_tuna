@@ -1100,7 +1100,11 @@ class NativeOakBrickDetector:
                 except (TypeError, ValueError):
                     width_ratio = 0.0
             score = (
-                (continuity_dist * (1.0 if has_previous else 0.35))
+                # Strong continuity weight = sticky tracking: once locked, stay on the
+                # brick nearest last frame's lock unless it clearly disappears. This
+                # stops the lock hopping between similar-width candidates (the stack /
+                # adjacent bricks / ghosts) which made x and distance jump frame-to-frame.
+                (continuity_dist * (2.5 if has_previous else 0.35))
                 + (screen_dist * (0.12 if has_previous else 1.0))
                 + (width_ratio * 90.0)
                 + (dist_preference * (0.08 if has_previous else 0.65))
@@ -1115,7 +1119,13 @@ class NativeOakBrickDetector:
         if has_previous:
             max_center_step = float(NATIVE_RECT_MAX_CENTER_STEP_PX) + (float(miss_count) * 12.0)
             max_width_ratio = float(NATIVE_RECT_MAX_WIDTH_RATIO_JUMP) + (float(miss_count) * 0.04)
-            if float(continuity_dist) > max_center_step and float(width_ratio) > max_width_ratio:
+            # Reject if the best candidate jumped too far in position OR changed width
+            # too much (was AND, which let a same-width candidate at a very different
+            # position pass and hop the lock). A single rejected frame holds the last
+            # good reading via the visibility bridge rather than publishing a jump.
+            # The miss_count terms still relax both thresholds so a genuinely lost lock
+            # can re-acquire.
+            if float(continuity_dist) > max_center_step or float(width_ratio) > max_width_ratio:
                 self.last_status = "native color rectangle continuity reject"
                 self._detector.last_status = self.last_status
                 return None
