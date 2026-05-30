@@ -38,6 +38,38 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
             "confidence": 0.99,
         }
 
+    def test_far_low_confident_reading_is_pickup_suspect_stop(self):
+        reading = {
+            "visible": True,
+            "confident": True,
+            "dist_mm": 301.0,
+            "x_mm": follow._x_target_mm(),
+            "y_mm": -79.0,
+            "conf": 99.0,
+        }
+
+        plan = follow._follow_action_plan(reading)
+
+        self.assertTrue(follow._pickup_suspected_reading(reading))
+        self.assertEqual(plan["kind"], "wait")
+        self.assertEqual(plan["action"], "PICKUP_SUSPECT_STOP")
+        self.assertEqual(plan["reason"], "pickup_suspected_far_low")
+
+    def test_normal_far_start_is_not_pickup_suspect(self):
+        reading = {
+            "visible": True,
+            "confident": True,
+            "dist_mm": 323.8,
+            "x_mm": follow._x_target_mm(),
+            "y_mm": -32.2,
+            "conf": 99.0,
+        }
+
+        plan = follow._follow_action_plan(reading)
+
+        self.assertFalse(follow._pickup_suspected_reading(reading))
+        self.assertNotEqual(plan.get("reason"), "pickup_suspected_far_low")
+
     def test_uses_combined_bias_until_dist_gap_is_tiny(self):
         plan = follow._follow_action_plan(
             self._reading_for_gap(dist_gap_mm=100.0, x_gap_mm=11.0)

@@ -200,6 +200,11 @@ DEFAULT_VISIBILITY_RECOVERY_CONFIG = {
     "mast_down_duration_ms": 2500,
     "mast_down_pwm": 255,
 }
+DEFAULT_PICKUP_SUSPECT_CONFIG = {
+    "enabled": True,
+    "min_dist_mm": 260.0,
+    "max_y_mm": -70.0,
+}
 MAST_RAISE_CEILING_ABOVE_TARGET_MM = 5.0
 DEFAULT_HOLDING_TARGET_VISION_CONFIG = {
     "min_confidence_pct": 40.0,
@@ -1006,6 +1011,7 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         "cautious_visibility": dict(DEFAULT_CAUTIOUS_VISIBILITY_CONFIG),
         "vision_jump_guard": dict(DEFAULT_VISION_JUMP_GUARD_CONFIG),
         "visibility_recovery": dict(DEFAULT_VISIBILITY_RECOVERY_CONFIG),
+        "pickup_suspect": dict(DEFAULT_PICKUP_SUSPECT_CONFIG),
         "holding_target_vision": dict(DEFAULT_HOLDING_TARGET_VISION_CONFIG),
         "act_stall_guard": dict(DEFAULT_ACT_STALL_GUARD_CONFIG),
         "win_confirmation": dict(DEFAULT_WIN_CONFIRMATION_CONFIG),
@@ -1124,6 +1130,22 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         DEFAULT_VISIBILITY_RECOVERY_CONFIG["mast_down_pwm"],
         minimum=1,
         maximum=255,
+    )
+    raw_pickup_suspect = raw.get("pickup_suspect") if isinstance(raw.get("pickup_suspect"), dict) else {}
+    cfg["pickup_suspect"]["enabled"] = bool(
+        raw_pickup_suspect.get("enabled", DEFAULT_PICKUP_SUSPECT_CONFIG["enabled"])
+    )
+    cfg["pickup_suspect"]["min_dist_mm"] = _coerce_float(
+        raw_pickup_suspect.get("min_dist_mm"),
+        DEFAULT_PICKUP_SUSPECT_CONFIG["min_dist_mm"],
+        minimum=0.0,
+        maximum=1000.0,
+    )
+    cfg["pickup_suspect"]["max_y_mm"] = _coerce_float(
+        raw_pickup_suspect.get("max_y_mm"),
+        DEFAULT_PICKUP_SUSPECT_CONFIG["max_y_mm"],
+        minimum=-1000.0,
+        maximum=1000.0,
     )
     raw_holding_target = (
         raw.get("holding_target_vision") if isinstance(raw.get("holding_target_vision"), dict) else {}
@@ -7082,6 +7104,43 @@ def _vision_jump_guard_config() -> dict:
     return out
 
 
+def _pickup_suspect_config() -> dict:
+    cfg = _follow_motion_config()
+    raw = cfg.get("pickup_suspect") if isinstance(cfg.get("pickup_suspect"), dict) else {}
+    return {
+        "enabled": bool(raw.get("enabled", DEFAULT_PICKUP_SUSPECT_CONFIG["enabled"])),
+        "min_dist_mm": _coerce_float(
+            raw.get("min_dist_mm"),
+            DEFAULT_PICKUP_SUSPECT_CONFIG["min_dist_mm"],
+            minimum=0.0,
+            maximum=1000.0,
+        ),
+        "max_y_mm": _coerce_float(
+            raw.get("max_y_mm"),
+            DEFAULT_PICKUP_SUSPECT_CONFIG["max_y_mm"],
+            minimum=-1000.0,
+            maximum=1000.0,
+        ),
+    }
+
+
+def _pickup_suspected_reading(reading: dict | None) -> bool:
+    cfg = _pickup_suspect_config()
+    if not bool(cfg.get("enabled", True)):
+        return False
+    if not isinstance(reading, dict) or not bool(reading.get("confident")):
+        return False
+    try:
+        dist_mm = float(reading.get("dist_mm"))
+        y_mm = float(reading.get("y_mm"))
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        float(dist_mm) >= float(cfg.get("min_dist_mm", DEFAULT_PICKUP_SUSPECT_CONFIG["min_dist_mm"]))
+        and float(y_mm) <= float(cfg.get("max_y_mm", DEFAULT_PICKUP_SUSPECT_CONFIG["max_y_mm"]))
+    )
+
+
 def _follow_y_axis_config() -> dict:
     cfg = _follow_motion_config()
     raw = cfg.get("y_axis") if isinstance(cfg.get("y_axis"), dict) else {}
@@ -8640,8 +8699,18 @@ def _follow_action_plan(reading: dict) -> dict:
     dist_ok = _win_axis_ok(dist_err, _dist_tol_mm())
     dist_happy_tol = _win_effective_tolerance(_dist_tol_mm())
     y_cfg = _follow_y_axis_config()
-    y_plan = _y_axis_action_plan(reading, dist_err=dist_err, x_err=x_err)
     y_err = _y_err_for_reading(reading, target=float(y_cfg.get("win_target_mm", Y_TARGET_MM)))
+    if _pickup_suspected_reading(reading):
+        return {
+            "kind": "wait",
+            "action": "PICKUP_SUSPECT_STOP",
+            "dist_err": float(dist_err),
+            "x_err": float(x_err),
+            "y_err": y_err,
+            "duration_ms": 0,
+            "reason": "pickup_suspected_far_low",
+        }
+    y_plan = _y_axis_action_plan(reading, dist_err=dist_err, x_err=x_err)
     y_ok = (
         True
         if y_err is None or not bool(y_cfg.get("enabled"))
@@ -11218,7 +11287,20 @@ def _follow_loop(
         _update_latest_step1_gap(stats, reading, plan, action=action, reason=plan.get("reason"))
         if str(plan.get("kind") or "").strip().lower() == "wait":
             _stop_robot(robot)
-            _bump_stat_count(stats, "miss_reasons", str(plan.get("reason") or "wait"))
+            wait_reason = str(plan.get("reason") or "wait")
+            _bump_stat_count(stats, "miss_reasons", wait_reason)
+            if wait_reason == "pickup_suspected_far_low":
+                stats["pickup_suspected_stop"] = True
+                stats["debug_stop_reading"] = dict(reading) if isinstance(reading, dict) else reading
+                stats["last_action"] = action
+                _record_non_win_stats(stats, reading, plan, action=action, reason=wait_reason)
+                print(
+                    f"[FOLLOW] HARD STOP: pickup suspected "
+                    f"(dist={dist_mm:.1f}mm x={x_mm:+.1f}mm {y_text} conf={conf:.0f}%). "
+                    "Holding still until the brick is cleared.",
+                    flush=True,
+                )
+                return stats
             print_ticker += 1
             if action != last_action or print_ticker >= 20:
                 print(
