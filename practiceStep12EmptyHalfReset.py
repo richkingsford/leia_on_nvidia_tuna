@@ -17,6 +17,7 @@ import argparse
 import copy
 from datetime import datetime
 import json
+import math
 from pathlib import Path
 import random
 import time
@@ -181,6 +182,69 @@ def _print_trial_line(summary: dict) -> None:
         f"attempts={summary['attempts']}",
         flush=True,
     )
+
+
+def _required_wins_for_rate(trials: int, min_win_rate: float) -> int:
+    trial_goal = max(1, int(trials))
+    rate = max(0.0, min(1.0, float(min_win_rate)))
+    return int(max(1, math.ceil((float(trial_goal) * float(rate)) - 1e-9)))
+
+
+def _longest_clean_streak(summaries: list[dict]) -> int:
+    longest = 0
+    current = 0
+    for row in summaries:
+        if bool((row or {}).get("clean")):
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return int(longest)
+
+
+def _block_summary_counts(summaries: list[dict], *, requested_trials: int, min_win_rate: float) -> dict:
+    trial_goal = max(1, int(requested_trials))
+    completed = int(len(summaries or []))
+    completed_den = max(1, completed)
+    clean = sum(1 for row in summaries if bool(row.get("clean")))
+    s1 = sum(1 for row in summaries if bool(row.get("s1_won")))
+    s2 = sum(1 for row in summaries if bool(row.get("s2_won")))
+    wrong_way = sum(int(row.get("wrong_way_count", 0) or 0) for row in summaries)
+    severe = sum(int(row.get("severe_overshoot_count", 0) or 0) for row in summaries)
+    required_wins = _required_wins_for_rate(trial_goal, min_win_rate)
+    s1_win_rate = float(s1) / float(trial_goal)
+    s2_win_rate = float(s2) / float(trial_goal)
+    meets_trial_count = bool(completed >= trial_goal)
+    meets_min_win_rate = bool(s1 >= required_wins and s2 >= required_wins)
+    meets_safety = bool(int(severe) == 0 and int(wrong_way) == 0)
+    clean_streak = _longest_clean_streak(summaries)
+    return {
+        "requested_trials": int(trial_goal),
+        "completed_trials": int(completed),
+        "clean_trials": int(clean),
+        "s1_wins": int(s1),
+        "s2_wins": int(s2),
+        "required_wins": int(required_wins),
+        "s1_win_rate": float(s1_win_rate),
+        "s2_win_rate": float(s2_win_rate),
+        "completed_s1_win_rate": float(s1) / float(completed_den),
+        "completed_s2_win_rate": float(s2) / float(completed_den),
+        "min_win_rate": max(0.0, min(1.0, float(min_win_rate))),
+        "meets_trial_count": bool(meets_trial_count),
+        "meets_min_win_rate": bool(meets_min_win_rate),
+        "meets_safety": bool(meets_safety),
+        "wrong_way_count": int(wrong_way),
+        "severe_overshoot_count": int(severe),
+        "longest_clean_streak": int(clean_streak),
+        "meets_100x_proof": bool(
+            trial_goal >= 100
+            and completed >= 100
+            and clean_streak >= 100
+            and s1 >= 100
+            and s2 >= 100
+            and meets_safety
+        ),
+    }
 
 
 def _configure_half_reset(fraction: float, *, scale_mast: bool = False) -> tuple[object, dict]:
@@ -463,6 +527,7 @@ def main() -> int:
 
     aggregate: dict = {}
     summaries = []
+    abort_reason = None
     vision = BrickDetector(debug=True)
     robot = Robot()
     try:
@@ -484,6 +549,7 @@ def main() -> int:
                     follow._bump_stat_count(stats, "miss_reasons", "pregame_no_visibility")
                     print("[STEP12] Pregame visibility failed; stopping trials with no reset.", flush=True)
                     abort_trials = True
+                    abort_reason = "pregame_no_visibility"
                 elif (
                     not bool(args.disable_pickup_suspect_guard)
                     and _pregame_pickup_suspected(
@@ -504,6 +570,7 @@ def main() -> int:
                         flush=True,
                     )
                     abort_trials = True
+                    abort_reason = "pregame_pickup_suspected"
                 else:
                     stats = follow._follow_loop(
                         vision,
@@ -524,6 +591,7 @@ def main() -> int:
                         "skipped": True,
                         "reason": "trial_not_s1_s2_win_stop_no_reset",
                     }
+                    abort_reason = "trial_not_s1_s2_win_stop_no_reset"
                     print("[STEP12] Trial did not win both Step 1 and Step 2; no reset, stopping trials.", flush=True)
                 if not abort_trials and reset_due:
                     post_trial = follow._read_brick_measurement(vision)
@@ -535,6 +603,7 @@ def main() -> int:
                             "reason": "post_trial_no_confident_visibility_stop_no_reset",
                             "reading": post_trial,
                         }
+                        abort_reason = "post_trial_no_confident_visibility_stop_no_reset"
                         print("[STEP12] Post-trial visibility is not confident; no reset, stopping trials.", flush=True)
                 if not abort_trials and reset_due:
                     reset_record = _run_half_reset(
@@ -557,30 +626,18 @@ def main() -> int:
                 if abort_trials:
                     break
 
-        clean = sum(1 for row in summaries if bool(row.get("clean")))
-        s1 = sum(1 for row in summaries if bool(row.get("s1_won")))
-        s2 = sum(1 for row in summaries if bool(row.get("s2_won")))
-        wrong_way = sum(int(row.get("wrong_way_count", 0) or 0) for row in summaries)
-        severe = sum(int(row.get("severe_overshoot_count", 0) or 0) for row in summaries)
-        trial_goal = max(1, int(args.trials))
         min_win_rate = max(0.0, min(1.0, float(args.min_win_rate)))
-        s1_win_rate = float(s1) / float(trial_goal)
-        s2_win_rate = float(s2) / float(trial_goal)
-        meets_min_win_rate = bool(s1_win_rate >= min_win_rate and s2_win_rate >= min_win_rate)
-        meets_safety = bool(int(severe) == 0 and int(wrong_way) == 0)
+        block_summary = _block_summary_counts(
+            summaries,
+            requested_trials=int(args.trials),
+            min_win_rate=min_win_rate,
+        )
         final_summary = {
             "kind": "summary",
             "trials": int(args.trials),
-            "clean_trials": int(clean),
-            "s1_wins": int(s1),
-            "s2_wins": int(s2),
-            "s1_win_rate": float(s1_win_rate),
-            "s2_win_rate": float(s2_win_rate),
-            "min_win_rate": float(min_win_rate),
-            "meets_min_win_rate": bool(meets_min_win_rate),
-            "meets_safety": bool(meets_safety),
-            "wrong_way_count": int(wrong_way),
-            "severe_overshoot_count": int(severe),
+            **block_summary,
+            "aborted_early": bool(abort_reason is not None or not block_summary["meets_trial_count"]),
+            "abort_reason": abort_reason,
             "out": str(out),
             "experiment": str(args.experiment),
             "experiment_config": experiment_config,
@@ -589,18 +646,21 @@ def main() -> int:
         with out.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(final_summary, sort_keys=True) + "\n")
         print(
-            f"\n[STEP12] DONE clean={clean}/{args.trials} "
-            f"s1={s1}/{args.trials} ({s1_win_rate:.0%}) "
-            f"s2={s2}/{args.trials} ({s2_win_rate:.0%}) "
-            f"min_win_rate={min_win_rate:.0%} "
-            f"wrong_way={wrong_way} severe_overshoot={severe} data={out}",
+            f"\n[STEP12] DONE completed={block_summary['completed_trials']}/{args.trials} "
+            f"clean={block_summary['clean_trials']}/{args.trials} "
+            f"s1={block_summary['s1_wins']}/{args.trials} ({block_summary['s1_win_rate']:.0%}) "
+            f"s2={block_summary['s2_wins']}/{args.trials} ({block_summary['s2_win_rate']:.0%}) "
+            f"required={block_summary['required_wins']} "
+            f"wrong_way={block_summary['wrong_way_count']} "
+            f"severe_overshoot={block_summary['severe_overshoot_count']} "
+            f"abort={abort_reason or 'none'} data={out}",
             flush=True,
         )
         try:
             print(follow._format_game_results_table(aggregate), flush=True)
         except Exception as exc:
             print(f"[STEP12] aggregate table unavailable: {exc}", flush=True)
-        return 0 if bool(meets_min_win_rate and meets_safety) else 1
+        return 0 if bool(block_summary["meets_trial_count"] and block_summary["meets_min_win_rate"] and block_summary["meets_safety"]) else 1
     finally:
         follow._follow_motion_config = old_follow_config_fn
         if old_action_plan_fn is not None:
