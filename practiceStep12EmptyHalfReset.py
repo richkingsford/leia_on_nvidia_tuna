@@ -421,6 +421,7 @@ def main() -> int:
     parser.add_argument("--trial-duration-s", type=float, default=80.0)
     parser.add_argument("--reset-fraction", type=float, default=0.5)
     parser.add_argument("--pregame-timeout-s", type=float, default=8.0)
+    parser.add_argument("--min-win-rate", type=float, default=0.85)
     parser.add_argument("--out", default=str(OUT_PATH))
     parser.add_argument(
         "--experiment",
@@ -527,12 +528,23 @@ def main() -> int:
         s2 = sum(1 for row in summaries if bool(row.get("s2_won")))
         wrong_way = sum(int(row.get("wrong_way_count", 0) or 0) for row in summaries)
         severe = sum(int(row.get("severe_overshoot_count", 0) or 0) for row in summaries)
+        trial_goal = max(1, int(args.trials))
+        min_win_rate = max(0.0, min(1.0, float(args.min_win_rate)))
+        s1_win_rate = float(s1) / float(trial_goal)
+        s2_win_rate = float(s2) / float(trial_goal)
+        meets_min_win_rate = bool(s1_win_rate >= min_win_rate and s2_win_rate >= min_win_rate)
+        meets_safety = bool(int(severe) == 0 and int(wrong_way) == 0)
         final_summary = {
             "kind": "summary",
             "trials": int(args.trials),
             "clean_trials": int(clean),
             "s1_wins": int(s1),
             "s2_wins": int(s2),
+            "s1_win_rate": float(s1_win_rate),
+            "s2_win_rate": float(s2_win_rate),
+            "min_win_rate": float(min_win_rate),
+            "meets_min_win_rate": bool(meets_min_win_rate),
+            "meets_safety": bool(meets_safety),
             "wrong_way_count": int(wrong_way),
             "severe_overshoot_count": int(severe),
             "out": str(out),
@@ -544,7 +556,9 @@ def main() -> int:
             fh.write(json.dumps(final_summary, sort_keys=True) + "\n")
         print(
             f"\n[STEP12] DONE clean={clean}/{args.trials} "
-            f"s1={s1}/{args.trials} s2={s2}/{args.trials} "
+            f"s1={s1}/{args.trials} ({s1_win_rate:.0%}) "
+            f"s2={s2}/{args.trials} ({s2_win_rate:.0%}) "
+            f"min_win_rate={min_win_rate:.0%} "
             f"wrong_way={wrong_way} severe_overshoot={severe} data={out}",
             flush=True,
         )
@@ -552,7 +566,7 @@ def main() -> int:
             print(follow._format_game_results_table(aggregate), flush=True)
         except Exception as exc:
             print(f"[STEP12] aggregate table unavailable: {exc}", flush=True)
-        return 0 if clean == int(args.trials) else 1
+        return 0 if bool(meets_min_win_rate and meets_safety) else 1
     finally:
         follow._follow_motion_config = old_follow_config_fn
         if old_action_plan_fn is not None:
