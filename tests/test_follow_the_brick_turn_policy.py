@@ -214,6 +214,119 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
             follow._follow_y_axis_config()["spool_reversal_mast_max_ms"],
         )
 
+    def test_close_trap_reverse_stalls_without_boost(self):
+        stats = follow._new_game_stats()
+        stats["pending_observation"] = {
+            "action": "BCK",
+            "cmd": "b",
+            "dist_err": -119.0,
+            "dist_mm": 97.6,
+            "x_mm": 9.4,
+            "y_mm": -27.8,
+            "duration_ms": 180,
+        }
+
+        result = follow._record_observed_after_pending_act(
+            stats,
+            {"dist_mm": 96.9, "x_mm": 9.5, "y_mm": -28.4},
+        )
+
+        self.assertFalse(result["observed"])
+        self.assertTrue(stats["stall_guard_triggered"])
+        self.assertIsNone(stats["stall_recovery_boost"])
+        self.assertTrue(stats["stall_guard_detail"]["close_trap_limited"])
+        self.assertEqual(stats["stall_guard_detail"]["max_no_change_tries"], 1)
+
+    def test_step2_precision_polishes_x_when_distance_and_y_are_ready(self):
+        step2 = {
+            "precision_settle_enabled": True,
+            "precision_max_attempts": 3,
+            "precision_hard_max_attempts": 5,
+            "precision_settle_s": 0.0,
+            "freeze_xz_after_xz_target": False,
+            "targets": {
+                "dist_mm": 149.0,
+                "dist_tol_mm": 10.0,
+                "x_mm": 4.0,
+                "x_tol_mm": 9.0,
+                "y_mm": -36.2,
+                "y_tol_mm": 3.0,
+            },
+        }
+        before = {
+            "visible": True,
+            "confident": True,
+            "conf": 95.0,
+            "dist_mm": 149.0,
+            "x_mm": 18.0,
+            "y_mm": -36.2,
+        }
+        after = dict(before, x_mm=4.0)
+        readings = iter([after, after])
+        old_read = follow._read_brick_measurement
+        old_reset = follow._reset_follow_reading_history
+        old_sleep = follow.time.sleep
+        try:
+            follow._read_brick_measurement = lambda _vision: next(readings)
+            follow._reset_follow_reading_history = lambda *_args, **_kwargs: None
+            follow.time.sleep = lambda _seconds: None
+            robot = _FakeRobot()
+
+            final, counts = follow._step2_precision_settle_to_targets(object(), robot, before, step2)
+        finally:
+            follow._read_brick_measurement = old_read
+            follow._reset_follow_reading_history = old_reset
+            follow.time.sleep = old_sleep
+
+        self.assertEqual(counts["turn_r"], 1)
+        self.assertEqual(counts["target_hit_confirmed"], 1)
+        self.assertEqual(final["x_mm"], 4.0)
+        self.assertEqual(len(robot.custom_commands), 1)
+
+    def test_step2_precision_stops_when_x_polish_leaves_distance_too_close(self):
+        step2 = {
+            "precision_settle_enabled": True,
+            "precision_max_attempts": 3,
+            "precision_hard_max_attempts": 5,
+            "precision_settle_s": 0.0,
+            "freeze_xz_after_xz_target": False,
+            "targets": {
+                "dist_mm": 149.0,
+                "dist_tol_mm": 10.0,
+                "x_mm": 4.0,
+                "x_tol_mm": 9.0,
+                "y_mm": -36.2,
+                "y_tol_mm": 3.0,
+            },
+        }
+        before = {
+            "visible": True,
+            "confident": True,
+            "conf": 95.0,
+            "dist_mm": 149.0,
+            "x_mm": 18.0,
+            "y_mm": -36.2,
+        }
+        too_close = dict(before, dist_mm=138.0)
+        old_read = follow._read_brick_measurement
+        old_reset = follow._reset_follow_reading_history
+        old_sleep = follow.time.sleep
+        try:
+            follow._read_brick_measurement = lambda _vision: too_close
+            follow._reset_follow_reading_history = lambda *_args, **_kwargs: None
+            follow.time.sleep = lambda _seconds: None
+            robot = _FakeRobot()
+
+            final, counts = follow._step2_precision_settle_to_targets(object(), robot, before, step2)
+        finally:
+            follow._read_brick_measurement = old_read
+            follow._reset_follow_reading_history = old_reset
+            follow.time.sleep = old_sleep
+
+        self.assertEqual(counts["turn_r"], 1)
+        self.assertEqual(counts["dist_too_close_safety_stop"], 1)
+        self.assertEqual(final["dist_mm"], 138.0)
+
 
 if __name__ == "__main__":
     unittest.main()
