@@ -231,7 +231,7 @@ def _apply_step2_strong_y_config(cfg: dict) -> None:
     step2["precision_max_attempts"] = 20
     step2["precision_hard_max_attempts"] = 120
     step2["precision_drive_min_pulse_ms"] = 100
-    step2["precision_drive_max_pulse_ms"] = 260
+    step2["precision_drive_max_pulse_ms"] = 180
     step2["precision_mast_pulse_ms"] = 1000
     step2["precision_mast_small_gap_min_pulse_ms"] = 300
     step2["precision_mast_small_gap_max_pulse_ms"] = 900
@@ -349,7 +349,7 @@ def _install_experiment(name: str) -> tuple[object, dict | None, object | None, 
         step2["precision_max_attempts"] = 14
         step2["precision_hard_max_attempts"] = 80
         step2["precision_drive_min_pulse_ms"] = 100
-        step2["precision_drive_max_pulse_ms"] = 260
+        step2["precision_drive_max_pulse_ms"] = 180
         step2["precision_mast_pulse_ms"] = 500
         step2["precision_mast_small_gap_min_pulse_ms"] = 220
         step2["precision_mast_small_gap_max_pulse_ms"] = 500

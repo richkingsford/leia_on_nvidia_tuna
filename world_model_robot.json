@@ -929,6 +929,7 @@
           "recovery_creep_max_attempts": 0,
           "visibility_recovery_creep_enabled": false,
           "visibility_recovery_creep_max_attempts": 0,
+          "precision_drive_max_pulse_ms": 180,
           "precision_mast_small_gap_max_mm": 5.0,
           "precision_mast_small_gap_pwm_scale": 1.0,
           "precision_mast_small_gap_min_pulse_ms": 150,
