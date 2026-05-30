@@ -4396,6 +4396,16 @@ def _step2_precision_settle_to_targets(
                 counts["target_hit_confirm_failed"] = int(counts.get("target_hit_confirm_failed", 0)) + 1
             counts["target_hit_reason"] = str(confirm_reason)
             break
+        if dist_axis_configured and bool(current.get("confident")):
+            try:
+                safety_dist_err = float(current.get("dist_mm")) - float(targets.get("dist_mm"))
+                safety_dist_tol = float(targets.get("dist_tol_mm"))
+            except (TypeError, ValueError):
+                safety_dist_err = None
+                safety_dist_tol = 0.0
+            if safety_dist_err is not None and float(safety_dist_err) < -float(safety_dist_tol):
+                counts["dist_too_close_safety_stop"] = int(counts.get("dist_too_close_safety_stop", 0)) + 1
+                break
         if progress_axis == "dist" and bool(current.get("confident")):
             try:
                 after_dist_err = float(current.get("dist_mm")) - float(targets.get("dist_mm"))
