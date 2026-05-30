@@ -1,0 +1,36 @@
+Siori's Gap Closing Solution
+==============================
+Submitted: 2026-05-29
+
+A proper Proportional-Derivative (PD) loop does not need to spend hours guessing or
+learning from mistakes because it calculates the exact curve required to close the X, Y,
+and distance errors smoothly in real-time.
+
+Act as a senior robotics controls engineer rewriting Leia's drive code. Discard all
+uncoupled loops, naive if/else distance statements, or bang-bang drive logic, as they
+directly cause momentum overshoots and tread jitter. Instead, implement a coordinated
+Astolfi-style approach controller for a differential-drive robot. At every 20 Hz tick,
+calculate the target bearing as head_err = atan2(-x_off, y_off) and the distance error
+as dist_err = distance - STOP_OFFSET. Form the coupled wheel commands where linear
+velocity v = (Kp_d * dist_err + Kd_d * d_dist_err) * cos(head_err) and angular velocity
+omega = Kp_h * head_err + Kd_h * d_head_err, mixing them as left = v - omega and
+right = v + omega. The cos(head_err) term dynamically throttles forward speed when
+misaligned so heading alignment dominates, allowing the robot to glide smoothly to a
+stop without fishtailing. To preserve steering authority during high-speed deceleration,
+implement coupled proportional saturation: if the maximum absolute wheel command exceeds
+your physical limit, scale both wheel commands down by the exact same ratio so the
+v/omega trajectory curvature survives clipping. Finally, analytically tune the PD gains
+for a slightly overdamped response targeting a damping ratio of zeta = 1.5 to
+mathematically guarantee zero overshoot and eliminate steady-state oscillations.
+
+Key formulas:
+  head_err  = atan2(-x_off, y_off)           [bearing to target]
+  dist_err  = distance - STOP_OFFSET          [range error]
+  v         = (Kp_d * dist_err + Kd_d * d_dist_err) * cos(head_err)
+  omega     = Kp_h * head_err + Kd_h * d_head_err
+  left      = v - omega
+  right     = v + omega
+  [scale both by min(1, PWM_MAX / max(|left|, |right|)) to preserve curvature]
+
+Tuning target: zeta = 1.5 (slightly overdamped, zero overshoot guaranteed)
+Tick rate: 20 Hz (50ms per tick)
