@@ -353,7 +353,7 @@
     "mast_up": {
       "enabled": true,
       "min_duration_ms": 1000,
-      "max_duration_ms": 1500,
+      "max_duration_ms": 1000,
       "pwm": 255,
       "cmd": "u",
       "settle_s": 0.1
@@ -629,7 +629,8 @@
     },
     "visibility_recovery": {
       "wait_s": 3.0,
-      "poll_s": 0.15
+      "poll_s": 0.15,
+      "mast_down_duration_ms": 1000
     },
     "holding_target_vision": {
       "min_confidence_pct": 40.0,
@@ -745,7 +746,7 @@
     "step4": {
       "lift_mast_cmd": "u",
       "lift_mast_pwm": 255,
-      "lift_pulse_ms": 1800,
+      "lift_pulse_ms": 1000,
       "lift_settle_s": 0.25,
       "max_lift_attempts": 1,
       "step_timeout_s": 10.0,
@@ -753,7 +754,7 @@
       "no_visibility_fallback_enabled": true,
       "no_visibility_fallback_mast_cmd": "u",
       "no_visibility_fallback_mast_pwm": 255,
-      "no_visibility_fallback_duration_ms": 3000,
+      "no_visibility_fallback_duration_ms": 1000,
       "no_visibility_fallback_settle_s": 0.15,
       "targets": {
         "y_mm": -3.5,
@@ -829,7 +830,7 @@
               "closes_mm": 1.1
             }
           ],
-          "max_step1_mast_up_ms": 9000,
+          "max_step1_mast_up_ms": 1000,
           "mast_correction_fraction": 0.45,
           "mast_duration_uses_tolerance_gap": true,
           "mast_coast_settle_s": 0.45,
@@ -983,7 +984,7 @@
         "step4": {
           "lift_mast_cmd": "u",
           "no_visibility_fallback_mast_cmd": "u",
-          "lift_pulse_ms": 1100,
+          "lift_pulse_ms": 1000,
           "lift_settle_s": 0.25,
           "max_lift_attempts": 1,
           "step_timeout_s": 10.0,

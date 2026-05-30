@@ -29,6 +29,59 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
     def setUp(self):
         follow._set_game_profile("empty")
 
+    def test_mast_action_duration_capped_to_one_second(self):
+        up = follow._mast_action_spec("u", duration_ms=2500)
+        down = follow._mast_action_spec("d", duration_ms=1200)
+
+        self.assertEqual(up["duration_ms"], 1000)
+        self.assertEqual(down["duration_ms"], 1000)
+
+    def test_visibility_recovery_mast_down_duration_capped_to_one_second(self):
+        old_follow_motion_config = follow._follow_motion_config
+        try:
+            follow._follow_motion_config = lambda: {
+                "visibility_recovery": {"mast_down_duration_ms": 2500}
+            }
+
+            cfg = follow._visibility_recovery_config()
+        finally:
+            follow._follow_motion_config = old_follow_motion_config
+
+        self.assertEqual(cfg["mast_down_duration_ms"], 1000)
+
+    def test_reset_mast_up_action_is_one_second_when_enabled(self):
+        old_reset_motion_config = follow._reset_motion_config
+        try:
+            follow._reset_motion_config = lambda: {
+                "reverse_turn": {"y_target_mm": -5.0},
+                "mast_up": {
+                    "enabled": True,
+                    "min_duration_ms": 2500,
+                    "max_duration_ms": 3000,
+                    "pwm": 255,
+                    "cmd": "u",
+                    "settle_s": 0.1,
+                },
+            }
+
+            action, duration_ms, _settle_s = follow._reset_mast_up_action_spec(
+                reading={"y_mm": -80.0}
+            )
+        finally:
+            follow._reset_motion_config = old_reset_motion_config
+
+        self.assertIsNotNone(action)
+        self.assertEqual(duration_ms, 1000)
+        self.assertEqual(action["duration_ms"], 1000)
+
+    def test_step2_seat_mast_duration_capped_to_one_second(self):
+        cfg = follow._default_step2_like_config()
+        cfg["seat_mast_cmd"] = "d"
+
+        follow._apply_step2_like_config({"seat_mast_duration_ms": 2500}, cfg)
+
+        self.assertEqual(cfg["seat_mast_duration_ms"], 1000)
+
     def _reading_for_gap(self, *, dist_gap_mm: float, x_gap_mm: float) -> dict:
         y_cfg = follow._follow_y_axis_config()
         return {
