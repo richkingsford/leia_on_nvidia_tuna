@@ -327,6 +327,32 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertEqual(counts["dist_too_close_safety_stop"], 1)
         self.assertEqual(final["dist_mm"], 138.0)
 
+    def test_step2_target_rejects_frozen_xz_when_raw_distance_is_too_close(self):
+        step2 = {
+            "targets": {
+                "dist_mm": 149.0,
+                "dist_tol_mm": 10.0,
+                "x_mm": 4.0,
+                "x_tol_mm": 9.0,
+                "y_mm": -36.2,
+                "y_tol_mm": 3.0,
+            },
+        }
+        reading = {
+            "confident": True,
+            "xz_frozen": True,
+            "dist_mm": 149.0,
+            "raw_dist_mm": 138.0,
+            "x_mm": 4.0,
+            "raw_x_mm": 4.0,
+            "y_mm": -36.2,
+        }
+
+        ready, reason, _closeness = follow._step2_targets_ready(reading, step2)
+
+        self.assertFalse(ready)
+        self.assertEqual(reason, "step2_raw_dist_too_close")
+
 
 if __name__ == "__main__":
     unittest.main()

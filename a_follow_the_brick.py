@@ -3859,6 +3859,15 @@ def _step2_targets_ready(reading: dict, step2_cfg: dict | None = None) -> tuple[
     if not isinstance(closeness, dict):
         return False, "invalid_step2_reading", None
     targets = _configured_step2_targets(step2_cfg)
+    if bool((reading or {}).get("xz_frozen")) and targets.get("dist_mm") is not None and targets.get("dist_tol_mm") is not None:
+        try:
+            raw_dist = float((reading or {}).get("raw_dist_mm"))
+            dist_target = float(targets.get("dist_mm"))
+            dist_tol = float(targets.get("dist_tol_mm"))
+        except (TypeError, ValueError):
+            raw_dist = None
+        if raw_dist is not None and float(raw_dist) < float(dist_target) - float(dist_tol):
+            return False, "step2_raw_dist_too_close", closeness
     axis_ok = []
     for _label, value_key, tol_key in _configured_step2_target_axes(step2_cfg):
         try:
