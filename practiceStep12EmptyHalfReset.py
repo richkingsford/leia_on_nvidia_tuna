@@ -415,6 +415,17 @@ def _wait_for_pregame_visibility(vision: BrickDetector, robot: Robot, timeout_s:
     return reading
 
 
+def _pregame_pickup_suspected(reading: dict, *, min_dist_mm: float, max_y_mm: float) -> bool:
+    if not isinstance(reading, dict) or not bool(reading.get("confident")):
+        return False
+    try:
+        dist_mm = float(reading.get("dist_mm"))
+        y_mm = float(reading.get("y_mm"))
+    except (TypeError, ValueError):
+        return False
+    return bool(float(dist_mm) >= float(min_dist_mm) and float(y_mm) <= float(max_y_mm))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trials", type=int, default=5)
@@ -422,6 +433,9 @@ def main() -> int:
     parser.add_argument("--reset-fraction", type=float, default=0.5)
     parser.add_argument("--pregame-timeout-s", type=float, default=8.0)
     parser.add_argument("--min-win-rate", type=float, default=0.85)
+    parser.add_argument("--pickup-suspect-min-dist-mm", type=float, default=260.0)
+    parser.add_argument("--pickup-suspect-max-y-mm", type=float, default=-70.0)
+    parser.add_argument("--disable-pickup-suspect-guard", action="store_true")
     parser.add_argument("--out", default=str(OUT_PATH))
     parser.add_argument(
         "--experiment",
@@ -469,6 +483,26 @@ def main() -> int:
                     stats["not_confident_count"] = 1
                     follow._bump_stat_count(stats, "miss_reasons", "pregame_no_visibility")
                     print("[STEP12] Pregame visibility failed; stopping trials with no reset.", flush=True)
+                    abort_trials = True
+                elif (
+                    not bool(args.disable_pickup_suspect_guard)
+                    and _pregame_pickup_suspected(
+                        pregame,
+                        min_dist_mm=float(args.pickup_suspect_min_dist_mm),
+                        max_y_mm=float(args.pickup_suspect_max_y_mm),
+                    )
+                ):
+                    stats = follow._new_game_stats()
+                    stats["sample_count"] = 1
+                    stats["confident_sample_count"] = 1
+                    follow._bump_stat_count(stats, "miss_reasons", "pregame_pickup_suspected")
+                    follow._stop_robot(robot)
+                    print(
+                        "[STEP12] Pregame pickup suspected "
+                        f"(dist={float(pregame.get('dist_mm')):.1f}mm, y={float(pregame.get('y_mm')):+.1f}mm); "
+                        "no motion, stopping trials.",
+                        flush=True,
+                    )
                     abort_trials = True
                 else:
                     stats = follow._follow_loop(
