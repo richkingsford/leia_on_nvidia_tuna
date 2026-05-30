@@ -285,6 +285,13 @@ def _install_step2_mast_d_only() -> object:
     return old_fn
 
 
+def _apply_strict_no_change_guard(cfg: dict, *, max_tries: int = 1) -> None:
+    guard = cfg.get("act_stall_guard") if isinstance(cfg.get("act_stall_guard"), dict) else {}
+    guard["max_no_change_tries"] = int(max(1, max_tries))
+    guard["recovery_boost_enabled"] = False
+    cfg["act_stall_guard"] = guard
+
+
 def _pregame_unlock_needed(reading: dict) -> bool:
     if not isinstance(reading, dict):
         return False
@@ -360,6 +367,9 @@ def _install_experiment(name: str) -> tuple[object, dict | None, object | None, 
     elif experiment == "step2_strong_y_mast_d_only":
         _apply_step2_strong_y_config(cfg)
         old_step2_mast_cmd_fn = _install_step2_mast_d_only()
+    elif experiment == "step2_strong_y_strict_stall":
+        _apply_step2_strong_y_config(cfg)
+        _apply_strict_no_change_guard(cfg, max_tries=1)
     else:
         raise ValueError(f"unknown experiment: {name}")
 
@@ -422,6 +432,7 @@ def main() -> int:
             "step2_strong_y_pregame_mast_unlock",
             "step2_strong_y_half_mast_reset",
             "step2_strong_y_mast_d_only",
+            "step2_strong_y_strict_stall",
         ),
         default="baseline",
     )
