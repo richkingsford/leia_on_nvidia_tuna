@@ -402,7 +402,7 @@
     "normal_speed_score": 10,
     "max_act_ms": 450,
     "combined_gap_policy": {
-      "straight_x_outside_max_mm": 0.0,
+      "straight_x_outside_max_mm": 5.0,
       "straight_dist_outside_min_mm": 8.0,
       "micro_x_outside_max_mm": 2.0,
       "gentle_x_outside_max_mm": 6.0,
@@ -528,7 +528,7 @@
       "protect_below_y_mm": 11.0,
       "protect_requires_brick_below": true,
       "protect_disabled_within_dist_mm": 177.0,
-      "priority_abs_err_mm": 14.0,
+      "priority_abs_err_mm": 8.0,
       "lock_on_enabled": true,
       "lock_on_dist_mm": 90.0,
       "lock_on_dist_window_mm": 10.0,
@@ -777,7 +777,7 @@
         "y_axis": {
           "enabled": true,
           "win_target_mm": -42.7,
-          "win_tol_mm": 3.0,
+          "win_tol_mm": 5.0,
           "approach_high_factor": 1.0,
           "lock_on_enabled": false,
           "mast_up_pwm": 255,
@@ -942,12 +942,12 @@
             "y_tol_mm": 1.0
           },
           "targets": {
-            "dist_mm": null,
-            "dist_tol_mm": null,
-            "x_mm": null,
-            "x_tol_mm": null,
-            "y_mm": null,
-            "y_tol_mm": null
+            "dist_mm": 139.0,
+            "dist_tol_mm": 5.0,
+            "x_mm": 4.0,
+            "x_tol_mm": 9.0,
+            "y_mm": -36.2,
+            "y_tol_mm": 3.0
           }
         },
         "step3": {

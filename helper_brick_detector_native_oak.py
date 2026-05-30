@@ -57,13 +57,52 @@ NATIVE_RECT_MIN_ACTIVE_ROW_RATIO = 0.14
 NATIVE_RECT_MIN_EDGE_STRAIGHTNESS = 0.0
 NATIVE_RECT_MIN_WIDTH_COHERENCE = 0.0
 NATIVE_RECT_MAX_DIST_STEP_MM = 8.0
-NATIVE_RECT_DIST_HISTORY_LEN = 7
+# Close-range stack-width distance: at close range the raw width detection jitters
+# more than real per-frame motion, so the median/outlier filter must SMOOTH the
+# jitter rather than reset on it. Longer history + wider outlier band + far less
+# trigger-happy resets give a stable published distance for Step 2 / picking.
+NATIVE_RECT_DIST_HISTORY_LEN = 12
 NATIVE_RECT_DIST_MIN_INLIERS = 3
-NATIVE_RECT_DIST_STABLE_SPREAD_MM = 5.0
-NATIVE_RECT_DIST_OUTLIER_BAND_MM = 12.0
-NATIVE_RECT_DIST_MAX_PUBLISH_STEP_MM = 5.0
-NATIVE_RECT_DIST_RESET_CENTER_STEP_PX = 80.0
-NATIVE_RECT_DIST_RESET_WIDTH_RATIO = 0.25
+NATIVE_RECT_DIST_STABLE_SPREAD_MM = 9.0
+NATIVE_RECT_DIST_OUTLIER_BAND_MM = 18.0
+NATIVE_RECT_DIST_MAX_PUBLISH_STEP_MM = 7.0
+NATIVE_RECT_DIST_RESET_CENTER_STEP_PX = 130.0
+NATIVE_RECT_DIST_RESET_WIDTH_RATIO = 0.55
+# Temporal gate on the RAW width-distance before it enters the median filter.
+# Close-range stack-width segmentation flickers between interpretations while the
+# brick is stationary; reject raw readings that jump beyond GATE_MM from the locked
+# estimate (hold last good), but re-lock if RELOCK_FRAMES consecutive readings agree
+# within RELOCK_SPREAD (a genuine move/approach), not random multimodal noise.
+NATIVE_RECT_DIST_GATE_MM = 35.0
+NATIVE_RECT_DIST_RELOCK_FRAMES = 4
+NATIVE_RECT_DIST_RELOCK_SPREAD_MM = 22.0
+# Confidence gate (RELATIVE): the mis-segmentation mode reads notably lower than the
+# correct reading *at the same pose* (e.g. 85 vs 99). A fixed absolute threshold breaks
+# at poses where the brick is legitimately seen at lower confidence (e.g. ~88 when low
+# in frame) — it would freeze the published distance. Instead reject frames whose
+# confidence is CONF_MARGIN below the recent-max confidence, so it rejects the bad mode
+# without freezing a consistent lower-confidence pose. Accept anyway after MAX_CONF_HOLD.
+NATIVE_RECT_DIST_CONF_MARGIN_PCT = 7.0
+NATIVE_RECT_DIST_CONF_WINDOW = 12
+NATIVE_RECT_DIST_MAX_CONF_HOLD = 8
+# Close-range green-edge fallback: at pick range the stack fills/overflows the frame
+# (often cut off at top), so the full-rectangle gate fails — but the LEFT/RIGHT green
+# edges stay crisp and stable (±1.5px). When the normal path finds no rectangle, derive
+# distance from the green stack's horizontal extent. Only trusted when both side edges
+# sit inside the frame (not cut off), coverage is real, and width implies close range.
+GREEN_EDGE_CLOSE_RANGE_ENABLED = True
+GREEN_EDGE_MIN_WIDTH_PX = 60
+GREEN_EDGE_FRAME_MARGIN_PX = 4
+GREEN_EDGE_MIN_COVERAGE = 0.05
+GREEN_EDGE_COL_ACTIVE_FRAC = 0.15
+GREEN_EDGE_CONF_PCT = 95.0
+GREEN_EDGE_MAX_DIST_MM = 220.0
+# Green-edge becomes the PRIMARY distance source (overriding the rectangle path) once
+# the stack is wide enough to mean close range. The rectangle path returns unreliable
+# (often garbage) distances at close range without failing cleanly, so we can't wait for
+# it to return None. ~180px width corresponds to ~148mm; Step 1 mid-range (~227mm) is
+# only ~117px wide, so it stays on the verified rectangle path.
+GREEN_EDGE_PRIMARY_MIN_WIDTH_PX = 180
 NATIVE_RECT_MAX_CENTER_STEP_PX = 140.0
 NATIVE_RECT_MAX_WIDTH_RATIO_JUMP = 0.42
 NATIVE_RECT_PREFERRED_LOCK_DIST_MM = 170.0
@@ -124,6 +163,10 @@ class NativeOakBrickDetector:
         self._native_last_good_width_px = None
         self._native_dist_history = deque(maxlen=int(NATIVE_RECT_DIST_HISTORY_LEN))
         self._native_last_stable_dist = None
+        self._native_gate_anchor = None
+        self._native_gate_pending = []
+        self._native_conf_hold_count = 0
+        self._native_conf_window = deque(maxlen=int(NATIVE_RECT_DIST_CONF_WINDOW))
         self._native_miss_count = 0
         self._reset_detector_tracking()
         self._clear_detection_metadata()
@@ -148,6 +191,12 @@ class NativeOakBrickDetector:
         if history is not None:
             history.clear()
         self._native_last_stable_dist = None
+        self._native_gate_anchor = None
+        self._native_gate_pending = []
+        self._native_conf_hold_count = 0
+        window = getattr(self, "_native_conf_window", None)
+        if window is not None:
+            window.clear()
 
     def _clear_detection_metadata(self) -> None:
         detector = self._detector
@@ -310,12 +359,29 @@ class NativeOakBrickDetector:
         self._detector.current_frame = frame
         self._sync_frame_shape(frame)
 
+        # Close-range PRIMARY: when the green stack is wide enough to be clearly close
+        # range, trust the stable green-edge width over the rectangle path (which returns
+        # unreliable distances at close range without failing cleanly).
+        green_primary = self._green_edge_close_range_result(frame, require_close=True)
+        if green_primary is not None:
+            self._detector.last_raw_prediction_count = 1
+            self._detector.last_candidate_count = 1
+            self._detector.last_nms_count = 1
+            self.current_frame = frame.copy()
+            self._detector.current_frame = self.current_frame
+            return green_primary
+
         primary, candidates = self._detect_color_rectangle_candidate(frame)
         self._detector.last_raw_prediction_count = int(len(candidates))
         self._detector.last_candidate_count = int(len(candidates))
         self._detector.last_nms_count = int(len(candidates))
 
         if primary is None:
+            green_result = self._green_edge_close_range_result(frame)
+            if green_result is not None:
+                self.current_frame = frame.copy()
+                self._detector.current_frame = self.current_frame
+                return green_result
             self._mark_not_found(str(getattr(self._detector, "last_status", "shape mismatch")))
             self.current_frame = frame.copy()
             self._detector.current_frame = self.current_frame
@@ -769,6 +835,96 @@ class NativeOakBrickDetector:
         self._detector.last_max_confidence = 0.0
         self._detector._clear_partial_state()
 
+    def _green_edge_close_range_result(self, frame, *, require_close: bool = False):
+        """Close-range distance from the green stack's left/right edges. The side
+        edges stay crisp even when the top overflows the frame at pick range.
+        When require_close is True, only returns a result if the stack is wide
+        enough to be unambiguously close range (used to OVERRIDE the unreliable
+        rectangle path); otherwise it acts as a last-resort fallback."""
+        if not bool(GREEN_EDGE_CLOSE_RANGE_ENABLED) or frame is None:
+            return None
+        detector = self._detector
+        try:
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            mask = cv2.inRange(
+                hsv,
+                np.array(CYAN_HSV_BALANCED_LOWER, dtype=np.uint8),
+                np.array(CYAN_HSV_BALANCED_UPPER, dtype=np.uint8),
+            )
+        except Exception:
+            return None
+        h, w = mask.shape[:2]
+        if h <= 0 or w <= 0:
+            return None
+        coverage = float(np.count_nonzero(mask)) / float(h * w)
+        if coverage < float(GREEN_EDGE_MIN_COVERAGE):
+            return None
+        col_counts = np.count_nonzero(mask, axis=0)
+        col_thr = max(8, int(float(GREEN_EDGE_COL_ACTIVE_FRAC) * float(h)))
+        active = np.where(col_counts > col_thr)[0]
+        if active.size < 6:
+            return None
+        left = int(np.percentile(active, 2))
+        right = int(np.percentile(active, 98))
+        width_px = right - left
+        if width_px < int(GREEN_EDGE_MIN_WIDTH_PX):
+            return None
+        # When used to override the rectangle path, require the stack to be wide
+        # enough to be unambiguously close range.
+        if bool(require_close) and width_px < int(GREEN_EDGE_PRIMARY_MIN_WIDTH_PX):
+            return None
+        margin = int(GREEN_EDGE_FRAME_MARGIN_PX)
+        # Both side edges must sit inside the frame, else the width is cut off.
+        if left <= margin or right >= (w - margin):
+            return None
+        raw_dist = detector._estimate_distance_from_width(float(width_px))
+        if raw_dist is None or not (0.0 < float(raw_dist) <= float(GREEN_EDGE_MAX_DIST_MM)):
+            return None
+        gate_primary = {
+            "shape_profile": "native_rect",
+            "native_rect_confidence_pct": float(GREEN_EDGE_CONF_PCT),
+        }
+        prev_for_dist = detector._prev_dist
+        if prev_for_dist is None:
+            prev_for_dist = self._native_last_good_dist
+        detector.last_raw_dist = float(raw_dist)
+        detector.last_bbox_dist = float(raw_dist)
+        detector.last_bbox_distance_source = "green_edge_close_range"
+        dist = self._native_rect_distance_from_raw(float(raw_dist), prev_for_dist, gate_primary)
+        detector._prev_dist = dist
+        detector.last_final_dist = dist
+        self._native_last_good_dist = float(dist)
+        self._native_miss_count = 0
+        cx = float(left + right) / 2.0
+        band = mask[:, int(left):int(right)]
+        rows = np.where(np.count_nonzero(band, axis=1) > 0)[0]
+        cy = float(rows.mean()) if rows.size > 0 else float(h) / 2.0
+        raw_offset_x = detector._estimate_offset_x_mm(cx, dist)
+        offset_x = detector._smooth(raw_offset_x, detector._prev_offset)
+        detector._prev_offset = offset_x
+        raw_cam_height = detector._estimate_cam_height(cy, dist)
+        cam_height = detector._smooth(raw_cam_height, detector._prev_offset_y)
+        detector._prev_offset_y = cam_height
+        conf_pct = float(GREEN_EDGE_CONF_PCT)
+        detector.last_primary_confidence = conf_pct / 100.0
+        detector.last_max_confidence = conf_pct / 100.0
+        detector.last_geometry_source = "green_edge_close_range_width"
+        detector.last_status = "target locked (green-edge close range)"
+        self.last_status = detector.last_status
+        detector.last_candidate_count = 1
+        detector.last_raw_prediction_count = 1
+        detector.last_nms_count = 1
+        return (
+            True,
+            0.0,
+            float(dist),
+            float(offset_x),
+            float(conf_pct),
+            float(cam_height),
+            False,
+            False,
+        )
+
     def _result_from_candidate(self, frame, primary: dict, candidates: list[dict]):
         detector = self._detector
         raw_angle = detector._refine_angle_for_primary(frame, primary)
@@ -1044,6 +1200,17 @@ class NativeOakBrickDetector:
         if history is None:
             self._native_dist_history = deque(maxlen=int(NATIVE_RECT_DIST_HISTORY_LEN))
             history = self._native_dist_history
+
+        # NOTE: An earlier experiment added a temporal "distance gate" and a
+        # confidence-hold gate here that, on a jump beyond GATE_MM from the last
+        # locked value, held the last good distance until several consecutive raw
+        # readings agreed. That assumes a STATIONARY brick: when the robot itself
+        # moves, the real distance legitimately changes every frame, so the gate
+        # treated genuine approach as "flicker" and FROZE the published distance
+        # (then snapped to the new level on re-lock) — locking failed while moving.
+        # The median window + outlier band + max-publish-step below already reject
+        # single-frame segmentation flicker without freezing, so the raw reading is
+        # fed straight in and the published distance tracks real motion.
         history.append(float(raw_val))
         values = [float(value) for value in list(history)]
         median = float(statistics.median(values))

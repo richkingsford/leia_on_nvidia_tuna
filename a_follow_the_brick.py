@@ -55,6 +55,10 @@ X_TARGET_MM    = -0.8462156212848165 # Step 1 HAPPY signed x target
 X_TOL_MM       = 3.0     # Step 1 HAPPY signed x tolerance default
 Y_TARGET_MM    = -11.952850590581479 # Step 1 HAPPY signed y target
 Y_TOL_MM       = 0.6     # Step 1 HAPPY signed y tolerance default
+# Operator rule: do not correct y (mast) until distance is at least this % closed to
+# target. Closing y while dist is still far wastes mast acts, and the wheel moves
+# needed to finish dist then disturb y again (wheels overpower the mast on y).
+Y_GATE_MIN_DIST_CLOSENESS_PCT = 80.0
 
 SPEED_SCORE        = 1    # slowest motor speed score
 PULSE_MS       = 200     # motor pulse duration — long enough for slow motor to engage
@@ -7940,6 +7944,10 @@ def _y_axis_action_plan(reading: dict, *, dist_err: float, x_err: float) -> dict
             "y_target_mm": float(target),
             "reason": "protect_lower_edge",
         }
+    # Gate y/mast correction until distance is at least Y_GATE_MIN_DIST_CLOSENESS_PCT
+    # of the way to target. (Lower-edge protection above still runs in every phase.)
+    if _target_closeness_pct(float(dist_err), _dist_tol_mm()) < float(Y_GATE_MIN_DIST_CLOSENESS_PCT):
+        return None
     active_target = target if near_end else high_target
     active_tol = _win_effective_tolerance(tol) if near_end else tol
     y_err = y_mm - active_target
@@ -8285,6 +8293,16 @@ def _should_avoid_forward_left_bias(
     )
 
 
+def _x_turn_duration_ms(*, dist_err: float, turn_cmd: str) -> int:
+    """Return turn duration, capped shorter when dist is already near the target gate."""
+    policy = _follow_dist_approach_policy()
+    near_band = float(policy.get("near_target_creep_band_mm", DEFAULT_DIST_APPROACH_POLICY["near_target_creep_band_mm"]))
+    min_ms = int(_min_motion_duration_ms(turn_cmd))
+    if abs(dist_err) <= near_band:
+        return int(max(150, min_ms))
+    return int(max(300, int(PULSE_MS), min_ms))
+
+
 def _x_only_turn_plan(
     *,
     reading: dict,
@@ -8309,7 +8327,7 @@ def _x_only_turn_plan(
         "x_err": float(x_err),
         "x_outside_mm": float(x_outside),
         "dist_outside_mm": float(dist_outside),
-        "duration_ms": int(max(300, int(PULSE_MS), int(_min_motion_duration_ms(turn_cmd)))),
+        "duration_ms": _x_turn_duration_ms(dist_err=dist_err, turn_cmd=turn_cmd),
         "reason": str(reason),
     }
     if bool(use_production_curve):
@@ -8323,7 +8341,9 @@ def _x_only_turn_plan(
         if isinstance(production_curve, tuple):
             curve, production_duration_ms = production_curve
             if production_duration_ms is not None:
-                plan["duration_ms"] = int(max(300, _bounded_act_duration_ms(production_duration_ms)))
+                _near_cap_ms = _x_turn_duration_ms(dist_err=dist_err, turn_cmd=turn_cmd)
+                _prod_ms = int(max(300, _bounded_act_duration_ms(production_duration_ms)))
+                plan["duration_ms"] = _near_cap_ms if _near_cap_ms < 300 else _prod_ms
             plan["production_curve_name"] = curve.get("curve_name")
             plan["production_curve_value_mm"] = curve.get("curve_value_mm")
     return _attach_mast_to_plan(plan, y_plan)
@@ -8529,8 +8549,7 @@ def _follow_action_plan(reading: dict) -> dict:
         if dist_err > dist_happy_tol:
             policy = _follow_combined_gap_policy()
             if (
-                abs(float(x_err)) <= _win_effective_tolerance(_x_tol_mm())
-                and x_outside <= float(policy.get("straight_x_outside_max_mm", 0.0))
+                x_outside <= float(policy.get("straight_x_outside_max_mm", 0.0))
                 and dist_outside >= float(policy.get("straight_dist_outside_min_mm", 0.0))
             ):
                 return _attach_mast_to_plan({
@@ -8797,6 +8816,8 @@ def _record_distance_act_state(stats: dict, action: str, plan: dict) -> None:
 
 def _should_stop_confirm_for_dist_pingpong(stats: dict, plan: dict) -> bool:
     if not isinstance(stats, dict) or not _distance_bearing_plan(plan):
+        return False
+    if bool(stats.get("last_act_was_mast")):
         return False
     try:
         previous_dist_err = float(stats.get("last_distance_act_dist_err"))
@@ -10605,12 +10626,15 @@ def _follow_loop(
     reset_after_win: bool = True,
     stop_after_win: bool = False,
     stop_after_step2: bool = False,
+    complete_after_step3: bool = False,
+    max_cycles: int | None = None,
     step2_probe_before_forward: bool = False,
     debug_mode: bool = False,
 ) -> dict:
     last_action = ""
     print_ticker = 0
     miss_count = 0
+    completed_cycles = 0
     deadline = time.monotonic() + duration_s
     step1_started_at = time.monotonic()
     step1_attempt_limit_s = _step_attempt_limit_s()
@@ -11226,6 +11250,35 @@ def _follow_loop(
                 print("[STEP3] Not starting step 4 until step 3 is an honest target hit.", flush=True)
                 last_action = "STEP3_NEEDS_WORK"
                 break
+            if bool(complete_after_step3):
+                stats["step3_win_count"] = int(stats.get("step3_win_count", 0)) + 1
+                print("[STEP3] Step 3 complete (steps 1-3 drill); skipping step 4 lift.", flush=True)
+                if not bool(reset_after_win):
+                    last_action = "STEP3_COMPLETE"
+                    break
+                reset_result = _run_reset_sequence(vision, robot)
+                _record_reset_stats(stats, reset_result)
+                _print_reset_stats(stats)
+                if not bool(reset_result.get("success")):
+                    print(
+                        f"[RESET] Failed during {reset_result.get('phase')}: "
+                        f"{reset_result.get('reason')}",
+                        flush=True,
+                    )
+                    break
+                _set_game_profile("empty")
+                completed_cycles += 1
+                if max_cycles is not None and completed_cycles >= int(max_cycles):
+                    last_action = "STEPS123_CYCLES_DONE"
+                    break
+                step1_started_at = time.monotonic()
+                last_action = "RESET"
+                stats["y_lock_on_armed"] = True
+                print_ticker = 0
+                elapsed = time.monotonic() - loop_start
+                if (remaining := LOOP_S - elapsed) > 0:
+                    time.sleep(remaining)
+                continue
             if bool(debug_mode):
                 _stop_robot(robot)
                 stats["debug_mode_terminated"] = True
@@ -11369,6 +11422,7 @@ def _follow_loop(
             )
             print_ticker = 0
         last_action = action
+        stats["last_act_was_mast"] = str(plan.get("kind") or "").strip().lower() in {"mast", "y"}
         elapsed = time.monotonic() - loop_start
         remaining = float(loop_wait_s) - elapsed
         if remaining > 0:
