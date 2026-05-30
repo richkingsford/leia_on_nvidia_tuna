@@ -4,7 +4,7 @@
 One trial:
   1. Run the production follow loop until empty Step 1 wins and Step 2 parks.
   2. Score Step 1, Step 2, severe overshoots, and wrong-way gap acts.
-  3. Run a half reset before the next trial.
+  3. Run a half reset before the next trial only after Step 1 and Step 2 win.
 
 This script intentionally uses a_follow_the_brick.py's production planner for
 the baseline. Experiments should change one thing at a time and compare against
@@ -189,11 +189,12 @@ def _configure_half_reset(fraction: float, *, scale_mast: bool = False) -> tuple
     cfg = copy.deepcopy(base)
     frac = max(0.1, min(1.0, float(fraction)))
     mast_up = cfg.get("mast_up") if isinstance(cfg.get("mast_up"), dict) else {}
+    mast_up["enabled"] = False
     if bool(scale_mast):
         for key in ("duration_ms", "min_duration_ms", "max_duration_ms"):
             if key in mast_up:
                 mast_up[key] = max(1, int(round(float(mast_up.get(key) or 0) * frac)))
-        cfg["mast_up"] = mast_up
+    cfg["mast_up"] = mast_up
     rev = cfg.get("reverse_turn") if isinstance(cfg.get("reverse_turn"), dict) else {}
 
     straight = rev.get("straight_back_first") if isinstance(rev.get("straight_back_first"), dict) else {}
@@ -469,7 +470,16 @@ def main() -> int:
                 summaries.append(summary)
                 _merge_counts(aggregate, stats)
                 reset_record = None
-                if not abort_trials and (trial_n < int(args.trials) or bool(args.reset_after_last)):
+                reset_due = trial_n < int(args.trials) or bool(args.reset_after_last)
+                if not abort_trials and not (bool(summary["s1_won"]) and bool(summary["s2_won"])):
+                    follow._stop_robot(robot)
+                    abort_trials = True
+                    reset_record = {
+                        "skipped": True,
+                        "reason": "trial_not_s1_s2_win_stop_no_reset",
+                    }
+                    print("[STEP12] Trial did not win both Step 1 and Step 2; no reset, stopping trials.", flush=True)
+                if not abort_trials and reset_due:
                     post_trial = follow._read_brick_measurement(vision)
                     if not bool(post_trial.get("confident")):
                         follow._stop_robot(robot)
@@ -480,7 +490,7 @@ def main() -> int:
                             "reading": post_trial,
                         }
                         print("[STEP12] Post-trial visibility is not confident; no reset, stopping trials.", flush=True)
-                if not abort_trials and (trial_n < int(args.trials) or bool(args.reset_after_last)):
+                if not abort_trials and reset_due:
                     reset_record = _run_half_reset(
                         vision,
                         robot,

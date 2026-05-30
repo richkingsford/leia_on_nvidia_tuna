@@ -5249,7 +5249,7 @@ def _reset_reverse_turn(
     for action in actions:
         action["duration_ms"] = int(duration_ms)
     scaled_actions = _scaled_actions(actions)
-    mast_action, mast_up_ms, mast_settle_s = _reset_mast_up_action_spec(rng=rng)
+    mast_action, mast_up_ms, mast_settle_s = _reset_mast_up_action_spec(rng=rng, reading=reading)
     delay_fraction = _coerce_float(
         straight_cfg.get("mast_up_delay_fraction"),
         DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG["mast_up_delay_fraction"],
@@ -5314,7 +5314,7 @@ def _reset_reverse_turn(
     }
 
 
-def _reset_mast_up_action_spec(*, rng=None) -> tuple[dict | None, int, float]:
+def _reset_mast_up_action_spec(*, rng=None, reading: dict | None = None) -> tuple[dict | None, int, float]:
     """Build the reset mast-up custom action for the combined reset packet."""
     reset_cfg = _reset_motion_config()
     cfg = reset_cfg.get("mast_up") if isinstance(reset_cfg.get("mast_up"), dict) else {}
@@ -5334,6 +5334,19 @@ def _reset_mast_up_action_spec(*, rng=None) -> tuple[dict | None, int, float]:
     cmd = str(cfg.get("cmd", RESET_MAST_UP_CMD) or "").strip().lower()
     if cmd not in {"u", "d"}:
         cmd = RESET_MAST_UP_CMD
+    if cmd == "u":
+        # Reset is a wheel-pose change, not an open-loop mast recovery. Mast-up
+        # corrections happen only in the observed follow loop, behind the
+        # target+5mm y ceiling guard.
+        try:
+            y_text = f"{float((reading or {}).get('y_mm')):+.1f}mm"
+        except (TypeError, ValueError):
+            y_text = "N/A"
+        print(
+            f"[RESET] Mast U skipped by safety ceiling during reset; current y={y_text}.",
+            flush=True,
+        )
+        return None, 0, float(settle_s)
     wire_action = cmd
     return {
         "target": "m",
