@@ -157,6 +157,23 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertNotIn("mast_cmd", plan)
         self.assertNotIn("MAST_", plan["action"])
 
+    def test_slightly_close_recovery_does_not_attach_mast_to_backward_drive(self):
+        plan = follow._follow_action_plan(
+            {
+                "visible": True,
+                "confident": True,
+                "dist_mm": 201.9,
+                "x_mm": 8.6,
+                "y_mm": -20.7,
+                "conf": 93.0,
+            }
+        )
+
+        self.assertEqual(plan["kind"], "drive")
+        self.assertEqual(plan["cmd"], "b")
+        self.assertNotIn("mast_cmd", plan)
+        self.assertNotIn("MAST_", plan["action"])
+
     def test_zero_step1_mast_up_budget_disables_cumulative_guard(self):
         old_follow_motion_config = follow._follow_motion_config
         try:

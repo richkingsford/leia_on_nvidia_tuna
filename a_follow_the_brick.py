@@ -8852,7 +8852,7 @@ def _attach_mast_to_plan(plan: dict, y_plan: dict | None) -> dict:
             dist_err = 0.0
         if (
             (drive_cmd == "b" or drive_mode == "backward")
-            and dist_err < -_win_effective_tolerance(_dist_tol_mm())
+            and dist_err < 0.0
         ):
             return plan
     if y_reason != "protect_lower_edge":
