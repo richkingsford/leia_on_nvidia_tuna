@@ -837,7 +837,7 @@
               "closes_mm": 1.1
             }
           ],
-          "max_step1_mast_up_ms": 1000,
+          "max_step1_mast_up_ms": 0,
           "mast_correction_fraction": 0.45,
           "mast_duration_uses_tolerance_gap": true,
           "mast_coast_settle_s": 0.45,

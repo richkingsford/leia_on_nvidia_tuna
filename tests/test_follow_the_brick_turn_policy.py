@@ -119,6 +119,24 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertEqual(plan["mast_cmd"], "u")
         self.assertIn("MAST_U", plan["action"])
 
+    def test_zero_step1_mast_up_budget_disables_cumulative_guard(self):
+        old_follow_motion_config = follow._follow_motion_config
+        try:
+            follow._follow_motion_config = lambda: {
+                "y_axis": {"enabled": True, "max_step1_mast_up_ms": 0}
+            }
+            plan = {"kind": "mast", "cmd": "u", "duration_ms": 900}
+
+            exceeded, used_ms, planned_ms, max_ms = follow._mast_up_budget_exceeded(
+                {"step1_mast_up_ms": 900},
+                plan,
+            )
+        finally:
+            follow._follow_motion_config = old_follow_motion_config
+
+        self.assertFalse(exceeded)
+        self.assertEqual((used_ms, planned_ms, max_ms), (0, 0, 0))
+
     def _reading_for_gap(self, *, dist_gap_mm: float, x_gap_mm: float) -> dict:
         y_cfg = follow._follow_y_axis_config()
         return {

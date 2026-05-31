@@ -398,7 +398,7 @@ DEFAULT_FOLLOW_Y_AXIS_CONFIG = {
     "mast_down_mm_per_100ms": 3.0,
     "mast_up_duration_curve": [],
     "mast_down_duration_curve": [],
-    "max_step1_mast_up_ms": 1000,
+    "max_step1_mast_up_ms": 0,
     "mast_correction_fraction": 0.9,
     "mast_duration_uses_tolerance_gap": False,
     "mast_coast_settle_s": 0.45,
