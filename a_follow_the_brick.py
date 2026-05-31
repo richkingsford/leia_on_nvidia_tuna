@@ -5554,7 +5554,7 @@ def _reset_reverse_turn(
     *,
     rng=None,
 ) -> dict | None:
-    """Send the first reset act: straight back plus mast-up."""
+    """Send the first reset act without changing mast height."""
     turn_cmd = str(direction or "").strip().lower()
     if turn_cmd not in {"l", "r"}:
         return None
@@ -5591,7 +5591,7 @@ def _reset_reverse_turn(
     for action in actions:
         action["duration_ms"] = int(duration_ms)
     scaled_actions = _scaled_actions(actions)
-    mast_action, mast_up_ms, mast_settle_s = _reset_mast_up_action_spec(rng=rng, reading=reading)
+    mast_action, mast_up_ms, mast_settle_s = None, 0, 0.0
     delay_fraction = _coerce_float(
         straight_cfg.get("mast_up_delay_fraction"),
         DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG["mast_up_delay_fraction"],
@@ -6172,7 +6172,8 @@ def _wait_for_visibility_recovery(
     poll_s = cfg["poll_s"] if sample_s is None else _coerce_float(sample_s, cfg["poll_s"], minimum=0.01, maximum=2.0)
     if wait_s <= 0.0:
         return current
-    if robot is not None:
+    reset_context = str(context or "").strip().lower().startswith("reset")
+    if robot is not None and not reset_context:
         _stop_robot(robot)
         down_ms = _cap_mast_duration_ms(
             "d",

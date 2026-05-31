@@ -74,6 +74,78 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertEqual(duration_ms, 1000)
         self.assertEqual(action["duration_ms"], 1000)
 
+    def test_reset_reverse_turn_does_not_call_mast_up(self):
+        old_reset_motion_config = follow._reset_motion_config
+        old_mast_up_spec = follow._reset_mast_up_action_spec
+        old_send_custom = follow.guarded_send_custom_actions_pwm
+        try:
+            follow._reset_motion_config = lambda: {
+                "reverse_turn": {
+                    "straight_back_first": {
+                        "enabled": True,
+                        "duration_ms": 100,
+                        "pwm": 103,
+                        "mast_up_delay_fraction": 0.5,
+                    }
+                },
+                "mast_up": {"enabled": True, "min_duration_ms": 1000, "max_duration_ms": 1000},
+            }
+            follow._reset_mast_up_action_spec = lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("reset must not request mast-up")
+            )
+            follow.guarded_send_custom_actions_pwm = lambda *_args, **_kwargs: {
+                "cmd_sent": "b",
+                "duration_ms": _kwargs.get("duration_ms"),
+            }
+
+            result = follow._reset_reverse_turn(
+                _FakeRobot(),
+                "r",
+                {"dist_mm": 200.0, "x_mm": 0.0, "y_mm": -80.0},
+            )
+        finally:
+            follow._reset_motion_config = old_reset_motion_config
+            follow._reset_mast_up_action_spec = old_mast_up_spec
+            follow.guarded_send_custom_actions_pwm = old_send_custom
+
+        self.assertEqual(result["mast_up_ms"], 0)
+        self.assertFalse(any(action.get("target") == "m" for action in result["actions"]))
+
+    def test_reset_visibility_recovery_does_not_mast_down(self):
+        old_visibility_recovery_config = follow._visibility_recovery_config
+        old_read = follow._read_brick_measurement
+        old_sleep = follow.time.sleep
+        try:
+            follow._visibility_recovery_config = lambda: {
+                "wait_s": 0.01,
+                "poll_s": 0.01,
+                "mast_down_duration_ms": 1000,
+                "mast_down_pwm": 255,
+            }
+            follow._read_brick_measurement = lambda *_args, **_kwargs: {
+                "confident": False,
+                "visible": False,
+                "reason": "not_visible",
+            }
+            follow.time.sleep = lambda _seconds: None
+            robot = _FakeRobot()
+
+            result = follow._wait_for_visibility_recovery(
+                object(),
+                robot,
+                {"confident": False, "visible": False, "reason": "not_visible"},
+                context="reset_after_motion",
+                timeout_s=0.01,
+                sample_s=0.01,
+            )
+        finally:
+            follow._visibility_recovery_config = old_visibility_recovery_config
+            follow._read_brick_measurement = old_read
+            follow.time.sleep = old_sleep
+
+        self.assertFalse(result["confident"])
+        self.assertEqual(robot.commands, [])
+
     def test_step2_seat_mast_duration_capped_to_one_second(self):
         cfg = follow._default_step2_like_config()
         cfg["seat_mast_cmd"] = "d"
