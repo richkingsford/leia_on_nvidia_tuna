@@ -146,6 +146,11 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertFalse(result["confident"])
         self.assertEqual(robot.commands, [])
 
+    def test_robot_visibility_recovery_is_wait_only_by_default(self):
+        cfg = follow._visibility_recovery_config()
+
+        self.assertEqual(cfg["mast_down_duration_ms"], 0)
+
     def test_step2_seat_mast_duration_capped_to_one_second(self):
         cfg = follow._default_step2_like_config()
         cfg["seat_mast_cmd"] = "d"
@@ -764,6 +769,62 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertIsNone(targets["x_tol_mm"])
         self.assertIsNone(targets["y_mm"])
         self.assertIsNone(targets["y_tol_mm"])
+
+    def test_empty_step2_requires_x_alignment_with_distance(self):
+        follow._set_game_profile("empty")
+
+        cfg = follow._follow_step2_config()
+        targets = cfg["targets"]
+
+        self.assertEqual(cfg["nickname"], "close dist+x")
+        self.assertEqual(targets["dist_mm"], 149.0)
+        self.assertEqual(targets["dist_tol_mm"], 5.0)
+        self.assertEqual(targets["x_mm"], follow._x_target_mm())
+        self.assertEqual(targets["x_tol_mm"], follow._x_tol_mm())
+        self.assertIsNone(targets["y_mm"])
+        self.assertIsNone(targets["y_tol_mm"])
+
+        ready, _reason, closeness = follow._step2_targets_ready(
+            {
+                "visible": True,
+                "confident": True,
+                "conf": 95.0,
+                "dist_mm": 149.0,
+                "x_mm": 15.0,
+                "y_mm": -28.0,
+            },
+            cfg,
+        )
+
+        self.assertFalse(ready)
+        self.assertIsInstance(closeness, dict)
+        self.assertLess(closeness["x_target_closeness_pct"], 100.0)
+
+    def test_step2_x_polish_uses_committed_turn_when_x_is_far(self):
+        old_curve = follow._production_turn_curve_for_reading
+        try:
+            follow._production_turn_curve_for_reading = lambda **_kwargs: (
+                {"curve_name": "test", "curve_value_mm": 14.0},
+                620,
+            )
+
+            plan = follow._x_only_turn_plan(
+                reading={"dist_mm": 149.0, "x_mm": 20.0, "y_mm": -32.0},
+                turn_cmd="r",
+                drive_mode="backward",
+                strength="micro",
+                dist_err=0.0,
+                x_err=14.0,
+                x_outside=11.0,
+                dist_outside=0.0,
+                y_plan=None,
+                reason="step2_precision_x_polish",
+                use_production_curve=True,
+            )
+        finally:
+            follow._production_turn_curve_for_reading = old_curve
+
+        self.assertGreaterEqual(plan["duration_ms"], 300)
 
     def test_empty_reset_distance_matches_step1_target(self):
         follow._set_game_profile("empty")

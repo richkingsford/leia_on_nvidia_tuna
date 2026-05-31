@@ -631,7 +631,7 @@
     "visibility_recovery": {
       "wait_s": 3.0,
       "poll_s": 0.15,
-      "mast_down_duration_ms": 1000
+      "mast_down_duration_ms": 0
     },
     "pickup_suspect": {
       "enabled": true,
@@ -930,7 +930,7 @@
           }
         },
         "step2": {
-          "nickname": "close dist",
+          "nickname": "close dist+x",
           "seat_mast_cmd": "d",
           "seat_mast_duration_ms": 200,
           "step_timeout_s": 25.0,
@@ -955,8 +955,8 @@
           "targets": {
             "dist_mm": 149.0,
             "dist_tol_mm": 5.0,
-            "x_mm": null,
-            "x_tol_mm": null,
+            "x_mm": 5.9,
+            "x_tol_mm": 3.0,
             "y_mm": null,
             "y_tol_mm": null
           }

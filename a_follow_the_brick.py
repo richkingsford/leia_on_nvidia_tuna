@@ -9046,7 +9046,10 @@ def _x_only_turn_plan(
             if production_duration_ms is not None:
                 _near_cap_ms = _x_turn_duration_ms(dist_err=dist_err, turn_cmd=turn_cmd)
                 _prod_ms = int(max(300, _bounded_act_duration_ms(production_duration_ms)))
-                plan["duration_ms"] = _near_cap_ms if _near_cap_ms < 300 else _prod_ms
+                if _near_cap_ms < 300 and float(x_outside) <= 2.0:
+                    plan["duration_ms"] = _near_cap_ms
+                else:
+                    plan["duration_ms"] = _prod_ms
             plan["production_curve_name"] = curve.get("curve_name")
             plan["production_curve_value_mm"] = curve.get("curve_value_mm")
     return _attach_mast_to_plan(plan, y_plan)
