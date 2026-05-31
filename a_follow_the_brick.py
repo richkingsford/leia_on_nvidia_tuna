@@ -8484,6 +8484,8 @@ def _y_axis_action_plan(reading: dict, *, dist_err: float, x_err: float) -> dict
             "reason": "y_min_act_would_overshoot",
         }
     cmd = "d" if y_err > 0.0 else "u"
+    if cmd == "u" and _step1_mast_up_budget_ms(y_cfg) <= 0:
+        return None
     # Hard ceiling: never raise y above the win zone (win target + win tol). There is
     # no reason to take y higher than the step-1 win, and over-raising wrecks the pose.
     win_ceiling_y = float(target) + float(tol)
@@ -8596,6 +8598,41 @@ def _plan_mast_duration_ms(plan: dict | None) -> int:
     kind = str(plan.get("kind") or "").strip().lower()
     raw = plan.get("duration_ms") if kind == "mast" else plan.get("mast_duration_ms")
     return _coerce_int(raw, 0, minimum=0, maximum=_max_mast_act_ms())
+
+
+def _step1_mast_up_budget_ms(y_cfg: dict | None = None) -> int:
+    cfg = y_cfg if isinstance(y_cfg, dict) else _follow_y_axis_config()
+    return _coerce_int(
+        cfg.get("max_step1_mast_up_ms"),
+        DEFAULT_FOLLOW_Y_AXIS_CONFIG["max_step1_mast_up_ms"],
+        minimum=0,
+        maximum=_max_mast_act_ms(),
+    )
+
+
+def _strip_attached_mast_up_for_budget(
+    plan: dict | None,
+    *,
+    used_ms: int,
+    planned_ms: int,
+    max_up_ms: int,
+    remaining_ms: int,
+) -> dict | None:
+    if not isinstance(plan, dict):
+        return plan
+    if str(plan.get("kind") or "").strip().lower() == "mast":
+        return plan
+    out = dict(plan)
+    for key in ("mast_cmd", "mast_pwm", "mast_duration_ms", "mast_reason", "mast_y_err", "mast_y_target_mm"):
+        out.pop(key, None)
+    out["mast_up_budget_blocked"] = True
+    out["mast_up_budget_used_ms"] = int(used_ms)
+    out["mast_up_budget_planned_ms"] = int(planned_ms)
+    out["mast_up_budget_max_ms"] = int(max_up_ms)
+    out["mast_up_budget_remaining_ms"] = int(remaining_ms)
+    action = str(out.get("action") or "").strip()
+    out["action"] = f"{action}_NO_MAST_U_BUDGET" if action else "NO_MAST_U_BUDGET"
+    return out
 
 
 def _cap_mast_plan_to_max_duration(plan: dict | None) -> dict | None:
@@ -8727,17 +8764,11 @@ def _cap_mast_up_plan_to_y_ceiling(plan: dict | None, reading: dict | None) -> d
 def _mast_up_budget_exceeded(stats: dict, plan: dict | None) -> tuple[bool, int, int, int]:
     if _plan_mast_cmd(plan) != "u":
         return False, 0, 0, 0
-    y_cfg = _follow_y_axis_config()
-    max_up_ms = _coerce_int(
-        y_cfg.get("max_step1_mast_up_ms"),
-        DEFAULT_FOLLOW_Y_AXIS_CONFIG["max_step1_mast_up_ms"],
-        minimum=0,
-        maximum=_max_mast_act_ms(),
-    )
-    if max_up_ms <= 0:
-        return False, 0, 0, 0
+    max_up_ms = _step1_mast_up_budget_ms()
     used_ms = _coerce_int((stats or {}).get("step1_mast_up_ms"), 0, minimum=0, maximum=100000)
     planned_ms = _plan_mast_duration_ms(plan)
+    if max_up_ms <= 0:
+        return True, used_ms, planned_ms, max_up_ms
     return (used_ms + planned_ms) > max_up_ms, used_ms, planned_ms, max_up_ms
 
 
@@ -8745,21 +8776,28 @@ def _cap_mast_up_plan_to_budget(stats: dict, plan: dict | None) -> dict | None:
     if not isinstance(plan, dict) or _plan_mast_cmd(plan) != "u":
         return plan
     y_cfg = _follow_y_axis_config()
-    max_up_ms = _coerce_int(
-        y_cfg.get("max_step1_mast_up_ms"),
-        DEFAULT_FOLLOW_Y_AXIS_CONFIG["max_step1_mast_up_ms"],
-        minimum=0,
-        maximum=_max_mast_act_ms(),
-    )
-    if max_up_ms <= 0:
-        return plan
+    max_up_ms = _step1_mast_up_budget_ms(y_cfg)
     used_ms = _coerce_int((stats or {}).get("step1_mast_up_ms"), 0, minimum=0, maximum=100000)
-    remaining_ms = max(0, int(max_up_ms) - int(used_ms))
     planned_ms = _plan_mast_duration_ms(plan)
+    if max_up_ms <= 0:
+        return _strip_attached_mast_up_for_budget(
+            plan,
+            used_ms=used_ms,
+            planned_ms=planned_ms,
+            max_up_ms=max_up_ms,
+            remaining_ms=0,
+        )
+    remaining_ms = max(0, int(max_up_ms) - int(used_ms))
     if planned_ms <= remaining_ms:
         return plan
     if remaining_ms <= 0:
-        return plan
+        return _strip_attached_mast_up_for_budget(
+            plan,
+            used_ms=used_ms,
+            planned_ms=planned_ms,
+            max_up_ms=max_up_ms,
+            remaining_ms=remaining_ms,
+        )
     min_up_ms = _coerce_int(
         y_cfg.get("mast_min_pulse_ms"),
         DEFAULT_FOLLOW_Y_AXIS_CONFIG["mast_min_pulse_ms"],
@@ -8767,7 +8805,13 @@ def _cap_mast_up_plan_to_budget(stats: dict, plan: dict | None) -> dict | None:
         maximum=_max_mast_act_ms(),
     )
     if remaining_ms < min_up_ms:
-        return plan
+        return _strip_attached_mast_up_for_budget(
+            plan,
+            used_ms=used_ms,
+            planned_ms=planned_ms,
+            max_up_ms=max_up_ms,
+            remaining_ms=remaining_ms,
+        )
     capped = dict(plan)
     key = "duration_ms" if str(capped.get("kind") or "").strip().lower() == "mast" else "mast_duration_ms"
     capped[key] = int(remaining_ms)
@@ -9031,6 +9075,7 @@ def _follow_action_plan(reading: dict) -> dict:
     y_ok = (
         True
         if y_err is None or not bool(y_cfg.get("enabled"))
+        or (float(y_err) < 0.0 and _step1_mast_up_budget_ms(y_cfg) <= 0)
         else _win_axis_ok(float(y_err), float(y_cfg.get("win_tol_mm", Y_TOL_MM)))
     )
 

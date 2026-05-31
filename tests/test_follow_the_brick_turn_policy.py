@@ -82,7 +82,7 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
 
         self.assertEqual(cfg["seat_mast_duration_ms"], 1000)
 
-    def test_y_gap_inside_x_dist_gate_closes_dist_and_y_together(self):
+    def test_low_y_inside_x_dist_gate_holds_without_mast_up(self):
         y_cfg = follow._follow_y_axis_config()
         reading = {
             "visible": True,
@@ -95,13 +95,10 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
 
         plan = follow._follow_action_plan(reading)
 
-        self.assertEqual(plan["kind"], "drive")
-        self.assertEqual(plan["cmd"], "f")
-        self.assertEqual(plan["mast_reason"], "final_y")
-        self.assertIn(plan["mast_cmd"], {"u", "d"})
-        self.assertIn("MAST_", plan["action"])
+        self.assertEqual(plan["kind"], "hold")
+        self.assertEqual(plan["action"], "HAPPY")
 
-    def test_far_visible_low_start_closes_distance_and_y_together(self):
+    def test_far_visible_low_start_closes_distance_without_mast_up(self):
         reading = {
             "visible": True,
             "confident": True,
@@ -116,11 +113,10 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertFalse(follow._pickup_suspected_reading(reading))
         self.assertEqual(plan["kind"], "drive")
         self.assertEqual(plan["cmd"], "f")
-        self.assertEqual(plan["mast_cmd"], "u")
-        self.assertIn("MAST_U", plan["action"])
-        self.assertLessEqual(plan["mast_duration_ms"], 300)
+        self.assertNotIn("mast_cmd", plan)
+        self.assertNotIn("MAST_U", plan["action"])
 
-    def test_empty_profile_near_gate_uses_short_y_packets(self):
+    def test_empty_profile_near_gate_low_y_holds_without_mast_up(self):
         plan = follow._follow_action_plan(
             {
                 "visible": True,
@@ -132,10 +128,8 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
             }
         )
 
-        self.assertEqual(plan["kind"], "mast")
-        self.assertEqual(plan["cmd"], "u")
-        self.assertEqual(plan["reason"], "final_y")
-        self.assertLessEqual(plan["duration_ms"], 300)
+        self.assertEqual(plan["kind"], "hold")
+        self.assertEqual(plan["action"], "HAPPY")
 
     def test_unreliable_spool_mast_cap_matches_regression_wish(self):
         self.assertEqual(follow._follow_y_axis_config()["spool_reversal_mast_max_ms"], 110)
@@ -174,7 +168,7 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertNotIn("mast_cmd", plan)
         self.assertNotIn("MAST_", plan["action"])
 
-    def test_zero_step1_mast_up_budget_disables_cumulative_guard(self):
+    def test_zero_step1_mast_up_budget_blocks_cumulative_guard(self):
         old_follow_motion_config = follow._follow_motion_config
         try:
             follow._follow_motion_config = lambda: {
@@ -189,8 +183,95 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         finally:
             follow._follow_motion_config = old_follow_motion_config
 
-        self.assertFalse(exceeded)
-        self.assertEqual((used_ms, planned_ms, max_ms), (0, 0, 0))
+        self.assertTrue(exceeded)
+        self.assertEqual((used_ms, planned_ms, max_ms), (900, 900, 0))
+
+    def test_zero_step1_mast_up_budget_treats_low_y_as_ok(self):
+        old_follow_motion_config = follow._follow_motion_config
+        try:
+            follow._follow_motion_config = lambda: {
+                "dist_axis": {"win_target_mm": 216.8, "win_tol_mm": 50.0},
+                "x_axis": {"win_target_mm": 5.9, "win_tol_mm": 3.0},
+                "y_axis": {
+                    "enabled": True,
+                    "win_target_mm": -42.7,
+                    "win_tol_mm": 5.0,
+                    "max_step1_mast_up_ms": 0,
+                },
+            }
+            plan = follow._follow_action_plan(
+                {
+                    "visible": True,
+                    "confident": True,
+                    "dist_mm": 216.8,
+                    "x_mm": 5.9,
+                    "y_mm": -60.0,
+                    "conf": 99.0,
+                }
+            )
+        finally:
+            follow._follow_motion_config = old_follow_motion_config
+
+        self.assertEqual(plan["kind"], "hold")
+        self.assertEqual(plan["action"], "HAPPY")
+
+    def test_zero_step1_mast_up_budget_strips_attached_up_from_drive(self):
+        old_follow_motion_config = follow._follow_motion_config
+        try:
+            follow._follow_motion_config = lambda: {
+                "y_axis": {
+                    "enabled": True,
+                    "win_target_mm": -42.7,
+                    "win_tol_mm": 5.0,
+                    "max_step1_mast_up_ms": 0,
+                },
+            }
+            plan = {
+                "kind": "drive",
+                "cmd": "f",
+                "action": "FWD_MAST_U",
+                "duration_ms": 200,
+                "mast_cmd": "u",
+                "mast_pwm": 255,
+                "mast_duration_ms": 220,
+            }
+            capped = follow._cap_mast_up_plan_to_budget({}, plan)
+        finally:
+            follow._follow_motion_config = old_follow_motion_config
+
+        self.assertEqual(capped["kind"], "drive")
+        self.assertNotIn("mast_cmd", capped)
+        self.assertTrue(capped["mast_up_budget_blocked"])
+        self.assertIn("NO_MAST_U_BUDGET", capped["action"])
+
+    def test_zero_step1_mast_up_budget_still_lowers_high_y(self):
+        old_follow_motion_config = follow._follow_motion_config
+        try:
+            follow._follow_motion_config = lambda: {
+                "dist_axis": {"win_target_mm": 216.8, "win_tol_mm": 50.0},
+                "x_axis": {"win_target_mm": 5.9, "win_tol_mm": 3.0},
+                "y_axis": {
+                    "enabled": True,
+                    "win_target_mm": -42.7,
+                    "win_tol_mm": 5.0,
+                    "max_step1_mast_up_ms": 0,
+                },
+            }
+            plan = follow._follow_action_plan(
+                {
+                    "visible": True,
+                    "confident": True,
+                    "dist_mm": 216.8,
+                    "x_mm": 5.9,
+                    "y_mm": -30.0,
+                    "conf": 99.0,
+                }
+            )
+        finally:
+            follow._follow_motion_config = old_follow_motion_config
+
+        self.assertEqual(plan["kind"], "mast")
+        self.assertEqual(plan["cmd"], "d")
 
     def _reading_for_gap(self, *, dist_gap_mm: float, x_gap_mm: float) -> dict:
         y_cfg = follow._follow_y_axis_config()
@@ -277,7 +358,7 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertEqual(plan["reason"], "wide_x_before_dist")
         self.assertFalse(plan.get("use_production_turn_curve", False))
 
-    def test_gross_y_gap_recovers_mast_when_x_is_centered(self):
+    def test_gross_low_y_gap_holds_without_mast_up_when_x_is_centered(self):
         y_cfg = follow._follow_y_axis_config()
         plan = follow._follow_action_plan(
             {
@@ -290,8 +371,8 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
             }
         )
 
-        self.assertEqual(plan["kind"], "mast")
-        self.assertEqual(plan["cmd"], "u")
+        self.assertEqual(plan["kind"], "hold")
+        self.assertEqual(plan["action"], "HAPPY")
 
     def test_uses_sharp_x_only_curve_when_dist_gap_is_tiny(self):
         plan = follow._follow_action_plan(

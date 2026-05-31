@@ -549,6 +549,7 @@
       "mast_mm_per_100ms": 2.0,
       "mast_up_mm_per_100ms": 1.0,
       "mast_down_mm_per_100ms": 2.2,
+      "max_step1_mast_up_ms": 1000,
       "mast_correction_fraction": 0.45,
       "mast_duration_uses_tolerance_gap": true,
       "mast_coast_settle_s": 0.45,
