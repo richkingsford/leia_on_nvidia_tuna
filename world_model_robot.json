@@ -929,14 +929,15 @@
           }
         },
         "step2": {
-          "nickname": "align y",
+          "nickname": "close dist",
           "seat_mast_cmd": "d",
           "seat_mast_duration_ms": 200,
-          "step_timeout_s": 10.0,
+          "step_timeout_s": 25.0,
           "recovery_creep_enabled": false,
           "recovery_creep_max_attempts": 0,
           "visibility_recovery_creep_enabled": false,
           "visibility_recovery_creep_max_attempts": 0,
+          "precision_max_attempts": 12,
           "precision_drive_max_pulse_ms": 180,
           "precision_mast_small_gap_max_mm": 5.0,
           "precision_mast_small_gap_pwm_scale": 1.0,
@@ -953,10 +954,10 @@
           "targets": {
             "dist_mm": 149.0,
             "dist_tol_mm": 5.0,
-            "x_mm": 4.0,
-            "x_tol_mm": 9.0,
-            "y_mm": -36.2,
-            "y_tol_mm": 3.0
+            "x_mm": null,
+            "x_tol_mm": null,
+            "y_mm": null,
+            "y_tol_mm": null
           }
         },
         "step3": {
