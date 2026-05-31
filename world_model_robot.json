@@ -961,17 +961,17 @@
           }
         },
         "step3": {
-          "nickname": "seat",
+          "nickname": "crawl dist",
           "seat_mast_duration_ms": 0,
-          "step_timeout_s": 10.0,
-          "recovery_creep_enabled": true,
-          "recovery_creep_max_attempts": 7,
+          "step_timeout_s": 25.0,
+          "recovery_creep_enabled": false,
+          "recovery_creep_max_attempts": 0,
           "visibility_recovery_creep_enabled": false,
           "visibility_recovery_creep_max_attempts": 0,
-          "post_precision_recovery_cycles": 6,
-          "precision_max_attempts": 9,
-          "precision_drive_min_pulse_ms": 72,
-          "precision_drive_max_pulse_ms": 150,
+          "post_precision_recovery_cycles": 0,
+          "precision_max_attempts": 30,
+          "precision_drive_min_pulse_ms": 45,
+          "precision_drive_max_pulse_ms": 85,
           "semi_happy_targets": {
             "dist_mm": 81.0,
             "dist_tol_mm": 5.0,
@@ -982,9 +982,9 @@
           },
           "targets": {
             "dist_mm": 72.00911283232475,
-            "dist_tol_mm": 1.5,
-            "x_mm": 0.0,
-            "x_tol_mm": 9.0,
+            "dist_tol_mm": 5.0,
+            "x_mm": null,
+            "x_tol_mm": null,
             "y_mm": null,
             "y_tol_mm": null
           }

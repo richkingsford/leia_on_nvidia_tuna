@@ -594,6 +594,24 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertEqual(len(robot.commands), 1)
         self.assertEqual(len(robot.custom_commands), 0)
 
+    def test_empty_step3_is_distance_only_slow_crawl(self):
+        follow._set_game_profile("empty")
+
+        cfg = follow._follow_step3_config()
+        targets = cfg["targets"]
+
+        self.assertEqual(cfg["nickname"], "crawl dist")
+        self.assertFalse(cfg["recovery_creep_enabled"])
+        self.assertEqual(cfg["precision_drive_max_pulse_ms"], 85)
+        self.assertEqual(cfg["precision_drive_min_pulse_ms"], 45)
+        self.assertEqual(cfg["precision_max_attempts"], 30)
+        self.assertIsNotNone(targets["dist_mm"])
+        self.assertEqual(targets["dist_tol_mm"], 5.0)
+        self.assertIsNone(targets["x_mm"])
+        self.assertIsNone(targets["x_tol_mm"])
+        self.assertIsNone(targets["y_mm"])
+        self.assertIsNone(targets["y_tol_mm"])
+
     def test_step2_precision_stops_when_x_polish_leaves_distance_too_close(self):
         step2 = {
             "precision_settle_enabled": True,
