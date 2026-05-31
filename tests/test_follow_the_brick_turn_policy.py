@@ -693,6 +693,13 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertIsNone(targets["y_mm"])
         self.assertIsNone(targets["y_tol_mm"])
 
+    def test_empty_reset_distance_matches_step1_target(self):
+        follow._set_game_profile("empty")
+
+        reset_cfg = follow._reset_motion_config()["reverse_turn"]
+
+        self.assertEqual(reset_cfg["dist_target_mm"], follow._dist_target_mm())
+
     def test_step2_precision_stops_when_x_polish_leaves_distance_too_close(self):
         step2 = {
             "precision_settle_enabled": True,
