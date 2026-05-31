@@ -118,6 +118,27 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertEqual(plan["cmd"], "f")
         self.assertEqual(plan["mast_cmd"], "u")
         self.assertIn("MAST_U", plan["action"])
+        self.assertLessEqual(plan["mast_duration_ms"], 300)
+
+    def test_empty_profile_near_gate_uses_short_y_packets(self):
+        plan = follow._follow_action_plan(
+            {
+                "visible": True,
+                "confident": True,
+                "dist_mm": 221.3,
+                "x_mm": 4.1,
+                "y_mm": -53.4,
+                "conf": 97.0,
+            }
+        )
+
+        self.assertEqual(plan["kind"], "mast")
+        self.assertEqual(plan["cmd"], "u")
+        self.assertEqual(plan["reason"], "final_y")
+        self.assertLessEqual(plan["duration_ms"], 300)
+
+    def test_unreliable_spool_mast_cap_matches_regression_wish(self):
+        self.assertEqual(follow._follow_y_axis_config()["spool_reversal_mast_max_ms"], 110)
 
     def test_zero_step1_mast_up_budget_disables_cumulative_guard(self):
         old_follow_motion_config = follow._follow_motion_config

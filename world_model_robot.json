@@ -557,7 +557,7 @@
       "tiny_y_no_observed_wait_s": 0.8,
       "tiny_y_no_observed_abs_err_mm": 16.0,
       "spool_reversal_short_act_count": 4,
-      "spool_reversal_mast_max_ms": 220,
+      "spool_reversal_mast_max_ms": 110,
       "attach_y_min_abs_err_mm": 5.0
     },
     "turn_bias_curves": {
@@ -790,51 +790,51 @@
           "lock_on_enabled": false,
           "mast_up_pwm": 255,
           "mast_down_pwm": 255,
-          "mast_pulse_ms": 400,
-          "mast_min_pulse_ms": 500,
-          "mast_max_pulse_ms": 900,
+          "mast_pulse_ms": 220,
+          "mast_min_pulse_ms": 110,
+          "mast_max_pulse_ms": 300,
           "finish_mast_up_pwm": 255,
           "finish_mast_down_pwm": 255,
-          "finish_mast_pulse_ms": 400,
-          "finish_mast_min_pulse_ms": 500,
-          "finish_mast_max_pulse_ms": 900,
+          "finish_mast_pulse_ms": 220,
+          "finish_mast_min_pulse_ms": 110,
+          "finish_mast_max_pulse_ms": 300,
           "mast_mm_per_100ms": 2.0,
           "mast_up_mm_per_100ms": 0.11,
           "mast_down_mm_per_100ms": 0.12,
           "mast_up_duration_curve": [
             {
-              "duration_ms": 500,
+              "duration_ms": 110,
               "closes_mm": 0.5
             },
             {
-              "duration_ms": 650,
-              "closes_mm": 0.8
+              "duration_ms": 180,
+              "closes_mm": 2.0
             },
             {
-              "duration_ms": 800,
-              "closes_mm": 0.9
+              "duration_ms": 240,
+              "closes_mm": 4.0
             },
             {
-              "duration_ms": 900,
-              "closes_mm": 1.0
+              "duration_ms": 300,
+              "closes_mm": 6.0
             }
           ],
           "mast_down_duration_curve": [
             {
-              "duration_ms": 500,
+              "duration_ms": 110,
               "closes_mm": 0.6
             },
             {
-              "duration_ms": 650,
-              "closes_mm": 0.9
+              "duration_ms": 180,
+              "closes_mm": 2.0
             },
             {
-              "duration_ms": 800,
-              "closes_mm": 1.0
+              "duration_ms": 240,
+              "closes_mm": 4.0
             },
             {
-              "duration_ms": 900,
-              "closes_mm": 1.1
+              "duration_ms": 300,
+              "closes_mm": 6.0
             }
           ],
           "max_step1_mast_up_ms": 0,

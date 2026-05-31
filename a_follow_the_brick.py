@@ -407,7 +407,7 @@ DEFAULT_FOLLOW_Y_AXIS_CONFIG = {
     "tiny_y_no_observed_wait_s": 0.8,
     "tiny_y_no_observed_abs_err_mm": 16.0,
     "spool_reversal_short_act_count": 4,
-    "spool_reversal_mast_max_ms": 220,
+    "spool_reversal_mast_max_ms": 110,
     "attach_y_min_abs_err_mm": 12.0,
     "attach_y_max_abs_dist_err_mm": 0.0,
 }
