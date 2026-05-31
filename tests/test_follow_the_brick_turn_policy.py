@@ -459,6 +459,58 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertEqual(final["x_mm"], 4.0)
         self.assertEqual(len(robot.custom_commands), 1)
 
+    def test_step2_precision_attaches_mast_down_to_forward_when_high(self):
+        step2 = {
+            "precision_settle_enabled": True,
+            "precision_max_attempts": 3,
+            "precision_hard_max_attempts": 5,
+            "precision_settle_s": 0.0,
+            "precision_drive_min_pulse_ms": 80,
+            "precision_drive_max_pulse_ms": 180,
+            "precision_mast_pulse_ms": 250,
+            "freeze_xz_after_xz_target": False,
+            "targets": {
+                "dist_mm": 149.0,
+                "dist_tol_mm": 5.0,
+                "x_mm": 4.0,
+                "x_tol_mm": 9.0,
+                "y_mm": -36.2,
+                "y_tol_mm": 3.0,
+            },
+        }
+        before = {
+            "visible": True,
+            "confident": True,
+            "conf": 95.0,
+            "dist_mm": 180.0,
+            "x_mm": 4.0,
+            "y_mm": -28.0,
+        }
+        after = dict(before, dist_mm=149.0, y_mm=-36.2)
+        readings = iter([after, after])
+        old_read = follow._read_brick_measurement
+        old_reset = follow._reset_follow_reading_history
+        old_sleep = follow.time.sleep
+        try:
+            follow._read_brick_measurement = lambda _vision: next(readings)
+            follow._reset_follow_reading_history = lambda *_args, **_kwargs: None
+            follow.time.sleep = lambda _seconds: None
+            robot = _FakeRobot()
+
+            final, counts = follow._step2_precision_settle_to_targets(object(), robot, before, step2)
+        finally:
+            follow._read_brick_measurement = old_read
+            follow._reset_follow_reading_history = old_reset
+            follow.time.sleep = old_sleep
+
+        self.assertEqual(counts["fwd"], 1)
+        self.assertEqual(counts["mast_d"], 1)
+        self.assertEqual(final["dist_mm"], 149.0)
+        self.assertEqual(final["y_mm"], -36.2)
+        self.assertEqual(len(robot.custom_commands), 1)
+        _cmd, actions, _duration_ms = robot.custom_commands[0]
+        self.assertTrue(any(row["target"] == "m" and row["action"] == "d" for row in actions))
+
     def test_step2_precision_stops_when_x_polish_leaves_distance_too_close(self):
         step2 = {
             "precision_settle_enabled": True,

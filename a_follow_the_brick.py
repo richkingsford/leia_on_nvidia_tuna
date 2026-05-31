@@ -4365,6 +4365,9 @@ def _step2_precision_settle_to_targets(
         if dist_gap <= 0.0 and x_gap <= 0.0 and y_gap <= 0.0:
             break
         x_turn_plan = None
+        attached_mast_cmd = None
+        attached_mast_pwm = None
+        attached_mast_duration_ms = None
         if y_axis_configured and y_gap > 0.0 and y_gap >= max(float(dist_gap), float(x_gap)):
             cmd = _step2_precision_mast_cmd(y_err)
             pwm = _step2_precision_mast_pwm(cmd, y_gap, step2_cfg)
@@ -4407,8 +4410,19 @@ def _step2_precision_settle_to_targets(
             if prev_dist_err is not None and (float(prev_dist_err) * float(dist_err)) < 0.0:
                 duration_ms = max(40, int(duration_ms * 0.5))
             prev_dist_err = float(dist_err)
+            if y_axis_configured and cmd == "f" and float(y_err) > 0.0 and float(y_gap) > 0.0:
+                y_cmd = _step2_precision_mast_cmd(y_err)
+                if y_cmd == "d":
+                    attached_mast_cmd = y_cmd
+                    attached_mast_pwm = _step2_precision_mast_pwm(y_cmd, y_gap, step2_cfg)
+                    attached_mast_duration_ms = min(
+                        int(duration_ms),
+                        _step2_precision_mast_duration_ms(y_gap, step2_cfg),
+                    )
             action_key = "fwd" if cmd == "f" else "bck"
             display_action = "STEP2_PRECISION_FWD" if cmd == "f" else "STEP2_PRECISION_BCK"
+            if attached_mast_cmd:
+                display_action = f"{display_action}_MAST_{str(attached_mast_cmd).upper()}"
             gap_before = float(dist_gap)
             progress_axis = "dist"
             before_err_for_sample = float(dist_err)
@@ -4442,6 +4456,17 @@ def _step2_precision_settle_to_targets(
             break
         if x_turn_plan is not None:
             send_result = _execute_follow_action(robot, x_turn_plan, current)
+        elif attached_mast_cmd:
+            send_result = _drive(
+                robot,
+                cmd,
+                current,
+                mast_cmd=attached_mast_cmd,
+                mast_pwm=attached_mast_pwm,
+                mast_duration_ms=attached_mast_duration_ms,
+                pwm=pwm,
+                duration_ms=duration_ms,
+            )
         else:
             send_result = guarded_send_command_pwm(
                 robot,
@@ -4455,6 +4480,9 @@ def _step2_precision_settle_to_targets(
             counts["blocked"] = int(counts.get("blocked", 0)) + 1
             break
         counts[action_key] = int(counts.get(action_key, 0)) + 1
+        if attached_mast_cmd:
+            attached_key = "mast_d" if str(attached_mast_cmd).lower() == "d" else "mast_u"
+            counts[attached_key] = int(counts.get(attached_key, 0)) + 1
         total_attempts += 1
         time.sleep((float(duration_ms) / 1000.0) + float(settle_s))
         _stop_robot(robot)
