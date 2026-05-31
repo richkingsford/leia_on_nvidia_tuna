@@ -632,6 +632,13 @@
       "poll_s": 0.15,
       "mast_down_duration_ms": 1000
     },
+    "pickup_suspect": {
+      "enabled": true,
+      "min_dist_mm": 260.0,
+      "max_y_mm": -80.0,
+      "confirm_frames": 2,
+      "confirm_poll_s": 0.12
+    },
     "holding_target_vision": {
       "min_confidence_pct": 40.0,
       "confidence": 0.12,

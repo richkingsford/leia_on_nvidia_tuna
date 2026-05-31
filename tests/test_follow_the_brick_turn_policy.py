@@ -110,13 +110,13 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
             "confidence": 0.99,
         }
 
-    def test_far_low_confident_reading_is_pickup_suspect_stop(self):
+    def test_extreme_far_low_confident_reading_is_pickup_suspect_stop(self):
         reading = {
             "visible": True,
             "confident": True,
             "dist_mm": 301.0,
             "x_mm": follow._x_target_mm(),
-            "y_mm": -79.0,
+            "y_mm": -91.0,
             "conf": 99.0,
         }
 
@@ -127,21 +127,20 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertEqual(plan["action"], "PICKUP_SUSPECT_STOP")
         self.assertEqual(plan["reason"], "pickup_suspected_far_low")
 
-    def test_shifted_live_far_low_reading_is_pickup_suspect_stop(self):
+    def test_shifted_visible_low_reading_is_recoverable_not_pickup_suspect(self):
         reading = {
             "visible": True,
             "confident": True,
             "dist_mm": 299.5,
             "x_mm": follow._x_target_mm(),
-            "y_mm": -56.7,
+            "y_mm": -60.0,
             "conf": 99.0,
         }
 
         plan = follow._follow_action_plan(reading)
 
-        self.assertTrue(follow._pickup_suspected_reading(reading))
-        self.assertEqual(plan["kind"], "wait")
-        self.assertEqual(plan["reason"], "pickup_suspected_far_low")
+        self.assertFalse(follow._pickup_suspected_reading(reading))
+        self.assertNotEqual(plan.get("reason"), "pickup_suspected_far_low")
 
     def test_normal_far_start_is_not_pickup_suspect(self):
         reading = {
@@ -491,7 +490,7 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
             "raw_dist_mm": 301.0,
             "x_mm": 4.0,
             "raw_x_mm": 4.0,
-            "y_mm": -79.0,
+            "y_mm": -91.0,
         }
 
         ready, reason, _closeness = follow._step2_targets_ready(reading, step2)
@@ -522,7 +521,7 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
             "conf": 99.0,
             "dist_mm": 301.0,
             "x_mm": 4.0,
-            "y_mm": -79.0,
+            "y_mm": -91.0,
         }
         robot = _FakeRobot()
 
@@ -552,7 +551,7 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
             "conf": 99.0,
             "dist_mm": 301.0,
             "x_mm": 4.0,
-            "y_mm": -79.0,
+            "y_mm": -91.0,
         }
         old_read = follow._read_brick_measurement
         try:

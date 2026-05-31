@@ -204,7 +204,7 @@ DEFAULT_VISIBILITY_RECOVERY_CONFIG = {
 DEFAULT_PICKUP_SUSPECT_CONFIG = {
     "enabled": True,
     "min_dist_mm": 260.0,
-    "max_y_mm": -50.0,
+    "max_y_mm": -80.0,
     "confirm_frames": 2,
     "confirm_poll_s": 0.12,
 }
