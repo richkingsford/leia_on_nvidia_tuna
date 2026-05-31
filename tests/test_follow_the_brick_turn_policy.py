@@ -174,6 +174,23 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertNotIn("mast_cmd", plan)
         self.assertNotIn("MAST_", plan["action"])
 
+    def test_high_y_final_mast_down_can_use_one_second_packet(self):
+        plan = follow._follow_action_plan(
+            {
+                "visible": True,
+                "confident": True,
+                "dist_mm": follow._dist_target_mm(),
+                "x_mm": follow._x_target_mm(),
+                "y_mm": -20.7,
+                "conf": 93.0,
+            }
+        )
+
+        self.assertEqual(plan["kind"], "mast")
+        self.assertEqual(plan["cmd"], "d")
+        self.assertGreater(plan["duration_ms"], 300)
+        self.assertLessEqual(plan["duration_ms"], 1000)
+
     def test_zero_step1_mast_up_budget_disables_cumulative_guard(self):
         old_follow_motion_config = follow._follow_motion_config
         try:

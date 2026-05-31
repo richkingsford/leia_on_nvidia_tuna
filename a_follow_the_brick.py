@@ -387,12 +387,16 @@ DEFAULT_FOLLOW_Y_AXIS_CONFIG = {
     "mast_pulse_ms": 130,
     "mast_min_pulse_ms": 80,
     "mast_max_pulse_ms": 130,
+    "mast_up_max_pulse_ms": 130,
+    "mast_down_max_pulse_ms": 130,
     "finish_mast_pwm": 255,
     "finish_mast_up_pwm": 255,
     "finish_mast_down_pwm": 255,
     "finish_mast_pulse_ms": 130,
     "finish_mast_min_pulse_ms": 80,
     "finish_mast_max_pulse_ms": 130,
+    "finish_mast_up_max_pulse_ms": 130,
+    "finish_mast_down_max_pulse_ms": 130,
     "mast_mm_per_100ms": 3.0,
     "mast_up_mm_per_100ms": 3.0,
     "mast_down_mm_per_100ms": 3.0,
@@ -1605,9 +1609,13 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         "mast_pulse_ms",
         "mast_min_pulse_ms",
         "mast_max_pulse_ms",
+        "mast_up_max_pulse_ms",
+        "mast_down_max_pulse_ms",
         "finish_mast_pulse_ms",
         "finish_mast_min_pulse_ms",
         "finish_mast_max_pulse_ms",
+        "finish_mast_up_max_pulse_ms",
+        "finish_mast_down_max_pulse_ms",
         "max_step1_mast_up_ms",
         "spool_reversal_mast_max_ms",
     }
@@ -8315,6 +8323,8 @@ def _adaptive_y_mast_duration_ms(
     cfg = y_cfg if isinstance(y_cfg, dict) else _follow_y_axis_config()
     prefix = "finish_mast" if bool(near_end) else "mast"
     fallback_ms = cfg.get(f"{prefix}_pulse_ms", cfg.get("mast_pulse_ms", 220))
+    cmd_key = str(cmd or "").strip().lower()
+    direction = "down" if cmd_key == "d" else "up"
     min_ms = _coerce_int(
         cfg.get(f"{prefix}_min_pulse_ms"),
         min(int(fallback_ms), 80 if near_end else 100),
@@ -8322,7 +8332,7 @@ def _adaptive_y_mast_duration_ms(
         maximum=_max_mast_act_ms(),
     )
     max_ms = _coerce_int(
-        cfg.get(f"{prefix}_max_pulse_ms"),
+        cfg.get(f"{prefix}_{direction}_max_pulse_ms", cfg.get(f"{prefix}_max_pulse_ms")),
         fallback_ms,
         minimum=1,
         maximum=_max_mast_act_ms(),
