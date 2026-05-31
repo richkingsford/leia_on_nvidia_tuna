@@ -285,6 +285,51 @@ def _configure_half_reset(fraction: float, *, scale_mast: bool = False) -> tuple
     return old_fn, cfg
 
 
+def _split_mast_pulses(total_ms: int | float, *, max_pulse_ms: int = 1000) -> list[int]:
+    total = max(0, int(round(float(total_ms or 0))))
+    cap = max(1, int(max_pulse_ms))
+    pulses = []
+    while total > 0:
+        pulse = min(cap, total)
+        pulses.append(int(pulse))
+        total -= int(pulse)
+    return pulses
+
+
+def _send_mast_pulse_train(robot: Robot, cmd: str, total_ms: int | float, *, label: str) -> dict:
+    direction = str(cmd or "").strip().lower()
+    if direction not in {"u", "d"}:
+        return {"cmd": direction, "requested_ms": int(total_ms or 0), "sent_ms": 0, "pulses": [], "skipped": True}
+    pulses = _split_mast_pulses(total_ms)
+    sent_ms = 0
+    for idx, pulse_ms in enumerate(pulses, start=1):
+        print(
+            f"[STEP12] {label}: mast_{direction} pulse {idx}/{len(pulses)} {pulse_ms}ms",
+            flush=True,
+        )
+        try:
+            robot.send_command_pwm(direction, 255, duration_ms=int(pulse_ms))
+            sent_ms += int(pulse_ms)
+            time.sleep((float(pulse_ms) / 1000.0) + 0.12)
+        finally:
+            follow._stop_robot(robot)
+    return {
+        "cmd": direction,
+        "requested_ms": max(0, int(round(float(total_ms or 0)))),
+        "sent_ms": int(sent_ms),
+        "pulses": pulses,
+        "skipped": not bool(pulses),
+    }
+
+
+def _reset_mast_cheat_config(args) -> dict:
+    return {
+        "enabled": bool(getattr(args, "reset_mast_cheat", False)),
+        "up_ms": max(0, int(round(float(getattr(args, "reset_mast_cheat_up_ms", 2500) or 0)))),
+        "down_ms": max(0, int(round(float(getattr(args, "reset_mast_cheat_down_ms", 0) or 0)))),
+    }
+
+
 def _apply_step2_strong_y_config(cfg: dict) -> None:
     step2 = cfg.get("step2") if isinstance(cfg.get("step2"), dict) else {}
     targets = step2.get("targets") if isinstance(step2.get("targets"), dict) else {}
@@ -448,14 +493,84 @@ def _run_half_reset(
     fraction: float,
     trial_n: int,
     scale_mast: bool = False,
+    reset_mast_cheat: dict | None = None,
 ) -> dict:
     old_fn, cfg = _configure_half_reset(fraction, scale_mast=scale_mast)
+    cheat_cfg = reset_mast_cheat if isinstance(reset_mast_cheat, dict) else {}
+    cheat_record = {"enabled": bool(cheat_cfg.get("enabled", False))}
     try:
         print(f"[STEP12] T{trial_n}: half reset fraction={fraction:.2f}", flush=True)
+        if bool(cheat_cfg.get("enabled", False)):
+            up_ms = int(cheat_cfg.get("up_ms", 2500) or 0)
+            down_ms = int(cheat_cfg.get("down_ms", 0) or 0)
+            print(
+                f"[STEP12] T{trial_n}: reset mast cheat up={up_ms}ms down={down_ms}ms",
+                flush=True,
+            )
+            cheat_record["up"] = _send_mast_pulse_train(robot, "u", up_ms, label=f"T{trial_n} reset cheat")
         result = follow._run_reset_sequence(vision, robot, rng=random)
-        return {"result": result, "config": cfg}
+        if bool(cheat_cfg.get("enabled", False)):
+            cheat_record["down"] = _send_mast_pulse_train(
+                robot,
+                "d",
+                int(cheat_cfg.get("down_ms", 0) or 0),
+                label=f"T{trial_n} reset cheat",
+            )
+            follow._reset_follow_reading_history(vision)
+            after_cheat = follow._read_brick_measurement(vision)
+            cheat_record["after"] = {
+                key: after_cheat.get(key)
+                for key in ("confident", "dist_mm", "x_mm", "y_mm", "conf", "reason", "vision_status")
+            }
+        return {"result": result, "config": cfg, "reset_mast_cheat": cheat_record}
     finally:
         follow._reset_motion_config = old_fn
+
+
+def _measurement_delta(before: dict, after: dict) -> dict:
+    delta = {}
+    for key in ("dist_mm", "x_mm", "y_mm"):
+        try:
+            delta[key] = float(after.get(key)) - float(before.get(key))
+        except (TypeError, ValueError):
+            delta[key] = None
+    return delta
+
+
+def _run_reset_mast_cheat_calibration(
+    vision: BrickDetector,
+    robot: Robot,
+    *,
+    up_ms: int,
+    down_ms: int,
+    timeout_s: float,
+) -> dict:
+    record = {
+        "kind": "reset_mast_cheat_calibration",
+        "up_ms": int(up_ms),
+        "down_ms": int(down_ms),
+    }
+    before = _wait_for_pregame_visibility(vision, robot, timeout_s)
+    record["before"] = before
+    if not bool(before.get("confident")):
+        record["aborted"] = True
+        record["abort_reason"] = "calibration_no_initial_visibility"
+        return record
+
+    record["up"] = _send_mast_pulse_train(robot, "u", up_ms, label="reset cheat calibration")
+    follow._reset_follow_reading_history(vision)
+    after_up = follow._wait_for_confident_brick(vision, timeout_s=timeout_s, sample_s=0.12)
+    record["after_up"] = after_up
+
+    record["down"] = _send_mast_pulse_train(robot, "d", down_ms, label="reset cheat calibration")
+    follow._reset_follow_reading_history(vision)
+    after_down = follow._wait_for_confident_brick(vision, timeout_s=timeout_s, sample_s=0.12)
+    record["after_down"] = after_down
+    record["delta_after_down"] = _measurement_delta(before, after_down)
+    record["aborted"] = not bool(after_down.get("confident"))
+    record["abort_reason"] = None if bool(after_down.get("confident")) else "calibration_no_final_visibility"
+    follow._stop_robot(robot)
+    return record
 
 
 def _wait_for_pregame_visibility(vision: BrickDetector, robot: Robot, timeout_s: float) -> dict:
@@ -502,6 +617,28 @@ def main() -> int:
     parser.add_argument("--disable-pickup-suspect-guard", action="store_true")
     parser.add_argument("--out", default=str(OUT_PATH))
     parser.add_argument(
+        "--reset-mast-cheat",
+        action="store_true",
+        help="During half reset, raise mast by a fixed amount then lower by the configured return amount.",
+    )
+    parser.add_argument(
+        "--reset-mast-cheat-up-ms",
+        type=float,
+        default=2500.0,
+        help="Total mast-up duration for reset cheat, split into <=1s pulses.",
+    )
+    parser.add_argument(
+        "--reset-mast-cheat-down-ms",
+        type=float,
+        default=0.0,
+        help="Total mast-down return duration for reset cheat, split into <=1s pulses.",
+    )
+    parser.add_argument(
+        "--reset-mast-cheat-calibrate-only",
+        action="store_true",
+        help="Run only mast up/down calibration, write one JSON row, then exit.",
+    )
+    parser.add_argument(
         "--experiment",
         choices=(
             "baseline",
@@ -517,6 +654,7 @@ def main() -> int:
     )
     parser.add_argument("--reset-after-last", action="store_true")
     args = parser.parse_args()
+    reset_mast_cheat = _reset_mast_cheat_config(args)
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -534,6 +672,26 @@ def main() -> int:
         vision.set_runtime_tuning(**dict(follow.CROWN_PROFILE_TUNING))
         follow._warmup(vision)
         follow._print_active_success_gates()
+        if bool(args.reset_mast_cheat_calibrate_only):
+            record = _run_reset_mast_cheat_calibration(
+                vision,
+                robot,
+                up_ms=int(reset_mast_cheat["up_ms"]),
+                down_ms=int(reset_mast_cheat["down_ms"]),
+                timeout_s=float(args.pregame_timeout_s),
+            )
+            with out.open("w", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, sort_keys=True) + "\n")
+            delta = record.get("delta_after_down") if isinstance(record.get("delta_after_down"), dict) else {}
+            print(
+                "[STEP12] RESET_MAST_CHEAT_CAL "
+                f"up={reset_mast_cheat['up_ms']}ms down={reset_mast_cheat['down_ms']}ms "
+                f"aborted={bool(record.get('aborted'))} "
+                f"dy={delta.get('y_mm')} dx={delta.get('x_mm')} ddist={delta.get('dist_mm')} "
+                f"data={out}",
+                flush=True,
+            )
+            return 1 if bool(record.get("aborted")) else 0
         with out.open("w", encoding="utf-8") as fh:
             for trial_n in range(1, int(args.trials) + 1):
                 print(f"\n[STEP12] === Trial {trial_n}/{args.trials} ===", flush=True)
@@ -612,6 +770,7 @@ def main() -> int:
                         fraction=float(args.reset_fraction),
                         trial_n=trial_n,
                         scale_mast=str(args.experiment) == "step2_strong_y_half_mast_reset",
+                        reset_mast_cheat=reset_mast_cheat,
                     )
                 row = {
                     "kind": "trial",
@@ -641,6 +800,7 @@ def main() -> int:
             "out": str(out),
             "experiment": str(args.experiment),
             "experiment_config": experiment_config,
+            "reset_mast_cheat_config": reset_mast_cheat,
             "most_egregious_problem": follow._most_egregious_problem(aggregate),
         }
         with out.open("a", encoding="utf-8") as fh:

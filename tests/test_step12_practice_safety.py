@@ -1,8 +1,52 @@
 import sys
+import types
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+
+def _install_robot_module_stubs() -> None:
+    native_oak = types.ModuleType("helper_brick_detector_native_oak")
+    native_oak.BrickDetector = type("BrickDetector", (), {})
+    sys.modules.setdefault("helper_brick_detector_native_oak", native_oak)
+
+    yolo = types.ModuleType("helper_brick_detector_yolo")
+    yolo.CYAN_HSV_BALANCED_LOWER = (0, 0, 0)
+    yolo.CYAN_HSV_BALANCED_UPPER = (0, 0, 0)
+    yolo.CYAN_HSV_WIDE_LOWER = (0, 0, 0)
+    yolo.CYAN_HSV_WIDE_UPPER = (0, 0, 0)
+    sys.modules.setdefault("helper_brick_detector_yolo", yolo)
+
+    visibility = types.ModuleType("helper_brick_visibility_safety")
+    visibility.brick_motion_measurement_from_result = lambda *args, **kwargs: None
+    visibility.guarded_send_command_pwm = lambda *args, **kwargs: None
+    visibility.guarded_send_custom_actions_pwm = lambda *args, **kwargs: None
+    visibility.load_brick_visibility_motion_safety_config = lambda *args, **kwargs: {}
+    sys.modules.setdefault("helper_brick_visibility_safety", visibility)
+
+    holding = types.ModuleType("helper_holding_brick")
+    holding.contour_target_result_tuple = lambda *args, **kwargs: None
+    holding.detect_holding_brick = lambda *args, **kwargs: None
+    holding.detect_masked_target_brick_contour = lambda *args, **kwargs: None
+    holding.mask_held_brick_for_target_frame = lambda *args, **kwargs: None
+    sys.modules.setdefault("helper_holding_brick", holding)
+
+    mast_guard = types.ModuleType("helper_mast_direction_guard")
+    mast_guard.classify_mast_y_effect = lambda *args, **kwargs: None
+    mast_guard.mast_effect_is_reversal = lambda *args, **kwargs: False
+    sys.modules.setdefault("helper_mast_direction_guard", mast_guard)
+
+    robot_control = types.ModuleType("helper_robot_control")
+    robot_control.Robot = type("Robot", (), {})
+    sys.modules.setdefault("helper_robot_control", robot_control)
+
+    telemetry = types.ModuleType("telemetry_robot")
+    sys.modules.setdefault("telemetry_robot", telemetry)
+
+
+_install_robot_module_stubs()
 
 import practiceStep12EmptyHalfReset as step12
 
@@ -96,6 +140,46 @@ class TestStep12PracticeSafety(unittest.TestCase):
                 max_y_mm=-50.0,
             )
         )
+
+    def test_reset_mast_cheat_defaults_to_2p5s_up_and_no_down(self):
+        args = types.SimpleNamespace(reset_mast_cheat=True)
+
+        cfg = step12._reset_mast_cheat_config(args)
+
+        self.assertEqual(cfg, {"enabled": True, "up_ms": 2500, "down_ms": 0})
+
+    def test_reset_mast_cheat_splits_long_moves_into_one_second_pulses(self):
+        self.assertEqual(step12._split_mast_pulses(2500), [1000, 1000, 500])
+        self.assertEqual(step12._split_mast_pulses(0), [])
+        self.assertEqual(step12._split_mast_pulses(-100), [])
+
+    def test_send_mast_pulse_train_stops_after_each_pulse(self):
+        robot = mock.Mock()
+
+        with mock.patch.object(step12.time, "sleep"), mock.patch.object(step12.follow, "_stop_robot") as stop_robot:
+            record = step12._send_mast_pulse_train(robot, "u", 2500, label="test")
+
+        self.assertEqual(record["sent_ms"], 2500)
+        self.assertEqual(record["pulses"], [1000, 1000, 500])
+        self.assertEqual(robot.send_command_pwm.call_count, 3)
+        self.assertEqual(stop_robot.call_count, 3)
+
+    def test_send_mast_pulse_train_rejects_unknown_direction_without_motion(self):
+        robot = mock.Mock()
+
+        record = step12._send_mast_pulse_train(robot, "x", 2500, label="test")
+
+        self.assertTrue(record["skipped"])
+        self.assertEqual(record["sent_ms"], 0)
+        robot.send_command_pwm.assert_not_called()
+
+    def test_measurement_delta_reports_axis_differences(self):
+        before = {"dist_mm": 220.0, "x_mm": 4.0, "y_mm": -41.5}
+        after = {"dist_mm": 225.5, "x_mm": 2.5, "y_mm": -39.0}
+
+        delta = step12._measurement_delta(before, after)
+
+        self.assertEqual(delta, {"dist_mm": 5.5, "x_mm": -1.5, "y_mm": 2.5})
 
 
 if __name__ == "__main__":
