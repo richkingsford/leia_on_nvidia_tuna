@@ -205,6 +205,8 @@ DEFAULT_PICKUP_SUSPECT_CONFIG = {
     "enabled": True,
     "min_dist_mm": 260.0,
     "max_y_mm": -50.0,
+    "confirm_frames": 2,
+    "confirm_poll_s": 0.12,
 }
 MAST_RAISE_CEILING_ABOVE_TARGET_MM = 5.0
 DEFAULT_HOLDING_TARGET_VISION_CONFIG = {
@@ -1175,6 +1177,18 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         DEFAULT_PICKUP_SUSPECT_CONFIG["max_y_mm"],
         minimum=-1000.0,
         maximum=1000.0,
+    )
+    cfg["pickup_suspect"]["confirm_frames"] = _coerce_int(
+        raw_pickup_suspect.get("confirm_frames"),
+        DEFAULT_PICKUP_SUSPECT_CONFIG["confirm_frames"],
+        minimum=1,
+        maximum=5,
+    )
+    cfg["pickup_suspect"]["confirm_poll_s"] = _coerce_float(
+        raw_pickup_suspect.get("confirm_poll_s"),
+        DEFAULT_PICKUP_SUSPECT_CONFIG["confirm_poll_s"],
+        minimum=0.0,
+        maximum=1.0,
     )
     raw_holding_target = (
         raw.get("holding_target_vision") if isinstance(raw.get("holding_target_vision"), dict) else {}
@@ -6832,6 +6846,34 @@ def _read_brick_measurement(vision: BrickDetector, *, jump_guard: bool = False) 
     return _apply_temporal_filter_brick_reading(vision, masked_reading, jump_guard=jump_guard)
 
 
+def _confirm_pickup_suspected_reading(
+    vision: BrickDetector,
+    reading: dict,
+) -> tuple[bool, dict, list[dict]]:
+    cfg = _pickup_suspect_config()
+    frames = _coerce_int(
+        cfg.get("confirm_frames"),
+        DEFAULT_PICKUP_SUSPECT_CONFIG["confirm_frames"],
+        minimum=1,
+        maximum=5,
+    )
+    poll_s = _coerce_float(
+        cfg.get("confirm_poll_s"),
+        DEFAULT_PICKUP_SUSPECT_CONFIG["confirm_poll_s"],
+        minimum=0.0,
+        maximum=1.0,
+    )
+    samples = [dict(reading)] if isinstance(reading, dict) else []
+    current = reading if isinstance(reading, dict) else {}
+    while len(samples) < int(frames):
+        if poll_s > 0.0:
+            time.sleep(float(poll_s))
+        current = _read_brick_measurement(vision, jump_guard=True)
+        samples.append(dict(current) if isinstance(current, dict) else {})
+    suspect_count = sum(1 for sample in samples if _pickup_suspected_reading(sample))
+    return bool(suspect_count >= int(frames)), current, samples
+
+
 def _follow_combined_gap_policy() -> dict:
     cfg = _follow_motion_config()
     raw = cfg.get("combined_gap_policy") if isinstance(cfg.get("combined_gap_policy"), dict) else {}
@@ -7315,6 +7357,18 @@ def _pickup_suspect_config() -> dict:
             DEFAULT_PICKUP_SUSPECT_CONFIG["max_y_mm"],
             minimum=-1000.0,
             maximum=1000.0,
+        ),
+        "confirm_frames": _coerce_int(
+            raw.get("confirm_frames"),
+            DEFAULT_PICKUP_SUSPECT_CONFIG["confirm_frames"],
+            minimum=1,
+            maximum=5,
+        ),
+        "confirm_poll_s": _coerce_float(
+            raw.get("confirm_poll_s"),
+            DEFAULT_PICKUP_SUSPECT_CONFIG["confirm_poll_s"],
+            minimum=0.0,
+            maximum=1.0,
         ),
     }
 
@@ -8336,7 +8390,11 @@ def _y_axis_action_plan(reading: dict, *, dist_err: float, x_err: float) -> dict
     tol = float(y_cfg.get("win_tol_mm", Y_TOL_MM))
     high_target = target * float(y_cfg.get("approach_high_factor", 1.3))
     protect_below = float(y_cfg.get("protect_below_y_mm", max(high_target + tol, target + (3.0 * tol))))
-    near_end = (
+    inside_step1_x_dist_gate = _win_axis_ok(float(dist_err), _dist_tol_mm()) and _win_axis_ok(
+        float(x_err),
+        _x_tol_mm(),
+    )
+    near_end = bool(inside_step1_x_dist_gate) or (
         abs(float(dist_err)) <= float(y_cfg.get("endgame_dist_tol_mm", _dist_tol_mm()))
         and abs(float(x_err)) <= float(y_cfg.get("endgame_x_tol_mm", _x_tol_mm()))
     ) or (
@@ -8367,9 +8425,13 @@ def _y_axis_action_plan(reading: dict, *, dist_err: float, x_err: float) -> dict
             "y_target_mm": float(target),
             "reason": "protect_lower_edge",
         }
-    # Gate y/mast correction until distance is at least Y_GATE_MIN_DIST_CLOSENESS_PCT
-    # of the way to target. (Lower-edge protection above still runs in every phase.)
-    if _target_closeness_pct(float(dist_err), _dist_tol_mm()) < float(Y_GATE_MIN_DIST_CLOSENESS_PCT):
+    # Gate early y/mast correction until distance has made enough progress.
+    # Once x/dist are already in the Step 1 endgame, freeze wheel motion and
+    # finish y instead of risking a wrong-way distance act.
+    if (
+        not bool(near_end)
+        and _target_closeness_pct(float(dist_err), _dist_tol_mm()) < float(Y_GATE_MIN_DIST_CLOSENESS_PCT)
+    ):
         return None
     active_target = target if near_end else high_target
     active_tol = _win_effective_tolerance(tol) if near_end else tol
@@ -9010,27 +9072,6 @@ def _follow_action_plan(reading: dict) -> dict:
     if _should_finish_y_before_wheels(y_plan, dist_err=dist_err, x_err=x_err):
         return y_plan
     dist_approach = _follow_dist_approach_policy()
-    if y_plan is not None and x_ok and dist_ok:
-        try:
-            priority_y_gap = abs(float(y_plan.get("y_err")))
-            priority_threshold = float(y_cfg.get("priority_abs_err_mm", 14.0))
-        except (TypeError, ValueError):
-            priority_y_gap = 0.0
-            priority_threshold = 0.0
-        if priority_threshold > 0.0 and priority_y_gap >= priority_threshold:
-            return y_plan
-    if y_plan is not None and x_ok and dist_ok:
-        return y_plan
-    if y_plan is not None and x_ok:
-        try:
-            priority_y_gap = abs(float(y_plan.get("y_err")))
-            priority_threshold = float(y_cfg.get("priority_abs_err_mm", 14.0))
-        except (TypeError, ValueError):
-            priority_y_gap = 0.0
-            priority_threshold = 0.0
-        if priority_threshold > 0.0 and priority_y_gap >= priority_threshold:
-            return y_plan
-
     if not x_ok:
         turn_cmd = _turn_cmd_to_close_x_gap(x_err) or "r"
         x_outside = _x_outside_gate_mm(x_err)
@@ -11514,13 +11555,31 @@ def _follow_loop(
             wait_reason = str(plan.get("reason") or "wait")
             _bump_stat_count(stats, "miss_reasons", wait_reason)
             if wait_reason == "pickup_suspected_far_low":
+                confirmed_pickup, confirmed_reading, pickup_samples = _confirm_pickup_suspected_reading(
+                    vision,
+                    reading,
+                )
+                if not bool(confirmed_pickup):
+                    stats["pickup_suspected_unconfirmed_count"] = int(
+                        stats.get("pickup_suspected_unconfirmed_count", 0) or 0
+                    ) + 1
+                    _bump_stat_count(stats, "miss_reasons", "pickup_suspect_unconfirmed")
+                    print(
+                        "[FOLLOW] Pickup-suspect read was not confirmed across "
+                        f"{len(pickup_samples)} frames; continuing from stopped observation.",
+                        flush=True,
+                    )
+                    continue
                 stats["pickup_suspected_stop"] = True
-                stats["debug_stop_reading"] = dict(reading) if isinstance(reading, dict) else reading
+                stats["pickup_suspected_confirm_frames"] = len(pickup_samples)
+                stats["pickup_suspected_confirm_samples"] = pickup_samples
+                stats["debug_stop_reading"] = dict(confirmed_reading) if isinstance(confirmed_reading, dict) else confirmed_reading
                 stats["last_action"] = action
-                _record_non_win_stats(stats, reading, plan, action=action, reason=wait_reason)
+                _record_non_win_stats(stats, confirmed_reading, plan, action=action, reason=wait_reason)
                 print(
                     f"[FOLLOW] HARD STOP: pickup suspected "
-                    f"(dist={dist_mm:.1f}mm x={x_mm:+.1f}mm {y_text} conf={conf:.0f}%). "
+                    f"(confirmed over {len(pickup_samples)} frames; "
+                    f"dist={dist_mm:.1f}mm x={x_mm:+.1f}mm {y_text} conf={conf:.0f}%). "
                     "Holding still until the brick is cleared.",
                     flush=True,
                 )

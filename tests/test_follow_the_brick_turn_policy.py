@@ -82,6 +82,25 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
 
         self.assertEqual(cfg["seat_mast_duration_ms"], 1000)
 
+    def test_y_gap_inside_x_dist_gate_closes_dist_and_y_together(self):
+        y_cfg = follow._follow_y_axis_config()
+        reading = {
+            "visible": True,
+            "confident": True,
+            "dist_mm": follow._dist_target_mm() + 43.0,
+            "x_mm": follow._x_target_mm() - 0.8,
+            "y_mm": float(y_cfg.get("win_target_mm")) - 18.0,
+            "conf": 95.0,
+        }
+
+        plan = follow._follow_action_plan(reading)
+
+        self.assertEqual(plan["kind"], "drive")
+        self.assertEqual(plan["cmd"], "f")
+        self.assertEqual(plan["mast_reason"], "final_y")
+        self.assertIn(plan["mast_cmd"], {"u", "d"})
+        self.assertIn("MAST_", plan["action"])
+
     def _reading_for_gap(self, *, dist_gap_mm: float, x_gap_mm: float) -> dict:
         y_cfg = follow._follow_y_axis_config()
         return {
