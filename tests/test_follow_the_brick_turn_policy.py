@@ -101,6 +101,24 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertIn(plan["mast_cmd"], {"u", "d"})
         self.assertIn("MAST_", plan["action"])
 
+    def test_far_visible_low_start_closes_distance_and_y_together(self):
+        reading = {
+            "visible": True,
+            "confident": True,
+            "dist_mm": 313.8,
+            "x_mm": 2.6,
+            "y_mm": -58.8,
+            "conf": 93.0,
+        }
+
+        plan = follow._follow_action_plan(reading)
+
+        self.assertFalse(follow._pickup_suspected_reading(reading))
+        self.assertEqual(plan["kind"], "drive")
+        self.assertEqual(plan["cmd"], "f")
+        self.assertEqual(plan["mast_cmd"], "u")
+        self.assertIn("MAST_U", plan["action"])
+
     def _reading_for_gap(self, *, dist_gap_mm: float, x_gap_mm: float) -> dict:
         y_cfg = follow._follow_y_axis_config()
         return {

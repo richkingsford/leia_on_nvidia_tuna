@@ -8425,14 +8425,6 @@ def _y_axis_action_plan(reading: dict, *, dist_err: float, x_err: float) -> dict
             "y_target_mm": float(target),
             "reason": "protect_lower_edge",
         }
-    # Gate early y/mast correction until distance has made enough progress.
-    # Once x/dist are already in the Step 1 endgame, freeze wheel motion and
-    # finish y instead of risking a wrong-way distance act.
-    if (
-        not bool(near_end)
-        and _target_closeness_pct(float(dist_err), _dist_tol_mm()) < float(Y_GATE_MIN_DIST_CLOSENESS_PCT)
-    ):
-        return None
     active_target = target if near_end else high_target
     active_tol = _win_effective_tolerance(tol) if near_end else tol
     y_err = y_mm - active_target
