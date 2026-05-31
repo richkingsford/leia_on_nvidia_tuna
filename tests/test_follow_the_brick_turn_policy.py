@@ -140,6 +140,23 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
     def test_unreliable_spool_mast_cap_matches_regression_wish(self):
         self.assertEqual(follow._follow_y_axis_config()["spool_reversal_mast_max_ms"], 110)
 
+    def test_too_close_recovery_does_not_attach_mast_to_backward_drive(self):
+        plan = follow._follow_action_plan(
+            {
+                "visible": True,
+                "confident": True,
+                "dist_mm": 119.3,
+                "x_mm": -2.3,
+                "y_mm": -23.0,
+                "conf": 95.0,
+            }
+        )
+
+        self.assertIn(plan["kind"], {"drive", "drive_bias"})
+        self.assertEqual(plan["cmd"], "b")
+        self.assertNotIn("mast_cmd", plan)
+        self.assertNotIn("MAST_", plan["action"])
+
     def test_zero_step1_mast_up_budget_disables_cumulative_guard(self):
         old_follow_motion_config = follow._follow_motion_config
         try:

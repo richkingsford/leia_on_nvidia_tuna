@@ -8844,6 +8844,18 @@ def _attach_mast_to_plan(plan: dict, y_plan: dict | None) -> dict:
     if y_reason != "protect_lower_edge" and not _y_plan_closes_win_y(y_plan):
         return plan
     if y_reason != "protect_lower_edge":
+        drive_cmd = str(plan.get("cmd") or "").strip().lower()
+        drive_mode = str(plan.get("drive_mode") or "").strip().lower()
+        try:
+            dist_err = float(plan.get("dist_err"))
+        except (TypeError, ValueError):
+            dist_err = 0.0
+        if (
+            (drive_cmd == "b" or drive_mode == "backward")
+            and dist_err < -_win_effective_tolerance(_dist_tol_mm())
+        ):
+            return plan
+    if y_reason != "protect_lower_edge":
         y_cfg = _follow_y_axis_config()
         attach_min_abs_err = _coerce_float(
             y_cfg.get("attach_y_min_abs_err_mm"),
