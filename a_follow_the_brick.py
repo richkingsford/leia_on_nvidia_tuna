@@ -42,6 +42,7 @@ from helper_holding_brick import (
     detect_masked_target_brick_contour,
     mask_held_brick_for_target_frame,
 )
+from helper_holding_distance_calibration import apply_holding_distance_calibration_to_reading
 from helper_mast_direction_guard import classify_mast_y_effect, mast_effect_is_reversal
 from helper_robot_control import Robot
 import telemetry_robot as _telemetry_robot
@@ -218,6 +219,11 @@ DEFAULT_HOLDING_TARGET_VISION_CONFIG = {
     "trust_detector_boxes": False,
     "require_cyan_shape": True,
     "far_suspect_enabled": False,
+    "use_unmasked_stack_xz": False,
+}
+DEFAULT_HOLDING_TARGET_DISTANCE_CALIBRATION_CONFIG = {
+    "enabled": False,
+    "points": [],
 }
 DEFAULT_ACT_STALL_GUARD_CONFIG = {
     "enabled": True,
@@ -285,6 +291,8 @@ DEFAULT_STEP3_CONFIG = {
     "lift_mast_cmd": "u",
     "lift_mast_pwm": 255,
     "lift_pulse_ms": 250,
+    "fixed_lift_only": False,
+    "fixed_lift_duration_ms": 1700,
     "lift_settle_s": 0.12,
     "max_lift_attempts": 12,
     "step_timeout_s": 15.0,
@@ -1044,6 +1052,7 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         "visibility_recovery": dict(DEFAULT_VISIBILITY_RECOVERY_CONFIG),
         "pickup_suspect": dict(DEFAULT_PICKUP_SUSPECT_CONFIG),
         "holding_target_vision": dict(DEFAULT_HOLDING_TARGET_VISION_CONFIG),
+        "holding_target_distance_calibration": dict(DEFAULT_HOLDING_TARGET_DISTANCE_CALIBRATION_CONFIG),
         "act_stall_guard": dict(DEFAULT_ACT_STALL_GUARD_CONFIG),
         "win_confirmation": dict(DEFAULT_WIN_CONFIRMATION_CONFIG),
         "dist_axis": dict(DEFAULT_FOLLOW_DIST_AXIS_CONFIG),
@@ -1204,6 +1213,28 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
             minimum=0.0,
             maximum=maximum,
         )
+    raw_holding_distance = (
+        raw.get("holding_target_distance_calibration")
+        if isinstance(raw.get("holding_target_distance_calibration"), dict)
+        else {}
+    )
+    holding_distance_points = []
+    for item in raw_holding_distance.get("points", []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            holding_distance_points.append(
+                {
+                    "reported_mm": float(item.get("reported_mm")),
+                    "true_mm": float(item.get("true_mm")),
+                }
+            )
+        except (TypeError, ValueError):
+            continue
+    cfg["holding_target_distance_calibration"] = {
+        "enabled": bool(raw_holding_distance.get("enabled", False)) and len(holding_distance_points) >= 2,
+        "points": holding_distance_points,
+    }
     raw_stall_guard = raw.get("act_stall_guard") if isinstance(raw.get("act_stall_guard"), dict) else {}
     cfg["act_stall_guard"]["enabled"] = bool(
         raw_stall_guard.get("enabled", DEFAULT_ACT_STALL_GUARD_CONFIG["enabled"])
@@ -2615,6 +2646,49 @@ def _holding_target_runtime_tuning() -> dict:
     }
 
 
+def _holding_target_distance_calibration_config() -> dict:
+    raw = _follow_motion_config().get("holding_target_distance_calibration")
+    cfg = raw if isinstance(raw, dict) else {}
+    points = cfg.get("points") if isinstance(cfg.get("points"), list) else []
+    return {
+        "enabled": bool(cfg.get("enabled", False)) and len(points) >= 2,
+        "points": points,
+    }
+
+
+def _apply_holding_target_distance_calibration(reading: dict) -> dict:
+    if not isinstance(reading, dict):
+        return reading
+    if reading.get("holding_xz_source") == "unmasked_stack":
+        return reading
+    if not bool(reading.get("target_masked_for_holding")):
+        return reading
+    return apply_holding_distance_calibration_to_reading(
+        reading,
+        config=_holding_target_distance_calibration_config(),
+    )
+
+
+def _apply_unmasked_stack_xz_if_configured(target_reading: dict, stack_reading: dict) -> dict:
+    if not bool(_holding_target_vision_config().get("use_unmasked_stack_xz", False)):
+        return target_reading
+    if not isinstance(target_reading, dict) or not isinstance(stack_reading, dict):
+        return target_reading
+    if not bool(stack_reading.get("confident")):
+        return target_reading
+    out = dict(target_reading)
+    for key in ("dist_mm", "x_mm"):
+        if stack_reading.get(key) is not None:
+            out[key] = stack_reading.get(key)
+    result = list(out.get("result") or [])
+    if len(result) >= 4:
+        result[2] = out.get("dist_mm", result[2])
+        result[3] = out.get("x_mm", result[3])
+        out["result"] = result
+    out["holding_xz_source"] = "unmasked_stack"
+    return out
+
+
 def _act_stall_guard_config() -> dict:
     raw = _follow_motion_config().get("act_stall_guard")
     cfg = raw if isinstance(raw, dict) else {}
@@ -3729,6 +3803,42 @@ def _deadline_expired(deadline: float | None) -> bool:
 
 def _run_step3_lift_sequence(vision: BrickDetector, robot: Robot) -> dict:
     step3 = _follow_step4_config()
+    if bool(step3.get("fixed_lift_only", DEFAULT_STEP3_CONFIG["fixed_lift_only"])):
+        lift_cmd = str(step3.get("lift_mast_cmd") or DEFAULT_STEP3_CONFIG["lift_mast_cmd"]).strip().lower()
+        if lift_cmd not in {"u", "d"}:
+            lift_cmd = DEFAULT_STEP3_CONFIG["lift_mast_cmd"]
+        lift_pwm = _scaled_pwm_for_cmd(lift_cmd, step3.get("lift_mast_pwm"))
+        pulse_ms = _coerce_int(
+            step3.get("fixed_lift_duration_ms"),
+            DEFAULT_STEP3_CONFIG["fixed_lift_duration_ms"],
+            minimum=1,
+            maximum=10000,
+        )
+        settle_s = _coerce_float(
+            step3.get("lift_settle_s"),
+            DEFAULT_STEP3_CONFIG["lift_settle_s"],
+            minimum=0.0,
+            maximum=2.0,
+        )
+        send_result = robot.send_command_pwm(lift_cmd, lift_pwm, duration_ms=pulse_ms)
+        time.sleep(float(pulse_ms) / 1000.0 + float(settle_s))
+        _stop_robot(robot)
+        _reset_follow_reading_history(vision)
+        try:
+            after = _read_brick_measurement(vision)
+        except Exception:
+            after = {"confident": False, "reason": "step4_fixed_lift_read_failed"}
+        return {
+            "success": True,
+            "target_met": True,
+            "holding": True,
+            "reason": "step4_fixed_lift_only",
+            "reading": after,
+            "attempts": 1,
+            "send_result": send_result,
+            "duration_ms": int(pulse_ms),
+            "mast_duration_ms": int(pulse_ms),
+        }
     targets = step3.get("targets") if isinstance(step3.get("targets"), dict) else {}
     missing = _step3_missing_target_keys(step3)
     before = _read_brick_measurement(vision)
@@ -4368,7 +4478,7 @@ def _step2_precision_settle_to_targets(
         attached_mast_cmd = None
         attached_mast_pwm = None
         attached_mast_duration_ms = None
-        if y_axis_configured and y_gap > 0.0 and y_gap >= max(float(dist_gap), float(x_gap)):
+        if y_axis_configured and y_gap > 0.0:
             cmd = _step2_precision_mast_cmd(y_err)
             pwm = _step2_precision_mast_pwm(cmd, y_gap, step2_cfg)
             duration_ms = _step2_precision_mast_duration_ms(y_gap, step2_cfg)
@@ -6834,6 +6944,8 @@ def _read_brick_measurement(vision: BrickDetector, *, jump_guard: bool = False) 
         contour_reading["holding_target_relaxed_confidence"] = True
         contour_reading["holding_target_contour"] = contour_result
         contour_reading["unmasked_target_reading"] = reading
+        contour_reading = _apply_unmasked_stack_xz_if_configured(contour_reading, reading)
+        contour_reading = _apply_holding_target_distance_calibration(contour_reading)
         try:
             vision.raw_frame = frame.copy()
         except Exception:
@@ -6865,6 +6977,8 @@ def _read_brick_measurement(vision: BrickDetector, *, jump_guard: bool = False) 
     masked_reading["target_masked_for_holding"] = True
     masked_reading["holding_target_relaxed_confidence"] = True
     masked_reading["unmasked_target_reading"] = reading
+    masked_reading = _apply_unmasked_stack_xz_if_configured(masked_reading, reading)
+    masked_reading = _apply_holding_target_distance_calibration(masked_reading)
     if _is_placeholder_reading(masked_reading):
         masked_reading["confident"] = False
         masked_reading["reason"] = "holding_target_placeholder_rejected"
@@ -7768,6 +7882,11 @@ def _success_gate_summary_lines() -> list[str]:
             f"freeze_xz_after_xz_target={bool(step2.get('freeze_xz_after_xz_target'))}"
         ),
     ]
+    if profile == "holding":
+        lines.insert(
+            1,
+            "[GATES] Holding reminder: reset into holding and holding Step 1 leave mast/y alone; Step 1 judges dist+x only.",
+        )
     if _game_complete_after_step2():
         if _step3_kind(step3) == "retreat":
             step3_label = str(step3.get("nickname") or "retreat").strip().upper()
@@ -8656,6 +8775,53 @@ def _cap_mast_plan_to_max_duration(plan: dict | None) -> dict | None:
     return out
 
 
+def _cap_near_target_wheel_plan_to_crawl(plan: dict | None) -> dict | None:
+    if not isinstance(plan, dict):
+        return plan
+    kind = str(plan.get("kind") or "").strip().lower()
+    if kind not in {"drive", "drive_bias", "drive_nudge", "turn"}:
+        return plan
+    try:
+        dist_err = float(plan.get("dist_err"))
+        current_ms = int(round(float(plan.get("duration_ms"))))
+    except (TypeError, ValueError):
+        return plan
+    policy = _follow_dist_approach_policy()
+    band_mm = _coerce_float(
+        policy.get("near_target_creep_band_mm"),
+        DEFAULT_DIST_APPROACH_POLICY["near_target_creep_band_mm"],
+        minimum=0.0,
+    )
+    if band_mm <= 0.0 or abs(float(dist_err)) > float(band_mm):
+        return plan
+    cap_ms = _coerce_int(
+        policy.get("near_target_max_pulse_ms"),
+        DEFAULT_DIST_APPROACH_POLICY["near_target_max_pulse_ms"],
+        minimum=1,
+        maximum=_max_act_ms(),
+    )
+    cmd = str(plan.get("cmd") or "").strip().lower()
+    if kind == "turn":
+        motion_cmd = cmd if cmd in {"l", "r"} else str(plan.get("turn_cmd") or "r").strip().lower()
+    elif kind == "drive_bias":
+        motion_cmd = str(plan.get("turn_cmd") or cmd or "r").strip().lower()
+    else:
+        motion_cmd = cmd
+    floor_ms = int(_min_motion_duration_ms(motion_cmd))
+    capped_ms = int(max(int(floor_ms), min(int(current_ms), int(cap_ms))))
+    if capped_ms >= int(current_ms):
+        return plan
+    out = dict(plan)
+    out["duration_ms"] = int(capped_ms)
+    out["near_target_crawl_cap"] = True
+    out["near_target_crawl_band_mm"] = float(band_mm)
+    out["near_target_crawl_original_ms"] = int(current_ms)
+    action = str(out.get("action") or "").strip()
+    if action and not action.endswith("_CRAWL"):
+        out["action"] = f"{action}_CRAWL"
+    return out
+
+
 def _mast_raise_ceiling_target_from_plan(plan: dict | None) -> float:
     if isinstance(plan, dict):
         for key in ("y_target_mm", "mast_y_target_mm"):
@@ -9000,9 +9166,15 @@ def _x_turn_duration_ms(*, dist_err: float, turn_cmd: str) -> int:
     """Return turn duration, capped shorter when dist is already near the target gate."""
     policy = _follow_dist_approach_policy()
     near_band = float(policy.get("near_target_creep_band_mm", DEFAULT_DIST_APPROACH_POLICY["near_target_creep_band_mm"]))
+    near_max_ms = _coerce_int(
+        policy.get("near_target_max_pulse_ms"),
+        DEFAULT_DIST_APPROACH_POLICY["near_target_max_pulse_ms"],
+        minimum=1,
+        maximum=_max_act_ms(),
+    )
     min_ms = int(_min_motion_duration_ms(turn_cmd))
     if abs(dist_err) <= near_band:
-        return int(max(150, min_ms))
+        return int(max(int(min_ms), int(near_max_ms)))
     return int(max(300, int(PULSE_MS), min_ms))
 
 
@@ -9046,8 +9218,11 @@ def _x_only_turn_plan(
             if production_duration_ms is not None:
                 _near_cap_ms = _x_turn_duration_ms(dist_err=dist_err, turn_cmd=turn_cmd)
                 _prod_ms = int(max(300, _bounded_act_duration_ms(production_duration_ms)))
-                if _near_cap_ms < 300 and float(x_outside) <= 2.0:
-                    plan["duration_ms"] = _near_cap_ms
+                if _near_cap_ms < 300:
+                    plan["duration_ms"] = int(min(_prod_ms, _near_cap_ms))
+                    plan["use_production_turn_curve"] = False
+                    plan["strength"] = "gentle"
+                    plan["near_target_production_curve_disabled"] = True
                 else:
                     plan["duration_ms"] = _prod_ms
             plan["production_curve_name"] = curve.get("curve_name")
@@ -9112,6 +9287,20 @@ def _follow_action_plan(reading: dict) -> dict:
                     "duration_ms": _distance_correction_duration_ms(dist_err),
                     "distance_creep": True,
                     "reason": "tiny_x_gap_backoff_instead_of_turn",
+                }, y_plan)
+            if dist_outside >= float(_follow_combined_gap_policy().get("straight_dist_outside_min_mm", 0.0)):
+                dist_cmd = _dist_cmd_for_error(dist_err)
+                return _attach_mast_to_plan({
+                    "kind": "drive",
+                    "cmd": dist_cmd,
+                    "action": "BCK" if dist_cmd == "b" else "FWD",
+                    "dist_err": dist_err,
+                    "x_err": x_err,
+                    "x_outside_mm": float(x_outside),
+                    "dist_outside_mm": float(dist_outside),
+                    "duration_ms": _distance_correction_duration_ms(dist_err),
+                    "distance_creep": True,
+                    "reason": "too_close_dist_first_before_x",
                 }, y_plan)
             if not _sharp_x_only_turn_allowed(dist_err):
                 return _x_dist_drive_bias_plan(
@@ -9182,6 +9371,20 @@ def _follow_action_plan(reading: dict) -> dict:
             if y_plan is not None:
                 return y_plan
             if bool(_follow_x_priority_policy().get("tiny_x_only_backoff_enabled", True)):
+                if dist_ok:
+                    return _x_only_turn_plan(
+                        reading=reading,
+                        turn_cmd=turn_cmd,
+                        drive_mode=_x_only_turn_drive_mode_for_dist(dist_err),
+                        strength=str(_follow_x_priority_policy().get("x_first_turn_strength", "adaptive")),
+                        dist_err=dist_err,
+                        x_err=x_err,
+                        x_outside=x_outside,
+                        dist_outside=dist_outside,
+                        y_plan=y_plan,
+                        reason="tiny_x_only_turn_at_happy_dist",
+                        use_production_curve=False,
+                    )
                 return {
                     "kind": "drive",
                     "cmd": "b",
@@ -11523,6 +11726,7 @@ def _follow_loop(
             plan = _cap_mast_up_plan_to_y_ceiling(plan, reading)
             plan = _cap_mast_up_plan_to_budget(stats, plan)
             plan = _cap_mast_plan_to_max_duration(plan)
+            plan = _cap_near_target_wheel_plan_to_crawl(plan)
             action = str(plan.get("action") or action)
             exceeded, used_up_ms, planned_up_ms, max_up_ms = _mast_up_budget_exceeded(stats, plan)
             if exceeded:
@@ -12124,6 +12328,7 @@ def _follow_loop(
             plan = _cap_mast_up_plan_to_y_ceiling(plan, reading)
             plan = _cap_mast_up_plan_to_budget(stats, plan)
             plan = _cap_mast_plan_to_max_duration(plan)
+            plan = _cap_near_target_wheel_plan_to_crawl(plan)
             action = str(plan.get("action") or action)
             exceeded, used_up_ms, planned_up_ms, max_up_ms = _mast_up_budget_exceeded(stats, plan)
             if exceeded:

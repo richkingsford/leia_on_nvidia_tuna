@@ -25,6 +25,7 @@ from helper_brick_detector_yolo import (
 )
 from helper_manual_config import load_manual_training_config
 from helper_holding_brick import detect_holding_brick
+from helper_holding_distance_calibration import apply_holding_distance_calibration_to_result
 
 try:
     from helper_holding_brick import (
@@ -354,6 +355,7 @@ class CrownVisionLivestream:
             result = None
             try:
                 result = self.vision.read()
+                self._last_holding_distance_calibration = {"calibrated": False}
                 raw_frame = getattr(self.vision, "raw_frame", None)
                 holding_result = detect_holding_brick(raw_frame)
                 self._holding_result = dict(holding_result) if isinstance(holding_result, dict) else {
@@ -375,6 +377,12 @@ class CrownVisionLivestream:
                         contour_result = detect_masked_target_brick_contour(masked, detector=self.vision)
                         if bool(contour_result.get("found")):
                             result = contour_target_result_tuple(contour_result)
+                            result, raw_dist, calibrated_dist, calibrated = apply_holding_distance_calibration_to_result(result)
+                            self._last_holding_distance_calibration = {
+                                "raw_dist_mm": raw_dist,
+                                "calibrated_dist_mm": calibrated_dist,
+                                "calibrated": calibrated,
+                            }
                             try:
                                 self.vision.current_frame = draw_masked_target_contour(raw_frame, contour_result)
                                 self.vision.last_status = "target contour locked below held brick"
@@ -392,6 +400,12 @@ class CrownVisionLivestream:
                             self.vision.set_runtime_tuning(**dict(settings))
                         if isinstance(masked_result, tuple) and len(masked_result) >= 1 and bool(masked_result[0]):
                             result = masked_result
+                            result, raw_dist, calibrated_dist, calibrated = apply_holding_distance_calibration_to_result(result)
+                            self._last_holding_distance_calibration = {
+                                "raw_dist_mm": raw_dist,
+                                "calibrated_dist_mm": calibrated_dist,
+                                "calibrated": calibrated,
+                            }
                             try:
                                 self.vision.last_status = "target locked below held brick"
                             except Exception:
@@ -616,6 +630,19 @@ class CrownVisionLivestream:
                     {"text": f"CONF:   {float(conf_pct):.0f}%", "color": "#ffffff"},
                 ]
             )
+            holding_cal = getattr(self, "_last_holding_distance_calibration", {}) or {}
+            if holding and bool(holding_cal.get("calibrated")):
+                lines.insert(
+                    -2,
+                    {
+                        "text": (
+                            "  holding calibrated: "
+                            f"{_num_text(holding_cal.get('raw_dist_mm'), 0, 'mm')} -> "
+                            f"{_num_text(holding_cal.get('calibrated_dist_mm'), 0, 'mm')}"
+                        ),
+                        "color": "#a8d8ff",
+                    },
+                )
             stack = []
             if bool(brick_above):
                 stack.append("ABOVE")
