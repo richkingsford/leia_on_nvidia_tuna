@@ -3584,6 +3584,33 @@ def _curve_forward(robot: Robot, cmd: str, reading: dict) -> None:
     )
 
 
+def _scripted_mast_allowed(reason: str) -> bool:
+    reason_key = str(reason or "").strip().lower()
+    profile = _active_game_profile()
+    if reason_key in {"empty_step4_lift", "empty_step4_visibility_fallback"}:
+        return profile == "empty"
+    if reason_key == "holding_step2_place":
+        return profile == "holding"
+    return False
+
+
+def _mast_locked_result(cmd: str | None, reason: str) -> dict:
+    cmd_key = str(cmd or "").strip().lower()
+    print(
+        f"[MAST_LOCK] Blocked mast {cmd_key.upper() if cmd_key else '?'} during {reason}; "
+        "allowed scripted mast moves are empty Step 4 lift and holding Step 2 place only.",
+        flush=True,
+    )
+    return {
+        "blocked": True,
+        "reason": f"mast_locked:{reason}",
+        "cmd_sent": "s",
+        "pwm": 0,
+        "duration_ms": 0,
+        "skipped": True,
+    }
+
+
 def _mast_action_spec(
     direction: str | None,
     *,
@@ -3593,23 +3620,12 @@ def _mast_action_spec(
     cmd = str(direction or "").strip().lower()
     if cmd not in {"u", "d"}:
         return None
-    y_cfg = _follow_y_axis_config()
-    mast_pwm = y_cfg.get("mast_pwm") if pwm is None else pwm
-    mast_duration_ms = y_cfg.get("mast_pulse_ms") if duration_ms is None else duration_ms
-    # Custom action specs are already at the Uno target/action layer. Keep the
-    # operator-facing plan logical: U raises the mast, D lowers it.
-    wire_action = cmd
-    return {
-        "target": "m",
-        "action": wire_action,
-        "pwm": _scaled_pwm_for_cmd(cmd, mast_pwm),
-        "duration_ms": _cap_mast_duration_ms(
-            cmd,
-            mast_duration_ms,
-            y_cfg.get("mast_pulse_ms", PULSE_MS),
-            minimum=1,
-        ),
-    }
+    print(
+        f"[MAST_LOCK] Stripped attached mast {cmd.upper()} action; "
+        "scripted mast motion is allowed only for empty Step 4 lift and holding Step 2 place.",
+        flush=True,
+    )
+    return None
 
 
 def _actions_with_mast(
@@ -3833,6 +3849,22 @@ def _run_step3_no_visibility_fallback(
     attempts: int = 0,
     send_result: dict | None = None,
 ) -> dict:
+    if not _scripted_mast_allowed("empty_step4_visibility_fallback"):
+        blocked = _mast_locked_result(
+            (step3_cfg or {}).get("no_visibility_fallback_mast_cmd", "u"),
+            "step4_no_visibility_fallback",
+        )
+        return {
+            "success": False,
+            "target_met": False,
+            "fallback_reset_ok": False,
+            "holding": bool((reading or {}).get("holding")) if isinstance(reading, dict) else False,
+            "reason": f"step4_no_visibility_fallback_blocked:{blocked.get('reason')}",
+            "reading": reading or {},
+            "attempts": attempts,
+            "send_result": send_result,
+            "fallback_send_result": blocked,
+        }
     if not bool(step3_cfg.get("no_visibility_fallback_enabled", True)):
         return {
             "success": False,
@@ -3913,6 +3945,17 @@ def _deadline_expired(deadline: float | None) -> bool:
 
 def _run_step3_lift_sequence(vision: BrickDetector, robot: Robot) -> dict:
     step3 = _follow_step4_config()
+    if not _scripted_mast_allowed("empty_step4_lift"):
+        lift_cmd = str(step3.get("lift_mast_cmd") or DEFAULT_STEP3_CONFIG["lift_mast_cmd"]).strip().lower()
+        return {
+            "success": False,
+            "target_met": False,
+            "holding": False,
+            "reason": "step4_lift_blocked:mast_locked",
+            "reading": {},
+            "attempts": 0,
+            "send_result": _mast_locked_result(lift_cmd, "empty_step4_lift"),
+        }
     if bool(step3.get("fixed_lift_only", DEFAULT_STEP3_CONFIG["fixed_lift_only"])):
         lift_cmd = str(step3.get("lift_mast_cmd") or DEFAULT_STEP3_CONFIG["lift_mast_cmd"]).strip().lower()
         if lift_cmd not in {"u", "d"}:
@@ -4453,6 +4496,7 @@ def _step2_precision_settle_to_targets(
     step2_cfg: dict,
     *,
     deadline: float | None = None,
+    allow_mast: bool = False,
 ) -> tuple[dict, dict]:
     current = reading if isinstance(reading, dict) else {}
     counts = {
@@ -4492,6 +4536,9 @@ def _step2_precision_settle_to_targets(
     dist_axis_configured = targets.get("dist_mm") is not None and targets.get("dist_tol_mm") is not None
     x_axis_configured = targets.get("x_mm") is not None and targets.get("x_tol_mm") is not None
     y_axis_configured = targets.get("y_mm") is not None and targets.get("y_tol_mm") is not None
+    if y_axis_configured and not bool(allow_mast):
+        print("[MAST_LOCK] Ignoring Step precision y target; mast is locked for this scripted step.", flush=True)
+        y_axis_configured = False
     prev_dist_err = None
     xz_freeze_enabled = _step2_xz_freeze_enabled(step2_cfg)
     xz_lock_reading: dict | None = None
@@ -4945,6 +4992,7 @@ def _run_step2_seat_sequence(
 ) -> dict:
     step2 = step_cfg if isinstance(step_cfg, dict) else _follow_step2_config()
     label = str(step_key or "step2").strip().lower()
+    mast_allowed = bool(label == "step2" and _scripted_mast_allowed("holding_step2_place"))
     step_timeout_s = _coerce_float(
         step2.get("step_timeout_s"),
         DEFAULT_STEP2_CONFIG["step_timeout_s"],
@@ -5039,8 +5087,29 @@ def _run_step2_seat_sequence(
         minimum=0,
         maximum=5000 if bool(step2.get("blind_mast_only", False)) else None,
     )
+    mast_blocked_result = None
+    if mast_duration_ms > 0 and not bool(mast_allowed):
+        mast_blocked_result = _mast_locked_result(mast_cmd, f"{label}_seat_mast")
+        mast_duration_ms = 0
     mast_pwm = _scaled_pwm_for_cmd(mast_cmd, step2.get("seat_mast_pwm"))
-    mast_result = {"skipped": True, "reason": f"{label}_mast_duration_zero"}
+    mast_result = mast_blocked_result or {"skipped": True, "reason": f"{label}_mast_duration_zero"}
+    if mast_blocked_result is not None:
+        return {
+            "success": False,
+            "target_met": False,
+            "reason": f"{label}_mast_blocked:{mast_blocked_result.get('reason')}",
+            "send_result": mast_blocked_result,
+            "mast_result": mast_blocked_result,
+            "before": before,
+            "reading": before,
+            "duration_ms": 0,
+            "mast_duration_ms": 0,
+            "drive_duration_ms": 0,
+            "creep_attempts": 0,
+            "visibility_recovery_creeps": 0,
+            "precision_counts": {"blocked": 1},
+            "closeness": _step2_target_closeness_from_reading(before, step2),
+        }
     if mast_duration_ms > 0:
         mast_result = guarded_send_command_pwm(
             robot,
@@ -5167,6 +5236,7 @@ def _run_step2_seat_sequence(
                     after,
                     step2,
                     deadline=deadline,
+                    allow_mast=False,
                 )
                 creep_attempts = int((precision_counts or {}).get("fwd", 0))
             if bool((precision_counts or {}).get("pickup_suspected_stop")) or _pickup_suspected_reading(after):
@@ -5236,6 +5306,7 @@ def _run_step2_seat_sequence(
             after_mast,
             step2,
             deadline=deadline,
+            allow_mast=False,
         )
         creep_attempts = int((precision_counts or {}).get("fwd", 0))
     else:
@@ -5341,6 +5412,7 @@ def _run_step2_seat_sequence(
                 after,
                 step2,
                 deadline=deadline,
+                allow_mast=False,
             )
             _merge_precision_counts(precision_counts, recovery_precision_counts)
             creep_attempts = int((precision_counts or {}).get("fwd", 0))
@@ -5551,7 +5623,13 @@ def _run_step2_settle_sequence(vision: BrickDetector, robot: Robot) -> dict:
             "visibility_recovery_creeps": int(visibility_recovery_creeps),
             "precision_counts": {},
         }
-    after, precision_counts = _step2_precision_settle_to_targets(vision, robot, before, step2)
+    after, precision_counts = _step2_precision_settle_to_targets(
+        vision,
+        robot,
+        before,
+        step2,
+        allow_mast=False,
+    )
     if bool(after.get("confident")):
         target_met, target_reason, closeness = _step2_targets_ready(after, step2)
     else:
@@ -5564,7 +5642,13 @@ def _run_step2_settle_sequence(vision: BrickDetector, robot: Robot) -> dict:
         visibility_recovery_creeps += int(recovered_creeps)
         if bool(after.get("confident")):
             if bool(step2.get("precision_settle_enabled", True)):
-                after, recovery_precision_counts = _step2_precision_settle_to_targets(vision, robot, after, step2)
+                after, recovery_precision_counts = _step2_precision_settle_to_targets(
+                    vision,
+                    robot,
+                    after,
+                    step2,
+                    allow_mast=False,
+                )
                 _merge_precision_counts(precision_counts, recovery_precision_counts)
             target_met, target_reason, closeness = _step2_targets_ready(after, step2)
             if not bool(target_met):
@@ -5598,33 +5682,11 @@ def _mast(
     cmd = str(direction or "").strip().lower()
     if cmd not in {"u", "d"}:
         return None
-    y_cfg = _follow_y_axis_config()
-    mast_pwm = y_cfg.get("mast_pwm") if pwm is None else pwm
-    mast_duration_ms = y_cfg.get("mast_pulse_ms") if duration_ms is None else duration_ms
-    pwm = _scaled_pwm_for_cmd(cmd, mast_pwm)
-    duration_ms = _cap_mast_duration_ms(cmd, mast_duration_ms, y_cfg.get("mast_pulse_ms", PULSE_MS), minimum=1)
-    return guarded_send_command_pwm(
-        robot,
-        cmd,
-        pwm,
-        duration_ms=duration_ms,
-        reading=reading,
-        context=f"follow_mast_{cmd}",
-    )
+    return _mast_locked_result(cmd, "follow_mast_plan")
 
 
 def _lock_on_mast_down(robot: Robot, reading: dict) -> dict | None:
-    y_cfg = _follow_y_axis_config()
-    pwm = _scaled_pwm_for_cmd("d", y_cfg.get("lock_on_mast_pwm", 255))
-    duration_ms = _cap_mast_duration_ms("d", y_cfg.get("lock_on_pulse_ms"), PULSE_MS, minimum=1)
-    return guarded_send_command_pwm(
-        robot,
-        "d",
-        pwm,
-        duration_ms=duration_ms,
-        reading=reading,
-        context="follow_y_lock_on_mast_down",
-    )
+    return _mast_locked_result("d", "follow_y_lock_on")
 
 
 def _should_run_y_lock_on(stats: dict, reading: dict) -> bool:
@@ -6567,34 +6629,11 @@ def _wait_for_visibility_recovery(
             minimum=0,
         )
         if down_ms > 0:
-            down_pwm = _coerce_int(
-                cfg.get("mast_down_pwm"),
-                DEFAULT_VISIBILITY_RECOVERY_CONFIG["mast_down_pwm"],
-                minimum=1,
-                maximum=255,
-            )
             print(
-                f"[FOLLOW] Visibility not confident after {context}; "
-                f"recovering with mast D for {int(down_ms)}ms, no wheel motion.",
+                f"[MAST_LOCK] Visibility recovery after {context} wanted mast D for {int(down_ms)}ms; "
+                "blocked. Waiting only with no wheel or mast motion.",
                 flush=True,
             )
-            robot.send_command_pwm("d", down_pwm, duration_ms=down_ms)
-            time.sleep(float(down_ms) / 1000.0)
-            _stop_robot(robot)
-            _reset_follow_reading_history(vision, allow_large_dist_jump=True)
-            current = _read_brick_measurement(vision, jump_guard=jump_guard)
-            if bool(current.get("confident")):
-                try:
-                    print(
-                        f"[FOLLOW] Visibility recovered after mast D: "
-                        f"dist={float(current.get('dist_mm')):.1f}mm "
-                        f"x={float(current.get('x_mm')):+.1f}mm "
-                        f"y={float(current.get('y_mm')):+.1f}mm",
-                        flush=True,
-                    )
-                except (TypeError, ValueError):
-                    print("[FOLLOW] Visibility recovered after mast D.", flush=True)
-                return current
     deadline = time.monotonic() + float(wait_s)
     while time.monotonic() < deadline and not bool(current.get("confident")):
         time.sleep(min(float(poll_s), max(0.0, deadline - time.monotonic())))
