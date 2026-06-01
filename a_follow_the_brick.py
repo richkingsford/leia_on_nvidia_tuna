@@ -127,6 +127,9 @@ HOLDING_S1_TRANSITION_COMMIT_MS = 800
 HOLDING_S1_TRANSITION_MAX_DIST_ERR_MM = 45.0
 HOLDING_S1_TRANSITION_MAX_X_OUTSIDE_MM = 0.0
 HOLDING_S1_RETRY_BACKOFF_MS = 1500
+RESET_FINAL_X_POLISH_MARGIN_MM = 2.0
+RESET_FINAL_X_POLISH_MIN_MS = 170
+RESET_FINAL_X_POLISH_MAX_MS = 250
 GAP_REGRESSION_EPSILON_MM = 0.25
 DEFAULT_FOLLOW_COMBINED_GAP_POLICY = {
     "straight_x_outside_max_mm": 0.0,
@@ -6424,6 +6427,104 @@ def _adjust_reset_until_xy_target(
     return current, _reset_xy_target_ready(current, reset_cfg), attempts
 
 
+def _reset_final_x_offset_polish(
+    vision: BrickDetector,
+    robot: Robot,
+    *,
+    reading: dict,
+    reset_cfg: dict,
+    initial_turn_cmd: str,
+) -> tuple[dict, bool, str]:
+    """End reset with a visible x-offset polish after distance-only adjustments."""
+    current = reading if isinstance(reading, dict) else {}
+    if not bool(current.get("confident")):
+        return current, False, "not_confident"
+    try:
+        dist_mm = float(current.get("dist_mm"))
+        x_mm = float(current.get("x_mm"))
+    except (TypeError, ValueError):
+        return current, False, "invalid_reading"
+
+    x_min = float(reset_cfg.get("x_offset_min_mm", RESET_X_OFFSET_MIN_MM))
+    x_max = float(reset_cfg.get("x_offset_max_mm", RESET_X_OFFSET_MAX_MM))
+    if x_min > x_max:
+        x_min, x_max = x_max, x_min
+    target_abs_x = _coerce_float(
+        reset_cfg.get("target_abs_x_mm"),
+        (float(x_min) + float(x_max)) / 2.0,
+        minimum=0.0,
+    )
+    if target_abs_x < x_min or target_abs_x > x_max:
+        target_abs_x = (float(x_min) + float(x_max)) / 2.0
+
+    dist_target = float(reset_cfg.get("dist_target_mm", RESET_DIST_TARGET_MM))
+    dist_tol = float(reset_cfg.get("dist_tol_mm", RESET_DIST_TOL_MM))
+    dist_low = max(float(dist_target) - float(dist_tol), _reset_min_attempt_dist_mm(reset_cfg))
+    if dist_mm < dist_low or dist_mm > (float(dist_target) + float(dist_tol)):
+        print(
+            f"[RESET] Final x-offset polish skipped: dist={dist_mm:.1f}mm outside reset-ready band "
+            f"{dist_low:.1f}-{float(dist_target) + float(dist_tol):.1f}mm.",
+            flush=True,
+        )
+        return current, False, "dist_not_ready"
+
+    abs_x = abs(float(x_mm))
+    if abs_x >= float(target_abs_x) - float(RESET_FINAL_X_POLISH_MARGIN_MM):
+        print(
+            f"[RESET] Final x-offset polish skipped: |x|={abs_x:.1f}mm already near "
+            f"{target_abs_x:.1f}mm target.",
+            flush=True,
+        )
+        return current, False, "already_near_target"
+    if abs_x >= float(x_max) - float(RESET_FINAL_X_POLISH_MARGIN_MM):
+        print(
+            f"[RESET] Final x-offset polish skipped: |x|={abs_x:.1f}mm already near max "
+            f"{x_max:.1f}mm.",
+            flush=True,
+        )
+        return current, False, "already_near_max"
+
+    cfg = _reset_adjustment_config(reset_cfg)
+    gap = max(0.0, float(target_abs_x) - float(abs_x))
+    duration_ms = _reset_adjustment_pulse_ms(gap, cfg)
+    duration_ms = max(
+        int(RESET_FINAL_X_POLISH_MIN_MS),
+        min(int(RESET_FINAL_X_POLISH_MAX_MS), int(duration_ms)),
+    )
+    turn_cmd = str(initial_turn_cmd or "r").strip().lower()
+    turn_cmd = turn_cmd if turn_cmd in {"l", "r"} else "r"
+    open_turn = _turn_cmd_to_open_x_gap(x_mm, turn_cmd)
+    send_result = _reset_small_turn_adjust(
+        robot,
+        turn_cmd=open_turn,
+        reading=current,
+        duration_ms=duration_ms,
+        reset_cfg=reset_cfg,
+        reason="final_x_offset",
+    )
+    if isinstance(send_result, dict) and bool(send_result.get("blocked")):
+        print(
+            f"[RESET] Final x-offset polish blocked: {send_result.get('reason')}",
+            flush=True,
+        )
+        return current, False, "blocked"
+
+    print(
+        f"[RESET] Final x-offset polish: BACK_CURVE_{open_turn.upper()} "
+        f"pulse={duration_ms}ms |x|={abs_x:.1f}->{target_abs_x:.1f}mm",
+        flush=True,
+    )
+    after = _reset_read_after_adjustment(
+        vision,
+        robot,
+        duration_ms=duration_ms,
+        settle_s=float(cfg.get("settle_s", 0.12)),
+        context="reset_final_x_offset_polish",
+        fallback=current,
+    )
+    return after if isinstance(after, dict) else current, True, "sent"
+
+
 def _warmup(vision: BrickDetector) -> None:
     log.info("Warming up camera pipeline (%d reads)...", WARMUP_READS)
     for _ in range(WARMUP_READS):
@@ -10181,6 +10282,16 @@ def _reverse_turn_until_x_offset(
         )
         if not bool(after_reading.get("confident")):
             return False, "lost_confident_brick_after_reset_adjustment", after_reading
+        after_reading, final_x_polished, final_x_reason = _reset_final_x_offset_polish(
+            vision,
+            robot,
+            reading=after_reading,
+            reset_cfg=reset_cfg,
+            initial_turn_cmd=turn_cmd,
+        )
+        if not bool(after_reading.get("confident")):
+            return False, "lost_confident_brick_after_final_x_polish", after_reading
+        target_met_xy = _reset_xy_target_ready(after_reading, reset_cfg)
         try:
             after_dist = float(after_reading["dist_mm"])
             after_x = float(after_reading["x_mm"])
@@ -10201,7 +10312,8 @@ def _reverse_turn_until_x_offset(
             )
         print(
             f"[RESET] Reset complete: dist={after_dist:.1f}mm x={after_x:+.1f}mm y={after_y_text} "
-            f"target_dist_abs_x={'hit' if bool(target_met_xy) else 'miss'} adjustments={int(adjustment_attempts)}{close_text}",
+            f"target_dist_abs_x={'hit' if bool(target_met_xy) else 'miss'} adjustments={int(adjustment_attempts)} "
+            f"final_x={'sent' if bool(final_x_polished) else 'skip:' + str(final_x_reason)}{close_text}",
             flush=True,
         )
         if bool(target_met_xy):
@@ -10305,6 +10417,16 @@ def _reverse_turn_until_x_offset(
     )
     if not bool(after_reading.get("confident")):
         return False, "lost_confident_brick_after_reset_adjustment", after_reading
+    after_reading, final_x_polished, final_x_reason = _reset_final_x_offset_polish(
+        vision,
+        robot,
+        reading=after_reading,
+        reset_cfg=reset_cfg,
+        initial_turn_cmd=turn_cmd,
+    )
+    if not bool(after_reading.get("confident")):
+        return False, "lost_confident_brick_after_final_x_polish", after_reading
+    target_met_xy = _reset_xy_target_ready(after_reading, reset_cfg)
 
     try:
         after_dist = float(after_reading["dist_mm"])
@@ -10332,7 +10454,8 @@ def _reverse_turn_until_x_offset(
         )
     print(
         f"[RESET] Reset complete: dist={after_dist:.1f}mm x={after_x:+.1f}mm y={after_y_text} "
-        f"target_dist_abs_x={'hit' if target_met else 'miss'} adjustments={int(adjustment_attempts)}{close_text}",
+        f"target_dist_abs_x={'hit' if target_met else 'miss'} adjustments={int(adjustment_attempts)} "
+        f"final_x={'sent' if bool(final_x_polished) else 'skip:' + str(final_x_reason)}{close_text}",
         flush=True,
     )
     if target_met:
