@@ -127,6 +127,9 @@ HOLDING_S1_TRANSITION_COMMIT_MS = 800
 HOLDING_S1_TRANSITION_MAX_DIST_ERR_MM = 45.0
 HOLDING_S1_TRANSITION_MAX_X_OUTSIDE_MM = 0.0
 HOLDING_S1_RETRY_BACKOFF_MS = 1500
+EMPTY_S1_RETRY_BACKOFF_MS = 900
+EMPTY_S1_COMBINED_CURVE_MEDIUM_MS = 300
+EMPTY_S1_COMBINED_CURVE_STRONG_MS = 450
 RESET_FINAL_X_POLISH_MARGIN_MM = 2.0
 RESET_FINAL_X_POLISH_MIN_MS = 170
 RESET_FINAL_X_POLISH_MAX_MS = 250
@@ -9397,6 +9400,15 @@ def _x_dist_drive_bias_plan(
     if mode not in {"forward", "backward"}:
         mode = "forward"
     strength = _bias_strength_for_dist_x(dist_err=dist_err, x_err=x_err, x_outside_mm=x_outside)
+    duration_ms = _combined_drive_bias_duration_ms(dist_err, drive_mode=mode)
+    skip_near_target_cap = False
+    if _active_game_profile() == "empty":
+        if float(x_outside) >= float(_follow_combined_gap_policy().get("medium_x_outside_max_mm", 12.0)):
+            duration_ms = max(int(duration_ms), min(_max_act_ms(), int(EMPTY_S1_COMBINED_CURVE_STRONG_MS)))
+        elif float(x_outside) >= float(_follow_combined_gap_policy().get("gentle_x_outside_max_mm", 6.0)):
+            duration_ms = max(int(duration_ms), min(_max_act_ms(), int(EMPTY_S1_COMBINED_CURVE_MEDIUM_MS)))
+        if int(duration_ms) > int(_follow_dist_approach_policy().get("near_target_max_pulse_ms", 80)):
+            skip_near_target_cap = True
     return _attach_mast_to_plan({
         "kind": "drive_bias",
         "cmd": "b" if mode == "backward" else "f",
@@ -9408,8 +9420,9 @@ def _x_dist_drive_bias_plan(
         "x_err": float(x_err),
         "x_outside_mm": float(x_outside),
         "dist_outside_mm": float(dist_outside),
-        "duration_ms": _combined_drive_bias_duration_ms(dist_err, drive_mode=mode),
+        "duration_ms": int(duration_ms),
         "distance_creep": True,
+        "skip_near_target_crawl_cap": bool(skip_near_target_cap),
         "reason": str(reason),
     }, y_plan)
 
@@ -9613,43 +9626,15 @@ def _follow_action_plan(reading: dict) -> dict:
                     "distance_creep": True,
                     "reason": "tiny_x_gap_backoff_instead_of_turn",
                 }, y_plan)
-            if dist_outside >= float(_follow_combined_gap_policy().get("straight_dist_outside_min_mm", 0.0)):
-                dist_cmd = _dist_cmd_for_error(dist_err)
-                return _attach_mast_to_plan({
-                    "kind": "drive",
-                    "cmd": dist_cmd,
-                    "action": "BCK" if dist_cmd == "b" else "FWD",
-                    "dist_err": dist_err,
-                    "x_err": x_err,
-                    "x_outside_mm": float(x_outside),
-                    "dist_outside_mm": float(dist_outside),
-                    "duration_ms": _distance_correction_duration_ms(dist_err),
-                    "distance_creep": True,
-                    "reason": "too_close_dist_first_before_x",
-                }, y_plan)
-            if not _sharp_x_only_turn_allowed(dist_err):
-                return _x_dist_drive_bias_plan(
-                    turn_cmd=turn_cmd,
-                    drive_mode=_drive_mode_for_dist_error(dist_err),
-                    dist_err=dist_err,
-                    x_err=x_err,
-                    x_outside=x_outside,
-                    dist_outside=dist_outside,
-                    y_plan=y_plan,
-                    reason="x_polish_while_backing_dist",
-                )
-            return _x_only_turn_plan(
-                reading=reading,
+            return _x_dist_drive_bias_plan(
                 turn_cmd=turn_cmd,
                 drive_mode="backward",
-                strength=str(_follow_x_priority_policy().get("x_first_turn_strength", "strong")),
                 dist_err=dist_err,
                 x_err=x_err,
                 x_outside=x_outside,
                 dist_outside=dist_outside,
                 y_plan=y_plan,
-                reason="sharp_x_only_tiny_dist",
-                use_production_curve=True,
+                reason="combined_curve_too_close_x",
             )
         nudge_plan = _distance_micro_nudge_plan(reading, dist_err=dist_err, x_err=x_err, y_plan=y_plan)
         if nudge_plan is not None:
@@ -9748,6 +9733,36 @@ def _follow_action_plan(reading: dict) -> dict:
                 "duration_ms": 0,
                 "reason": "tiny_x_gap_no_subfloor_turn",
             }
+        if dist_ok and _active_game_profile() == "empty":
+            strength = _near_wide_x_turn_strength(abs(x_err))
+            return _attach_mast_to_plan({
+                "kind": "drive_bias",
+                "cmd": "b",
+                "turn_cmd": turn_cmd,
+                "drive_mode": "backward",
+                "strength": strength,
+                "action": f"BIAS_{turn_cmd.upper()}_{strength.upper()}_BACKOFF",
+                "dist_err": float(dist_err),
+                "x_err": float(x_err),
+                "x_outside_mm": float(x_outside),
+                "dist_outside_mm": float(dist_outside),
+                "duration_ms": int(EMPTY_S1_RETRY_BACKOFF_MS),
+                "distance_creep": True,
+                "allow_long_duration": True,
+                "skip_near_target_crawl_cap": True,
+                "reason": "empty_s1_dist_ok_x_retry_backoff_curve",
+            }, y_plan)
+        if dist_outside > 0.0:
+            return _x_dist_drive_bias_plan(
+                turn_cmd=turn_cmd,
+                drive_mode=_drive_mode_for_dist_error(dist_err),
+                dist_err=dist_err,
+                x_err=x_err,
+                x_outside=x_outside,
+                dist_outside=dist_outside,
+                y_plan=y_plan,
+                reason="combined_dist_x_curve",
+            )
         sharp_x_only_allowed = _sharp_x_only_turn_allowed(dist_err)
         if _near_target_forward_veto_active(dist_err=dist_err, x_ok=x_ok, y_ok=y_ok) and sharp_x_only_allowed:
             return _x_only_turn_plan(
