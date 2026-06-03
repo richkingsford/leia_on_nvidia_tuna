@@ -5,6 +5,8 @@ import numpy as np
 
 from helper_holding_brick import (
     HoldingBrickConfig,
+    HoldingMaskLock,
+    HoldingMaskLockConfig,
     contour_target_result_tuple,
     detect_holding_brick,
     detect_masked_target_brick_contour,
@@ -18,6 +20,44 @@ def _brick_bgr():
 
 
 class TestHoldingBrickDetector(unittest.TestCase):
+    def test_holding_mask_lock_survives_brief_not_held_flicker(self):
+        lock = HoldingMaskLock(HoldingMaskLockConfig(release_after_misses=3))
+        held = {"holding": True, "reason": "held_brick_top_nubs", "mask_regions": [(10, 0, 20, 12)]}
+
+        first = lock.update(held)
+        second = lock.update({"holding": False, "reason": "no_green_contour"})
+        third = lock.update({"holding": False, "reason": "no_green_contour"})
+        released = lock.update({"holding": False, "reason": "no_green_contour"})
+
+        self.assertTrue(first["holding"])
+        self.assertTrue(second["holding"])
+        self.assertTrue(second["holding_mask_locked"])
+        self.assertEqual(second["mask_regions"], [(10, 0, 20, 12)])
+        self.assertEqual(third["holding_mask_lock_misses"], 2)
+        self.assertFalse(released["holding"])
+        self.assertTrue(released["holding_mask_lock_released"])
+
+    def test_holding_mask_lock_keeps_original_mask_while_holding_jitters(self):
+        lock = HoldingMaskLock(HoldingMaskLockConfig(release_after_misses=3))
+
+        first = lock.update({"holding": True, "reason": "held", "mask_regions": [(10, 0, 20, 12)]})
+        second = lock.update({"holding": True, "reason": "held", "mask_regions": [(40, 0, 20, 12)]})
+
+        self.assertEqual(first["mask_regions"], [(10, 0, 20, 12)])
+        self.assertEqual(second["mask_regions"], [(10, 0, 20, 12)])
+        self.assertTrue(second["holding_mask_locked"])
+
+    def test_holding_mask_lock_reset_clears_stale_held_mask(self):
+        lock = HoldingMaskLock(HoldingMaskLockConfig(release_after_misses=3))
+
+        lock.update({"holding": True, "reason": "held", "mask_regions": [(10, 0, 20, 12)]})
+        lock.reset()
+        result = lock.update({"holding": False, "reason": "clear"})
+
+        self.assertFalse(result["holding"])
+        self.assertNotIn("holding_mask_locked", result)
+        self.assertEqual(result["reason"], "clear")
+
     def test_detects_large_green_region_in_upper_prong_roi(self):
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
         frame[70:175, 90:550] = _brick_bgr()
@@ -67,21 +107,20 @@ class TestHoldingBrickDetector(unittest.TestCase):
 
         self.assertTrue(result["holding"])
 
-    def test_mask_held_brick_never_extends_below_top_limit(self):
+    def test_mask_held_brick_detected_below_top_limit(self):
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        frame[20:95, 90:550] = _brick_bgr()
+        frame[70:175, 90:550] = _brick_bgr()
         frame[220:270, 280:365] = _brick_bgr()
         result = detect_holding_brick(frame)
 
         masked = mask_held_brick_for_target_frame(frame, result)
 
         self.assertIsNotNone(masked)
-        self.assertEqual(int(masked[45, 100].sum()), 0)
-        self.assertGreater(int(masked[60, 100].sum()), 0)
-        self.assertGreater(int(masked[70, 100].sum()), 0)
+        self.assertEqual(int(masked[90, 100].sum()), 0)
+        self.assertGreater(int(masked[160, 320].sum()), 0)
         self.assertGreater(int(masked[240, 320].sum()), 0)
 
-    def test_mask_held_brick_lifts_center_bottom_but_keeps_outer_nubs_masked(self):
+    def test_mask_held_brick_excludes_upper_bbox_without_erasing_lower_target(self):
         frame = np.full((480, 640, 3), 120, dtype=np.uint8)
         result = {"best": {"bbox": (90, 20, 460, 105)}}
 
@@ -89,11 +128,71 @@ class TestHoldingBrickDetector(unittest.TestCase):
 
         self.assertIsNotNone(masked)
         self.assertEqual(int(masked[29, 320].sum()), 0)
-        self.assertGreater(int(masked[30, 320].sum()), 0)
-        self.assertEqual(int(masked[59, 100].sum()), 0)
-        self.assertEqual(int(masked[59, 540].sum()), 0)
-        self.assertGreater(int(masked[60, 100].sum()), 0)
-        self.assertGreater(int(masked[60, 540].sum()), 0)
+        self.assertEqual(int(masked[90, 320].sum()), 0)
+        self.assertGreater(int(masked[130, 320].sum()), 0)
+        self.assertGreater(int(masked[160, 100].sum()), 0)
+        self.assertGreater(int(masked[160, 540].sum()), 0)
+        self.assertGreater(int(masked[180, 320].sum()), 0)
+
+    def test_top_edge_nubs_detect_holding_and_mask_only_nubs(self):
+        frame = np.zeros((300, 404, 3), dtype=np.uint8)
+        # The cropped held brick now shows as two small hanging nubs at the
+        # very top edge, with a faint top bridge that should not become a
+        # broad mask over the real target.
+        frame[0:11, 95:345] = _brick_bgr()
+        frame[7:35, 140:156] = _brick_bgr()
+        frame[7:35, 292:310] = _brick_bgr()
+        frame[74:100, 210:258] = _brick_bgr()
+
+        result = detect_holding_brick(frame)
+        masked = mask_held_brick_for_target_frame(frame, result)
+
+        self.assertTrue(result["holding"])
+        self.assertEqual(result["reason"], "held_brick_top_nubs")
+        self.assertEqual(len(result["mask_regions"]), 2)
+        self.assertEqual(int(masked[18, 148].sum()), 0)
+        self.assertEqual(int(masked[18, 300].sum()), 0)
+        self.assertGreater(int(masked[86, 234].sum()), 0)
+
+    def test_broad_holding_detection_uses_top_edge_mask_when_available(self):
+        frame = np.zeros((300, 404, 3), dtype=np.uint8)
+        frame[0:38, 0:404] = _brick_bgr()
+        frame[74:100, 210:258] = _brick_bgr()
+
+        result = detect_holding_brick(frame)
+        masked = mask_held_brick_for_target_frame(frame, result)
+
+        self.assertTrue(result["holding"])
+        self.assertIn("mask_regions", result)
+        self.assertEqual(int(masked[18, 202].sum()), 0)
+        self.assertGreater(int(masked[86, 234].sum()), 0)
+
+    def test_thin_top_edge_sliver_does_not_count_as_holding(self):
+        frame = np.zeros((300, 404, 3), dtype=np.uint8)
+        frame[0:6, 0:320] = _brick_bgr()
+        frame[74:100, 210:258] = _brick_bgr()
+
+        result = detect_holding_brick(frame)
+
+        self.assertFalse(result["holding"])
+
+    def test_short_broad_top_edge_does_not_count_as_holding(self):
+        frame = np.zeros((300, 404, 3), dtype=np.uint8)
+        frame[0:17, 0:404] = _brick_bgr()
+        frame[74:100, 210:258] = _brick_bgr()
+
+        result = detect_holding_brick(frame)
+
+        self.assertFalse(result["holding"])
+
+    def test_single_top_nub_does_not_count_as_holding(self):
+        frame = np.zeros((300, 404, 3), dtype=np.uint8)
+        frame[7:35, 140:156] = _brick_bgr()
+        frame[74:100, 210:258] = _brick_bgr()
+
+        result = detect_holding_brick(frame)
+
+        self.assertFalse(result["holding"])
 
     def test_masked_target_contour_uses_full_wide_lower_brick(self):
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -111,6 +210,17 @@ class TestHoldingBrickDetector(unittest.TestCase):
         self.assertGreaterEqual(w, 330)
         self.assertGreater(float(result["confidence_pct"]), 60.0)
 
+    def test_target_contour_finds_high_stack_after_lower_camera_move(self):
+        frame = np.zeros((300, 404, 3), dtype=np.uint8)
+        frame[0:38, 100:320] = _brick_bgr()
+        frame[74:104, 150:254] = _brick_bgr()
+
+        result = detect_masked_target_brick_contour(frame)
+
+        self.assertTrue(result["found"])
+        _x, y, _w, _h = result["bbox"]
+        self.assertLess(y, 90)
+
     def test_masked_target_contour_rejects_far_side_blob(self):
         frame = np.zeros((300, 404, 3), dtype=np.uint8)
         frame[95:158, 346:404] = _brick_bgr()
@@ -118,7 +228,8 @@ class TestHoldingBrickDetector(unittest.TestCase):
         result = detect_masked_target_brick_contour(frame)
 
         self.assertFalse(result["found"])
-        self.assertFalse(result["candidates"][0]["checks"]["center_x"])
+        checked = next(row for row in result["candidates"] if isinstance(row, dict) and "checks" in row)
+        self.assertFalse(checked["checks"]["center_x"])
 
     def test_contour_target_result_tuple_matches_detector_contract(self):
         row = {

@@ -24,7 +24,7 @@ from helper_brick_detector_yolo import (
     CYAN_SHADE_HEXES,
 )
 from helper_manual_config import load_manual_training_config
-from helper_holding_brick import detect_holding_brick
+from helper_holding_brick import HoldingMaskLock, detect_holding_brick
 from helper_holding_distance_calibration import apply_holding_distance_calibration_to_result
 
 try:
@@ -167,6 +167,69 @@ HELD_TARGET_TUNING = {
     "far_suspect_enabled": False,
 }
 
+VISION_CONTEXT_LABELS = {
+    "empty_s1": "Empty Step 1/2: normal stack model locked",
+    "empty_s2": "Empty Step 1/2: normal stack model locked",
+    "empty_s3": "Empty Step 3: close stack model",
+    "holding_s1": "Holding Step 1: held-brick mask model",
+    "holding_s2": "Holding Step 2: held-brick mask model",
+    "holding_s3": "Holding Step 3: held-brick mask model",
+}
+
+
+def _normalize_vision_context(value) -> str:
+    key = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "": "empty_s1",
+        "empty": "empty_s1",
+        "empty_step1": "empty_s1",
+        "empty_step_1": "empty_s1",
+        "empty_step2": "empty_s2",
+        "empty_step_2": "empty_s2",
+        "empty_step3": "empty_s3",
+        "empty_step_3": "empty_s3",
+        "holding": "holding_s1",
+        "held": "holding_s1",
+        "holding_step1": "holding_s1",
+        "holding_step_1": "holding_s1",
+        "holding_step2": "holding_s2",
+        "holding_step_2": "holding_s2",
+        "holding_step3": "holding_s3",
+        "holding_step_3": "holding_s3",
+    }
+    key = aliases.get(key, key)
+    return key if key in VISION_CONTEXT_LABELS else "empty_s1"
+
+
+def _vision_context_label(value) -> str:
+    key = _normalize_vision_context(value)
+    return VISION_CONTEXT_LABELS.get(key, key)
+
+
+def _vision_context_allows_holding_model(value) -> bool:
+    return _normalize_vision_context(value).startswith("holding_")
+
+
+def _holding_result_for_vision_context(raw_holding_result, vision_context, holding_mask_lock):
+    context = _normalize_vision_context(vision_context)
+    if _vision_context_allows_holding_model(context):
+        return holding_mask_lock.update(raw_holding_result)
+
+    holding_mask_lock.reset()
+    holding_result = (
+        dict(raw_holding_result)
+        if isinstance(raw_holding_result, dict)
+        else {"holding": False, "reason": "invalid_holding_result"}
+    )
+    holding_result["raw_holding"] = bool(holding_result.get("holding"))
+    holding_result["raw_holding_reason"] = holding_result.get("reason")
+    holding_result["holding"] = False
+    holding_result["holding_model_allowed"] = False
+    holding_result["holding_mask_blocked_by_context"] = context
+    if bool(holding_result.get("raw_holding")):
+        holding_result["reason"] = "empty_context_uses_normal_model"
+    return holding_result
+
 
 def _profile_settings(profile_key: str) -> tuple[str, dict]:
     key = str(profile_key or "").strip().lower()
@@ -249,6 +312,7 @@ def _draw_center_guides(frame) -> None:
 class CrownVisionLivestream:
     def __init__(self, args):
         self.args = args
+        self.vision_context = _normalize_vision_context(getattr(args, "vision_context", "empty_s1"))
         self.lock = threading.Lock()
         self.running = threading.Event()
         self.running.set()
@@ -263,6 +327,7 @@ class CrownVisionLivestream:
             "show_center_line": True,
             "vision_mode": "cyan",
             "cyan_profile": CROWN_PROFILE_KEY,
+            "vision_context": self.vision_context,
             "xyz_workspace": helper_xyz_coords.build_live_position_workspace(
                 None,
                 visible=False,
@@ -275,6 +340,7 @@ class CrownVisionLivestream:
         self._held_frame = None
         self._miss_count = 0
         self._holding_result = {"holding": False, "reason": "not_checked"}
+        self._holding_mask_lock = HoldingMaskLock()
 
     def start(self) -> str:
         # Start Flask immediately so the URL is accessible within ~1 s.
@@ -340,7 +406,12 @@ class CrownVisionLivestream:
             started = time.monotonic()
             with self.state["lock"]:
                 requested_profile = str(self.state.get("cyan_profile", CROWN_PROFILE_KEY) or CROWN_PROFILE_KEY)
+                vision_context = _normalize_vision_context(
+                    self.state.get("vision_context", self.vision_context)
+                )
+                self.state["vision_context"] = vision_context
             profile_key, settings = _profile_settings(requested_profile)
+            holding_model_allowed = _vision_context_allows_holding_model(vision_context)
             if profile_key != active_profile:
                 active_profile = profile_key
                 with self.state["lock"]:
@@ -357,7 +428,12 @@ class CrownVisionLivestream:
                 result = self.vision.read()
                 self._last_holding_distance_calibration = {"calibrated": False}
                 raw_frame = getattr(self.vision, "raw_frame", None)
-                holding_result = detect_holding_brick(raw_frame)
+                raw_holding_result = detect_holding_brick(raw_frame)
+                holding_result = _holding_result_for_vision_context(
+                    raw_holding_result,
+                    vision_context,
+                    self._holding_mask_lock,
+                )
                 self._holding_result = dict(holding_result) if isinstance(holding_result, dict) else {
                     "holding": False,
                     "reason": "invalid_holding_result",
@@ -371,7 +447,13 @@ class CrownVisionLivestream:
                         draw_masked_target_contour,
                     )
                 )
-                if bool(holding_result.get("holding")) and holding_target_helpers_available:
+                if (
+                    bool(holding_model_allowed)
+                    and bool(holding_result.get("holding"))
+                    and holding_target_helpers_available
+                ):
+                    raw_unmasked_result = result
+                    result = None
                     masked = mask_held_brick_for_target_frame(raw_frame, holding_result)
                     if masked is not None:
                         contour_result = detect_masked_target_brick_contour(masked, detector=self.vision)
@@ -384,8 +466,13 @@ class CrownVisionLivestream:
                                 "calibrated": calibrated,
                             }
                             try:
-                                self.vision.current_frame = draw_masked_target_contour(raw_frame, contour_result)
-                                self.vision.last_status = "target contour locked below held brick"
+                                draw_result = dict(contour_result)
+                                if calibrated_dist is not None:
+                                    draw_result["raw_dist_mm"] = raw_dist
+                                    draw_result["dist_mm"] = calibrated_dist
+                                self.vision.current_frame = draw_masked_target_contour(raw_frame, draw_result)
+                                suffix = "locked mask" if bool(holding_result.get("holding_mask_locked")) else "mask"
+                                self.vision.last_status = f"target locked below held brick ({suffix})"
                             except Exception:
                                 pass
                             self._publish(result)
@@ -407,9 +494,25 @@ class CrownVisionLivestream:
                                 "calibrated": calibrated,
                             }
                             try:
-                                self.vision.last_status = "target locked below held brick"
+                                suffix = "locked mask" if bool(holding_result.get("holding_mask_locked")) else "mask"
+                                self.vision.last_status = f"target locked below held brick ({suffix} model fallback)"
                             except Exception:
                                 pass
+                        else:
+                            try:
+                                self.vision.last_status = "held brick masked; no stack target found"
+                            except Exception:
+                                pass
+                    else:
+                        try:
+                            self.vision.last_status = "held brick detected; mask unavailable; raw ghost suppressed"
+                        except Exception:
+                            pass
+                    if result is None:
+                        self._last_holding_distance_calibration = {
+                            "calibrated": False,
+                            "raw_unmasked_suppressed": bool(raw_unmasked_result),
+                        }
             except Exception as exc:
                 logging.getLogger("CrownVisionLivestream").exception("Vision read failed: %s", exc)
             self._publish(result)
@@ -516,6 +619,8 @@ class CrownVisionLivestream:
             depth_stats = {}
         with self.state["lock"]:
             profile_label = _profile_label(self.state.get("cyan_profile", CROWN_PROFILE_KEY))
+            vision_context = _normalize_vision_context(self.state.get("vision_context", "empty_s1"))
+        holding_model_allowed = _vision_context_allows_holding_model(vision_context)
         raw_holding_result = getattr(self, "_holding_result", None)
         holding_result = raw_holding_result if isinstance(raw_holding_result, dict) else {}
         holding = bool(holding_result.get("holding"))
@@ -540,11 +645,21 @@ class CrownVisionLivestream:
         if holding_checks:
             failed = [name for name, ok in holding_checks.items() if not bool(ok)]
             holding_detail += " checks=ok" if not failed else " failed=" + ",".join(failed)
+        if "raw_holding" in holding_result:
+            holding_detail += (
+                f" raw={str(bool(holding_result.get('raw_holding'))).lower()}"
+                f"/{holding_result.get('raw_holding_reason', '-')}"
+            )
+        holding_detail += f" model={'allowed' if holding_model_allowed else 'blocked'}"
 
         lines = [
             {
                 "text": f"[VISION] PROFILE: {profile_label} | BACKEND: {backend} | TRUST: {trust} | MODEL: {model_name}",
                 "color": "#ffffff",
+            },
+            {
+                "text": f"[VISION] CONTEXT: {_vision_context_label(vision_context)}",
+                "color": "#a8d8ff" if not holding_model_allowed else "#ffd166",
             },
             {
                 "text": (
@@ -664,6 +779,14 @@ def parse_args(argv=None):
     parser.add_argument("--camera-fps", type=int, default=15)
     parser.add_argument("--port-tries", type=int, default=10)
     parser.add_argument("--sharpen", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--vision-context",
+        default=_normalize_vision_context(cfg.get("vision_context", "empty_s1")),
+        help=(
+            "Step/model context for livestream reads. empty_s1/empty_s2 lock the normal "
+            "stack model; holding_s1+ allow held-brick masking and holding calibration."
+        ),
+    )
     return parser.parse_args(argv)
 
 
