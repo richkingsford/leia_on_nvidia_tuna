@@ -14,6 +14,7 @@ log = logging.getLogger("brick_visibility_safety")
 ROBOT_MODEL_FILE = Path(__file__).resolve().parent / "world_model_robot.json"
 CONFIG_KEY = "brick_visibility_motion_safety"
 DEFAULT_MIN_CONFIDENCE_PCT = 75.0
+DEFAULT_MAX_DIST_MM = 300.0
 
 
 def _coerce_float(value: Any, fallback: float, *, minimum: float | None = None, maximum: float | None = None) -> float:
@@ -31,7 +32,10 @@ def _coerce_float(value: Any, fallback: float, *, minimum: float | None = None, 
 def load_brick_visibility_motion_safety_config(path: Path | None = None) -> dict:
     """Load the confidence threshold for motion gating from world_model_robot.json."""
     model_path = path if isinstance(path, Path) else ROBOT_MODEL_FILE
-    cfg = {"min_confidence_pct": float(DEFAULT_MIN_CONFIDENCE_PCT)}
+    cfg = {
+        "min_confidence_pct": float(DEFAULT_MIN_CONFIDENCE_PCT),
+        "max_dist_mm": float(DEFAULT_MAX_DIST_MM),
+    }
     try:
         payload = json.loads(model_path.read_text())
     except Exception:
@@ -44,6 +48,12 @@ def load_brick_visibility_motion_safety_config(path: Path | None = None) -> dict
         DEFAULT_MIN_CONFIDENCE_PCT,
         minimum=0.0,
         maximum=100.0,
+    )
+    cfg["max_dist_mm"] = _coerce_float(
+        raw.get("max_dist_mm"),
+        DEFAULT_MAX_DIST_MM,
+        minimum=0.0,
+        maximum=1000.0,
     )
     return cfg
 
@@ -125,15 +135,39 @@ def brick_motion_measurement_from_result(result, *, min_confidence_pct: float | 
     return measurement
 
 
-def brick_motion_allowed(reading: dict | None, *, min_confidence_pct: float | None = None) -> bool:
+def _cmd_is_forward(cmd: str | None) -> bool:
+    return str(cmd or "").strip().lower() in {"f", "forward"}
+
+
+def brick_motion_allowed(
+    reading: dict | None,
+    *,
+    min_confidence_pct: float | None = None,
+    allow_virtual_safety_forward_recovery: bool = False,
+) -> bool:
     if not isinstance(reading, dict):
         return False
+    safety_cfg = load_brick_visibility_motion_safety_config()
+    max_dist = _coerce_float(
+        safety_cfg.get("max_dist_mm"),
+        DEFAULT_MAX_DIST_MM,
+        minimum=0.0,
+        maximum=1000.0,
+    )
+    if max_dist > 0.0:
+        try:
+            if float(reading.get("dist_mm")) > float(max_dist) and not bool(
+                allow_virtual_safety_forward_recovery
+            ):
+                return False
+        except (TypeError, ValueError):
+            pass
     threshold = (
         _coerce_float(min_confidence_pct, DEFAULT_MIN_CONFIDENCE_PCT, minimum=0.0, maximum=100.0)
         if min_confidence_pct is not None
         else _coerce_float(
             reading.get("min_confidence_pct"),
-            load_brick_visibility_motion_safety_config().get("min_confidence_pct", DEFAULT_MIN_CONFIDENCE_PCT),
+            safety_cfg.get("min_confidence_pct", DEFAULT_MIN_CONFIDENCE_PCT),
             minimum=0.0,
             maximum=100.0,
         )
@@ -175,13 +209,34 @@ def _custom_actions_move(action_specs) -> bool:
 def block_reason(reading: dict | None) -> str:
     if not isinstance(reading, dict):
         return "missing_visibility_reading"
+    max_dist = _coerce_float(
+        load_brick_visibility_motion_safety_config().get("max_dist_mm"),
+        DEFAULT_MAX_DIST_MM,
+        minimum=0.0,
+        maximum=1000.0,
+    )
+    if max_dist > 0.0:
+        try:
+            if float(reading.get("dist_mm")) > float(max_dist):
+                return "virtual_safety_dist_exceeded"
+        except (TypeError, ValueError):
+            pass
     reason = str(reading.get("reason") or "").strip()
     return reason or "not_confidently_visible"
 
 
-def require_confident_brick_for_motion(robot, reading: dict | None, *, context: str = "") -> bool:
+def require_confident_brick_for_motion(
+    robot,
+    reading: dict | None,
+    *,
+    context: str = "",
+    allow_virtual_safety_forward_recovery: bool = False,
+) -> bool:
     """Return true only when the current reading allows non-stop motion."""
-    if brick_motion_allowed(reading):
+    if brick_motion_allowed(
+        reading,
+        allow_virtual_safety_forward_recovery=allow_virtual_safety_forward_recovery,
+    ):
         return True
     _stop_robot(robot)
     context_text = f" context={context}" if context else ""
@@ -190,12 +245,24 @@ def require_confident_brick_for_motion(robot, reading: dict | None, *, context: 
 
 
 def guarded_send_command_pwm(robot, cmd, pwm, *, duration_ms=None, reading: dict | None, context: str = ""):
-    if _motion_cmd(cmd, pwm) and not require_confident_brick_for_motion(robot, reading, context=context):
+    forward_recovery = _cmd_is_forward(cmd)
+    if _motion_cmd(cmd, pwm) and not require_confident_brick_for_motion(
+        robot,
+        reading,
+        context=context,
+        allow_virtual_safety_forward_recovery=forward_recovery,
+    ):
         return {"blocked": True, "reason": block_reason(reading), "cmd": str(cmd or "").strip().lower()}
     return robot.send_command_pwm(cmd, pwm, duration_ms=duration_ms)
 
 
 def guarded_send_custom_actions_pwm(robot, cmd, action_specs, *, duration_ms=None, reading: dict | None, context: str = ""):
-    if _custom_actions_move(action_specs) and not require_confident_brick_for_motion(robot, reading, context=context):
+    forward_recovery = _cmd_is_forward(cmd)
+    if _custom_actions_move(action_specs) and not require_confident_brick_for_motion(
+        robot,
+        reading,
+        context=context,
+        allow_virtual_safety_forward_recovery=forward_recovery,
+    ):
         return {"blocked": True, "reason": block_reason(reading), "cmd": str(cmd or "").strip().lower()}
     return robot.send_custom_actions_pwm(cmd, action_specs, duration_ms=duration_ms)

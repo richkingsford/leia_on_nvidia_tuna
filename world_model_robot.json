@@ -1,6 +1,7 @@
 {
   "auto_turn_speed_boost_pct": 4.0,
   "brick_visibility_motion_safety": {
+    "max_dist_mm": 275.0,
     "min_confidence_pct": 75.0
   },
   "calibration_trial_speed_profiles": {
@@ -105,25 +106,25 @@
     },
     "dist_approach_policy": {
       "close_target_creep_band_mm": 20.0,
-      "close_target_max_pulse_ms": 80,
+      "close_target_max_pulse_ms": 180,
       "closure_shots": 1.0,
       "full_forward_gap_mm": 120.0,
-      "max_forward_pulse_ms": 150,
+      "max_forward_pulse_ms": 300,
       "micro_nudge_abs_dist_err_mm": 30.0,
-      "micro_nudge_min_effective_pulse_ms": 70,
-      "micro_nudge_pulse_ms": 70,
+      "micro_nudge_min_effective_pulse_ms": 150,
+      "micro_nudge_pulse_ms": 150,
       "micro_nudge_pwm": 103,
-      "min_effective_drive_pulse_ms": 70,
-      "min_forward_pulse_ms": 80,
+      "min_effective_drive_pulse_ms": 150,
+      "min_forward_pulse_ms": 150,
       "near_target_creep_band_mm": 50.0,
       "near_target_forward_veto_mm": 0.0,
-      "near_target_max_pulse_ms": 80,
-      "near_target_min_pulse_ms": 60,
+      "near_target_max_pulse_ms": 220,
+      "near_target_min_pulse_ms": 150,
       "pingpong_confirm_abs_dist_err_mm": 20.0,
       "require_y_ok_before_dist": false,
-      "settle_after_act_s": 0.1,
+      "settle_after_act_s": 0.04,
       "very_close_target_creep_band_mm": 10.0,
-      "very_close_target_max_pulse_ms": 70
+      "very_close_target_max_pulse_ms": 150
     },
     "dist_axis": {
       "win_target_mm": 63.882,
@@ -136,8 +137,8 @@
           "strong": 16.0
         },
         "dist_axis": {
-          "win_target_mm": 216.8,
-          "win_tol_mm": 50.0
+          "win_target_mm": 175.0,
+          "win_tol_mm": 25.0
         },
         "holding": false,
         "nickname": "align x/dist",
@@ -165,6 +166,8 @@
           "targets": {
             "dist_mm": 149.0,
             "dist_tol_mm": 5.0,
+            "dist_tol_minus_mm": 20.0,
+            "dist_tol_plus_mm": 3.0,
             "x_mm": 5.9,
             "x_tol_mm": 3.0,
             "y_mm": null,
@@ -177,12 +180,16 @@
         "step3": {
           "nickname": "crawl dist",
           "post_precision_recovery_cycles": 0,
-          "precision_drive_max_pulse_ms": 85,
-          "precision_drive_min_pulse_ms": 45,
-          "precision_max_attempts": 30,
+          "precision_drive_max_pulse_ms": 120,
+          "precision_drive_min_pulse_ms": 60,
+          "precision_back_max_pulse_ms": 280,
+          "precision_back_min_pulse_ms": 220,
+          "precision_max_attempts": 120,
           "recovery_creep_enabled": false,
           "recovery_creep_max_attempts": 0,
           "seat_mast_duration_ms": 0,
+          "post_win_forward_creep_ms": 400,
+          "post_win_forward_creep_pwm": 103,
           "semi_happy_targets": {
             "dist_mm": 81.0,
             "dist_tol_mm": 5.0,
@@ -193,8 +200,8 @@
           },
           "step_timeout_s": 30.0,
           "targets": {
-            "dist_mm": 72.00911283232475,
-            "dist_tol_mm": 5.0,
+            "dist_mm": 90.0,
+            "dist_tol_mm": 10.0,
             "x_mm": null,
             "x_tol_mm": null,
             "y_mm": null,
@@ -204,6 +211,8 @@
           "visibility_recovery_creep_max_attempts": 0
         },
         "step4": {
+          "fixed_lift_duration_ms": 1400,
+          "fixed_lift_only": true,
           "initial_lift_before_gate": true,
           "lift_mast_cmd": "u",
           "lift_pulse_ms": 1400,
@@ -219,38 +228,38 @@
         "turn_bias_curves": {
           "backward": {
             "gentle": {
-              "inner_pwm": 117,
-              "outer_pwm": 129
+              "inner_pwm": 103,
+              "outer_pwm": 117
             },
             "medium": {
-              "inner_pwm": 117,
-              "outer_pwm": 142
+              "inner_pwm": 103,
+              "outer_pwm": 133
             },
             "micro": {
-              "inner_pwm": 117,
-              "outer_pwm": 121
+              "inner_pwm": 103,
+              "outer_pwm": 106
             },
             "strong": {
-              "inner_pwm": 117,
-              "outer_pwm": 155
+              "inner_pwm": 103,
+              "outer_pwm": 145
             }
           },
           "forward": {
             "gentle": {
-              "inner_pwm": 117,
-              "outer_pwm": 129
+              "inner_pwm": 103,
+              "outer_pwm": 117
             },
             "medium": {
-              "inner_pwm": 117,
-              "outer_pwm": 142
+              "inner_pwm": 103,
+              "outer_pwm": 133
             },
             "micro": {
-              "inner_pwm": 117,
-              "outer_pwm": 121
+              "inner_pwm": 103,
+              "outer_pwm": 106
             },
             "strong": {
-              "inner_pwm": 117,
-              "outer_pwm": 155
+              "inner_pwm": 103,
+              "outer_pwm": 145
             }
           }
         },
@@ -289,6 +298,12 @@
           "positive_error_turn_cmd": "r",
           "win_target_mm": 5.9,
           "win_tol_mm": 7.0
+        },
+        "x_dist_curve_policy": {
+          "combined_x_dist_strength": "strong",
+          "large_dist_small_x_strength": "gentle",
+          "near_wide_x_strength": "strong",
+          "too_close_wide_x_drive_mode": "backward"
         },
         "x_priority_policy": {
           "adaptive_outer_pwm_scale": 1.0,
@@ -382,7 +397,7 @@
           "precision_max_attempts": 7,
           "recovery_creep_enabled": false,
           "recovery_creep_max_attempts": 0,
-          "seat_mast_duration_ms": 2300,
+          "seat_mast_duration_ms": 1700,
           "seat_drive_duration_ms": 0,
           "semi_happy_targets": {
             "dist_mm": 81.0,
@@ -409,11 +424,12 @@
           "drive_cmd": "b",
           "drive_pwm": 103,
           "kind": "retreat",
-          "max_duration_ms": 30000,
+          "max_duration_ms": 1500,
           "nickname": "retreat",
           "settle_s": 0.08,
           "stop_when_dist_at_or_beyond": true,
-          "target_dist_profile": "empty",
+          "target_dist_mm": 110.0,
+          "target_dist_profile": "holding",
           "target_dist_tol_mm": 0.0
         },
         "step4": {
@@ -494,14 +510,14 @@
           }
         },
         "x_axis": {
-          "positive_error_turn_cmd": "l",
-          "win_target_mm": -8.4,
-          "win_tol_mm": 3.0
+          "positive_error_turn_cmd": "r",
+          "win_target_mm": -0.9,
+          "win_tol_mm": 7.0
         },
         "x_dist_curve_policy": {
-          "combined_bias_max_pulse_ms": 100,
-          "combined_x_dist_strength": "gentle",
-          "near_wide_x_strength": "gentle"
+          "combined_bias_max_pulse_ms": 180,
+          "combined_x_dist_strength": "strong",
+          "near_wide_x_strength": "medium"
         },
         "x_priority_policy": {
           "adaptive_outer_pwm_scale": 0.7,
@@ -545,12 +561,12 @@
       "enabled": true,
       "points": [
         {
-          "reported_mm": 57.0,
+          "reported_mm": 41.0,
           "true_mm": 90.0
         },
         {
-          "reported_mm": 65.5,
-          "true_mm": 100.0
+          "reported_mm": 53.0,
+          "true_mm": 90.0
         },
         {
           "reported_mm": 186.0,
@@ -564,7 +580,45 @@
     },
     "max_act_ms": 450,
     "motion_power_scale": 1.0,
-    "normal_speed_score": 10,
+    "normal_speed_score": 1,
+    "wheel_pwm_ceiling": 104,
+    "duty_turn_curves": {
+      "enabled": true,
+      "tick_ms": 150,
+      "ramp_pwm_min": 104,
+      "ramp_pwm_max": 104,
+      "strengths": {
+        "gentle": {
+          "every_n": 4,
+          "mode": "skip_on",
+          "phase_offset": 3,
+          "pwm": 104,
+          "skip_pwm": 0
+        },
+        "medium": {
+          "every_n": 2,
+          "mode": "skip_on",
+          "phase_offset": 1,
+          "pwm": 104,
+          "skip_pwm": 0
+        },
+        "strong": {
+          "every_n": 3,
+          "mode": "run_on",
+          "phase_offset": 2,
+          "pwm": 104,
+          "skip_pwm": 0
+        },
+        "superstrong": {
+          "every_n": 1,
+          "mode": "hold_zero",
+          "phase_offset": 0,
+          "pwm": 115,
+          "pwm_ceiling": 115,
+          "skip_pwm": 0
+        }
+      }
+    },
     "pickup_suspect": {
       "confirm_frames": 2,
       "confirm_poll_s": 0.12,
@@ -664,10 +718,12 @@
       "visibility_recovery_wait_s": 3.0
     },
     "step4": {
+      "fixed_lift_duration_ms": 1400,
+      "fixed_lift_only": true,
       "initial_lift_before_gate": true,
       "lift_mast_cmd": "u",
       "lift_mast_pwm": 255,
-      "lift_pulse_ms": 1000,
+      "lift_pulse_ms": 1400,
       "lift_settle_s": 0.25,
       "max_lift_attempts": 1,
       "no_visibility_fallback_duration_ms": 1000,
@@ -773,7 +829,7 @@
       "max_vector_jump_mm": 0.0,
       "max_x_jump_mm": 0.0,
       "max_y_jump_mm": 0.0,
-      "post_act_stabilize_s": 0.25,
+      "post_act_stabilize_s": 0.08,
       "reacquire_frames_after_motion": 0,
       "reacquire_window_mm": 80.0
     },
@@ -875,9 +931,11 @@
       "empty": {
         "reverse_turn": {
           "adjustment": {
+            "back_progress_min_delta_mm": 3.0,
             "enabled": true,
-            "max_attempts": 20,
-            "pulse_max_ms": 300,
+            "max_attempts": 4,
+            "max_stale_back_attempts": 2,
+            "pulse_max_ms": 200,
             "pulse_min_ms": 45,
             "settle_s": 0.12
           },
@@ -907,8 +965,10 @@
             ]
           },
           "confirm_frames": 2,
-          "dist_target_mm": 200.0,
-          "dist_tol_mm": 100.0,
+          "dist_target_mm": 135.0,
+          "dist_tol_mm": 50.0,
+          "hard_abs_x_tol_mm": 90.0,
+          "hard_dist_tol_mm": 90.0,
           "holding_pulse_scale": 1.0,
           "low_x_extra_sharp_turn": {
             "duration_ms": 150,
@@ -917,6 +977,7 @@
             "slower_pwm": 103,
             "threshold_abs_x_mm": 35.0
           },
+          "max_total_back_ms": 1500,
           "post_pause_s": 2.0,
           "pulse_ms": 4455,
           "settle_s": 0.06,
@@ -930,7 +991,8 @@
             "duration_min_ms": 800,
             "duration_ms": 3000,
             "enabled": true,
-            "pwm": 103
+            "pwm": 115,
+            "pwm_ceiling": 115
           },
           "target_abs_x_mm": 20.0,
           "timeout_s": 4.455,
@@ -943,9 +1005,11 @@
       "holding": {
         "reverse_turn": {
           "adjustment": {
+            "back_progress_min_delta_mm": 3.0,
             "enabled": true,
-            "max_attempts": 20,
-            "pulse_max_ms": 300,
+            "max_attempts": 4,
+            "max_stale_back_attempts": 2,
+            "pulse_max_ms": 200,
             "pulse_min_ms": 45,
             "settle_s": 0.12
           },
@@ -975,9 +1039,12 @@
             ]
           },
           "confirm_frames": 2,
-          "dist_target_mm": 200.0,
-          "dist_tol_mm": 100.0,
+          "dist_target_mm": 130.0,
+          "dist_tol_mm": 20.0,
+          "hard_abs_x_tol_mm": 90.0,
+          "hard_dist_tol_mm": 20.0,
           "holding_pulse_scale": 0.5,
+          "min_attempt_dist_mm": 110.0,
           "low_x_extra_sharp_turn": {
             "duration_ms": 150,
             "enabled": false,
@@ -985,6 +1052,7 @@
             "slower_pwm": 103,
             "threshold_abs_x_mm": 35.0
           },
+          "max_total_back_ms": 1500,
           "post_pause_s": 2.0,
           "pulse_ms": 4455,
           "settle_s": 0.06,
@@ -1020,9 +1088,11 @@
     },
     "reverse_turn": {
       "adjustment": {
+        "back_progress_min_delta_mm": 3.0,
         "enabled": true,
-        "max_attempts": 20,
-        "pulse_max_ms": 300,
+        "max_attempts": 4,
+        "max_stale_back_attempts": 2,
+        "pulse_max_ms": 200,
         "pulse_min_ms": 45,
         "settle_s": 0.12
       },
@@ -1052,8 +1122,10 @@
         ]
       },
       "confirm_frames": 2,
-      "dist_target_mm": 200.0,
-      "dist_tol_mm": 100.0,
+      "dist_target_mm": 135.0,
+      "dist_tol_mm": 50.0,
+      "hard_abs_x_tol_mm": 90.0,
+      "hard_dist_tol_mm": 90.0,
       "holding_pulse_scale": 0.5,
       "low_x_extra_sharp_turn": {
         "duration_ms": 150,
@@ -1062,6 +1134,7 @@
         "slower_pwm": 103,
         "threshold_abs_x_mm": 35.0
       },
+      "max_total_back_ms": 1500,
       "post_pause_s": 2.0,
       "pulse_ms": 4455,
       "settle_s": 0.06,
@@ -1075,7 +1148,8 @@
         "duration_min_ms": 800,
         "duration_ms": 1000,
         "enabled": true,
-        "pwm": 103
+        "pwm": 115,
+        "pwm_ceiling": 115
       },
       "target_abs_x_mm": 20.0,
       "timeout_s": 4.455,

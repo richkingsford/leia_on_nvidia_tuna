@@ -20,6 +20,7 @@ from helper_robot_control import Robot
 
 
 DEFAULT_SITE_DIR = Path("runs/frozen_step12_site")
+PROGRESS_SITE_RETENTION_HOURS = 10.0
 AXES = ("dist", "x", "y")
 Y_LOCK_TARGET_MM: float | None = None
 Y_LOCK_TOL_MM = 5.0
@@ -29,20 +30,26 @@ WHEEL_TURN_ACTION_CAP_MS: int | None = None
 DIRECT_X_PULSE_MS = 35
 DIRECT_X_PWM = 92
 DIRECT_DIST_PULSE_MS = 55
-DIRECT_RESET_DIST_MAX_PULSES = 8
+DIRECT_RESET_DIST_MAX_PULSES = 14
 DIRECT_STEP2_DIST_PULSE_MS = 55
 DIRECT_STEP2_DIST_PWM = 98
 DIRECT_STEP2_DIST_MAX_PULSES = 10
+DIRECT_STEP3_DIST_PWM = 96
+DIRECT_STEP3_DIST_MAX_PULSES = 10
+DIRECT_STEP3_DIST_TARGET_MM = 67.0
+DIRECT_STEP3_DIST_TOL_MM = 5.0
+DIRECT_STEP3_MID_MAST_DOWN_MS = 500
+DIRECT_STEP3_MID_MAST_DOWN_PWM = 100
 DIRECT_USE_TURN_CURVE = False
 DIRECT_X_PRIMITIVE = "command"
 DIRECT_X_ADAPTIVE_PULSE = False
 DIRECT_STEP1_DIST_TOL_MM = 50.0
 DIRECT_STEP1_X_TOL_MM = 7.0
-HONEST_RESET_DIST_OFFSET_MIN_MM = 1.0
+HONEST_RESET_DIST_OFFSET_MIN_MM = -5.0
 HONEST_RESET_DIST_OFFSET_MAX_MM = 5.0
-HONEST_RESET_X_GAP_MIN_MM = 5.0
-HONEST_RESET_X_GAP_MAX_MM = 20.0
-HONEST_RESET_X_TARGET_GAP_MM = 12.0
+HONEST_RESET_X_GAP_MIN_MM = 10.0
+HONEST_RESET_X_GAP_MAX_MM = 16.0
+HONEST_RESET_X_TARGET_GAP_MM = 13.0
 HONEST_RESET_X_SNAP_MIN_MS = 210
 HONEST_RESET_X_OPEN_MS = 120
 HONEST_RESET_X_CONTRACT_MS = 90
@@ -55,7 +62,7 @@ DIRECT_X_SNAP_OUTSIDE_MAX_MM = 2.0
 DIRECT_X_MAX_ABS_ERR_MM = 22.0
 DIRECT_X_MIN_SAFE_CX_PX = 95.0
 DIRECT_X_MAX_SAFE_CX_PX = 560.0
-DIRECT_X_MAX_CX_JUMP_PX = 65.0
+DIRECT_X_MAX_CX_JUMP_PX = 95.0
 DIRECT_X_MAX_BOX_SCALE_JUMP = 0.40
 GREEN_CONTOUR_DIST_SCALE_MM_PX = 19000.0
 DIRECT_STABLE_READS = 1
@@ -65,14 +72,17 @@ DIRECT_LIVE_SAMPLE_S = 0.08
 DIRECT_LIVE_FINAL_SETTLE_S = 0.0
 DIRECT_LIVE_DIST_CRAWL_MS = 1000
 DIRECT_LIVE_RESET_DIST_CRAWL_MS = 450
-DIRECT_LIVE_STEP2_DIST_CRAWL_MS = 80
+DIRECT_LIVE_STEP2_DIST_CRAWL_MS = 1800
+DIRECT_LIVE_STEP3_DIST_CRAWL_MS = 1200
 DIRECT_LIVE_X_CRAWL_MS = 700
-DIRECT_STEP2_DIST_EARLY_STOP_MARGIN_MM = 10.0
-DIRECT_STEP2_DIST_TARGET_MM = 185.0
+DIRECT_STEP2_DIST_EARLY_STOP_MARGIN_MM = 1.0
+DIRECT_STEP3_DIST_EARLY_STOP_MARGIN_MM = 1.0
+DIRECT_STEP2_DIST_TARGET_MM = 100.0
 DIRECT_STEP2_DIST_TOL_MM = 10.0
 DIRECT_STEP2_DIST_LIVE_MAX_X_ERR_MM = 22.0
 DIRECT_STEP2_FORWARD_X_PREBIAS_MM = 12.0
 DIRECT_STEP1_PREALIGN_DIST_TOL_MM = 8.0
+DIRECT_STEP1_FORWARD_X_PREBIAS_MM = -4.0
 
 EXPERIMENT_LINES = {
     "strict-y": "Original Step 1/2 gates with the mast command physically blocked.",
@@ -114,7 +124,7 @@ EXPERIMENT_LINES = {
     "honest-locked-y-direct-stablecontour-adaptive-right-pwm140": "Mast/Y frozen; stable contour-only reads with edge filtering; X pulse length scales down near target to avoid overshoot.",
     "honest-locked-y-direct-adaptive-right-step2-strongdist": "Mast/Y frozen; keeps the adaptive X solution and gives Step 2 stronger forward distance pulses with wrong-way proof.",
     "honest-locked-y-direct-adaptive-right-resetlong-step2strong": "Mast/Y frozen; keeps adaptive X, gives reset more distance pulses, and gives Step 2 stronger forward distance pulses.",
-    "honest-locked-y-direct-adaptive-right-resetstrong-step2strong": "Mast/Y frozen; honest reset, Step 1 distance polish, tiny repeated Step 2 crawls, capped X nudges, and drift recentering.",
+    "honest-locked-y-direct-adaptive-right-resetstrong-step2strong": "Mast/Y frozen for Steps 1/2; visible reset gaps, Step 1 pre-biases X, Step 2 closes dist+X, and Step 3 slow-crawls with one 0.5s mast-down nudge halfway through.",
     "honest-locked-y-direct-adaptive-right-step2-toggle": "Mast/Y frozen; each attempt starts from a centered Step 1 win pose, captures the prior image, pursues only Step 2 with adaptive polish, then returns to centered Step 1 for the next toggle.",
 }
 
@@ -209,6 +219,18 @@ def _now_label() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _row_time_epoch(row: dict) -> float | None:
+    raw = str((row or {}).get("time") or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S",):
+        try:
+            return time.mktime(time.strptime(raw, fmt))
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
 def _reading_summary(reading: dict | None) -> dict:
     if not isinstance(reading, dict):
         return {}
@@ -235,6 +257,12 @@ def _reading_summary(reading: dict | None) -> dict:
             else:
                 out[key] = value
     return out
+
+
+def _reading_has_pose(reading: dict | None) -> bool:
+    if not isinstance(reading, dict):
+        return False
+    return any(reading.get(key) is not None for key in ("dist_mm", "x_mm", "y_mm"))
 
 
 def _fmt_mm(value, signed: bool = False) -> str:
@@ -269,6 +297,8 @@ def _current_targets() -> dict:
     y_cfg = cfg.get("y_axis") if isinstance(cfg.get("y_axis"), dict) else {}
     step2 = cfg.get("step2") if isinstance(cfg.get("step2"), dict) else {}
     step2_targets = step2.get("targets") if isinstance(step2.get("targets"), dict) else {}
+    step3 = cfg.get("step3") if isinstance(cfg.get("step3"), dict) else {}
+    step3_targets = step3.get("targets") if isinstance(step3.get("targets"), dict) else {}
     locked_y = _float_or_none(Y_LOCK_TARGET_MM)
     locked_tol = _float_or_none(Y_LOCK_TOL_MM)
     return {
@@ -290,11 +320,20 @@ def _current_targets() -> dict:
                 locked=locked_y is not None,
             ),
         },
+        "step3": {
+            "dist": _target_entry(step3_targets.get("dist_mm"), step3_targets.get("dist_tol_mm")),
+            "x": _target_entry(step3_targets.get("x_mm"), step3_targets.get("x_tol_mm")),
+            "y": _target_entry(
+                locked_y if locked_y is not None else step3_targets.get("y_mm"),
+                locked_tol if locked_y is not None else step3_targets.get("y_tol_mm"),
+                locked=locked_y is not None,
+            ),
+        },
     }
 
 
 def _evaluate_reading(reading: dict | None, step: str | None) -> dict:
-    if step not in {"step1", "step2"}:
+    if step not in {"step1", "step2", "step3"}:
         return {}
     targets = _current_targets().get(str(step), {})
     summary = _reading_summary(reading)
@@ -310,17 +349,19 @@ def _evaluate_reading(reading: dict | None, step: str | None) -> dict:
         axis_ok = False
         closeness = 0.0
         err = None
-        if target is not None and tol is not None and value is not None and tol > 0.0:
+        has_target = target is not None and tol is not None and tol > 0.0
+        if has_target and value is not None:
             err = float(value) - float(target)
             closeness = max(0.0, min(100.0, 100.0 * (1.0 - (abs(err) / float(tol)))))
             axis_ok = abs(err) <= float(tol)
             if not locked:
                 any_axis = True
-        else:
-            if not locked:
-                all_ok = False
-        if not locked and not axis_ok:
+        elif has_target and not locked:
+            any_axis = True
             all_ok = False
+        if not locked and not axis_ok:
+            if has_target:
+                all_ok = False
         axes[axis] = {
             "value_mm": value,
             "target_mm": target,
@@ -329,7 +370,7 @@ def _evaluate_reading(reading: dict | None, step: str | None) -> dict:
             "closeness_pct": round(closeness, 1),
             "ok": bool(axis_ok),
             "locked": bool(locked),
-            "gated": not bool(locked),
+            "gated": bool(has_target and not bool(locked)),
         }
     return {"step": step, "axes": axes, "target_met": bool(any_axis and all_ok)}
 
@@ -343,10 +384,9 @@ def _green_stack_candidates(frame) -> list[dict]:
         return []
     mask = cv2.inRange(
         hsv,
-        np.array([45, 45, 25], dtype=np.uint8),
+        np.array([45, 90, 25], dtype=np.uint8),
         np.array([105, 255, 255], dtype=np.uint8),
     )
-    mask[:60, :] = 0
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), dtype=np.uint8))
     mask = cv2.dilate(mask, np.ones((25, 45), dtype=np.uint8), iterations=1)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -358,8 +398,9 @@ def _green_stack_candidates(frame) -> list[dict]:
             continue
         x, y, w, h = cv2.boundingRect(contour)
         cx = float(x) + float(w) / 2.0
+        close_top_crop = y <= 5 and h >= 120 and w >= 120
         if (
-            y < 40
+            (y < 40 and not close_top_crop)
             or y > int(frame_h * 0.55)
             or x < 20
             or x + w > int(frame_w - 20)
@@ -367,7 +408,7 @@ def _green_stack_candidates(frame) -> list[dict]:
             or cx > float(DIRECT_X_MAX_SAFE_CX_PX)
             or w < 28
             or h < 45
-            or w > int(frame_w * 0.45)
+            or w > int(frame_w * (0.70 if close_top_crop else 0.45))
         ):
             continue
         candidates.append(
@@ -560,19 +601,90 @@ class ProgressSite:
         safe_label = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(label))
         image_name = f"{int(time.time())}_{safe_label}.png"
         image_path = self.images_dir / image_name
+        fresh_result = None
+        try:
+            fresh_result = vision.read()
+        except Exception:
+            pass
+        if not _reading_has_pose(reading) and fresh_result is not None:
+            try:
+                fresh_reading = follow.brick_motion_measurement_from_result(fresh_result)
+            except Exception:
+                fresh_reading = None
+            if _reading_has_pose(fresh_reading):
+                merged = dict(reading)
+                merged.update(fresh_reading)
+                merged["capture_read_source"] = "fresh_photo_read"
+                reading = merged
         frame = getattr(vision, "current_frame", None)
         if frame is None:
             frame = getattr(vision, "raw_frame", None)
         rel = None
         if frame is not None:
+            frame = frame.copy()
+            h, w = frame.shape[:2]
+            x_mid = int(round((float(w) * 0.5) + float(getattr(vision, "camera_center_offset_px", 0.0) or 0.0)))
+            y_mid = int(round(float(h) * 0.5))
+            x_mid = max(0, min(int(w) - 1, int(x_mid)))
+            y_mid = max(0, min(int(h) - 1, int(y_mid)))
+            cv2.line(frame, (x_mid, 0), (x_mid, int(h) - 1), (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.line(frame, (max(0, x_mid - 6), y_mid), (min(int(w) - 1, x_mid + 6), y_mid), (0, 255, 255), 1, cv2.LINE_AA)
+            cv2.line(frame, (0, y_mid), (int(w) - 1, y_mid), (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.line(frame, (x_mid, max(0, y_mid - 6)), (x_mid, min(int(h) - 1, y_mid + 6)), (0, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(frame, "x mid", (min(int(w) - 54, x_mid + 6), 16), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(frame, "y mid", (6, max(14, y_mid - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1, cv2.LINE_AA)
             cv2.imwrite(str(image_path), frame)
             rel = f"images/{image_name}"
         return rel, _reading_summary(reading)
 
     def _write(self) -> None:
         self.site_dir.mkdir(parents=True, exist_ok=True)
+        self._prune_old_rows()
         self.state_path.write_text(json.dumps(self.state, indent=2, sort_keys=True), encoding="utf-8")
         self.index_path.write_text(self._render_html(), encoding="utf-8")
+
+    def _prune_old_rows(self) -> None:
+        rows = self.state.get("rows")
+        if not isinstance(rows, list) or not rows:
+            return
+        cutoff = time.time() - (float(PROGRESS_SITE_RETENTION_HOURS) * 3600.0)
+        kept = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_epoch = _row_time_epoch(row)
+            if row_epoch is None or row_epoch >= cutoff:
+                kept.append(row)
+        if len(kept) == len(rows):
+            return
+        self.state["rows"] = kept
+        self.state["pruned_before"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cutoff))
+        self.state["retention_hours"] = float(PROGRESS_SITE_RETENTION_HOURS)
+        self._prune_unreferenced_images()
+
+    def _prune_unreferenced_images(self) -> None:
+        referenced = {
+            str(row.get("image") or "")
+            for row in list(self.state.get("rows") or [])
+            if isinstance(row, dict) and row.get("image")
+        }
+        if not self.images_dir.exists():
+            return
+        try:
+            site_root = self.site_dir.resolve()
+        except Exception:
+            site_root = self.site_dir
+        for image_path in self.images_dir.glob("*.png"):
+            rel = f"images/{image_path.name}"
+            if rel in referenced:
+                continue
+            try:
+                resolved = image_path.resolve()
+                if site_root not in resolved.parents:
+                    continue
+                image_path.unlink()
+            except Exception:
+                pass
 
     def _render_html(self) -> str:
         rows = list(self.state.get("rows") or [])
@@ -594,6 +706,7 @@ class ProgressSite:
         )
         step1_rows = [row for row in rows if row.get("step") == "step1"]
         step2_rows = [row for row in rows if row.get("step") == "step2"]
+        step3_rows = [row for row in rows if row.get("step") == "step3"]
         end_rows = {}
         for row in rows:
             if row.get("phase") == "trial" and row.get("honest_trial") is not None:
@@ -613,6 +726,107 @@ class ProgressSite:
             except (TypeError, ValueError):
                 continue
             iteration_groups.setdefault(attempt_key, []).append(row)
+
+        def axis_gauge(row: dict | None, axis: str, *, compact: bool = False) -> str:
+            if not isinstance(row, dict):
+                return '<span class="muted">no read</span>'
+            evaluation = row.get("evaluation") if isinstance(row.get("evaluation"), dict) else {}
+            phase_key = str(row.get("phase") or "").strip().lower()
+            step_key = str(row.get("step") or "").strip().lower()
+            if step_key not in {"step1", "step2", "step3"}:
+                if phase_key.startswith("step1") or phase_key in {"pre-reset", "post-reset", "start"}:
+                    step_key = "step1"
+                elif phase_key.startswith("step2"):
+                    step_key = "step2"
+                elif phase_key.startswith("step3"):
+                    step_key = "step3"
+            if step_key in {"step1", "step2", "step3"}:
+                evaluation = _evaluate_reading(row.get("reading"), step_key)
+            axes = evaluation.get("axes") if isinstance(evaluation.get("axes"), dict) else {}
+            data = axes.get(axis) if isinstance(axes.get(axis), dict) else {}
+            ok_class = " axis-ok" if bool(data.get("ok")) else ""
+            locked = " locked" if bool(data.get("locked")) else ""
+            signed_axis = axis in {"x", "y"}
+            value_raw = _float_or_none(data.get("value_mm"))
+            value = _fmt_mm(value_raw, signed=signed_axis)
+            target = _float_or_none(data.get("target_mm"))
+            tol = _float_or_none(data.get("tol_mm"))
+            err = _float_or_none(data.get("err_mm"))
+            score = _float_or_none(data.get("closeness_pct"))
+            score_text = "score unavailable" if score is None or value_raw is None else f"score {max(0.0, min(100.0, score)):.0f}%"
+            read_score = f"read {value} | {score_text}"
+            marker_html = ""
+            gauge_labels = ""
+            state_class = ""
+            if target is None or tol is None or tol <= 0.0:
+                range_text = "not scored"
+                phrase = read_score
+                sub = ""
+            else:
+                low_val = float(target) - float(tol)
+                high_val = float(target) + float(tol)
+                low = _fmt_mm(low_val, signed=signed_axis)
+                high = _fmt_mm(high_val, signed=signed_axis)
+                range_text = f"happy {low} to {high}"
+                if value_raw is None:
+                    phrase = "no read"
+                    sub = "score unavailable; marker unavailable"
+                else:
+                    marker_pct = 50.0 + ((float(value_raw) - float(target)) / (float(tol) * 3.0) * 50.0)
+                    marker_pct = max(0.0, min(100.0, marker_pct))
+                    marker_html = (
+                        f'<span class="gauge-marker" style="left:{marker_pct:.1f}%">'
+                        f'<span class="gauge-label gauge-read">read {value}</span></span>'
+                    )
+                    gauge_labels = (
+                        f'<span class="gauge-tick gauge-floor"><span>floor {low}</span></span>'
+                        f'<span class="gauge-tick gauge-ceiling"><span>ceiling {high}</span></span>'
+                    )
+                    if bool(data.get("ok")):
+                        phrase = f"happy: {value} is between"
+                        state_class = " happy-shot"
+                    elif float(value_raw) < low_val:
+                        miss = low_val - float(value_raw)
+                        phrase = f"undershot: {value} is below"
+                        sub = f"{_fmt_mm(miss)} mm below happy"
+                        state_class = " undershot"
+                    else:
+                        miss = float(value_raw) - high_val
+                        phrase = f"overshot: {value} is above"
+                        sub = f"{_fmt_mm(miss)} mm above happy"
+                        state_class = " overshot"
+                    if bool(data.get("ok")):
+                        sub = f"err {_fmt_mm(err, signed=True)} mm, target {_fmt_mm(target, signed=signed_axis)}"
+            wrapper = "mini-axis" if compact else "axis"
+            return (
+                f'<div class="{wrapper}{ok_class}{locked}{state_class}">'
+                f'<div class="axis-top"><b>{html.escape(axis.upper())}</b><span>{html.escape(read_score)}</span></div>'
+                f'<div class="axis-phrase">{html.escape(phrase)}</div>'
+                f'<div class="gauge"><span class="gauge-zone"></span><span class="gauge-center"></span>{gauge_labels}{marker_html}</div>'
+                f'<div class="axis-sub">{html.escape(range_text)}{(" | " + html.escape(sub)) if sub else ""}</div>'
+                "</div>"
+            )
+
+        def reading_line(row: dict | None) -> str:
+            if not isinstance(row, dict):
+                return '<div class="read-line">read unavailable</div>'
+            reading = row.get("reading") if isinstance(row.get("reading"), dict) else {}
+            confident = bool(reading.get("confident"))
+            visible = bool(reading.get("visible"))
+            conf = _float_or_none(reading.get("conf"))
+            conf_text = "N/A" if conf is None else f"{conf:.0f}%"
+            dist = _fmt_mm(reading.get("dist_mm"))
+            x_val = _fmt_mm(reading.get("x_mm"), signed=True)
+            y_val = _fmt_mm(reading.get("y_mm"), signed=True)
+            reason = str(reading.get("reason") or "unknown")
+            source = str(reading.get("vision_geometry_source") or reading.get("capture_read_source") or "-")
+            state = "confident" if confident else ("visible, not confident" if visible else "not visible")
+            return (
+                f'<div class="read-line">'
+                f'<b>read</b> dist {html.escape(dist)} | x {html.escape(x_val)} | y {html.escape(y_val)} '
+                f'| conf {html.escape(conf_text)} | {html.escape(state)} | {html.escape(reason)} | {html.escape(source)}'
+                f'</div>'
+            )
 
         def iteration_card(attempt_key: int, attempt_rows: list[dict]) -> str:
             experiment_name = ""
@@ -645,38 +859,396 @@ class ProgressSite:
                 stop_reason = str(fail_rows[-1].get("reason") or "")
             elif trial_rows:
                 stop_reason = str(trial_rows[-1].get("reason") or "")
+            failure_line_row = next(
+                (
+                    row
+                    for row in reversed(attempt_rows)
+                    if row.get("failure_explanation") or row.get("failure_diagnosis") or row.get("failure_plan")
+                ),
+                None,
+            )
+            failure_lines = ""
+            if isinstance(failure_line_row, dict):
+                explanation = str(failure_line_row.get("failure_explanation") or "").strip()
+                diagnosis = str(failure_line_row.get("failure_diagnosis") or "").strip()
+                plan = str(failure_line_row.get("failure_plan") or "").strip()
+                items = []
+                if explanation:
+                    items.append(f"<div><b>What happened:</b> {html.escape(explanation)}</div>")
+                if diagnosis:
+                    items.append(f"<div><b>Diagnosis:</b> {html.escape(diagnosis)}</div>")
+                if plan:
+                    items.append(f"<div><b>Plan:</b> {html.escape(plan)}</div>")
+                if items:
+                    failure_lines = f'<div class="failure-lines">{"".join(items)}</div>'
             prior_rows = [
                 row for row in attempt_rows if row.get("phase") == "prior" and row.get("trial") not in {None, 0}
             ]
+            def mini_axis(row: dict | None, axis: str) -> str:
+                return axis_gauge(row, axis, compact=True)
 
-            def thumb_strip(selected_rows: list[dict], *, empty: str, alt: str) -> str:
-                thumbs = []
-                for row in selected_rows[-5:]:
-                    image = row.get("image")
-                    status = str(row.get("status", ""))
-                    if image:
-                        thumbs.append(
-                            f'<a href="{html.escape(str(image))}" title="trial {html.escape(str(row.get("trial", "")))}">'
-                            f'<img src="{html.escape(str(image))}" alt="{html.escape(alt)}"></a>'
+            def decision_log_html(row: dict | None) -> str:
+                entries = (row or {}).get("decision_log") if isinstance(row, dict) else None
+                if not isinstance(entries, list) or not entries:
+                    return ""
+                def axis_timeline_icon(current: float | None, previous: float | None) -> str:
+                    if current is None or previous is None:
+                        return ""
+                    current_abs = abs(float(current))
+                    previous_abs = abs(float(previous))
+                    if current_abs < previous_abs - 0.25:
+                        return "&#128994;"
+                    if current_abs > previous_abs + 0.25:
+                        return "&#128308;"
+                    return "&#9898;"
+
+                bits = []
+                previous_entry = None
+                for entry in entries[-18:]:
+                    if not isinstance(entry, dict):
+                        continue
+                    try:
+                        timestamp = int(round(float(entry.get("timestamp_ms", 0) or 0)))
+                    except (TypeError, ValueError):
+                        timestamp = 0
+                    approx = "~" if bool(entry.get("timestamp_approx")) else ""
+                    try:
+                        duration = int(round(float(entry.get("duration_ms", 0) or 0)))
+                    except (TypeError, ValueError):
+                        duration = 0
+                    dist_err = _float_or_none(entry.get("dist_err_mm"))
+                    x_err = _float_or_none(entry.get("x_err_mm"))
+                    prev_dist_err = _float_or_none(previous_entry.get("dist_err_mm")) if isinstance(previous_entry, dict) else None
+                    prev_x_err = _float_or_none(previous_entry.get("x_err_mm")) if isinstance(previous_entry, dict) else None
+                    dist_text = _fmt_mm(dist_err, signed=True)
+                    x_text = _fmt_mm(x_err, signed=True)
+                    dist_icon = axis_timeline_icon(dist_err, prev_dist_err)
+                    x_icon = axis_timeline_icon(x_err, prev_x_err)
+                    dist_icon_html = f'<span class="decision-icon">{dist_icon}</span>' if dist_icon else ""
+                    x_icon_html = f'<span class="decision-icon">{x_icon}</span>' if x_icon else ""
+                    after_dist = None
+                    after_x = None
+                    outcome_icon = {"improved": "🟢", "worsened": "🔴", "same": "⚪"}
+                    dist_after_html = ""
+                    x_after_html = ""
+                    if after_dist is not None:
+                        dist_icon = outcome_icon.get(str(entry.get("dist_outcome") or ""), "")
+                        dist_after_html = (
+                            f' → <span class="decision-after">dist '
+                            f'<span class="decision-num dist">{html.escape(_fmt_mm(after_dist, signed=True))}</span>'
+                            f'<span class="decision-icon">{dist_icon}</span></span>'
                         )
-                    else:
-                        thumbs.append(f'<span class="status {html.escape(status)}">{html.escape(status)}</span>')
-                return "".join(thumbs) if thumbs else f'<span class="muted">{html.escape(empty)}</span>'
+                    if after_x is not None:
+                        x_icon = outcome_icon.get(str(entry.get("x_outcome") or ""), "")
+                        x_after_html = (
+                            f' <span class="decision-after">x '
+                            f'<span class="decision-num x">{html.escape(_fmt_mm(after_x, signed=True))}</span>'
+                            f'<span class="decision-icon">{x_icon}</span></span>'
+                        )
+                    curve = str(entry.get("curve") or entry.get("action") or "unknown")
+                    reason = str(entry.get("reason") or "").strip()
+                    reason_html = f' <span class="decision-reason">({html.escape(reason)})</span>' if reason else ""
+                    bits.append(
+                        '<li>'
+                        f'<span class="decision-time">{approx}{timestamp}ms</span>: '
+                        'To close the '
+                        f'[dist=<span class="decision-num dist">{html.escape(dist_text)}</span>{dist_icon_html}, '
+                        f'x=<span class="decision-num x">{html.escape(x_text)}</span>{x_icon_html}] gap'
+                        f'{dist_after_html}{x_after_html}, '
+                        'I will use the '
+                        f'<span class="decision-curve">{html.escape(curve)}</span> '
+                        'for '
+                        f'<span class="decision-num ms">{duration}ms</span>.'
+                        f'{reason_html}'
+                        '</li>'
+                    )
+                    previous_entry = entry
+                if not bits:
+                    return ""
+                return (
+                    '<details class="decision-log" open>'
+                    f'<summary>Decision log ({len(entries)} acts)</summary>'
+                    f'<ol>{"".join(bits)}</ol>'
+                    '</details>'
+                )
 
-            prior_html = thumb_strip(prior_rows, empty="No prior images yet", alt="prior to attempt")
-            end_html = thumb_strip(trial_rows, empty="No trial end image yet", alt="trial end")
+            def decision_log_html(row: dict | None) -> str:
+                entries = (row or {}).get("decision_log") if isinstance(row, dict) else None
+                if not isinstance(entries, list) or not entries:
+                    return ""
+
+                def axis_timeline_icon(current: float | None, previous: float | None) -> str:
+                    if current is None or previous is None:
+                        return ""
+                    current_abs = abs(float(current))
+                    previous_abs = abs(float(previous))
+                    if current_abs < previous_abs - 0.25:
+                        return "&#128994;"
+                    if current_abs > previous_abs + 0.25:
+                        return "&#128308;"
+                    return "&#9898;"
+
+                def axis_goal_html(axis: str) -> str:
+                    step_key = str((row or {}).get("step") or "").strip().lower()
+                    phase_key = str((row or {}).get("phase") or "").strip().lower()
+                    if step_key not in {"step1", "step2", "step3"}:
+                        if phase_key.startswith("step2"):
+                            step_key = "step2"
+                        elif phase_key.startswith("step3"):
+                            step_key = "step3"
+                        else:
+                            step_key = "step1"
+                    targets = self.state.get("targets") if isinstance(self.state.get("targets"), dict) else {}
+                    step_targets = targets.get(step_key) if isinstance(targets.get(step_key), dict) else {}
+                    spec = step_targets.get(axis) if isinstance(step_targets.get(axis), dict) else {}
+                    target = _float_or_none(spec.get("target_mm"))
+                    tol = _float_or_none(spec.get("tol_mm"))
+                    if target is None or tol is None:
+                        return ""
+                    signed_axis = axis in {"x", "y"}
+                    low = _fmt_mm(float(target) - float(tol), signed=signed_axis)
+                    high = _fmt_mm(float(target) + float(tol), signed=signed_axis)
+                    return f'<span class="decision-abs-goal">goal {html.escape(low)} to {html.escape(high)}</span>'
+
+                final_reading = (row or {}).get("reading") if isinstance(row, dict) else None
+                final_dist = _float_or_none((final_reading or {}).get("dist_mm")) if isinstance(final_reading, dict) else None
+                final_x = _float_or_none((final_reading or {}).get("x_mm")) if isinstance(final_reading, dict) else None
+                final_read_html = ""
+                if final_dist is not None or final_x is not None:
+                    final_bits = []
+                    if final_dist is not None:
+                        final_bits.append(f'dist=<span class="decision-read dist">{html.escape(_fmt_mm(final_dist))}</span>')
+                    if final_x is not None:
+                        final_bits.append(f'x=<span class="decision-read x">{html.escape(_fmt_mm(final_x, signed=True))}</span>')
+                    final_read_html = (
+                        '<div class="decision-final-read">'
+                        f'Final settled proof/photo read: [{", ".join(final_bits)}]'
+                        '</div>'
+                    )
+
+                bits = []
+                previous_entry = None
+                for entry in entries[-20:]:
+                    if not isinstance(entry, dict):
+                        continue
+                    try:
+                        timestamp = int(round(float(entry.get("timestamp_ms", 0) or 0)))
+                    except (TypeError, ValueError):
+                        timestamp = 0
+                    approx = "~" if bool(entry.get("timestamp_approx")) else ""
+                    try:
+                        duration = int(round(float(entry.get("duration_ms", 0) or 0)))
+                    except (TypeError, ValueError):
+                        duration = 0
+                    dist_err = _float_or_none(entry.get("dist_err_mm"))
+                    x_err = _float_or_none(entry.get("x_err_mm"))
+                    dist_read = _float_or_none(entry.get("dist_mm"))
+                    x_read = _float_or_none(entry.get("x_mm"))
+                    prev_dist_err = _float_or_none(previous_entry.get("dist_err_mm")) if isinstance(previous_entry, dict) else None
+                    prev_x_err = _float_or_none(previous_entry.get("x_err_mm")) if isinstance(previous_entry, dict) else None
+                    dist_text = _fmt_mm(dist_err, signed=True)
+                    x_text = _fmt_mm(x_err, signed=True)
+                    dist_read_text = _fmt_mm(dist_read) if dist_read is not None else "N/A"
+                    x_read_text = _fmt_mm(x_read, signed=True) if x_read is not None else "N/A"
+                    dist_icon = axis_timeline_icon(dist_err, prev_dist_err)
+                    x_icon = axis_timeline_icon(x_err, prev_x_err)
+                    dist_icon_html = f'<span class="decision-icon">{dist_icon}</span>' if dist_icon else ""
+                    x_icon_html = f'<span class="decision-icon">{x_icon}</span>' if x_icon else ""
+                    outcome_icon = {"improved": "&#128994;", "worsened": "&#128308;", "same": "&#9898;"}
+                    dist_after = _float_or_none(entry.get("after_dist_mm"))
+                    x_after = _float_or_none(entry.get("after_x_mm"))
+                    after_parts = []
+                    if dist_after is not None:
+                        dist_outcome_icon = outcome_icon.get(str(entry.get("dist_outcome") or ""), "")
+                        after_parts.append(
+                            f'dist=<span class="decision-read dist">{html.escape(_fmt_mm(dist_after))}</span>'
+                            f'<span class="decision-icon">{dist_outcome_icon}</span>'
+                        )
+                    if x_after is not None:
+                        x_outcome_icon = outcome_icon.get(str(entry.get("x_outcome") or ""), "")
+                        after_parts.append(
+                            f'x=<span class="decision-read x">{html.escape(_fmt_mm(x_after, signed=True))}</span>'
+                            f'<span class="decision-icon">{x_outcome_icon}</span>'
+                        )
+                    after_html = (
+                        f' <span class="decision-after-wrap">After act read [{", ".join(after_parts)}].</span>'
+                        if after_parts
+                        else ""
+                    )
+                    curve = str(entry.get("curve") or entry.get("action") or "unknown")
+                    reason = str(entry.get("reason") or "").strip()
+                    reason_html = f' <span class="decision-reason">({html.escape(reason)})</span>' if reason else ""
+                    bits.append(
+                        '<li>'
+                        f'<span class="decision-time">{approx}{timestamp}ms</span>: '
+                        f'<span class="decision-current">I see [dist='
+                        f'<span class="decision-read dist">{html.escape(dist_read_text)}</span>, '
+                        f'x=<span class="decision-read x">{html.escape(x_read_text)}</span>]</span>. '
+                        'To close the '
+                        f'[dist=<span class="decision-num dist">{html.escape(dist_text)}</span>{dist_icon_html}'
+                        f'{axis_goal_html("dist")}, '
+                        f'x=<span class="decision-num x">{html.escape(x_text)}</span>{x_icon_html}'
+                        f'{axis_goal_html("x")}] gap, '
+                        'I will use the '
+                        f'<span class="decision-curve">{html.escape(curve)}</span> '
+                        'for '
+                        f'<span class="decision-num ms">{duration}ms</span>.'
+                        f'{reason_html}'
+                        f'{after_html}'
+                        '</li>'
+                    )
+                    previous_entry = entry
+                if not bits:
+                    return ""
+                return (
+                    '<details class="decision-log" open>'
+                    f'<summary>Decision log ({len(entries)} acts)</summary>'
+                    f'<ol>{"".join(bits)}</ol>'
+                    f'{final_read_html}'
+                    '</details>'
+                )
+
+            def proof_rows() -> str:
+                trial_keys = sorted({
+                    int(row.get("trial"))
+                    for row in attempt_rows
+                    if row.get("trial") not in {None, 0}
+                })
+                bits = []
+                for trial_key in trial_keys[-5:]:
+                    trial_phase_rows = [
+                        row for row in attempt_rows if row.get("trial") == trial_key
+                    ]
+                    def latest_phase(phase: str, *, status: str | None = None) -> dict | None:
+                        for candidate in reversed(trial_phase_rows):
+                            if candidate.get("phase") != phase:
+                                continue
+                            if status is not None and candidate.get("status") != status:
+                                continue
+                            return candidate
+                        return None
+
+                    prior_row = latest_phase("prior")
+                    step1_start = latest_phase("step1-start", status="win") or latest_phase("step1-start") or prior_row
+                    step1_row = latest_phase("step1")
+                    if step1_row is None and isinstance(step1_start, dict) and step1_start.get("status") == "fail":
+                        step1_row = step1_start
+                    step2_start = latest_phase("step2-start", status="win") or latest_phase("step2-start") or step1_row
+                    step2_row = latest_phase("step2")
+                    step3_start = latest_phase("step3-start", status="win") or latest_phase("step3-start") or step2_row
+                    step3_row = latest_phase("step3")
+                    if step1_row is None and step2_row is None and step3_row is None:
+                        continue
+
+                    def step_photo(step_label: str, position: str, row: dict | None) -> str:
+                        image = str((row or {}).get("image") or "")
+                        caption = f"{step_label} {position}"
+                        axes_for_photo = ("dist", "x") if step_label in {"S1", "S2"} else ("dist",)
+                        step_key = {"S1": "step1", "S2": "step2", "S3": "step3"}.get(step_label, "step1")
+
+                        def photo_read_score() -> str:
+                            if not isinstance(row, dict):
+                                return '<div class="photo-read">read unavailable<br>score unavailable</div>'
+                            reading = row.get("reading") if isinstance(row.get("reading"), dict) else {}
+                            evaluation = row.get("evaluation") if isinstance(row.get("evaluation"), dict) else {}
+                            if not evaluation.get("axes"):
+                                evaluation = _evaluate_reading(reading, step_key)
+                            axes_eval = evaluation.get("axes") if isinstance(evaluation.get("axes"), dict) else {}
+                            conf_val = _float_or_none(reading.get("conf"))
+                            conf_text = "N/A" if conf_val is None else f"{conf_val:.0f}%"
+                            read_text = (
+                                f"read dist {_fmt_mm(reading.get('dist_mm'))} | "
+                                f"x {_fmt_mm(reading.get('x_mm'), signed=True)} | "
+                                f"y {_fmt_mm(reading.get('y_mm'), signed=True)} | "
+                                f"conf {conf_text}"
+                            )
+                            score_bits = []
+                            for axis_name in axes_for_photo:
+                                data = axes_eval.get(axis_name) if isinstance(axes_eval.get(axis_name), dict) else {}
+                                score = _float_or_none(data.get("closeness_pct"))
+                                score_text = "N/A" if score is None or data.get("value_mm") is None else f"{score:.0f}%"
+                                score_bits.append(f"{axis_name} {score_text}")
+                            return (
+                                f'<div class="photo-read">{html.escape(read_text)}<br>'
+                                f'score {html.escape(", ".join(score_bits))}</div>'
+                            )
+
+                        read_html = photo_read_score()
+                        if not image:
+                            return (
+                                f'<figure class="proof-photo step-photo"><figcaption>{html.escape(caption)}</figcaption>'
+                                f'<span class="muted">no photo</span>{read_html}</figure>'
+                            )
+                        return (
+                            f'<figure class="proof-photo step-photo"><figcaption>{html.escape(caption)}</figcaption>'
+                            f'<a href="{html.escape(image)}"><img src="{html.escape(image)}" '
+                            f'alt="{html.escape(caption)}"></a>{read_html}</figure>'
+                        )
+
+                    def step_block(
+                        step_label: str,
+                        start_row: dict | None,
+                        step_row: dict | None,
+                        axes: tuple[str, ...],
+                    ) -> str:
+                        status = str((step_row or {}).get("status", ""))
+                        reset_badge = ""
+                        if step_label == "S1":
+                            reset_status = str((start_row or {}).get("status") or "")
+                            reset_reading = (
+                                start_row.get("reading")
+                                if isinstance(start_row, dict) and isinstance(start_row.get("reading"), dict)
+                                else {}
+                            )
+                            reset_cfg = follow._reset_motion_config().get("reverse_turn")
+                            reset_cfg = reset_cfg if isinstance(reset_cfg, dict) else {}
+                            try:
+                                reset_read_clean = bool(follow._reset_xy_target_ready(reset_reading, reset_cfg))
+                            except Exception:
+                                reset_read_clean = False
+                            if reset_status == "win" and reset_read_clean:
+                                reset_badge = '<span class="reset-badge clean">Clean reset</span>'
+                            elif reset_status in {"win", "fail"}:
+                                reset_badge = '<span class="reset-badge failed">Failed reset</span>'
+                        bars = (
+                            reading_line(step_row)
+                            + "".join(mini_axis(step_row, axis) for axis in axes)
+                            + decision_log_html(step_row)
+                        )
+                        return (
+                            f'<div class="proof-step">'
+                            f'<div class="step-status-stack">{reset_badge}'
+                            f'<span class="status {html.escape(status)}">{html.escape(step_label)} {html.escape(status or "pending")}</span>'
+                            f'</div>'
+                            f'{step_photo(step_label, "start", start_row)}'
+                            f'<div class="proof-bars">{bars}</div>'
+                            f'{step_photo(step_label, "end", step_row)}'
+                            f'</div>'
+                        )
+
+                    bits.append(
+                        f'<div class="trial-proof">'
+                        f'<div class="trial-proof-head">Trial {trial_key}</div>'
+                        f'<div class="proof-mid">'
+                        f'{step_block("S1", step1_start, step1_row, ("dist", "x"))}'
+                        f'{step_block("S2", step2_start, step2_row, ("dist", "x"))}'
+                        f'{step_block("S3", step3_start, step3_row, ("dist",))}'
+                        f'</div>'
+                        f'</div>'
+                    )
+                return "".join(bits) if bits else '<span class="muted">No Step 1-3 proof rows yet</span>'
+
+            proof_html = proof_rows()
             return (
                 f'<article class="iteration-card">'
                 f'<div class="iteration-head"><b>Iteration {attempt_key}</b>'
                 f'<span class="status {html.escape(grade_class)}">{html.escape(grade)}</span></div>'
                 f'<div class="experiment-name">{html.escape(experiment_name or "unknown")}</div>'
                 f'<div class="experiment-line">{html.escape(experiment_line or "No description recorded.")}</div>'
-                f'<div class="iteration-meta">Trial wins {wins_count}/5'
+                f'<div class="iteration-meta">Full Step 1-3 wins {wins_count}/5'
                 f'{(" - " + html.escape(stop_reason)) if stop_reason else ""}</div>'
-                f'<div class="iteration-label">Prior to attempt</div>'
-                f'<div class="iteration-images">{prior_html}</div>'
-                f'<div class="iteration-label">Trial end</div>'
-                f'<div class="iteration-images">{end_html}</div>'
+                f'{failure_lines}'
+                f'<div class="proof-grid">{proof_html}</div>'
                 f'</article>'
             )
 
@@ -689,23 +1261,7 @@ class ProgressSite:
         )
 
         def axis_cell(row: dict, axis: str) -> str:
-            evaluation = row.get("evaluation") if isinstance(row.get("evaluation"), dict) else {}
-            axes = evaluation.get("axes") if isinstance(evaluation.get("axes"), dict) else {}
-            data = axes.get(axis) if isinstance(axes.get(axis), dict) else {}
-            pct = max(0.0, min(100.0, _float_or_none(data.get("closeness_pct")) or 0.0))
-            ok_class = " axis-ok" if bool(data.get("ok")) else ""
-            locked = " locked" if bool(data.get("locked")) else ""
-            value = _fmt_mm(data.get("value_mm"), signed=axis in {"x", "y"})
-            target = _fmt_mm(data.get("target_mm"), signed=axis in {"x", "y"})
-            tol = _fmt_mm(data.get("tol_mm"))
-            err = _fmt_mm(data.get("err_mm"), signed=True)
-            return (
-                f'<div class="axis{ok_class}{locked}">'
-                f'<div class="axis-top"><b>{html.escape(axis.upper())}</b><span>{value} / {target} +/- {tol}</span></div>'
-                f'<div class="bar"><i style="width:{pct:.1f}%"></i></div>'
-                f'<div class="axis-sub">err {err} mm, close {pct:.0f}%</div>'
-                "</div>"
-            )
+            return axis_gauge(row, axis, compact=False)
 
         def step_table(step_rows_for_table: list[dict]) -> str:
             cards = []
@@ -779,30 +1335,86 @@ class ProgressSite:
     .tabs input {{ position: absolute; opacity: 0; pointer-events: none; }}
     .tab-labels {{ display: flex; gap: 8px; margin-bottom: 10px; }}
     .tab-labels label {{ display: inline-flex; align-items: center; justify-content: center; min-width: 110px; padding: 8px 12px; border: 1px solid #bdc8d4; border-radius: 6px; background: #fff; font-weight: 700; cursor: pointer; }}
-    #tab-step1:checked ~ .tab-labels label[for="tab-step1"], #tab-step2:checked ~ .tab-labels label[for="tab-step2"] {{ background: #193549; color: #fff; border-color: #193549; }}
+    #tab-step1:checked ~ .tab-labels label[for="tab-step1"], #tab-step2:checked ~ .tab-labels label[for="tab-step2"], #tab-step3:checked ~ .tab-labels label[for="tab-step3"] {{ background: #193549; color: #fff; border-color: #193549; }}
     .panel {{ display: none; }}
-    #tab-step1:checked ~ .panels .panel-step1, #tab-step2:checked ~ .panels .panel-step2 {{ display: block; }}
+    #tab-step1:checked ~ .panels .panel-step1, #tab-step2:checked ~ .panels .panel-step2, #tab-step3:checked ~ .panels .panel-step3 {{ display: block; }}
     .axis {{ min-width: 180px; }}
     .axis-top {{ display: flex; gap: 8px; justify-content: space-between; font-size: 12px; }}
-    .bar {{ height: 10px; margin: 4px 0; background: #edf1f4; border-radius: 999px; overflow: hidden; }}
-    .bar i {{ display: block; height: 100%; background: #bd5a45; }}
-    .axis-ok .bar i {{ background: #2b8a58; }}
+    .axis-phrase {{ margin-top: 2px; color: #17202a; font-size: 12px; }}
+    .gauge {{ position: relative; height: 18px; margin: 16px 0 18px; background: #edf1f4; border: 1px solid #ccd6df; border-radius: 999px; overflow: visible; }}
+    .gauge-zone {{ position: absolute; left: 33.333%; width: 33.333%; top: 0; bottom: 0; background: #cfeeda; border-left: 1px solid #8dc7a3; border-right: 1px solid #8dc7a3; }}
+    .gauge-center {{ position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: rgba(23, 32, 42, 0.25); }}
+    .gauge-marker {{ position: absolute; top: -1px; bottom: -1px; width: 3px; margin-left: -1.5px; background: #17202a; box-shadow: 0 0 0 1px rgba(255,255,255,0.75); }}
+    .gauge-tick {{ position: absolute; top: -1px; bottom: -1px; width: 1px; background: #6fa686; z-index: 2; }}
+    .gauge-floor {{ left: 33.333%; }}
+    .gauge-ceiling {{ left: 66.666%; }}
+    .gauge-label {{ position: absolute; left: 50%; transform: translateX(-50%); white-space: nowrap; font-size: 10px; line-height: 1; font-weight: 700; color: #33485b; background: rgba(255,255,255,0.9); border: 1px solid #d9e0e8; border-radius: 4px; padding: 1px 3px; pointer-events: none; }}
+    .gauge-tick .gauge-label, .gauge-tick span {{ position: absolute; left: 50%; bottom: -15px; transform: translateX(-50%); white-space: nowrap; font-size: 10px; line-height: 1; font-weight: 700; color: #46606f; background: rgba(255,255,255,0.9); border: 1px solid #d9e0e8; border-radius: 4px; padding: 1px 3px; pointer-events: none; }}
+    .gauge-read {{ top: -14px; color: #17202a; }}
+    .axis-ok .gauge-marker {{ background: #17633a; }}
+    .overshot .gauge-marker, .undershot .gauge-marker {{ background: #9f3327; }}
     .axis-sub {{ color: #566574; font-size: 12px; }}
     .locked .axis-top b::after {{ content: " locked"; color: #5d6b78; font-weight: 600; text-transform: none; }}
-    .iteration-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }}
+    .iteration-grid {{ display: grid; grid-template-columns: 1fr; gap: 10px; }}
     .iteration-card {{ background: white; border: 1px solid #d9e0e8; border-radius: 6px; padding: 10px; }}
     .iteration-head {{ display: flex; align-items: center; justify-content: space-between; gap: 8px; }}
     .experiment-name {{ margin-top: 6px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; color: #33485b; overflow-wrap: anywhere; }}
     .experiment-line {{ margin-top: 4px; color: #253341; }}
     .iteration-meta {{ margin-top: 6px; color: #566574; font-size: 12px; }}
+    .failure-lines {{ margin-top: 8px; display: grid; gap: 4px; padding: 8px 10px; border-left: 3px solid #bd5a45; background: #fff7f5; color: #432820; border-radius: 4px; }}
     .iteration-label {{ margin-top: 8px; color: #33485b; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; }}
     .iteration-images {{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }}
     .iteration-images img {{ width: 76px; height: 54px; object-fit: cover; }}
+    .proof-grid {{ display: grid; gap: 10px; margin-top: 10px; }}
+    .trial-proof {{ display: grid; grid-template-columns: minmax(180px, 24%) 1fr minmax(180px, 24%); gap: 12px; align-items: stretch; border: 1px solid #d9e0e8; border-radius: 6px; padding: 10px; background: #fbfcfd; }}
+    .trial-proof-head {{ grid-column: 1 / -1; font-weight: 700; margin-bottom: 0; }}
+    .proof-photo {{ margin: 0; padding: 0; border: 0; background: transparent; }}
+    .proof-photo img {{ width: 100%; height: 220px; max-height: none; object-fit: cover; }}
+    .proof-photo figcaption {{ margin: 0 0 6px; font-size: 12px; font-weight: 700; color: #566574; text-transform: uppercase; }}
+    .photo-read {{ margin-top: 6px; padding: 6px 7px; background: #fff; border: 1px solid #d9e0e8; border-radius: 5px; color: #33485b; font-size: 11px; line-height: 1.3; overflow-wrap: anywhere; }}
+    .proof-mid {{ grid-column: 1 / -1; display: grid; align-content: start; gap: 12px; }}
+    .proof-step {{ display: grid; grid-template-columns: 78px minmax(150px, 22%) 1fr minmax(150px, 22%); gap: 10px; align-items: center; border-top: 1px solid #e6ebf0; padding-top: 10px; }}
+    .proof-step:first-child {{ border-top: 0; padding-top: 0; }}
+    .step-status-stack {{ display: grid; gap: 5px; justify-items: start; align-content: center; }}
+    .reset-badge {{ display: inline-block; min-width: 72px; padding: 3px 7px; border-radius: 999px; text-align: center; font-size: 11px; font-weight: 800; }}
+    .reset-badge.clean {{ background: #d9f4e4; color: #075d35; }}
+    .reset-badge.failed {{ background: #ffe0d8; color: #8d2a1b; }}
+    .proof-bars {{ display: grid; gap: 5px; }}
+    .read-line {{ padding: 6px 8px; border: 1px solid #d9e0e8; border-radius: 5px; background: #fff; color: #33485b; font-size: 12px; overflow-wrap: anywhere; }}
+    .decision-log {{ margin-top: 3px; padding: 7px 8px; border: 1px solid #d9e0e8; border-radius: 5px; background: #fff; font-size: 11px; color: #253341; }}
+    .decision-log summary {{ cursor: pointer; font-weight: 700; color: #33485b; }}
+    .decision-log ol {{ margin: 6px 0 0 18px; padding: 0; display: grid; gap: 4px; }}
+    .decision-time {{ font-family: ui-monospace, SFMono-Regular, Consolas, monospace; color: #5b6570; }}
+    .decision-num {{ font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-weight: 800; }}
+    .decision-num.dist {{ color: #0b6b55; }}
+    .decision-num.x {{ color: #8949a8; }}
+    .decision-num.ms {{ color: #a85b00; }}
+    .decision-after {{ white-space: nowrap; }}
+    .decision-after-wrap {{ display: inline-block; margin-left: 6px; color: #425568; }}
+    .decision-current {{ color: #2f4154; font-weight: 700; }}
+    .decision-read {{ font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-weight: 800; color: #51677b; }}
+    .decision-read.dist {{ color: #357365; }}
+    .decision-read.x {{ color: #76578a; }}
+    .decision-abs-goal {{ display: inline-block; margin-left: 5px; color: #6f7f8d; opacity: 0.68; font-weight: 700; }}
+    .decision-final-read {{ margin-top: 6px; padding: 5px 7px; border-radius: 4px; background: #f3f6f8; color: #44586b; font-weight: 700; }}
+    .decision-icon {{ display: inline-block; margin-left: 2px; }}
+    .decision-curve {{ font-family: ui-monospace, SFMono-Regular, Consolas, monospace; color: #123d69; font-weight: 700; }}
+    .decision-reason {{ color: #6a7784; }}
+    .step-photo img {{ height: 150px; }}
+    .mini-axis .axis-top {{ display: flex; justify-content: space-between; gap: 6px; font-size: 11px; color: #566574; }}
+    .mini-axis .axis-phrase {{ justify-content: flex-start; color: #17202a; font-size: 12px; }}
+    .mini-axis .gauge {{ height: 14px; margin: 4px 0; }}
+    .mini-axis .axis-sub {{ font-size: 11px; }}
     .muted {{ color: #6b7785; font-size: 12px; }}
     .gallery {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-top: 10px; }}
     figure {{ margin: 0; background: white; border: 1px solid #d9e0e8; border-radius: 6px; padding: 8px; }}
     figcaption {{ margin-top: 6px; font-size: 13px; }}
     .empty {{ padding: 14px; background: white; border: 1px solid #d9e0e8; border-radius: 6px; }}
+    @media (max-width: 760px) {{
+      .trial-proof {{ grid-template-columns: 1fr; }}
+      .proof-step {{ grid-template-columns: 1fr; }}
+      .proof-photo img {{ height: 210px; }}
+    }}
   </style>
 </head>
 <body>
@@ -814,9 +1426,9 @@ class ProgressSite:
   </header>
   <main>
     <section class="summary">
-      <div class="metric"><span>Current honest streak</span><b>{wins}/5</b></div>
-      <div class="metric"><span>Current trial attempts</span><b>{trials}</b></div>
-      <div class="metric"><span>Historical honest rows</span><b>{historical_wins}/{len(historical_trial_rows)}</b></div>
+      <div class="metric"><span>Current S1-3 streak</span><b>{wins}/5</b></div>
+      <div class="metric"><span>Current S1-3 attempts</span><b>{trials}</b></div>
+      <div class="metric"><span>Historical rows (mixed)</span><b>{historical_wins}/{len(historical_trial_rows)}</b></div>
       <div class="metric wide"><span>Status</span><b>{html.escape(str(self.state.get('summary') or ''))}</b></div>
     </section>
     <h2>Iterations</h2>
@@ -824,13 +1436,16 @@ class ProgressSite:
     <section class="tabs">
       <input id="tab-step1" name="tabs" type="radio" checked>
       <input id="tab-step2" name="tabs" type="radio">
+      <input id="tab-step3" name="tabs" type="radio">
       <div class="tab-labels">
         <label for="tab-step1">Step 1</label>
         <label for="tab-step2">Step 2</label>
+        <label for="tab-step3">Step 3</label>
       </div>
       <div class="panels">
         <section class="panel panel-step1">{step_table(step1_rows)}</section>
         <section class="panel panel-step2">{step_table(step2_rows)}</section>
+        <section class="panel panel-step3">{step_table(step3_rows)}</section>
       </div>
     </section>
     <h2>End Images</h2>
@@ -1296,6 +1911,19 @@ def _apply_experiment(name: str) -> str:
     cfg = follow._follow_motion_config()
     step2 = cfg.get("step2") if isinstance(cfg.get("step2"), dict) else {}
     step2["seat_mast_duration_ms"] = 0
+    step3 = cfg.get("step3") if isinstance(cfg.get("step3"), dict) else {}
+    step3_targets = step3.get("targets") if isinstance(step3.get("targets"), dict) else {}
+    step3_targets["dist_mm"] = float(DIRECT_STEP3_DIST_TARGET_MM)
+    step3_targets["dist_tol_mm"] = float(DIRECT_STEP3_DIST_TOL_MM)
+    step3["targets"] = step3_targets
+    cfg["step3"] = step3
+    step4 = cfg.get("step4") if isinstance(cfg.get("step4"), dict) else {}
+    step4["fixed_lift_only"] = True
+    step4["fixed_lift_duration_ms"] = 1700
+    step4["lift_mast_cmd"] = "u"
+    step4["lift_mast_pwm"] = 255
+    step4["lift_settle_s"] = 0.12
+    cfg["step4"] = step4
     if isinstance(step2.get("semi_happy_targets"), dict):
         step2["semi_happy_targets"]["y_mm"] = None
         step2["semi_happy_targets"]["y_tol_mm"] = None
@@ -1779,7 +2407,7 @@ def _apply_experiment(name: str) -> str:
         _set_direct_x_pwm(140)
         _set_direct_x_adaptive_pulse(True)
         _set_direct_reset_dist(pulse_ms=240, max_pulses=24)
-        _set_direct_step2_dist(pulse_ms=240, max_pulses=22)
+        _set_direct_step2_dist(pulse_ms=45, max_pulses=60)
         _set_direct_turn_curve_enabled(False)
         _set_direct_x_primitive("onewheel_forward")
         _apply_distance_only_reset(dist_offset_mm=0.0, dist_tol_mm=float(DIRECT_STEP1_DIST_TOL_MM))
@@ -1832,7 +2460,7 @@ def _capture_phase(
 ) -> None:
     image, summary = site.capture(vision, f"trial{trial}_{attempt}_{phase}", reading)
     evaluation = _evaluate_reading(reading, step)
-    if step in {"step1", "step2"}:
+    if phase in {"step1", "step2", "step3"} and step in {"step1", "step2", "step3"} and status in {"win", "fail"}:
         status = "win" if bool(evaluation.get("target_met")) and status == "win" else "fail"
         if status == "fail" and reason:
             reason = str(reason)
@@ -1875,6 +2503,38 @@ def _capture_trial_failure(
         mast_count,
         honest_trial=False,
     )
+
+
+def _reset_after_incomplete_step(
+    site: ProgressSite,
+    vision: BrickDetector,
+    robot: MastFrozenRobot,
+    *,
+    trial: int,
+    attempt: int,
+    positive_cmd: str,
+    failed_phase: str,
+    reading: dict | None,
+) -> tuple[bool, str, dict]:
+    reset_ok, reset_reason, reset_reading = _direct_close_honest_reset_pose(
+        vision,
+        robot,
+        positive_cmd=positive_cmd,
+        label=f"{failed_phase}_recovery_reset",
+        initial_reading=reading,
+    )
+    _capture_phase(
+        site,
+        vision,
+        trial,
+        attempt,
+        f"{failed_phase}-reset",
+        "win" if reset_ok else "fail",
+        f"after {failed_phase}: {reset_reason}",
+        reset_reading,
+        len(robot.mast_attempts),
+    )
+    return reset_ok, reset_reason, reset_reading
 
 
 def _forward_recover_confidence(
@@ -2017,6 +2677,24 @@ def _direct_pulse(robot: MastFrozenRobot, cmd: str, duration_ms: int, *, pwm: in
     time.sleep((int(duration_ms) / 1000.0) + 0.18 + float(DIRECT_POST_PULSE_EXTRA_SETTLE_S))
     follow._stop_robot(robot)
     time.sleep(0.10)
+
+
+def _direct_step3_mid_mast_down(robot: MastFrozenRobot) -> None:
+    duration_ms = int(DIRECT_STEP3_MID_MAST_DOWN_MS)
+    if duration_ms <= 0:
+        return
+    if hasattr(robot, "mast_attempts"):
+        robot.mast_attempts.append(
+            {
+                "kind": "step3_mid_mast_down",
+                "cmd": "d",
+                "pwm": int(DIRECT_STEP3_MID_MAST_DOWN_PWM),
+                "duration_ms": duration_ms,
+                "blocked_reason": "mast_locked_except_empty_step4_lift_and_holding_step2_place",
+            }
+        )
+    follow._stop_robot(robot)
+    return
 
 
 def _median_float(values: list[float]) -> float | None:
@@ -2168,6 +2846,13 @@ def _honest_reset_target_met(reading: dict | None) -> bool:
     )
 
 
+def _honest_reset_dist_met(reading: dict | None) -> bool:
+    dist = _float_or_none((reading or {}).get("dist_mm") if isinstance(reading, dict) else None)
+    if dist is None:
+        return False
+    return abs(float(dist) - _honest_reset_dist_target()) <= _honest_reset_dist_tol()
+
+
 def _honest_reset_x_gap(reading: dict | None) -> float | None:
     if not isinstance(reading, dict):
         return None
@@ -2278,7 +2963,12 @@ def _direct_open_honest_reset_x_gap(
 
 
 def _direct_dist_pulse_ms(label: str, old_gap: float, tol: float) -> int:
-    pulse_ms = int(DIRECT_STEP2_DIST_PULSE_MS) if str(label).startswith("step2") else int(DIRECT_DIST_PULSE_MS)
+    if str(label).startswith("step2"):
+        pulse_ms = int(DIRECT_STEP2_DIST_PULSE_MS)
+    elif str(label).startswith("step3"):
+        pulse_ms = int(DIRECT_DIST_PULSE_MS)
+    else:
+        pulse_ms = int(DIRECT_DIST_PULSE_MS)
     outside = max(0.0, float(old_gap) - float(tol))
     if bool(DIRECT_LIVE_OBSERVE_MOVES):
         if "reset" in str(label):
@@ -2295,6 +2985,15 @@ def _direct_dist_pulse_ms(label: str, old_gap: float, tol: float) -> int:
                 pulse_ms = max(pulse_ms, 60)
             elif outside > 2.0:
                 pulse_ms = max(pulse_ms, 45)
+        elif str(label).startswith("step3"):
+            if outside > 40.0:
+                pulse_ms = max(pulse_ms, int(DIRECT_LIVE_STEP3_DIST_CRAWL_MS))
+            elif outside > 20.0:
+                pulse_ms = max(pulse_ms, 800)
+            elif outside > 10.0:
+                pulse_ms = max(pulse_ms, 420)
+            elif outside > 2.0:
+                pulse_ms = max(pulse_ms, 180)
         elif outside > 20.0:
             pulse_ms = max(pulse_ms, int(DIRECT_LIVE_DIST_CRAWL_MS))
         elif outside > 6.0:
@@ -2316,6 +3015,8 @@ def _direct_dist_pulse_ms(label: str, old_gap: float, tol: float) -> int:
 def _direct_dist_live_stop_margin(label: str, cmd: str) -> float:
     if str(label).startswith("step2") and str(cmd).strip().lower() == "f":
         return float(DIRECT_STEP2_DIST_EARLY_STOP_MARGIN_MM)
+    if str(label).startswith("step3") and str(cmd).strip().lower() == "f":
+        return float(DIRECT_STEP3_DIST_EARLY_STOP_MARGIN_MM)
     return 0.0
 
 
@@ -2401,7 +3102,12 @@ def _direct_x_pose_guard(
     x_val = _float_or_none(reading.get("x_mm"))
     if x_val is None:
         return f"{label}_x_invalid"
-    max_abs_err = 80.0 if "reset_x" in str(label) else float(DIRECT_X_MAX_ABS_ERR_MM)
+    if "reset_x" in str(label):
+        max_abs_err = 80.0
+    elif str(label).startswith("step1"):
+        max_abs_err = 40.0
+    else:
+        max_abs_err = float(DIRECT_X_MAX_ABS_ERR_MM)
     if abs(float(x_val) - float(follow._x_target_mm())) > float(max_abs_err):
         return f"{label}_x_too_far_for_direct_{float(x_val):.1f}"
     box_reason = _direct_x_box_guard(reading, label=label, previous_reading=previous_reading)
@@ -2436,11 +3142,15 @@ def _direct_close_dist(
     reading = initial_reading if use_initial else _direct_read(vision)
     if not bool(reading.get("confident")) and not ("reset" in str(label) and _float_or_none(reading.get("dist_mm")) is not None):
         return False, f"{label}_not_confident", reading
+    step3_mid_mast_done = False
+    step3_initial_gap: float | None = None
     for _ in range(int(max_pulses)):
         dist = _float_or_none(reading.get("dist_mm"))
         if dist is None:
             return False, f"{label}_dist_invalid", reading
         old_gap = abs(float(dist) - float(target))
+        if str(label).startswith("step3") and step3_initial_gap is None:
+            step3_initial_gap = float(old_gap)
         if old_gap <= float(tol):
             return True, f"{label}_dist_hit", reading
         cmd = "f" if float(dist) > float(target) else "b"
@@ -2469,7 +3179,13 @@ def _direct_close_dist(
             robot,
             cmd,
             pulse_ms,
-            pwm=int(DIRECT_STEP2_DIST_PWM) if str(label).startswith("step2") else 98,
+            pwm=(
+                int(DIRECT_STEP2_DIST_PWM)
+                if str(label).startswith("step2")
+                else int(DIRECT_STEP3_DIST_PWM)
+                if str(label).startswith("step3")
+                else 98
+            ),
             reading=reading,
             stop_when=dist_hit,
         )
@@ -2492,6 +3208,26 @@ def _direct_close_dist(
             x_text = "invalid" if next_x is None else f"{float(next_x):.1f}"
             return False, f"{label}_dist_x_unsafe_{x_text}_after_{cmd}", next_reading
         new_gap = abs(float(next_dist) - float(target))
+        if (
+            str(label).startswith("step3")
+            and cmd == "f"
+            and not bool(step3_mid_mast_done)
+            and int(DIRECT_STEP3_MID_MAST_DOWN_MS) > 0
+            and step3_initial_gap is not None
+        ):
+            initial_outside = max(0.0, float(step3_initial_gap) - float(tol))
+            current_outside = max(0.0, float(new_gap) - float(tol))
+            if initial_outside > 1.0 and current_outside <= initial_outside * 0.5:
+                _direct_step3_mid_mast_down(robot)
+                step3_mid_mast_done = True
+                mast_reading = _direct_read(vision, timeout_s=4.0)
+                if not bool(mast_reading.get("confident")):
+                    return False, f"{label}_mid_mast_down_lost_confidence", mast_reading
+                next_reading = mast_reading
+                next_dist = _float_or_none(next_reading.get("dist_mm"))
+                if next_dist is None:
+                    return False, f"{label}_dist_invalid_after_mid_mast_down", next_reading
+                new_gap = abs(float(next_dist) - float(target))
         if live_hit and new_gap <= float(tol):
             return True, f"{label}_dist_live_hit", next_reading
         wrong_way_slack = 12.0 if "reset" in str(label) else 4.0
@@ -2612,6 +3348,7 @@ def _direct_close_x(
             if not bool(retry_reading.get("confident")) and not retry_numeric_contract:
                 return False, f"{label}_lost_confidence_after_{cmd}", retry_reading
             next_reading = retry_reading
+        guard_reason = None
         if bool(next_reading.get("confident")):
             guard_reason = _direct_x_pose_guard(
                 next_reading,
@@ -2689,6 +3426,15 @@ def _direct_step2_target_values() -> tuple[float, float, float, float]:
     )
 
 
+def _direct_step3_target_values() -> tuple[float, float]:
+    step3_targets = follow._follow_step3_config().get("targets")
+    step3_targets = step3_targets if isinstance(step3_targets, dict) else {}
+    return (
+        float(step3_targets.get("dist_mm", DIRECT_STEP3_DIST_TARGET_MM)),
+        float(step3_targets.get("dist_tol_mm", DIRECT_STEP3_DIST_TOL_MM)),
+    )
+
+
 def _direct_close_step1_pose(
     vision: BrickDetector,
     robot: MastFrozenRobot,
@@ -2749,6 +3495,8 @@ def _direct_close_honest_reset_pose(
         label=f"{label}_reset_dist",
         initial_reading=initial_reading,
     )
+    if not _honest_reset_dist_met(reading):
+        return False, reason, reading
     if ok:
         ok, reason, reading = _direct_open_honest_reset_x_gap(
             vision,
@@ -2852,8 +3600,8 @@ def _direct_close_step2_pose(
     x_prealign_target = step2_x_target
     x_prealign_tol = step2_x_tol
     if dist_now is not None and float(dist_now) > float(step2_dist_target) + float(step2_dist_tol):
-        x_prealign_target = float(DIRECT_STEP2_FORWARD_X_PREBIAS_MM)
-        x_prealign_tol = 6.0
+        x_prealign_target = step2_x_target
+        x_prealign_tol = float(DIRECT_STEP2_DIST_LIVE_MAX_X_ERR_MM)
     if x_now is not None and dist_now is not None and abs(float(x_now) - float(x_prealign_target)) > float(x_prealign_tol):
         ok, reason, reading = _direct_close_x(
             vision,
@@ -2986,6 +3734,26 @@ def _direct_close_step2_pose(
     return ok, reason, reading
 
 
+def _direct_close_step3_pose(
+    vision: BrickDetector,
+    robot: MastFrozenRobot,
+    *,
+    label: str = "step3",
+    initial_reading: dict | None = None,
+) -> tuple[bool, str, dict]:
+    step3_dist_target, step3_dist_tol = _direct_step3_target_values()
+    return _direct_close_dist(
+        vision,
+        robot,
+        step3_dist_target,
+        step3_dist_tol,
+        allow_back=False,
+        max_pulses=int(DIRECT_STEP3_DIST_MAX_PULSES),
+        label=label,
+        initial_reading=initial_reading,
+    )
+
+
 def _run_direct_single_trial(
     site: ProgressSite,
     vision: BrickDetector,
@@ -3018,8 +3786,41 @@ def _run_direct_single_trial(
         _capture_trial_failure(site, vision, trial, attempt, f"trial incomplete: {reason}", reading, len(robot.mast_attempts))
         site.update_summary(f"Stopped after trial {trial} honest reset failure")
         return 2
+    _capture_phase(
+        site,
+        vision,
+        trial,
+        attempt,
+        "step1-start",
+        "start",
+        "step1_start",
+        reading,
+        len(robot.mast_attempts),
+        step="step1",
+    )
     step1_dist_target = _direct_step1_dist_target()
     step1_dist_tol = float(DIRECT_STEP1_DIST_TOL_MM)
+    step1_positive_cmd = "l" if str(positive_cmd).strip().lower() == "r" else "r"
+    pre_x = _float_or_none(reading.get("x_mm") if isinstance(reading, dict) else None)
+    pre_dist = _float_or_none(reading.get("dist_mm") if isinstance(reading, dict) else None)
+    if pre_x is not None and pre_dist is not None and float(pre_dist) > step1_dist_target + float(DIRECT_STEP1_PREALIGN_DIST_TOL_MM):
+        x_prebias_target = float(follow._x_target_mm()) + float(DIRECT_STEP1_FORWARD_X_PREBIAS_MM)
+        if abs(float(pre_x) - x_prebias_target) > 5.0:
+            pre_ok, pre_reason, pre_reading = _direct_close_x(
+                vision,
+                robot,
+                positive_cmd=step1_positive_cmd,
+                dist_target=float(pre_dist),
+                dist_tol=45.0,
+                x_target=x_prebias_target,
+                x_tol=5.0,
+                min_pulse_ms=int(DIRECT_X_SNAP_MIN_MS),
+                max_pulses=5,
+                label="step1_prex",
+                initial_reading=reading,
+            )
+            if pre_ok or _float_or_none(pre_reading.get("x_mm") if isinstance(pre_reading, dict) else None) is not None:
+                reading = pre_reading
     ok, reason, reading = _direct_close_dist(
         vision,
         robot,
@@ -3032,13 +3833,31 @@ def _run_direct_single_trial(
     )
     if not ok:
         _capture_phase(site, vision, trial, attempt, "step1", "fail", reason, reading, len(robot.mast_attempts), step="step1")
-        _capture_trial_failure(site, vision, trial, attempt, f"trial incomplete: {reason}", reading, len(robot.mast_attempts))
-        site.update_summary(f"Stopped after trial {trial} direct Step 1 distance failure")
+        reset_ok, reset_reason, reset_reading = _reset_after_incomplete_step(
+            site,
+            vision,
+            robot,
+            trial=trial,
+            attempt=attempt,
+            positive_cmd=positive_cmd,
+            failed_phase="step1",
+            reading=reading,
+        )
+        _capture_trial_failure(
+            site,
+            vision,
+            trial,
+            attempt,
+            f"trial incomplete: {reason}; recovery reset {'ok' if reset_ok else 'failed'}: {reset_reason}",
+            reset_reading,
+            len(robot.mast_attempts),
+        )
+        site.update_summary(f"Stopped after trial {trial} direct Step 1 distance failure; recovery reset {'ok' if reset_ok else 'failed'}")
         return 3
     ok, reason, reading = _direct_close_x(
         vision,
         robot,
-        positive_cmd=positive_cmd,
+        positive_cmd=step1_positive_cmd,
         dist_target=step1_dist_target,
         dist_tol=step1_dist_tol,
         x_target=float(follow._x_target_mm()),
@@ -3065,7 +3884,7 @@ def _run_direct_single_trial(
                 ok, reason, reading = _direct_close_x(
                     vision,
                     robot,
-                    positive_cmd=positive_cmd,
+                    positive_cmd=step1_positive_cmd,
                     dist_target=step1_dist_target,
                     dist_tol=step1_dist_tol,
                     x_target=float(follow._x_target_mm()),
@@ -3079,9 +3898,39 @@ def _run_direct_single_trial(
     step1_ok = bool(ok and step1_eval.get("target_met"))
     _capture_phase(site, vision, trial, attempt, "step1", "win" if step1_ok else "fail", reason, reading, len(robot.mast_attempts), step="step1")
     if not step1_ok:
-        _capture_trial_failure(site, vision, trial, attempt, f"trial incomplete: {reason}", reading, len(robot.mast_attempts))
-        site.update_summary(f"Stopped after trial {trial} direct Step 1 failure")
+        reset_ok, reset_reason, reset_reading = _reset_after_incomplete_step(
+            site,
+            vision,
+            robot,
+            trial=trial,
+            attempt=attempt,
+            positive_cmd=positive_cmd,
+            failed_phase="step1",
+            reading=reading,
+        )
+        _capture_trial_failure(
+            site,
+            vision,
+            trial,
+            attempt,
+            f"trial incomplete: {reason}; recovery reset {'ok' if reset_ok else 'failed'}: {reset_reason}",
+            reset_reading,
+            len(robot.mast_attempts),
+        )
+        site.update_summary(f"Stopped after trial {trial} direct Step 1 failure; recovery reset {'ok' if reset_ok else 'failed'}")
         return 3
+    _capture_phase(
+        site,
+        vision,
+        trial,
+        attempt,
+        "step2-start",
+        "start",
+        "step2_start",
+        reading,
+        len(robot.mast_attempts),
+        step="step2",
+    )
     ok, reason, reading = _direct_close_step2_pose(
         vision,
         robot,
@@ -3092,29 +3941,88 @@ def _run_direct_single_trial(
     step2_eval = _evaluate_reading(reading, "step2")
     step2_ok = bool(ok and step2_eval.get("target_met"))
     _capture_phase(site, vision, trial, attempt, "step2", "win" if step2_ok else "fail", reason, reading, len(robot.mast_attempts), step="step2")
-    post_reset_ok = False
-    post_reset_reason = "post_reset_skipped"
-    post_reset_reading = reading
-    if step2_ok:
-        post_reset_ok, post_reset_reason, post_reset_reading = _direct_close_honest_reset_pose(
+    if not step2_ok:
+        reset_ok, reset_reason, reset_reading = _reset_after_incomplete_step(
+            site,
             vision,
             robot,
+            trial=trial,
+            attempt=attempt,
             positive_cmd=positive_cmd,
-            label="post_reset",
-            initial_reading=reading,
+            failed_phase="step2",
+            reading=reading,
         )
-        _capture_phase(
+        _capture_trial_failure(
             site,
             vision,
             trial,
             attempt,
-            "post-reset",
-            "win" if post_reset_ok else "fail",
-            post_reset_reason,
-            post_reset_reading,
+            f"trial incomplete: {reason}; recovery reset {'ok' if reset_ok else 'failed'}: {reset_reason}",
+            reset_reading,
             len(robot.mast_attempts),
         )
-    honest_win = bool(step2_ok and post_reset_ok)
+        site.update_summary(f"Stopped after trial {trial} direct Step 2 failure; recovery reset {'ok' if reset_ok else 'failed'}")
+        return 3
+    _capture_phase(
+        site,
+        vision,
+        trial,
+        attempt,
+        "step3-start",
+        "start",
+        "step3_start",
+        reading,
+        len(robot.mast_attempts),
+        step="step3",
+    )
+    ok, step3_reason, step3_reading = _direct_close_step3_pose(
+        vision,
+        robot,
+        label="step3",
+        initial_reading=reading,
+    )
+    step3_eval = _evaluate_reading(step3_reading, "step3")
+    step3_ok = bool(ok and step3_eval.get("target_met"))
+    _capture_phase(
+        site,
+        vision,
+        trial,
+        attempt,
+        "step3",
+        "win" if step3_ok else "fail",
+        step3_reason,
+        step3_reading,
+        len(robot.mast_attempts),
+        step="step3",
+    )
+    post_reset_ok = False
+    post_reset_reason = "post_reset_skipped"
+    post_reset_reading = step3_reading
+    post_reset_ok, post_reset_reason, post_reset_reading = _direct_close_honest_reset_pose(
+        vision,
+        robot,
+        positive_cmd=positive_cmd,
+        label="post_reset",
+        initial_reading=step3_reading,
+    )
+    _capture_phase(
+        site,
+        vision,
+        trial,
+        attempt,
+        "post-reset",
+        "win" if post_reset_ok else "fail",
+        post_reset_reason,
+        post_reset_reading,
+        len(robot.mast_attempts),
+    )
+    honest_win = bool(step3_ok and post_reset_ok)
+    if step3_ok:
+        incomplete_reason = post_reset_reason
+    elif post_reset_ok:
+        incomplete_reason = f"{step3_reason}; post-reset ok"
+    else:
+        incomplete_reason = f"{step3_reason}; post-reset failed: {post_reset_reason}"
     _capture_phase(
         site,
         vision,
@@ -3122,12 +4030,16 @@ def _run_direct_single_trial(
         attempt,
         "trial",
         "win" if honest_win else "fail",
-        "honest reset -> step1 -> step2 -> honest reset" if honest_win else f"trial incomplete: {post_reset_reason if step2_ok else reason}",
-        post_reset_reading if step2_ok else reading,
+        "honest reset -> step1 -> step2 -> step3 -> honest reset" if honest_win else f"trial incomplete: {incomplete_reason}",
+        post_reset_reading,
         len(robot.mast_attempts),
         honest_trial=honest_win,
     )
-    site.update_summary("Victory: 1/1 direct trial won" if honest_win else f"Stopped after trial {trial} direct {'post-reset' if step2_ok else 'Step 2'} failure")
+    if honest_win:
+        site.update_summary("Victory: 1/1 full Step 1-3 trial won")
+    else:
+        failed_phase = "post-reset" if step3_ok else "Step 3"
+        site.update_summary(f"Stopped after trial {trial} direct {failed_phase} failure")
     return 0 if honest_win else 3
 
 
@@ -3155,11 +4067,11 @@ def _run_direct_trial_iteration(
             prefer_current_reset=trial > 1,
         )
         if rc != 0:
-            site.update_summary(f"Iteration {attempt}: stopped after {wins}/{total} direct wins")
+            site.update_summary(f"Iteration {attempt}: stopped after {wins}/{total} full Step 1-3 wins")
             return rc
         wins += 1
-        site.update_summary(f"Iteration {attempt}: {wins}/{total} direct wins")
-    site.update_summary(f"Victory: iteration {attempt} won {wins}/{total} direct trials")
+        site.update_summary(f"Iteration {attempt}: {wins}/{total} full Step 1-3 wins")
+    site.update_summary(f"Victory: iteration {attempt} won {wins}/{total} full Step 1-3 trials")
     return 0
 
 
@@ -3337,7 +4249,7 @@ def _run_frozen_reset(vision: BrickDetector, robot: MastFrozenRobot) -> dict:
 
 
 def run_trials(args: argparse.Namespace) -> int:
-    site = ProgressSite(Path(args.site_dir), "Leia Frozen Mast Step 1/2 Trials")
+    site = ProgressSite(Path(args.site_dir), "Leia Frozen Mast Step 1/2/3 Trials")
     summary = _apply_experiment(str(args.experiment))
     site.set_experiment(str(args.experiment), summary)
     print(f"[SITE] {Path(args.site_dir).resolve()}", flush=True)

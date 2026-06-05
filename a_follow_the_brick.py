@@ -37,6 +37,7 @@ from helper_brick_visibility_safety import (
     load_brick_visibility_motion_safety_config,
 )
 from helper_holding_brick import (
+    HoldingMaskLock,
     contour_target_result_tuple,
     detect_holding_brick,
     detect_masked_target_brick_contour,
@@ -46,6 +47,8 @@ from helper_holding_distance_calibration import apply_holding_distance_calibrati
 from helper_mast_direction_guard import classify_mast_y_effect, mast_effect_is_reversal
 from helper_robot_control import Robot
 import telemetry_robot as _telemetry_robot
+
+_HOLDING_MASK_LOCK = HoldingMaskLock()
 
 # ── tuning ────────────────────────────────────────────────────────────────────
 # Runtime success-gate defaults for this runner. a_follow_the_brick.py owns
@@ -78,6 +81,8 @@ RESET_TARGET_ABS_X_MM = 15.0
 RESET_X_OFFSET_CONFIRM_FRAMES = 2
 RESET_DIST_TARGET_MM = TARGET_DIST_MM * 1.75
 RESET_DIST_TOL_MM = 9.0
+RESET_HARD_DIST_TOL_MM = 90.0
+RESET_HARD_ABS_X_TOL_MM = 90.0
 RESET_Y_TARGET_MM = -5.0
 RESET_SHARP_FINISH_MS = 135
 RESET_LOW_X_EXTRA_TURN_THRESHOLD_MM = 35.0
@@ -95,6 +100,9 @@ DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG = {
     "pwm": 103,
     "mast_up_delay_fraction": 0.0,
 }
+RESET_STRAIGHT_BACK_TARGET_MM_PER_MS = 0.22
+RESET_STRAIGHT_BACK_TARGET_MIN_MS = 80
+RESET_STRAIGHT_BACK_TARGET_MAX_MS = 450
 DEFAULT_RESET_X_GOAL_CURVE_CONFIG = {
     "enabled": True,
     "target_fraction": 0.8,
@@ -113,6 +121,7 @@ DEFAULT_RESET_ARC_ALGORITHM_POINTS = (
 )
 DEFAULT_MOTION_POWER_SCALE = 1.0
 DEFAULT_NORMAL_SPEED_SCORE = 1
+DEFAULT_WHEEL_PWM_CEILING = 104
 DEFAULT_TURN_CURVE_INNER_PWM = 104
 DEFAULT_TURN_CURVE_OUTER_PWMS = {
     "gentle": 155,
@@ -122,24 +131,44 @@ DEFAULT_TURN_CURVE_OUTER_PWMS = {
 DEFAULT_STRONG_CURVE_ABS_X_ERR_MM = 18.0
 DEFAULT_MEDIUM_CURVE_ABS_X_ERR_MM = 10.0
 DEFAULT_MAX_ACT_MS = 2000
-MAX_MAST_ACT_MS = 1000
-HOLDING_S1_TRANSITION_COMMIT_MS = 800
+MAX_MAST_ACT_MS = 2500
+HOLDING_S1_TRANSITION_COMMIT_MS = 300
 HOLDING_S1_TRANSITION_MAX_DIST_ERR_MM = 45.0
 HOLDING_S1_TRANSITION_MAX_X_OUTSIDE_MM = 0.0
-HOLDING_S1_RETRY_BACKOFF_MS = 1500
+HOLDING_S1_RETRY_BACKOFF_MS = 900
 EMPTY_S1_RETRY_BACKOFF_MS = 900
-EMPTY_S1_COMBINED_CURVE_MEDIUM_MS = 300
-EMPTY_S1_COMBINED_CURVE_STRONG_MS = 450
+EMPTY_S1_COMBINED_CURVE_MEDIUM_MS = 260
+EMPTY_S1_COMBINED_CURVE_STRONG_MS = 320
+EMPTY_S1_TOO_CLOSE_BIAS_MAX_MS = 180
+VIRTUAL_WALL_RECOVERY_FORWARD_MS = 300
+EMPTY_S1_LEARNING_CURVE_MS = 250
+EMPTY_S1_CURVE_BREAKAWAY_MIN_MS = 450
+EMPTY_S1_SUPERSTRONG_X_OUTSIDE_MM = 20.0
+EMPTY_S1_GENTLE_X_OUTSIDE_MM = 8.0
+EMPTY_S1_IN_BAND_SUPERSTRONG_ABS_X_ERR_MM = 10.0
+EMPTY_S1_X_PERFECTION_DEADBAND_MM = 2.0
+EMPTY_S1_PREDICTIVE_X_ENABLED = False
+EMPTY_S1_PREDICTIVE_MIN_REDUCTION_MM = 2.5
+EMPTY_S1_PREDICTIVE_BRAKE_MARGIN_MM = 3.0
+EMPTY_S1_PREDICTIVE_DOWN_SHIFT_MARGIN_MM = 18.0
+EMPTY_S1_PREDICTIVE_DIST_ENABLED = False
+EMPTY_S1_PREDICTIVE_DIST_MIN_REDUCTION_MM = 5.0
+EMPTY_S1_PREDICTIVE_DIST_TARGET_MARGIN_MM = 8.0
+EMPTY_S1_LEARNING_POST_ACT_SETTLE_S = 0.08
+EMPTY_STEP1_CONFIDENT_WORSE_STOP_COUNT = 3
 RESET_FINAL_X_POLISH_MARGIN_MM = 2.0
 RESET_FINAL_X_POLISH_MIN_MS = 170
 RESET_FINAL_X_POLISH_MAX_MS = 250
 GAP_REGRESSION_EPSILON_MM = 0.25
+NOISE_MARGIN_MM = 5.0
+STEP1_WRONG_WAY_TREND_WINDOW = 4
+STEP1_WRONG_WAY_TREND_MIN_AVG_REGRESSION_MM = NOISE_MARGIN_MM
 DEFAULT_FOLLOW_COMBINED_GAP_POLICY = {
     "straight_x_outside_max_mm": 0.0,
     "straight_dist_outside_min_mm": 8.0,
     "micro_x_outside_max_mm": 2.0,
     "gentle_x_outside_max_mm": 6.0,
-    "medium_x_outside_max_mm": 12.0,
+    "medium_x_outside_max_mm": 30.0,
 }
 DEFAULT_DIST_APPROACH_POLICY = {
     "closure_shots": 1.0,
@@ -162,6 +191,7 @@ DEFAULT_DIST_APPROACH_POLICY = {
     "min_effective_drive_pulse_ms": 300,
     "near_target_forward_veto_mm": 0.0,
     "pingpong_confirm_abs_dist_err_mm": 20.0,
+    "pingpong_hard_stop_after_count": 1,
 }
 DEFAULT_X_PRIORITY_POLICY = {
     "polish_abs_x_mm": 6.0,
@@ -256,6 +286,8 @@ DEFAULT_STEP2_CONFIG = {
     "seat_drive_cmd": "f",
     "seat_drive_pwm": 103,
     "seat_drive_duration_ms": 0,
+    "post_win_forward_creep_ms": 0,
+    "post_win_forward_creep_pwm": 103,
     "post_seat_pause_s": 0.25,
     "step_timeout_s": 15.0,
     "recovery_creep_enabled": True,
@@ -292,6 +324,8 @@ DEFAULT_STEP2_CONFIG = {
     "targets": {
         "dist_mm": None,
         "dist_tol_mm": None,
+        "dist_tol_minus_mm": None,
+        "dist_tol_plus_mm": None,
         "x_mm": 0.0,
         "x_tol_mm": X_TOL_MM,
         "y_mm": -7.093439,
@@ -437,11 +471,41 @@ DEFAULT_TURN_BIAS_CURVES = {
     "strong": {"inner_pwm": 104, "outer_pwm": 155},
 }
 TURN_BIAS_STRENGTHS = ("micro", "gentle", "medium", "strong")
+DUTY_TURN_CURVE_STRENGTHS = ("gentle", "medium", "strong", "superstrong")
+DEFAULT_DUTY_TURN_CURVE_CONFIG = {
+    "enabled": True,
+    "tick_ms": 150,
+    "ramp_pwm_min": 104,
+    "ramp_pwm_max": 104,
+    "strengths": {
+        "gentle": {"mode": "skip_on", "every_n": 4, "phase_offset": 3, "skip_pwm": 0, "pwm": 104},
+        "medium": {"mode": "skip_on", "every_n": 2, "phase_offset": 1, "skip_pwm": 0, "pwm": 104},
+        "strong": {"mode": "run_on", "every_n": 3, "phase_offset": 2, "skip_pwm": 0, "pwm": 104},
+        "superstrong": {
+            "mode": "hold_zero",
+            "every_n": 1,
+            "phase_offset": 0,
+            "skip_pwm": 0,
+            "pwm": 115,
+            "pwm_ceiling": 115,
+        },
+    },
+}
+CALIBRATED_TURN_DRIVE_BASE_PWM = 133
+CALIBRATED_TURN_DRIVE_INNER_PWM = 93
+CALIBRATED_TURN_DRIVE_INNER_RATIO = CALIBRATED_TURN_DRIVE_INNER_PWM / CALIBRATED_TURN_DRIVE_BASE_PWM
+CALIBRATED_MEDIUM_TURN_DRIVE_BASE_PWM = 155
+CALIBRATED_MEDIUM_TURN_DRIVE_INNER_PWM = 104
+CALIBRATED_MEDIUM_TURN_DRIVE_INNER_RATIO = CALIBRATED_MEDIUM_TURN_DRIVE_INNER_PWM / CALIBRATED_MEDIUM_TURN_DRIVE_BASE_PWM
+CALIBRATED_STRONG_TURN_DRIVE_BASE_PWM = 186
+CALIBRATED_STRONG_TURN_DRIVE_INNER_PWM = 104
+CALIBRATED_STRONG_TURN_DRIVE_INNER_RATIO = CALIBRATED_STRONG_TURN_DRIVE_INNER_PWM / CALIBRATED_STRONG_TURN_DRIVE_BASE_PWM
 DEFAULT_VISION_MIN_LFB_MB = 16.0
 VISION_PREFLIGHT_BLOCK_EXIT = 42
 PREGAME_VISIBILITY_BLOCK_EXIT = 43
 VISION_RECOVERY_RETRIES = 2
 PREGAME_VISIBILITY_RECOVERY_RETRIES = 3
+WORKER_CRASH_RECOVERY_RETRIES = 2
 
 CROWN_PROFILE_TUNING = {
     "confidence": 0.08,
@@ -668,6 +732,23 @@ def _apply_step2_like_config(raw_cfg: dict | None, step_cfg: dict) -> dict:
             minimum=0,
             maximum=5000,
         )
+    if "post_win_forward_creep_ms" in raw:
+        step_cfg["post_win_forward_creep_ms"] = _coerce_int(
+            raw.get("post_win_forward_creep_ms"),
+            step_cfg.get("post_win_forward_creep_ms", DEFAULT_STEP2_CONFIG["post_win_forward_creep_ms"]),
+            minimum=0,
+            maximum=1000,
+        )
+    if "post_win_forward_creep_pwm" in raw:
+        step_cfg["post_win_forward_creep_pwm"] = _coerce_int(
+            raw.get("post_win_forward_creep_pwm"),
+            step_cfg.get(
+                "post_win_forward_creep_pwm",
+                step_cfg.get("seat_drive_pwm", DEFAULT_STEP2_CONFIG["post_win_forward_creep_pwm"]),
+            ),
+            minimum=1,
+            maximum=255,
+        )
     for key, maximum in (("max_duration_ms", 30000), ("chunk_ms", 1000)):
         if key in raw:
             step_cfg[key] = _coerce_int(
@@ -734,6 +815,8 @@ def _apply_step2_like_config(raw_cfg: dict | None, step_cfg: dict) -> dict:
         ("post_precision_recovery_cycles", 20),
         ("precision_drive_min_pulse_ms", 1000),
         ("precision_drive_max_pulse_ms", 1000),
+        ("precision_back_min_pulse_ms", 1000),
+        ("precision_back_max_pulse_ms", 1000),
         ("precision_mast_pulse_ms", _max_mast_act_ms()),
         ("precision_mast_small_gap_min_pulse_ms", _max_mast_act_ms()),
         ("precision_mast_small_gap_max_pulse_ms", _max_mast_act_ms()),
@@ -777,6 +860,9 @@ def _apply_step2_like_config(raw_cfg: dict | None, step_cfg: dict) -> dict:
         if key in raw_targets:
             target_cfg[key] = None if raw_targets.get(key) is None else _coerce_optional_float(raw_targets.get(key), target_cfg.get(key))
     for key in ("dist_tol_mm", "x_tol_mm", "y_tol_mm"):
+        if key in raw_targets:
+            target_cfg[key] = None if raw_targets.get(key) is None else _coerce_optional_float(raw_targets.get(key), target_cfg.get(key), minimum=0.0)
+    for key in ("dist_tol_minus_mm", "dist_tol_plus_mm"):
         if key in raw_targets:
             target_cfg[key] = None if raw_targets.get(key) is None else _coerce_optional_float(raw_targets.get(key), target_cfg.get(key), minimum=0.0)
     step_cfg["targets"] = target_cfg
@@ -825,6 +911,116 @@ def _auto_select_game_profile(vision: BrickDetector, *, samples: int = 3, sample
 def _hard_motion_min_confidence_pct() -> float:
     cfg = load_brick_visibility_motion_safety_config()
     return _coerce_float(cfg.get("min_confidence_pct"), 75.0, minimum=0.0, maximum=100.0)
+
+
+def _virtual_safety_max_dist_mm() -> float:
+    cfg = load_brick_visibility_motion_safety_config()
+    return _coerce_float(cfg.get("max_dist_mm"), 300.0, minimum=0.0, maximum=1000.0)
+
+
+def _virtual_safety_dist_exceeded(reading: dict | None) -> bool:
+    if not isinstance(reading, dict):
+        return False
+    max_dist = _virtual_safety_max_dist_mm()
+    if max_dist <= 0.0:
+        return False
+    try:
+        return float(reading.get("dist_mm")) > float(max_dist)
+    except (TypeError, ValueError):
+        return False
+
+
+def _virtual_safety_in_safe_zone(reading: dict | None) -> bool:
+    if not isinstance(reading, dict):
+        return False
+    max_dist = _virtual_safety_max_dist_mm()
+    if max_dist <= 0.0:
+        return True
+    try:
+        return float(reading.get("dist_mm")) <= float(max_dist)
+    except (TypeError, ValueError):
+        return False
+
+
+def _virtual_safety_stop_plan(
+    reading: dict | None,
+    *,
+    dist_err: float | None = None,
+    x_err: float | None = None,
+    y_err: float | None = None,
+) -> dict:
+    return {
+        "kind": "wait",
+        "action": "VIRTUAL_WALL_STOP",
+        "dist_err": 0.0 if dist_err is None else float(dist_err),
+        "x_err": 0.0 if x_err is None else float(x_err),
+        "y_err": y_err,
+        "duration_ms": 0,
+        "reason": "virtual_safety_dist_exceeded",
+        "dist_mm": None if not isinstance(reading, dict) else reading.get("dist_mm"),
+        "virtual_safety_max_dist_mm": float(_virtual_safety_max_dist_mm()),
+    }
+
+
+def _virtual_safety_forward_recovery_plan(
+    reading: dict,
+    *,
+    dist_err: float,
+    x_err: float,
+    y_err: float | None = None,
+) -> dict:
+    x_outside = _x_outside_gate_mm(float(x_err))
+    if float(x_outside) >= float(EMPTY_S1_GENTLE_X_OUTSIDE_MM):
+        turn_cmd = _turn_cmd_to_close_x_gap(float(x_err)) or "r"
+        strength = _empty_step1_learning_curve_strength(float(x_outside))
+        return {
+            "kind": "drive_bias",
+            "cmd": "f",
+            "turn_cmd": str(turn_cmd),
+            "drive_mode": "forward",
+            "strength": str(strength),
+            "action": f"VIRTUAL_WALL_RECOVERY_BIAS_{str(turn_cmd).upper()}_{str(strength).upper()}",
+            "dist_err": float(dist_err),
+            "x_err": float(x_err),
+            "x_outside_mm": float(x_outside),
+            "dist_outside_mm": float(_dist_outside_gate_mm(float(dist_err))),
+            "y_err": y_err,
+            "duration_ms": int(EMPTY_S1_LEARNING_CURVE_MS),
+            "distance_creep": True,
+            "reason": "virtual_safety_unarmed_forward_curve_recovery",
+            "use_calibrated_turn_drive_curve": False,
+            "skip_near_target_crawl_cap": True,
+            "dist_mm": reading.get("dist_mm") if isinstance(reading, dict) else None,
+            "virtual_safety_max_dist_mm": float(_virtual_safety_max_dist_mm()),
+        }
+    return {
+        "kind": "drive",
+        "cmd": "f",
+        "action": "VIRTUAL_WALL_RECOVERY_FWD",
+        "dist_err": float(dist_err),
+        "x_err": float(x_err),
+        "y_err": y_err,
+        "duration_ms": int(VIRTUAL_WALL_RECOVERY_FORWARD_MS),
+        "pwm": int(_pwm_floor_for_cmd("f")),
+        "distance_creep": True,
+        "reason": "virtual_safety_unarmed_forward_recovery",
+        "dist_mm": reading.get("dist_mm") if isinstance(reading, dict) else None,
+        "virtual_safety_max_dist_mm": float(_virtual_safety_max_dist_mm()),
+    }
+
+
+def _virtual_safety_result_triggered(result: dict | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if bool(result.get("virtual_safety_stop")):
+        return True
+    if str(result.get("last_action") or "") == "VIRTUAL_WALL_STOP":
+        return True
+    reason = str(result.get("reason") or "")
+    if "virtual_safety_dist_exceeded" in reason:
+        return True
+    reading = result.get("reading") if isinstance(result.get("reading"), dict) else None
+    return _virtual_safety_dist_exceeded(reading)
 
 
 def _coerce_curve_strength(value, fallback: str = "gentle") -> str:
@@ -1038,6 +1234,7 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
     cfg = {
         "motion_power_scale": float(DEFAULT_MOTION_POWER_SCALE),
         "normal_speed_score": int(DEFAULT_NORMAL_SPEED_SCORE),
+        "wheel_pwm_ceiling": int(DEFAULT_WHEEL_PWM_CEILING),
         "turn_curves": {
             "inner_pwm": int(DEFAULT_TURN_CURVE_INNER_PWM),
             "forward": {
@@ -1092,6 +1289,16 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
             }
             for drive_mode in ("forward", "backward")
         },
+        "duty_turn_curves": {
+            "enabled": bool(DEFAULT_DUTY_TURN_CURVE_CONFIG["enabled"]),
+            "tick_ms": int(DEFAULT_DUTY_TURN_CURVE_CONFIG["tick_ms"]),
+            "ramp_pwm_min": int(DEFAULT_DUTY_TURN_CURVE_CONFIG["ramp_pwm_min"]),
+            "ramp_pwm_max": int(DEFAULT_DUTY_TURN_CURVE_CONFIG["ramp_pwm_max"]),
+            "strengths": {
+                name: dict(curve)
+                for name, curve in DEFAULT_DUTY_TURN_CURVE_CONFIG["strengths"].items()
+            },
+        },
     }
     try:
         payload = json.loads(model_path.read_text())
@@ -1111,6 +1318,12 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         DEFAULT_NORMAL_SPEED_SCORE,
         minimum=1,
         maximum=100,
+    )
+    cfg["wheel_pwm_ceiling"] = _coerce_int(
+        raw.get("wheel_pwm_ceiling"),
+        DEFAULT_WHEEL_PWM_CEILING,
+        minimum=0,
+        maximum=255,
     )
     cfg["max_act_ms"] = _coerce_int(
         raw.get("max_act_ms"),
@@ -1716,6 +1929,76 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
                 minimum=1,
                 maximum=255,
             )
+    raw_duty_curves = raw.get("duty_turn_curves") if isinstance(raw.get("duty_turn_curves"), dict) else {}
+    cfg["duty_turn_curves"]["enabled"] = bool(
+        raw_duty_curves.get("enabled", DEFAULT_DUTY_TURN_CURVE_CONFIG["enabled"])
+    )
+    cfg["duty_turn_curves"]["tick_ms"] = _coerce_int(
+        raw_duty_curves.get("tick_ms"),
+        DEFAULT_DUTY_TURN_CURVE_CONFIG["tick_ms"],
+        minimum=50,
+        maximum=500,
+    )
+    cfg["duty_turn_curves"]["ramp_pwm_min"] = _coerce_int(
+        raw_duty_curves.get("ramp_pwm_min"),
+        DEFAULT_DUTY_TURN_CURVE_CONFIG["ramp_pwm_min"],
+        minimum=1,
+        maximum=255,
+    )
+    cfg["duty_turn_curves"]["ramp_pwm_max"] = _coerce_int(
+        raw_duty_curves.get("ramp_pwm_max"),
+        DEFAULT_DUTY_TURN_CURVE_CONFIG["ramp_pwm_max"],
+        minimum=1,
+        maximum=255,
+    )
+    raw_duty_strengths = (
+        raw_duty_curves.get("strengths")
+        if isinstance(raw_duty_curves.get("strengths"), dict)
+        else {}
+    )
+    for strength in DUTY_TURN_CURVE_STRENGTHS:
+        fallback_curve = DEFAULT_DUTY_TURN_CURVE_CONFIG["strengths"][strength]
+        raw_curve = (
+            raw_duty_strengths.get(strength)
+            if isinstance(raw_duty_strengths.get(strength), dict)
+            else {}
+        )
+        mode = str(raw_curve.get("mode", fallback_curve["mode"]) or "").strip().lower()
+        if mode not in {"skip_on", "run_on", "hold_zero"}:
+            mode = str(fallback_curve["mode"])
+        cfg["duty_turn_curves"]["strengths"][strength] = {
+            "mode": mode,
+            "every_n": _coerce_int(
+                raw_curve.get("every_n"),
+                fallback_curve["every_n"],
+                minimum=1,
+                maximum=20,
+            ),
+            "phase_offset": _coerce_int(
+                raw_curve.get("phase_offset"),
+                fallback_curve["phase_offset"],
+                minimum=0,
+                maximum=20,
+            ),
+            "skip_pwm": _coerce_int(
+                raw_curve.get("skip_pwm"),
+                fallback_curve["skip_pwm"],
+                minimum=0,
+                maximum=255,
+            ),
+            "pwm": _coerce_int(
+                raw_curve.get("pwm"),
+                fallback_curve.get("pwm", 0),
+                minimum=0,
+                maximum=255,
+            ),
+            "pwm_ceiling": _coerce_int(
+                raw_curve.get("pwm_ceiling"),
+                fallback_curve.get("pwm_ceiling", raw_curve.get("pwm", fallback_curve.get("pwm", 0))),
+                minimum=0,
+                maximum=255,
+            ),
+        }
     raw_step2 = raw.get("step2") if isinstance(raw.get("step2"), dict) else {}
     step2 = cfg["step2"]
     mast_cmd = str(raw_step2.get("seat_mast_cmd", DEFAULT_STEP2_CONFIG["seat_mast_cmd"])).strip().lower()
@@ -1874,6 +2157,12 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
             DEFAULT_STEP2_CONFIG["targets"][key],
             minimum=0.0,
         )
+    for key in ("dist_tol_minus_mm", "dist_tol_plus_mm"):
+        target_cfg[key] = _coerce_optional_float(
+            raw_targets.get(key),
+            DEFAULT_STEP2_CONFIG["targets"][key],
+            minimum=0.0,
+        )
     raw_semi = raw_step2.get("semi_happy_targets") if isinstance(raw_step2.get("semi_happy_targets"), dict) else {}
     semi_cfg = dict(DEFAULT_STEP2_CONFIG["semi_happy_targets"])
     for key in ("dist_mm", "x_mm", "y_mm"):
@@ -1901,6 +2190,18 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
     step4["lift_pulse_ms"] = _coerce_int(
         raw_step4_lift.get("lift_pulse_ms"),
         DEFAULT_STEP3_CONFIG["lift_pulse_ms"],
+        minimum=1,
+        maximum=_max_mast_act_ms(),
+    )
+    step4["fixed_lift_only"] = bool(
+        raw_step4_lift.get(
+            "fixed_lift_only",
+            DEFAULT_STEP3_CONFIG["fixed_lift_only"],
+        )
+    )
+    step4["fixed_lift_duration_ms"] = _coerce_int(
+        raw_step4_lift.get("fixed_lift_duration_ms"),
+        DEFAULT_STEP3_CONFIG["fixed_lift_duration_ms"],
         minimum=1,
         maximum=_max_mast_act_ms(),
     )
@@ -2204,6 +2505,13 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
                 if raw_profile_step2_targets.get(key) is None
                 else _coerce_optional_float(raw_profile_step2_targets.get(key), target_cfg.get(key), minimum=0.0)
             )
+    for key in ("dist_tol_minus_mm", "dist_tol_plus_mm"):
+        if key in raw_profile_step2_targets:
+            target_cfg[key] = (
+                None
+                if raw_profile_step2_targets.get(key) is None
+                else _coerce_optional_float(raw_profile_step2_targets.get(key), target_cfg.get(key), minimum=0.0)
+            )
     raw_profile_step3 = raw_profile.get("step3") if isinstance(raw_profile.get("step3"), dict) else {}
     _apply_step2_like_config(raw_profile_step3, cfg["step3"])
     raw_profile_step4 = raw_profile.get("step4") if isinstance(raw_profile.get("step4"), dict) else {}
@@ -2215,9 +2523,9 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         profile_lift_cmd = str(raw_profile_step4_lift.get("lift_mast_cmd") or "").strip().lower()
         if profile_lift_cmd in {"u", "d"}:
             step4["lift_mast_cmd"] = profile_lift_cmd
-    for key in ("lift_mast_pwm", "lift_pulse_ms", "max_lift_attempts", "no_visibility_fallback_mast_pwm", "no_visibility_fallback_duration_ms"):
+    for key in ("lift_mast_pwm", "lift_pulse_ms", "fixed_lift_duration_ms", "max_lift_attempts", "no_visibility_fallback_mast_pwm", "no_visibility_fallback_duration_ms"):
         if key in raw_profile_step4_lift:
-            maximum = _max_mast_act_ms() if key in {"lift_pulse_ms", "no_visibility_fallback_duration_ms"} else (
+            maximum = _max_mast_act_ms() if key in {"lift_pulse_ms", "fixed_lift_duration_ms", "no_visibility_fallback_duration_ms"} else (
                 50 if key == "max_lift_attempts" else 5000
             )
             step4[key] = _coerce_int(
@@ -2237,6 +2545,8 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
             )
     if "no_visibility_fallback_enabled" in raw_profile_step4_lift:
         step4["no_visibility_fallback_enabled"] = bool(raw_profile_step4_lift.get("no_visibility_fallback_enabled"))
+    if "fixed_lift_only" in raw_profile_step4_lift:
+        step4["fixed_lift_only"] = bool(raw_profile_step4_lift.get("fixed_lift_only"))
     if "initial_lift_before_gate" in raw_profile_step4_lift:
         step4["initial_lift_before_gate"] = bool(raw_profile_step4_lift.get("initial_lift_before_gate"))
     if "no_visibility_fallback_mast_cmd" in raw_profile_step4_lift:
@@ -2274,19 +2584,21 @@ def _load_reset_motion_config(path: Path | None = None) -> dict:
             "y_tol_mm": float(DEFAULT_FOLLOW_Y_AXIS_CONFIG["reset_tol_mm"]),
             "confirm_frames": int(RESET_X_OFFSET_CONFIRM_FRAMES),
             "holding_pulse_scale": 1.0,
+            "max_total_back_ms": 0,
             "arc_algorithm": {"points": [dict(point) for point in DEFAULT_RESET_ARC_ALGORITHM_POINTS]},
             "sharp_finish": {
                 "enabled": True,
                 "duration_ms": int(RESET_SHARP_FINISH_MS),
                 "mode": "faster_wheel_only",
             },
-            "low_x_extra_sharp_turn": {
-                "enabled": True,
-                "threshold_abs_x_mm": float(RESET_LOW_X_EXTRA_TURN_THRESHOLD_MM),
-                "duration_ms": int(RESET_LOW_X_EXTRA_TURN_DURATION_MS),
-                "slower_pwm": int(RESET_LOW_X_EXTRA_TURN_SLOWER_PWM),
-                "faster_pwm": int(RESET_LOW_X_EXTRA_TURN_FASTER_PWM),
-            },
+        "low_x_extra_sharp_turn": {
+            "enabled": True,
+            "threshold_abs_x_mm": float(RESET_LOW_X_EXTRA_TURN_THRESHOLD_MM),
+            "duration_ms": int(RESET_LOW_X_EXTRA_TURN_DURATION_MS),
+            "slower_pwm": int(RESET_LOW_X_EXTRA_TURN_SLOWER_PWM),
+            "faster_pwm": int(RESET_LOW_X_EXTRA_TURN_FASTER_PWM),
+            "pwm_ceiling": 115,
+        },
             "straight_back_first": dict(DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG),
             "x_goal_curve": dict(DEFAULT_RESET_X_GOAL_CURVE_CONFIG),
             "adjustment": {
@@ -2380,6 +2692,12 @@ def _load_reset_motion_config(path: Path | None = None) -> dict:
         minimum=0.1,
         maximum=1.0,
     )
+    cfg["reverse_turn"]["max_total_back_ms"] = _coerce_int(
+        reverse_turn.get("max_total_back_ms"),
+        0,
+        minimum=0,
+        maximum=10000,
+    )
     cfg["reverse_turn"]["dist_target_mm"] = _coerce_float(
         reverse_turn.get("dist_target_mm"),
         RESET_DIST_TARGET_MM,
@@ -2390,6 +2708,22 @@ def _load_reset_motion_config(path: Path | None = None) -> dict:
         RESET_DIST_TOL_MM,
         minimum=0.0,
     )
+    cfg["reverse_turn"]["hard_dist_tol_mm"] = _coerce_float(
+        reverse_turn.get("hard_dist_tol_mm"),
+        RESET_HARD_DIST_TOL_MM,
+        minimum=0.0,
+    )
+    cfg["reverse_turn"]["hard_abs_x_tol_mm"] = _coerce_float(
+        reverse_turn.get("hard_abs_x_tol_mm"),
+        RESET_HARD_ABS_X_TOL_MM,
+        minimum=0.0,
+    )
+    if reverse_turn.get("min_attempt_dist_mm") is not None:
+        cfg["reverse_turn"]["min_attempt_dist_mm"] = _coerce_float(
+            reverse_turn.get("min_attempt_dist_mm"),
+            0.0,
+            minimum=0.0,
+        )
     cfg["reverse_turn"]["y_target_mm"] = _coerce_float(
         reverse_turn.get("y_target_mm"),
         RESET_Y_TARGET_MM,
@@ -2464,6 +2798,12 @@ def _load_reset_motion_config(path: Path | None = None) -> dict:
             minimum=1,
             maximum=255,
         ),
+        "pwm_ceiling": _coerce_int(
+            raw_low_x_extra.get("pwm_ceiling"),
+            115,
+            minimum=1,
+            maximum=255,
+        ),
     }
     raw_straight_back = (
         reverse_turn.get("straight_back_first")
@@ -2493,6 +2833,12 @@ def _load_reset_motion_config(path: Path | None = None) -> dict:
         "pwm": _coerce_int(
             raw_straight_back.get("pwm"),
             DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG["pwm"],
+            minimum=1,
+            maximum=255,
+        ),
+        "pwm_ceiling": _coerce_int(
+            raw_straight_back.get("pwm_ceiling"),
+            raw_straight_back.get("pwm", DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG["pwm"]),
             minimum=1,
             maximum=255,
         ),
@@ -2808,6 +3154,16 @@ def _normal_speed_score() -> int:
     )
 
 
+def _wheel_pwm_ceiling() -> int:
+    cfg = _follow_motion_config()
+    return _coerce_int(
+        cfg.get("wheel_pwm_ceiling"),
+        DEFAULT_WHEEL_PWM_CEILING,
+        minimum=0,
+        maximum=255,
+    )
+
+
 def _x_only_turn_drive_mode() -> str:
     cfg = _follow_motion_config()
     raw = cfg.get("x_only_turn") if isinstance(cfg.get("x_only_turn"), dict) else {}
@@ -2923,11 +3279,22 @@ def _pwm_floor_for_cmd(cmd: str | None) -> int:
     return int(_telemetry_robot.clamp_pwm(max(0, int(floor))) or 0)
 
 
-def _scaled_pwm_for_cmd(cmd: str | None, pwm: int | float | None) -> int:
+def _scaled_pwm_for_cmd(
+    cmd: str | None,
+    pwm: int | float | None,
+    *,
+    wheel_pwm_ceiling: int | float | None = None,
+) -> int:
+    cmd_key = str(cmd or "").strip().lower()
     scaled = _scaled_pwm(pwm)
     if int(scaled) <= 0:
         return 0
-    return int(max(int(scaled), int(_pwm_floor_for_cmd(cmd))))
+    pwm_val = int(max(int(scaled), int(_pwm_floor_for_cmd(cmd_key))))
+    if cmd_key in {"f", "b", "l", "r"}:
+        ceiling = _coerce_int(wheel_pwm_ceiling, _wheel_pwm_ceiling(), minimum=0, maximum=255)
+        if ceiling > 0:
+            pwm_val = min(int(pwm_val), int(ceiling))
+    return int(pwm_val)
 
 
 def _approved_straight_drive_pwm(cmd: str | None) -> int:
@@ -2958,7 +3325,12 @@ def _scaled_actions(action_specs) -> list[dict]:
         if not isinstance(action, dict):
             continue
         row = dict(action)
-        row["pwm"] = _scaled_pwm_for_cmd(row.get("action"), row.get("pwm"))
+        pwm_ceiling = row.pop("pwm_ceiling", None)
+        row["pwm"] = _scaled_pwm_for_cmd(
+            row.get("action"),
+            row.get("pwm"),
+            wheel_pwm_ceiling=pwm_ceiling,
+        )
         scaled.append(row)
     return scaled
 
@@ -3045,6 +3417,63 @@ def _turn_cmd_to_close_x_gap(x_mm: float) -> str | None:
     if float(x_mm) < 0.0:
         return "l" if positive_cmd == "r" else "r"
     return None
+
+
+def _empty_step1_learning_curve_strength(x_outside_mm: float) -> str:
+    policy = _follow_combined_gap_policy()
+    if float(x_outside_mm) >= float(EMPTY_S1_SUPERSTRONG_X_OUTSIDE_MM):
+        return "superstrong"
+    if float(x_outside_mm) <= float(policy.get("gentle_x_outside_max_mm", 6.0)):
+        return "gentle"
+    if float(x_outside_mm) <= float(policy.get("medium_x_outside_max_mm", 12.0)):
+        return "medium"
+    return "strong"
+
+
+def _empty_step1_crawl_to_win_floor_ms(dist_err: float) -> int:
+    """Return a smooth crawl pulse sized only to reach the far edge of Step 1."""
+    gap_to_floor = max(0.0, float(dist_err) - float(_win_effective_tolerance(_dist_tol_mm())))
+    if gap_to_floor <= 0.0:
+        return 0
+    if gap_to_floor <= 10.0:
+        return int(EMPTY_S1_CURVE_BREAKAWAY_MIN_MS)
+    if gap_to_floor <= 20.0:
+        return int(EMPTY_S1_CURVE_BREAKAWAY_MIN_MS)
+    if gap_to_floor <= 40.0:
+        return max(int(EMPTY_S1_CURVE_BREAKAWAY_MIN_MS), 520)
+    if gap_to_floor <= 70.0:
+        return max(int(EMPTY_S1_CURVE_BREAKAWAY_MIN_MS), 600)
+    return max(int(EMPTY_S1_CURVE_BREAKAWAY_MIN_MS), 650)
+
+
+def _empty_step1_in_band_x_curve_ms(dist_err: float) -> int:
+    """Smallest forward curve that still feels like a crawl, used only inside the Step 1 distance band."""
+    tol = float(_win_effective_tolerance(_dist_tol_mm()))
+    err = float(dist_err)
+    if err <= -0.65 * tol:
+        return 0
+    if err <= -0.25 * tol:
+        return 120
+    if err <= 0.0:
+        return 150
+    if err <= 0.5 * tol:
+        return 170
+    return 190
+
+
+def _empty_step1_inband_x_forward_curve_ms(dist_err: float) -> int:
+    """Forward gentle curve sized to stop at the first happy distance edge."""
+    tol = float(_win_effective_tolerance(_dist_tol_mm()))
+    gap_to_happy_edge = max(0.0, float(dist_err) - float(tol))
+    if gap_to_happy_edge <= 0.0:
+        return 0
+    if gap_to_happy_edge <= 8.0:
+        return 70
+    if gap_to_happy_edge <= 16.0:
+        return 90
+    if gap_to_happy_edge <= 24.0:
+        return 110
+    return 120
 
 
 def _opposite_turn_cmd(cmd: str | None) -> str | None:
@@ -3253,7 +3682,306 @@ def _turn_curve_actions(*, drive_mode: str, cmd: str, curve: dict) -> list[dict]
 
 
 def _turn_bias_actions(*, drive_mode: str, turn_cmd: str, curve: dict) -> list[dict]:
-    return _turn_curve_actions(drive_mode=drive_mode, cmd=turn_cmd, curve=curve)
+    turn_key = str(turn_cmd or "").strip().lower()
+    drive_key = str(drive_mode or "").strip().lower()
+    if turn_key not in {"l", "r"} or drive_key not in {"forward", "backward"}:
+        return []
+    try:
+        inner_pwm = int(curve.get("inner_pwm"))
+    except (TypeError, ValueError):
+        inner_pwm = int(DEFAULT_TURN_BIAS_CURVES["gentle"]["inner_pwm"])
+    try:
+        outer_pwm = int(curve.get("outer_pwm"))
+    except (TypeError, ValueError):
+        outer_pwm = int(DEFAULT_TURN_BIAS_CURVES["gentle"]["outer_pwm"])
+    drive_actions = (
+        {"l": "b", "r": "f"}
+        if drive_key == "forward"
+        else {"l": "f", "r": "b"}
+    )
+    if turn_key == "r":
+        by_target = {
+            "l": {"target": "l", "action": drive_actions["l"], "pwm": int(outer_pwm)},
+            "r": {"target": "r", "action": drive_actions["r"], "pwm": int(inner_pwm)},
+        }
+    else:
+        by_target = {
+            "l": {"target": "l", "action": drive_actions["l"], "pwm": int(inner_pwm)},
+            "r": {"target": "r", "action": drive_actions["r"], "pwm": int(outer_pwm)},
+        }
+    return [dict(by_target[target]) for target in ("l", "r")]
+
+
+def _duty_turn_curve_config() -> dict:
+    raw = _follow_motion_config().get("duty_turn_curves")
+    cfg = raw if isinstance(raw, dict) else {}
+    strengths = cfg.get("strengths") if isinstance(cfg.get("strengths"), dict) else {}
+    out = {
+        "enabled": bool(cfg.get("enabled", DEFAULT_DUTY_TURN_CURVE_CONFIG["enabled"])),
+        "tick_ms": _coerce_int(
+            cfg.get("tick_ms"),
+            DEFAULT_DUTY_TURN_CURVE_CONFIG["tick_ms"],
+            minimum=50,
+            maximum=500,
+        ),
+        "ramp_pwm_min": _coerce_int(
+            cfg.get("ramp_pwm_min"),
+            DEFAULT_DUTY_TURN_CURVE_CONFIG["ramp_pwm_min"],
+            minimum=1,
+            maximum=255,
+        ),
+        "ramp_pwm_max": _coerce_int(
+            cfg.get("ramp_pwm_max"),
+            DEFAULT_DUTY_TURN_CURVE_CONFIG["ramp_pwm_max"],
+            minimum=1,
+            maximum=255,
+        ),
+        "strengths": {},
+    }
+    if int(out["ramp_pwm_max"]) < int(out["ramp_pwm_min"]):
+        out["ramp_pwm_min"], out["ramp_pwm_max"] = out["ramp_pwm_max"], out["ramp_pwm_min"]
+    for strength in DUTY_TURN_CURVE_STRENGTHS:
+        fallback = DEFAULT_DUTY_TURN_CURVE_CONFIG["strengths"][strength]
+        raw_curve = strengths.get(strength) if isinstance(strengths.get(strength), dict) else {}
+        mode = str(raw_curve.get("mode", fallback["mode"]) or "").strip().lower()
+        if mode not in {"skip_on", "run_on", "hold_zero"}:
+            mode = str(fallback["mode"])
+        out["strengths"][strength] = {
+            "mode": mode,
+            "every_n": _coerce_int(raw_curve.get("every_n"), fallback["every_n"], minimum=1, maximum=20),
+            "phase_offset": _coerce_int(
+                raw_curve.get("phase_offset"),
+                fallback["phase_offset"],
+                minimum=0,
+                maximum=20,
+            ),
+            "skip_pwm": _coerce_int(raw_curve.get("skip_pwm"), fallback["skip_pwm"], minimum=0, maximum=255),
+            "pwm": _coerce_int(raw_curve.get("pwm"), fallback.get("pwm", 0), minimum=0, maximum=255),
+            "pwm_ceiling": _coerce_int(
+                raw_curve.get("pwm_ceiling"),
+                fallback.get("pwm_ceiling", raw_curve.get("pwm", fallback.get("pwm", 0))),
+                minimum=0,
+                maximum=255,
+            ),
+        }
+    return out
+
+
+def _duty_curve_strength_for_request(strength: str, x_abs_mm: float) -> str | None:
+    strength_key = str(strength or "").strip().lower()
+    if strength_key == "micro":
+        return None
+    if strength_key == "adaptive":
+        return _curve_strength_for_abs_x_err(float(x_abs_mm))
+    if strength_key in DUTY_TURN_CURVE_STRENGTHS:
+        return strength_key
+    if "superstrong" in strength_key:
+        return "superstrong"
+    if "strong" in strength_key:
+        return "strong"
+    if "medium" in strength_key:
+        return "medium"
+    if "gentle" in strength_key:
+        return "gentle"
+    return None
+
+
+def _drive_actions_for_drive_mode(drive_mode: str) -> dict[str, str]:
+    drive_key = str(drive_mode or "").strip().lower()
+    if drive_key == "backward":
+        return {"l": "f", "r": "b"}
+    return {"l": "b", "r": "f"}
+
+
+def _duty_curve_actions(
+    *,
+    drive_mode: str,
+    turn_cmd: str,
+    strength: str,
+    step_zero_based: int,
+    phase_steps: int,
+    recovery_boost_scale: float | None = None,
+) -> tuple[list[dict], dict] | None:
+    turn_key = str(turn_cmd or "").strip().lower()
+    drive_key = str(drive_mode or "").strip().lower()
+    strength_key = str(strength or "").strip().lower()
+    if turn_key not in {"l", "r"} or drive_key not in {"forward", "backward"}:
+        return None
+    cfg = _duty_turn_curve_config()
+    if not bool(cfg.get("enabled", True)):
+        return None
+    strength_cfg = cfg.get("strengths", {}).get(strength_key)
+    if not isinstance(strength_cfg, dict):
+        return None
+    steps = max(1, int(phase_steps))
+    idx = max(0, int(step_zero_based))
+    ratio = 1.0 if steps <= 1 else max(0.0, min(1.0, float(idx) / float(steps - 1)))
+    base_pwm = _lerp_pwm(int(cfg["ramp_pwm_min"]), int(cfg["ramp_pwm_max"]), ratio)
+    try:
+        boost_scale = float(recovery_boost_scale)
+    except (TypeError, ValueError):
+        boost_scale = 1.0
+    if boost_scale > 1.0:
+        base_pwm = _scaled_action_pwm_for_boost(base_pwm, boost_scale)
+    fixed_pwm = _coerce_int(strength_cfg.get("pwm"), 0, minimum=0, maximum=255)
+    if fixed_pwm > 0:
+        base_pwm = int(fixed_pwm)
+    pwm_ceiling = _coerce_int(strength_cfg.get("pwm_ceiling"), 0, minimum=0, maximum=255)
+    if pwm_ceiling <= 0:
+        pwm_ceiling = int(base_pwm)
+    every_n = max(1, int(strength_cfg.get("every_n", 1)))
+    phase_offset = int(strength_cfg.get("phase_offset", 0))
+    mode = str(strength_cfg.get("mode") or "skip_on").strip().lower()
+    selected_tick = (int(idx) - int(phase_offset)) % int(every_n) == 0
+    if mode == "hold_zero":
+        stop_inside = True
+    elif mode == "run_on":
+        stop_inside = not bool(selected_tick)
+    else:
+        stop_inside = bool(selected_tick)
+        mode = "skip_on"
+
+    inside = "r" if turn_key == "r" else "l"
+    outside = "l" if inside == "r" else "r"
+    drive_actions = _drive_actions_for_drive_mode(drive_key)
+    by_target = {
+        outside: {
+            "target": outside,
+            "action": drive_actions[outside],
+            "pwm": int(base_pwm),
+            "pwm_ceiling": int(pwm_ceiling),
+        },
+        inside: {
+            "target": inside,
+            "action": "s" if bool(stop_inside) else drive_actions[inside],
+            "pwm": int(strength_cfg.get("skip_pwm", 0) if bool(stop_inside) else base_pwm),
+            "pwm_ceiling": int(pwm_ceiling),
+        },
+    }
+    metadata = {
+        "curve_label": f"{'b' if drive_key == 'backward' else 'f'}{turn_key}_{strength_key}",
+        "duty_strength": strength_key,
+        "duty_mode": mode,
+        "tick_index": int(idx),
+        "tick_count": int(steps),
+        "tick_selected": bool(selected_tick),
+        "inside_target": inside,
+        "outside_target": outside,
+        "inside_stopped": bool(stop_inside),
+        "base_pwm": int(base_pwm),
+        "fixed_pwm": int(fixed_pwm),
+        "pwm_ceiling": int(pwm_ceiling),
+        "ramp_pwm_min": int(cfg["ramp_pwm_min"]),
+        "ramp_pwm_max": int(cfg["ramp_pwm_max"]),
+        "every_n": int(every_n),
+        "phase_offset": int(phase_offset),
+    }
+    return [dict(by_target[target]) for target in ("l", "r")], metadata
+
+
+def _send_duty_curve_sequence(
+    robot: Robot,
+    logical_cmd: str,
+    *,
+    drive_mode: str,
+    turn_cmd: str,
+    strength: str,
+    duration_ms: int,
+    reading: dict,
+    context: str,
+    mast_cmd: str | None = None,
+    recovery_boost_scale: float | None = None,
+    allow_long_duration: bool = False,
+) -> dict | None:
+    if str(mast_cmd or "").strip().lower() in {"u", "d"}:
+        return None
+    drive_key = str(drive_mode or "").strip().lower()
+    if drive_key not in {"forward", "backward"}:
+        drive_key = "forward"
+    turn_key = str(turn_cmd or "").strip().lower()
+    if turn_key not in {"l", "r"}:
+        return None
+    try:
+        x_err = _x_err_for_reading(reading)
+        x_abs = abs(float(x_err if x_err is not None else (reading or {}).get("x_mm", 0.0)))
+    except (TypeError, ValueError):
+        x_abs = 0.0
+    duty_strength = _duty_curve_strength_for_request(strength, x_abs)
+    if duty_strength is None:
+        return None
+    cfg = _duty_turn_curve_config()
+    if not bool(cfg.get("enabled", True)):
+        return None
+    act_ms = _wheel_act_duration_ms(duration_ms, allow_long_duration=allow_long_duration)
+    tick_ms = _coerce_int(cfg.get("tick_ms"), DEFAULT_DUTY_TURN_CURVE_CONFIG["tick_ms"], minimum=50, maximum=500)
+    phase_steps = max(1, int((int(act_ms) + int(tick_ms) - 1) // int(tick_ms)))
+    remaining_ms = int(act_ms)
+    start_s = time.monotonic()
+    elapsed_target_ms = 0
+    sent = []
+    last_result = None
+    last_curve = None
+    for idx in range(phase_steps):
+        this_ms = min(int(tick_ms), int(remaining_ms))
+        if this_ms <= 0:
+            break
+        curve_actions = _duty_curve_actions(
+            drive_mode=drive_key,
+            turn_cmd=turn_key,
+            strength=duty_strength,
+            step_zero_based=idx,
+            phase_steps=phase_steps,
+            recovery_boost_scale=recovery_boost_scale,
+        )
+        if curve_actions is None:
+            return None
+        actions, curve_meta = curve_actions
+        scaled_actions = _scaled_actions(actions)
+        last_curve = dict(curve_meta)
+        send_result = guarded_send_custom_actions_pwm(
+            robot,
+            str(logical_cmd),
+            scaled_actions,
+            duration_ms=int(this_ms),
+            reading=reading,
+            context=f"{context}_duty_{curve_meta['curve_label']}_{idx + 1}of{phase_steps}",
+        )
+        last_result = send_result
+        sent.append(
+            {
+                "duration_ms": int(this_ms),
+                "actions": scaled_actions,
+                "duty_curve": dict(curve_meta),
+                "send_result": send_result,
+            }
+        )
+        if _virtual_safety_result_triggered(send_result):
+            if isinstance(send_result, dict):
+                send_result["duty_curve"] = dict(curve_meta)
+                send_result["duty_curve_sequence"] = list(sent)
+            return send_result
+        remaining_ms -= int(this_ms)
+        elapsed_target_ms += int(this_ms)
+        if remaining_ms > 0:
+            next_start_s = float(start_s) + (float(elapsed_target_ms) / 1000.0)
+            remaining_s = float(next_start_s) - time.monotonic()
+            if remaining_s > 0.0:
+                time.sleep(remaining_s)
+    if isinstance(last_result, dict):
+        out = dict(last_result)
+        out["duty_curve"] = dict(last_curve or {})
+        out["duty_curve_sequence"] = list(sent)
+        out["duration_ms"] = int(act_ms)
+        out["turn_cmd"] = str(turn_key)
+        return out
+    return {
+        "cmd_sent": str(logical_cmd),
+        "turn_cmd": str(turn_key),
+        "duration_ms": int(act_ms),
+        "actions": sent[-1]["actions"] if sent else [],
+        "duty_curve": dict(last_curve or {}),
+        "duty_curve_sequence": list(sent),
+    }
 
 
 def _production_turn_curve_for_reading(
@@ -3306,6 +4034,41 @@ def _production_turn_curve_for_reading(
     except (TypeError, ValueError):
         duration_ms = None
     return curve, duration_ms
+
+
+def _calibrated_turn_drive_curve(*, drive_mode: str, strength: str) -> dict | None:
+    drive_key = str(drive_mode or "").strip().lower()
+    if drive_key not in {"forward", "backward"}:
+        return None
+    strength_key = str(strength or "").strip().lower()
+    if strength_key == "micro":
+        return None
+    if strength_key == "strong":
+        inner_pwm = CALIBRATED_STRONG_TURN_DRIVE_INNER_PWM
+        outer_pwm = CALIBRATED_STRONG_TURN_DRIVE_BASE_PWM
+        inner_ratio = CALIBRATED_STRONG_TURN_DRIVE_INNER_RATIO
+        curve_name = "sharpened strong 104/186"
+    elif strength_key == "medium":
+        inner_pwm = CALIBRATED_MEDIUM_TURN_DRIVE_INNER_PWM
+        outer_pwm = CALIBRATED_MEDIUM_TURN_DRIVE_BASE_PWM
+        inner_ratio = CALIBRATED_MEDIUM_TURN_DRIVE_INNER_RATIO
+        curve_name = "calibrated medium 104/155"
+    else:
+        inner_pwm = CALIBRATED_TURN_DRIVE_INNER_PWM
+        outer_pwm = CALIBRATED_TURN_DRIVE_BASE_PWM
+        inner_ratio = CALIBRATED_TURN_DRIVE_INNER_RATIO
+        curve_name = "balanced_turn_sweep_72_rerun gentle 93/133"
+    return {
+        "inner_pwm": int(inner_pwm),
+        "outer_pwm": int(outer_pwm),
+        "inner_ratio": float(inner_ratio),
+        "outer_ratio": 1.0,
+        "strength": f"calibrated_{strength_key or 'gentle'}",
+        "drive_mode": str(drive_key),
+        "source": "balanced_turn_sweep_72_rerun",
+        "curve_name": curve_name,
+        "production": True,
+    }
 
 
 def _interp_reset_arc_point(points: list[dict], x_gap_mm: float) -> dict:
@@ -3407,6 +4170,36 @@ def _send_turn_curve(
             else _turn_curve_for_drive_mode(drive_mode, strength)
         )
     curve = _boost_curve_pwms(curve, recovery_boost_scale)
+    duty_result = _send_duty_curve_sequence(
+        robot,
+        str(cmd),
+        drive_mode=drive_mode,
+        turn_cmd=cmd,
+        strength=strength,
+        duration_ms=duration_ms,
+        reading=reading,
+        context=context,
+        mast_cmd=mast_cmd,
+        recovery_boost_scale=recovery_boost_scale,
+        allow_long_duration=False,
+    )
+    if duty_result is not None:
+        if isinstance(duty_result, dict):
+            curve_report = dict(curve)
+            duty_meta = duty_result.get("duty_curve") if isinstance(duty_result.get("duty_curve"), dict) else {}
+            if duty_meta:
+                curve_report.update(
+                    {
+                        "strength": duty_meta.get("duty_strength", curve_report.get("strength")),
+                        "source": "duty_turn_curves",
+                        "curve_name": duty_meta.get("curve_label"),
+                        "inner_pwm": 0 if bool(duty_meta.get("inside_stopped")) else duty_meta.get("base_pwm"),
+                        "outer_pwm": duty_meta.get("base_pwm"),
+                        "duty_curve": dict(duty_meta),
+                    }
+                )
+            duty_result["x_curve"] = curve_report
+        return duty_result
     actions = _turn_curve_actions(drive_mode=drive_mode, cmd=cmd, curve=curve)
     if not actions:
         return None
@@ -3450,6 +4243,7 @@ def _send_drive_bias(
     mast_duration_ms: int | float | None = None,
     recovery_boost_scale: float | None = None,
     allow_long_duration: bool = False,
+    use_calibrated_turn_drive_curve: bool = False,
 ) -> dict | None:
     drive_key = str(drive_mode or "").strip().lower()
     logical_cmd = "b" if drive_key == "backward" else "f"
@@ -3459,11 +4253,47 @@ def _send_drive_bias(
     except (TypeError, ValueError):
         x_abs = 0.0
     curve = (
-        _adaptive_turn_bias_curve_for_drive_mode(drive_key, x_abs)
-        if str(strength or "").strip().lower() == "adaptive"
-        else _turn_bias_curve_for_drive_mode(drive_key, strength)
+        _calibrated_turn_drive_curve(drive_mode=drive_key, strength=strength)
+        if bool(use_calibrated_turn_drive_curve)
+        else None
     )
+    if curve is None:
+        curve = (
+            _adaptive_turn_bias_curve_for_drive_mode(drive_key, x_abs)
+            if str(strength or "").strip().lower() == "adaptive"
+            else _turn_bias_curve_for_drive_mode(drive_key, strength)
+        )
     curve = _boost_curve_pwms(curve, recovery_boost_scale)
+    duty_result = _send_duty_curve_sequence(
+        robot,
+        logical_cmd,
+        drive_mode=drive_key,
+        turn_cmd=turn_cmd,
+        strength=strength,
+        duration_ms=duration_ms,
+        reading=reading,
+        context=context,
+        mast_cmd=mast_cmd,
+        recovery_boost_scale=recovery_boost_scale,
+        allow_long_duration=allow_long_duration,
+    )
+    if duty_result is not None:
+        if isinstance(duty_result, dict):
+            curve_report = dict(curve)
+            duty_meta = duty_result.get("duty_curve") if isinstance(duty_result.get("duty_curve"), dict) else {}
+            if duty_meta:
+                curve_report.update(
+                    {
+                        "strength": duty_meta.get("duty_strength", curve_report.get("strength")),
+                        "source": "duty_turn_curves",
+                        "curve_name": duty_meta.get("curve_label"),
+                        "inner_pwm": 0 if bool(duty_meta.get("inside_stopped")) else duty_meta.get("base_pwm"),
+                        "outer_pwm": duty_meta.get("base_pwm"),
+                        "duty_curve": dict(duty_meta),
+                    }
+                )
+            duty_result["x_curve"] = curve_report
+        return duty_result
     actions = _turn_bias_actions(drive_mode=drive_key, turn_cmd=turn_cmd, curve=curve)
     if not actions:
         return None
@@ -3587,7 +4417,7 @@ def _curve_forward(robot: Robot, cmd: str, reading: dict) -> None:
 def _scripted_mast_allowed(reason: str) -> bool:
     reason_key = str(reason or "").strip().lower()
     profile = _active_game_profile()
-    if reason_key in {"empty_step4_lift", "empty_step4_visibility_fallback"}:
+    if reason_key == "empty_step4_lift":
         return profile == "empty"
     if reason_key == "holding_step2_place":
         return profile == "holding"
@@ -3598,7 +4428,7 @@ def _mast_locked_result(cmd: str | None, reason: str) -> dict:
     cmd_key = str(cmd or "").strip().lower()
     print(
         f"[MAST_LOCK] Blocked mast {cmd_key.upper() if cmd_key else '?'} during {reason}; "
-        "allowed scripted mast moves are empty Step 4 lift and holding Step 2 place only.",
+        "allowed scripted mast moves are empty Step 4 lift-up and holding Step 2 lower-down only.",
         flush=True,
     )
     return {
@@ -3622,7 +4452,7 @@ def _mast_action_spec(
         return None
     print(
         f"[MAST_LOCK] Stripped attached mast {cmd.upper()} action; "
-        "scripted mast motion is allowed only for empty Step 4 lift and holding Step 2 place.",
+        "scripted mast motion is allowed only for empty Step 4 lift-up and holding Step 2 lower-down.",
         flush=True,
     )
     return None
@@ -3701,6 +4531,11 @@ def _drive(
 ) -> None:
     """Straight drive: 'f' forward, 'b' backward."""
     cmd = str(direction or "").strip().lower()
+    if cmd in {"u", "d"}:
+        return _mast_locked_result(cmd, "follow_drive_wrong_mast_cmd")
+    if cmd not in {"f", "b"}:
+        _stop_robot(robot)
+        return {"cmd_sent": "s", "pwm": 0, "power": 0.0, "duration_ms": 0, "skipped": True}
     requested_pwm = _normal_drive_pwm(cmd) if pwm is None else pwm
     try:
         boost_scale = float(recovery_boost_scale)
@@ -3907,6 +4742,19 @@ def _run_step3_no_visibility_fallback(
         DEFAULT_STEP3_CONFIG["no_visibility_fallback_duration_ms"],
         minimum=1,
     )
+    if _virtual_safety_dist_exceeded(reading):
+        _stop_robot(robot)
+        return {
+            "success": False,
+            "target_met": False,
+            "fallback_reset_ok": False,
+            "holding": bool((reading or {}).get("holding")) if isinstance(reading, dict) else False,
+            "reason": "step4_no_visibility_fallback_blocked:virtual_safety_dist_exceeded",
+            "reading": reading or {},
+            "attempts": attempts,
+            "send_result": send_result,
+            "fallback_send_result": {"blocked": True, "reason": "virtual_safety_dist_exceeded", "cmd": cmd},
+        }
     fallback_send = robot.send_command_pwm(cmd, pwm, duration_ms=duration_ms)
     time.sleep(float(duration_ms) / 1000.0 + float(settle_s))
     _stop_robot(robot)
@@ -3960,6 +4808,28 @@ def _run_step3_lift_sequence(vision: BrickDetector, robot: Robot) -> dict:
         lift_cmd = str(step3.get("lift_mast_cmd") or DEFAULT_STEP3_CONFIG["lift_mast_cmd"]).strip().lower()
         if lift_cmd not in {"u", "d"}:
             lift_cmd = DEFAULT_STEP3_CONFIG["lift_mast_cmd"]
+        if lift_cmd != "u":
+            return {
+                "success": False,
+                "target_met": False,
+                "holding": False,
+                "reason": "step4_lift_blocked:wrong_mast_direction",
+                "reading": {},
+                "attempts": 0,
+                "send_result": _mast_locked_result(lift_cmd, "empty_step4_lift_wrong_direction"),
+            }
+        before = _read_brick_measurement(vision)
+        if _virtual_safety_dist_exceeded(before):
+            _stop_robot(robot)
+            return {
+                "success": False,
+                "target_met": False,
+                "holding": False,
+                "reason": "step4_fixed_lift_blocked:virtual_safety_dist_exceeded",
+                "reading": before,
+                "attempts": 0,
+                "send_result": {"blocked": True, "reason": "virtual_safety_dist_exceeded", "cmd": lift_cmd},
+            }
         lift_pwm = _scaled_pwm_for_cmd(lift_cmd, step3.get("lift_mast_pwm"))
         pulse_ms = _coerce_int(
             step3.get("fixed_lift_duration_ms"),
@@ -4019,6 +4889,18 @@ def _run_step3_lift_sequence(vision: BrickDetector, robot: Robot) -> dict:
             "reading": before,
         }
     lift_cmd = str(step3.get("lift_mast_cmd") or DEFAULT_STEP3_CONFIG["lift_mast_cmd"]).strip().lower()
+    if lift_cmd not in {"u", "d"}:
+        lift_cmd = DEFAULT_STEP3_CONFIG["lift_mast_cmd"]
+    if lift_cmd != "u":
+        return {
+            "success": False,
+            "target_met": False,
+            "holding": False,
+            "reason": "step4_lift_blocked:wrong_mast_direction",
+            "reading": before,
+            "attempts": attempts,
+            "send_result": _mast_locked_result(lift_cmd, "empty_step4_lift_wrong_direction"),
+        }
     lift_pwm = _scaled_pwm_for_cmd(lift_cmd, step3.get("lift_mast_pwm"))
     pulse_ms = _cap_mast_duration_ms(
         lift_cmd,
@@ -4182,6 +5064,37 @@ STEP2_AXIS_SPECS = (
 )
 
 
+def _step2_axis_tolerance_pair(targets: dict, label: str, tol_key: str) -> tuple[float, float]:
+    tol = float(targets.get(tol_key))
+    minus_tol = tol
+    plus_tol = tol
+    if str(label) == "dist":
+        if targets.get("dist_tol_minus_mm") is not None:
+            minus_tol = float(targets.get("dist_tol_minus_mm"))
+        if targets.get("dist_tol_plus_mm") is not None:
+            plus_tol = float(targets.get("dist_tol_plus_mm"))
+    return max(0.0, minus_tol), max(0.0, plus_tol)
+
+
+def _step2_axis_tolerance_for_error(error: float, targets: dict, label: str, tol_key: str) -> float:
+    minus_tol, plus_tol = _step2_axis_tolerance_pair(targets, label, tol_key)
+    return float(plus_tol if float(error) >= 0.0 else minus_tol)
+
+
+def _step2_axis_gap_mm(value: float, target: float, targets: dict, label: str, tol_key: str) -> float:
+    err = float(value) - float(target)
+    minus_tol, plus_tol = _step2_axis_tolerance_pair(targets, label, tol_key)
+    if err < -float(minus_tol):
+        return float((-float(minus_tol)) - err)
+    if err > float(plus_tol):
+        return float(err - float(plus_tol))
+    return 0.0
+
+
+def _step2_axis_ok(value: float, target: float, targets: dict, label: str, tol_key: str) -> bool:
+    return _step2_axis_gap_mm(value, target, targets, label, tol_key) <= 0.0
+
+
 def _configured_step2_target_axes(step2_cfg: dict | None = None) -> list[tuple[str, str, str]]:
     targets = _configured_step2_targets(step2_cfg)
     axes = []
@@ -4226,7 +5139,11 @@ def _step2_target_closeness_from_reading(reading: dict, step2_cfg: dict | None =
             value = float(reading.get(value_key))
         except (TypeError, ValueError):
             return None
-        close = _target_closeness_pct(value - float(target), float(tol))
+        err = value - float(target)
+        close = _target_closeness_pct(
+            err,
+            _step2_axis_tolerance_for_error(err, targets, label, tol_key),
+        )
         closeness[f"{label}_target_closeness_pct"] = float(close)
         values.append(float(close))
     closeness["target_closeness_pct"] = None if not values else float(sum(values) / float(len(values)))
@@ -4247,7 +5164,7 @@ def _step2_targets_ready(reading: dict, step2_cfg: dict | None = None) -> tuple[
         try:
             raw_dist = float((reading or {}).get("raw_dist_mm"))
             dist_target = float(targets.get("dist_mm"))
-            dist_tol = float(targets.get("dist_tol_mm"))
+            dist_tol, _dist_plus_tol = _step2_axis_tolerance_pair(targets, "dist", "dist_tol_mm")
         except (TypeError, ValueError):
             raw_dist = None
         if raw_dist is not None and float(raw_dist) < float(dist_target) - float(dist_tol):
@@ -4257,10 +5174,10 @@ def _step2_targets_ready(reading: dict, step2_cfg: dict | None = None) -> tuple[
         try:
             value = float((reading or {}).get(value_key))
             target = float(targets.get(value_key))
-            tol = float(targets.get(tol_key))
+            float(targets.get(tol_key))
         except (TypeError, ValueError):
             return False, "invalid_step2_reading", closeness
-        axis_ok.append(abs(value - target) <= tol)
+        axis_ok.append(_step2_axis_ok(value, target, targets, _label, tol_key))
     return bool(axis_ok and all(axis_ok)), "step2_targets_scored", closeness
 
 
@@ -4298,7 +5215,22 @@ def _step2_stop_and_confirm_target_hit(
     if bool(target_met):
         return settled, True, f"{label}_target_hit_confirmed_after_stop", closeness
     if not bool(settled.get("confident")):
-        return settled, False, f"{label}_target_hit_unconfirmed_after_stop", None
+        recovered = _wait_for_visibility_recovery(
+            vision,
+            robot,
+            settled,
+            timeout_s=step2_cfg.get("visibility_recovery_wait_s"),
+            sample_s=step2_cfg.get("visibility_recovery_wait_poll_s"),
+            context=f"{label}_target_hit_confirm",
+        )
+        if xz_lock_reading is not None:
+            recovered = _step2_freeze_xz_reading(recovered, xz_lock_reading)
+        target_met, target_reason, closeness = _step2_targets_ready(recovered, step2_cfg)
+        if bool(target_met):
+            return recovered, True, f"{label}_target_hit_confirmed_after_visibility_recovery", closeness
+        if not bool(recovered.get("confident")):
+            return recovered, False, f"{label}_target_hit_unconfirmed_after_stop", None
+        return recovered, False, f"{label}_target_drifted_after_visibility_recovery:{target_reason}", closeness
     return settled, False, f"{label}_target_drifted_after_stop:{target_reason}", closeness
 
 
@@ -4325,7 +5257,13 @@ def _step2_xz_targets_ready(reading: dict, step2_cfg: dict | None = None) -> tup
     if not isinstance(reading, dict) or not bool(reading.get("confident")):
         return False, "invalid_step2_xz_reading"
     try:
-        dist_ok = abs(float(reading.get("dist_mm")) - float(targets.get("dist_mm"))) <= float(targets.get("dist_tol_mm"))
+        dist_ok = _step2_axis_ok(
+            float(reading.get("dist_mm")),
+            float(targets.get("dist_mm")),
+            targets,
+            "dist",
+            "dist_tol_mm",
+        )
         x_ok = abs(float(reading.get("x_mm")) - float(targets.get("x_mm"))) <= float(targets.get("x_tol_mm"))
     except (TypeError, ValueError):
         return False, "invalid_step2_xz_reading"
@@ -4386,13 +5324,13 @@ def _step2_should_creep_forward(reading: dict, step2_cfg: dict | None = None) ->
     try:
         dist_mm = float(reading.get("dist_mm"))
         dist_target = float(targets.get("dist_mm"))
-        dist_tol = float(targets.get("dist_tol_mm"))
+        _minus_tol, dist_tol = _step2_axis_tolerance_pair(targets, "dist", "dist_tol_mm")
     except (TypeError, ValueError):
         return False
     return float(dist_mm) > float(dist_target) + float(dist_tol)
 
 
-def _step2_precision_drive_duration_ms(dist_gap_mm: float, step2_cfg: dict) -> int:
+def _step2_precision_drive_duration_ms(dist_gap_mm: float, step2_cfg: dict, *, cmd: str | None = None) -> int:
     min_ms = _coerce_int(
         step2_cfg.get("precision_drive_min_pulse_ms"),
         DEFAULT_STEP2_CONFIG["precision_drive_min_pulse_ms"],
@@ -4405,6 +5343,21 @@ def _step2_precision_drive_duration_ms(dist_gap_mm: float, step2_cfg: dict) -> i
         minimum=1,
         maximum=1000,
     )
+    if str(cmd or "").strip().lower() == "b":
+        min_ms = _coerce_int(
+            step2_cfg.get("precision_back_min_pulse_ms"),
+            min_ms,
+            minimum=1,
+            maximum=1000,
+        )
+        max_ms = _coerce_int(
+            step2_cfg.get("precision_back_max_pulse_ms"),
+            max_ms,
+            minimum=1,
+            maximum=1000,
+        )
+        if min_ms > max_ms:
+            min_ms, max_ms = max_ms, min_ms
     return _proportional_duration_ms(
         gap_mm=max(0.0, float(dist_gap_mm)),
         min_ms=min_ms,
@@ -4502,6 +5455,7 @@ def _step2_precision_settle_to_targets(
     counts = {
         "fwd": 0,
         "bck": 0,
+        "dist_x_curve": 0,
         "turn_l": 0,
         "turn_r": 0,
         "mast_u": 0,
@@ -4544,6 +5498,9 @@ def _step2_precision_settle_to_targets(
     xz_lock_reading: dict | None = None
     no_progress_attempts = 0
     total_attempts = 0
+    wrong_way_streak_axis: str | None = None
+    wrong_way_streak_count = 0
+    x_turn_override_cmd: str | None = None
     progress_min_mm = max(
         0.25,
         float(_act_stall_guard_config().get("min_axis_delta_mm", DEFAULT_ACT_STALL_GUARD_CONFIG["min_axis_delta_mm"])) * 0.5,
@@ -4611,10 +5568,16 @@ def _step2_precision_settle_to_targets(
         if dist_axis_configured:
             try:
                 dist_err = float(current.get("dist_mm")) - float(targets.get("dist_mm"))
-                dist_tol = float(targets.get("dist_tol_mm"))
+                float(targets.get("dist_tol_mm"))
             except (TypeError, ValueError):
                 break
-            dist_gap = max(0.0, abs(float(dist_err)) - float(dist_tol))
+            dist_gap = _step2_axis_gap_mm(
+                float(current.get("dist_mm")),
+                float(targets.get("dist_mm")),
+                targets,
+                "dist",
+                "dist_tol_mm",
+            )
         if x_axis_configured:
             try:
                 x_err = float(current.get("x_mm")) - float(targets.get("x_mm"))
@@ -4670,13 +5633,89 @@ def _step2_precision_settle_to_targets(
             progress_axis = "y"
             before_err_for_sample = float(y_err)
             tol_for_sample = float(targets.get("y_tol_mm"))
+        elif (
+            dist_axis_configured
+            and x_axis_configured
+            and float(dist_gap) > 0.0
+            and float(x_gap) > 0.0
+            and abs(float(dist_err)) <= 12.0
+            and float(x_gap) >= float(dist_gap)
+        ):
+            cmd = _turn_cmd_to_close_x_gap(float(x_err))
+            x_turn_override_cmd = None
+            if cmd not in {"l", "r"}:
+                break
+            x_turn_plan = _x_only_turn_plan(
+                reading=current,
+                turn_cmd=cmd,
+                drive_mode="forward",
+                strength="gentle",
+                dist_err=float(dist_err),
+                x_err=float(x_err),
+                x_outside=float(x_gap),
+                dist_outside=float(dist_gap),
+                y_plan=None,
+                reason="step2_precision_near_dist_x_nudge",
+                use_production_curve=False,
+            )
+            x_turn_plan["one_wheel_x_nudge"] = True
+            x_turn_plan["duration_ms"] = 500
+            x_turn_plan["allow_long_duration"] = True
+            x_turn_plan["skip_near_target_crawl_cap"] = True
+            x_turn_plan["strength"] = "one_wheel_500ms"
+            pwm = 0
+            duration_ms = int(x_turn_plan.get("duration_ms", PULSE_MS))
+            action_key = "turn_l" if cmd == "l" else "turn_r"
+            display_action = "STEP2_PRECISION_TURN_L" if cmd == "l" else "STEP2_PRECISION_TURN_R"
+            gap_before = float(x_gap)
+            progress_axis = "x"
+            before_err_for_sample = float(x_err)
+            tol_for_sample = float(targets.get("x_tol_mm"))
+        elif (
+            dist_axis_configured
+            and x_axis_configured
+            and float(dist_gap) > 0.0
+            and float(x_gap) > 0.0
+            and float(dist_err) > 0.0
+        ):
+            cmd = "f"
+            turn_cmd = _turn_cmd_to_close_x_gap(float(x_err))
+            x_turn_override_cmd = None
+            if turn_cmd not in {"l", "r"}:
+                break
+            duration_ms = _step2_precision_drive_duration_ms(float(dist_gap), step2_cfg, cmd=cmd)
+            duration_ms = max(90, min(160, int(duration_ms)))
+            strength = _bias_strength_for_x_outside(float(x_gap))
+            if strength == "micro":
+                strength = "gentle"
+            if strength == "strong":
+                strength = "medium"
+            x_turn_plan = {
+                "kind": "drive_bias",
+                "cmd": cmd,
+                "drive_mode": "forward",
+                "turn_cmd": str(turn_cmd),
+                "strength": str(strength),
+                "duration_ms": int(duration_ms),
+                "distance_creep": True,
+                "use_calibrated_turn_drive_curve": True,
+                "skip_near_target_crawl_cap": True,
+                "reason": "step2_precision_dist_x_curve",
+            }
+            prev_dist_err = float(dist_err)
+            action_key = "dist_x_curve"
+            display_action = f"STEP2_PRECISION_DIST_X_CURVE_{str(turn_cmd).upper()}_{str(strength).upper()}"
+            gap_before = float(x_gap)
+            progress_axis = "x"
+            before_err_for_sample = float(x_err)
+            tol_for_sample = float(targets.get("x_tol_mm"))
         elif dist_axis_configured and dist_gap > 0.0 and dist_gap >= float(x_gap):
             cmd = _step2_precision_dist_cmd(dist_err, step2_cfg)
             pwm = _clamp_to_approved_straight_drive_pwm(
                 cmd,
                 step2_cfg.get("seat_drive_pwm", DEFAULT_STEP2_CONFIG["seat_drive_pwm"]),
             )
-            duration_ms = _step2_precision_drive_duration_ms(dist_gap, step2_cfg)
+            duration_ms = _step2_precision_drive_duration_ms(dist_gap, step2_cfg, cmd=cmd)
             if prev_dist_err is not None and (float(prev_dist_err) * float(dist_err)) < 0.0:
                 duration_ms = max(40, int(duration_ms * 0.5))
             prev_dist_err = float(dist_err)
@@ -4696,22 +5735,28 @@ def _step2_precision_settle_to_targets(
             gap_before = float(dist_gap)
             progress_axis = "dist"
             before_err_for_sample = float(dist_err)
-            tol_for_sample = float(targets.get("dist_tol_mm"))
+            tol_for_sample = _step2_axis_tolerance_for_error(
+                dist_err,
+                targets,
+                "dist",
+                "dist_tol_mm",
+            )
         elif x_axis_configured and x_gap > 0.0:
             cmd = _turn_cmd_to_close_x_gap(float(x_err))
+            x_turn_override_cmd = None
             if cmd not in {"l", "r"}:
                 break
             x_turn_plan = _x_only_turn_plan(
                 reading=current,
                 turn_cmd=cmd,
                 drive_mode=_x_only_turn_drive_mode_for_dist(float(dist_err)),
-                strength="micro",
+                strength="gentle",
                 dist_err=float(dist_err),
                 x_err=float(x_err),
                 x_outside=float(x_gap),
                 dist_outside=float(dist_gap),
                 y_plan=None,
-                reason="step2_precision_x_polish",
+                reason="step2_precision_x_polish_gentle_curve",
                 use_production_curve=True,
             )
             pwm = 0
@@ -4724,6 +5769,7 @@ def _step2_precision_settle_to_targets(
             tol_for_sample = float(targets.get("x_tol_mm"))
         else:
             break
+        previous_current = dict(current) if isinstance(current, dict) else current
         if x_turn_plan is not None:
             send_result = _execute_follow_action(robot, x_turn_plan, current)
         elif attached_mast_cmd:
@@ -4768,10 +5814,12 @@ def _step2_precision_settle_to_targets(
             try:
                 if progress_axis == "dist":
                     after_err_for_sample = float(current.get("dist_mm")) - float(targets.get("dist_mm"))
-                    gap_after = max(
-                        0.0,
-                        abs(float(after_err_for_sample))
-                        - float(tol_for_sample),
+                    gap_after = _step2_axis_gap_mm(
+                        float(current.get("dist_mm")),
+                        float(targets.get("dist_mm")),
+                        targets,
+                        "dist",
+                        "dist_tol_mm",
                     )
                 elif progress_axis == "y":
                     after_err_for_sample = float(current.get("y_mm")) - float(targets.get("y_mm"))
@@ -4842,37 +5890,79 @@ def _step2_precision_settle_to_targets(
         if dist_axis_configured and bool(current.get("confident")):
             try:
                 safety_dist_err = float(current.get("dist_mm")) - float(targets.get("dist_mm"))
-                safety_dist_tol = float(targets.get("dist_tol_mm"))
+                safety_dist_tol, _safety_plus_tol = _step2_axis_tolerance_pair(targets, "dist", "dist_tol_mm")
             except (TypeError, ValueError):
                 safety_dist_err = None
                 safety_dist_tol = 0.0
-            if safety_dist_err is not None and float(safety_dist_err) < -float(safety_dist_tol):
+            recovering_from_too_close = bool(progress_axis == "dist" and str(cmd or "").strip().lower() == "b")
+            if (
+                safety_dist_err is not None
+                and float(safety_dist_err) < -float(safety_dist_tol)
+                and not bool(recovering_from_too_close)
+            ):
                 counts["dist_too_close_safety_stop"] = int(counts.get("dist_too_close_safety_stop", 0)) + 1
                 break
         if progress_axis == "dist" and bool(current.get("confident")):
             try:
                 after_dist_err = float(current.get("dist_mm")) - float(targets.get("dist_mm"))
-                dist_tol = float(targets.get("dist_tol_mm"))
             except (TypeError, ValueError):
                 after_dist_err = None
-                dist_tol = 0.0
-            if after_dist_err is not None and abs(float(after_dist_err)) <= float(dist_tol):
+            if after_dist_err is not None and _step2_axis_ok(
+                float(current.get("dist_mm")),
+                float(targets.get("dist_mm")),
+                targets,
+                "dist",
+                "dist_tol_mm",
+            ):
                 counts["target_hit_stop"] = int(counts.get("target_hit_stop", 0)) + 1
                 break
             if after_dist_err is not None and (float(dist_err) * float(after_dist_err)) < 0.0:
                 counts["dist_crossed_target_stop"] = int(counts.get("dist_crossed_target_stop", 0)) + 1
                 break
             if after_dist_err is not None and abs(float(after_dist_err)) > abs(float(dist_err)) + float(progress_min_mm):
-                counts["dist_wrong_way_stop"] = int(counts.get("dist_wrong_way_stop", 0)) + 1
-                break
+                if wrong_way_streak_axis == "dist":
+                    wrong_way_streak_count += 1
+                else:
+                    wrong_way_streak_axis = "dist"
+                    wrong_way_streak_count = 1
+                counts["dist_wrong_way_count"] = int(counts.get("dist_wrong_way_count", 0)) + 1
+                if wrong_way_streak_count >= 2:
+                    counts["dist_wrong_way_stop"] = int(counts.get("dist_wrong_way_stop", 0)) + 1
+                    break
+                counts["dist_wrong_way_ignored"] = int(counts.get("dist_wrong_way_ignored", 0)) + 1
+                if no_progress_attempts > 0:
+                    no_progress_attempts -= 1
+                if int(counts.get("no_progress", 0) or 0) > 0:
+                    counts["no_progress"] = int(counts.get("no_progress", 0) or 0) - 1
+                current = previous_current
+                continue
         if progress_axis == "x" and bool(current.get("confident")):
             try:
                 after_x_err = float(current.get("x_mm")) - float(targets.get("x_mm"))
             except (TypeError, ValueError):
                 after_x_err = None
             if after_x_err is not None and abs(float(after_x_err)) > abs(float(x_err)) + float(progress_min_mm):
-                counts["x_wrong_way_stop"] = int(counts.get("x_wrong_way_stop", 0)) + 1
-                break
+                if wrong_way_streak_axis == "x":
+                    wrong_way_streak_count += 1
+                else:
+                    wrong_way_streak_axis = "x"
+                    wrong_way_streak_count = 1
+                counts["x_wrong_way_count"] = int(counts.get("x_wrong_way_count", 0)) + 1
+                if wrong_way_streak_count >= 2:
+                    counts["x_wrong_way_stop"] = int(counts.get("x_wrong_way_stop", 0)) + 1
+                    break
+                counts["x_wrong_way_ignored"] = int(counts.get("x_wrong_way_ignored", 0)) + 1
+                x_turn_override_cmd = _opposite_turn_cmd(
+                    x_turn_plan.get("turn_cmd") if isinstance(x_turn_plan, dict) else cmd
+                )
+                if no_progress_attempts > 0:
+                    no_progress_attempts -= 1
+                if int(counts.get("no_progress", 0) or 0) > 0:
+                    counts["no_progress"] = int(counts.get("no_progress", 0) or 0) - 1
+                current = previous_current
+                continue
+        wrong_way_streak_axis = None
+        wrong_way_streak_count = 0
     counts["precision_total_attempts"] = int(total_attempts)
     counts["precision_no_progress_attempts"] = int(no_progress_attempts)
     if _deadline_expired(deadline):
@@ -5088,7 +6178,10 @@ def _run_step2_seat_sequence(
         maximum=5000 if bool(step2.get("blind_mast_only", False)) else None,
     )
     mast_blocked_result = None
-    if mast_duration_ms > 0 and not bool(mast_allowed):
+    if mast_duration_ms > 0 and mast_cmd != "d":
+        mast_blocked_result = _mast_locked_result(mast_cmd, f"{label}_seat_mast_wrong_direction")
+        mast_duration_ms = 0
+    elif mast_duration_ms > 0 and not bool(mast_allowed):
         mast_blocked_result = _mast_locked_result(mast_cmd, f"{label}_seat_mast")
         mast_duration_ms = 0
     mast_pwm = _scaled_pwm_for_cmd(mast_cmd, step2.get("seat_mast_pwm"))
@@ -5436,13 +6529,91 @@ def _run_step2_seat_sequence(
     }
 
 
+def _run_post_win_forward_creep(
+    vision: BrickDetector,
+    robot: Robot,
+    reading: dict | None,
+    step_cfg: dict | None,
+    *,
+    label: str,
+) -> tuple[dict | None, dict | None]:
+    cfg = step_cfg if isinstance(step_cfg, dict) else {}
+    duration_ms = _coerce_int(
+        cfg.get("post_win_forward_creep_ms"),
+        DEFAULT_STEP2_CONFIG["post_win_forward_creep_ms"],
+        minimum=0,
+        maximum=1000,
+    )
+    if duration_ms <= 0:
+        return reading, None
+    if not isinstance(reading, dict) or not bool(reading.get("confident")):
+        return reading, {
+            "skipped": True,
+            "reason": f"{label}_post_win_forward_creep_no_confident_reading",
+        }
+    cmd = "f"
+    pwm = _clamp_to_approved_straight_drive_pwm(
+        cmd,
+        cfg.get(
+            "post_win_forward_creep_pwm",
+            cfg.get("seat_drive_pwm", DEFAULT_STEP2_CONFIG["post_win_forward_creep_pwm"]),
+        ),
+    )
+    print(
+        f"[{label.upper()}] Post-win forward creep: {duration_ms}ms pwm={pwm} after confirmed target.",
+        flush=True,
+    )
+    send_result = guarded_send_command_pwm(
+        robot,
+        cmd,
+        pwm,
+        duration_ms=duration_ms,
+        reading=reading,
+        context=f"{label}_post_win_forward_creep",
+    )
+    if isinstance(send_result, dict) and bool(send_result.get("blocked")):
+        _stop_robot(robot)
+        return reading, send_result
+    time.sleep(float(duration_ms) / 1000.0)
+    _stop_robot(robot)
+    _reset_follow_reading_history(vision)
+    after = _read_brick_measurement(vision)
+    return after, send_result
+
+
 def _run_step3_seat_sequence(vision: BrickDetector, robot: Robot) -> dict:
-    return _run_step2_seat_sequence(
+    step3_cfg = _follow_step3_config()
+    result = _run_step2_seat_sequence(
         vision,
         robot,
-        step_cfg=_follow_step3_config(),
+        step_cfg=step3_cfg,
         step_key="step3",
     )
+    if bool(result.get("target_met")):
+        before_creep = result.get("reading") if isinstance(result.get("reading"), dict) else None
+        after_creep, creep_result = _run_post_win_forward_creep(
+            vision,
+            robot,
+            before_creep,
+            step3_cfg,
+            label="step3",
+        )
+        if creep_result is not None:
+            result["reading_before_post_win_forward_creep"] = before_creep
+            result["post_win_forward_creep_result"] = creep_result
+            result["post_win_forward_creep_ms"] = _coerce_int(
+                step3_cfg.get("post_win_forward_creep_ms"),
+                DEFAULT_STEP2_CONFIG["post_win_forward_creep_ms"],
+                minimum=0,
+                maximum=1000,
+            )
+            if isinstance(after_creep, dict):
+                result["reading"] = after_creep
+            if isinstance(creep_result, dict) and bool(creep_result.get("blocked")):
+                result["success"] = False
+                result["target_met"] = False
+                result["reason"] = f"step3_post_win_forward_creep_blocked:{creep_result.get('reason')}"
+    return result
 
 
 def _step3_retreat_target_dist_mm(step3_cfg: dict | None = None) -> float:
@@ -5584,12 +6755,22 @@ def _run_step3_retreat_sequence(vision: BrickDetector, robot: Robot) -> dict:
             break
 
     target_met = _step3_retreat_target_ready(current, step3)
+    soft_reset_complete = (
+        _active_game_profile() == "holding"
+        and bool(current.get("confident"))
+        and not bool(target_met)
+        and int(elapsed_ms) >= int(max_duration_ms)
+    )
     reason = "step3_retreat_target_dist_seen" if bool(target_met) else "step3_retreat_time_budget_elapsed"
+    if bool(soft_reset_complete):
+        reason = "step3_retreat_soft_time_budget_complete"
     if not bool(current.get("confident")):
         reason = "step3_retreat_lost_confident_brick"
+        soft_reset_complete = False
     return {
         "success": bool(current.get("confident")),
         "target_met": bool(target_met),
+        "soft_reset_complete": bool(soft_reset_complete),
         "reason": reason,
         "before": before,
         "reading": current,
@@ -5690,6 +6871,8 @@ def _lock_on_mast_down(robot: Robot, reading: dict) -> dict | None:
 
 
 def _should_run_y_lock_on(stats: dict, reading: dict) -> bool:
+    # Mast is locked during normal follow; scripted step handlers own the two exceptions.
+    return False
     y_cfg = _follow_y_axis_config()
     if not bool(y_cfg.get("lock_on_enabled", True)):
         return False
@@ -5791,6 +6974,12 @@ def _reset_straight_back_first_config(reset_cfg: dict | None = None) -> dict:
             minimum=1,
             maximum=255,
         ),
+        "pwm_ceiling": _coerce_int(
+            raw.get("pwm_ceiling"),
+            raw.get("pwm", DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG["pwm"]),
+            minimum=1,
+            maximum=255,
+        ),
         "mast_up_delay_fraction": _coerce_float(
             raw.get("mast_up_delay_fraction"),
             DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG["mast_up_delay_fraction"],
@@ -5851,12 +7040,48 @@ def _reset_x_goal_curve_config(reset_cfg: dict | None = None) -> dict:
     }
 
 
+def _reset_back_budget_state(reset_cfg: dict | None) -> dict | None:
+    cfg = reset_cfg if isinstance(reset_cfg, dict) else {}
+    max_ms = _coerce_int(cfg.get("max_total_back_ms"), 0, minimum=0, maximum=10000)
+    if max_ms <= 0:
+        return None
+    return {"max_ms": int(max_ms), "used_ms": 0}
+
+
+def _reset_back_budget_remaining_ms(back_budget: dict | None) -> int | None:
+    if not isinstance(back_budget, dict):
+        return None
+    return max(0, int(back_budget.get("max_ms", 0)) - int(back_budget.get("used_ms", 0)))
+
+
+def _reset_back_budget_cap_ms(duration_ms: int, back_budget: dict | None, *, label: str) -> int:
+    requested_ms = max(0, int(duration_ms))
+    remaining_ms = _reset_back_budget_remaining_ms(back_budget)
+    if remaining_ms is None:
+        return requested_ms
+    capped_ms = max(0, min(requested_ms, int(remaining_ms)))
+    if capped_ms < requested_ms:
+        print(
+            f"[RESET] Back budget capped {label}: {requested_ms}ms -> {capped_ms}ms "
+            f"(remaining {remaining_ms}ms).",
+            flush=True,
+        )
+    return int(capped_ms)
+
+
+def _reset_back_budget_consume(back_budget: dict | None, duration_ms: int) -> None:
+    if not isinstance(back_budget, dict):
+        return
+    back_budget["used_ms"] = int(back_budget.get("used_ms", 0)) + max(0, int(duration_ms))
+
+
 def _reset_reverse_turn(
     robot: Robot,
     direction: str,
     reading: dict,
     *,
     rng=None,
+    back_budget: dict | None = None,
 ) -> dict | None:
     """Send the first reset act without changing mast height."""
     turn_cmd = str(direction or "").strip().lower()
@@ -5865,6 +7090,10 @@ def _reset_reverse_turn(
     cfg = _reset_motion_config().get("reverse_turn")
     reset_cfg = cfg if isinstance(cfg, dict) else {}
     straight_cfg = _reset_straight_back_first_config(reset_cfg)
+    try:
+        before_dist_for_duration = float(reading.get("dist_mm"))
+    except (TypeError, ValueError, AttributeError):
+        before_dist_for_duration = None
     if not bool(straight_cfg.get("enabled", True)):
         return {
             "wheel_ms": 0,
@@ -5890,10 +7119,84 @@ def _reset_reverse_turn(
         duration_ms = int(round(float(random_source.uniform(float(min_duration_ms), float(max_duration_ms)))))
     else:
         duration_ms = _coerce_int(straight_cfg.get("duration_ms"), DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG["duration_ms"], minimum=1)
-    drive_pwm = _clamp_to_approved_straight_drive_pwm("b", straight_cfg.get("pwm"))
+    dist_target = float(reset_cfg.get("dist_target_mm", RESET_DIST_TARGET_MM))
+    if (
+        before_dist_for_duration is not None
+        and _reset_xy_target_ready(reading, reset_cfg)
+    ):
+        print(
+            "[RESET] Pose already acceptable for reset; skipping straight-back: "
+            f"dist={before_dist_for_duration:.1f}mm x={float(reading.get('x_mm')):+.1f}mm.",
+            flush=True,
+        )
+        return {
+            "wheel_ms": 0,
+            "straight_back_ms": 0,
+            "gentle_ms": 0,
+            "sharp_finish_ms": 0,
+            "mast_up_ms": 0,
+            "mast_settle_s": 0.0,
+            "duration_ms": 0,
+            "actions": [],
+            "curve": {
+                "drive_mode": "none",
+                "strength": "straight_back_dist_already_ready",
+                "inner_pwm": 0,
+                "outer_pwm": 0,
+                "turn_cmd": str(turn_cmd),
+            },
+        }
+    if before_dist_for_duration is not None and float(before_dist_for_duration) < float(dist_target):
+        desired_back_mm = max(0.0, float(dist_target) - float(before_dist_for_duration))
+        estimated_ms = int(round(desired_back_mm / float(RESET_STRAIGHT_BACK_TARGET_MM_PER_MS)))
+        effective_min_ms = max(int(RESET_STRAIGHT_BACK_TARGET_MIN_MS), int(min_duration_ms))
+        effective_max_ms = max(int(effective_min_ms), int(RESET_STRAIGHT_BACK_TARGET_MAX_MS), int(max_duration_ms))
+        target_limited_ms = max(
+            int(effective_min_ms),
+            min(int(effective_max_ms), int(estimated_ms)),
+        )
+        if int(target_limited_ms) < int(duration_ms):
+            print(
+                "[RESET] Capping straight-back reset by distance gap: "
+                f"dist={before_dist_for_duration:.1f}->{dist_target:.1f}mm gap={desired_back_mm:.1f}mm "
+                f"duration {int(duration_ms)}ms -> {int(target_limited_ms)}ms.",
+                flush=True,
+            )
+            duration_ms = int(target_limited_ms)
+    duration_ms = _reset_back_budget_cap_ms(duration_ms, back_budget, label="straight_back_first")
+    if int(duration_ms) <= 0:
+        return {
+            "wheel_ms": 0,
+            "straight_back_ms": 0,
+            "gentle_ms": 0,
+            "sharp_finish_ms": 0,
+            "mast_up_ms": 0,
+            "mast_settle_s": 0.0,
+            "duration_ms": 0,
+            "actions": [],
+            "curve": {
+                "drive_mode": "none",
+                "strength": "back_budget_exhausted",
+                "inner_pwm": 0,
+                "outer_pwm": 0,
+                "turn_cmd": str(turn_cmd),
+            },
+        }
+    reset_pwm_ceiling = _coerce_int(
+        straight_cfg.get("pwm_ceiling"),
+        straight_cfg.get("pwm"),
+        minimum=1,
+        maximum=255,
+    )
+    drive_pwm = _scaled_pwm_for_cmd(
+        "b",
+        straight_cfg.get("pwm"),
+        wheel_pwm_ceiling=reset_pwm_ceiling,
+    )
     actions = _straight_drive_actions("b", drive_pwm)
     for action in actions:
         action["duration_ms"] = int(duration_ms)
+        action["pwm_ceiling"] = int(reset_pwm_ceiling)
     scaled_actions = _scaled_actions(actions)
     mast_action, mast_up_ms, mast_settle_s = None, 0, 0.0
     delay_fraction = _coerce_float(
@@ -5913,6 +7216,7 @@ def _reset_reverse_turn(
         first_actions = _straight_drive_actions("b", drive_pwm)
         for action in first_actions:
             action["duration_ms"] = int(delay_ms)
+            action["pwm_ceiling"] = int(reset_pwm_ceiling)
         first_scaled = _scaled_actions(first_actions)
         first_result = _send_reset_custom_actions_pwm(
             robot,
@@ -5927,6 +7231,7 @@ def _reset_reverse_turn(
         actions = _straight_drive_actions("b", drive_pwm)
         for action in actions:
             action["duration_ms"] = int(remaining_ms)
+            action["pwm_ceiling"] = int(reset_pwm_ceiling)
         scaled_actions = _scaled_actions(actions)
         delayed_actions = [dict(action) for action in first_scaled]
     if mast_action is not None:
@@ -5941,6 +7246,7 @@ def _reset_reverse_turn(
     )
     if isinstance(send_result, dict) and bool(send_result.get("blocked")):
         return None
+    _reset_back_budget_consume(back_budget, duration_ms)
     return {
         "wheel_ms": int(duration_ms),
         "straight_back_ms": int(duration_ms),
@@ -6132,6 +7438,7 @@ def _reset_curve_until_x_goal_fraction(
     reading: dict,
     reset_cfg: dict,
     target_abs_x_mm: float,
+    back_budget: dict | None = None,
 ) -> tuple[dict, dict]:
     """Open reset x with strong bounded curve pulses and read after each pulse."""
     curve_cfg = _reset_x_goal_curve_config(reset_cfg)
@@ -6190,6 +7497,16 @@ def _reset_curve_until_x_goal_fraction(
         this_ms = min(int(chunk_ms), int(max_ms) - int(elapsed_ms))
         if elapsed_ms < min_ms:
             this_ms = min(max(int(this_ms), int(min_ms) - int(elapsed_ms)), int(max_ms) - int(elapsed_ms))
+        this_ms = _reset_back_budget_cap_ms(this_ms, back_budget, label="x_goal_curve")
+        if int(this_ms) <= 0:
+            return current, {
+                "enabled": True,
+                "reason": "back_budget_exhausted",
+                "attempts": int(attempts),
+                "elapsed_ms": int(elapsed_ms),
+                "x_goal_mm": float(x_goal),
+                "abs_x_mm": None if last_abs_x is None else float(last_abs_x),
+            }
         curve = {
             "inner_pwm": int(curve_cfg.get("inner_pwm", DEFAULT_RESET_X_GOAL_CURVE_CONFIG["inner_pwm"])),
             "outer_pwm": int(curve_cfg.get("outer_pwm", DEFAULT_RESET_X_GOAL_CURVE_CONFIG["outer_pwm"])),
@@ -6225,6 +7542,7 @@ def _reset_curve_until_x_goal_fraction(
             }
         attempts += 1
         elapsed_ms += int(this_ms)
+        _reset_back_budget_consume(back_budget, this_ms)
         time.sleep(max(float(LOOP_S), (float(this_ms) / 1000.0) + float(settle_s)))
         _stop_robot(robot)
         _reset_follow_reading_history(vision)
@@ -6266,6 +7584,35 @@ def _reset_xy_target_ready(reading: dict, reset_cfg: dict) -> bool:
         return False
 
 
+def _reset_primary_dist_target_ready(dist_mm: float, reset_cfg: dict | None = None, *, hard: bool = False) -> bool:
+    cfg = reset_cfg if isinstance(reset_cfg, dict) else {}
+    try:
+        dist_val = float(dist_mm)
+    except (TypeError, ValueError):
+        return False
+    dist_target = float(cfg.get("dist_target_mm", RESET_DIST_TARGET_MM))
+    tol_key = "hard_dist_tol_mm" if bool(hard) else "dist_tol_mm"
+    default_tol = RESET_HARD_DIST_TOL_MM if bool(hard) else RESET_DIST_TOL_MM
+    dist_tol = float(cfg.get(tol_key, default_tol))
+    return bool(abs(float(dist_val) - float(dist_target)) <= float(dist_tol))
+
+
+def _reset_dist_target_ready(dist_mm: float, reset_cfg: dict | None = None, *, hard: bool = False) -> bool:
+    cfg = reset_cfg if isinstance(reset_cfg, dict) else {}
+    try:
+        dist_val = float(dist_mm)
+    except (TypeError, ValueError):
+        return False
+    if _reset_primary_dist_target_ready(float(dist_val), cfg, hard=hard):
+        return True
+    if _active_game_profile() == "empty":
+        step1_low = float(_profile_step1_dist_target_mm("empty")) - float(_profile_step1_dist_tol_mm("empty"))
+        step1_high = float(_profile_step1_dist_target_mm("empty")) + float(_profile_step1_dist_tol_mm("empty"))
+        step1_low = max(float(step1_low), float(_reset_min_attempt_dist_mm(cfg)))
+        return bool(float(step1_low) <= float(dist_val) <= float(step1_high))
+    return False
+
+
 def _reset_adjustment_config(reset_cfg: dict) -> dict:
     raw = reset_cfg.get("adjustment") if isinstance(reset_cfg.get("adjustment"), dict) else {}
     return {
@@ -6274,6 +7621,18 @@ def _reset_adjustment_config(reset_cfg: dict) -> dict:
         "pulse_min_ms": _coerce_int(raw.get("pulse_min_ms"), 60, minimum=1, maximum=400),
         "pulse_max_ms": _coerce_int(raw.get("pulse_max_ms"), 260, minimum=1, maximum=500),
         "settle_s": _coerce_float(raw.get("settle_s"), 0.12, minimum=0.0, maximum=2.0),
+        "back_progress_min_delta_mm": _coerce_float(
+            raw.get("back_progress_min_delta_mm"),
+            3.0,
+            minimum=0.0,
+            maximum=50.0,
+        ),
+        "max_stale_back_attempts": _coerce_int(
+            raw.get("max_stale_back_attempts"),
+            2,
+            minimum=1,
+            maximum=5,
+        ),
     }
 
 
@@ -6298,6 +7657,12 @@ def _reset_small_turn_adjust(
     extra_cfg = _reset_low_x_extra_sharp_config(reset_cfg)
     slower_pwm = int(extra_cfg.get("slower_pwm", RESET_LOW_X_EXTRA_TURN_SLOWER_PWM))
     faster_pwm = int(extra_cfg.get("faster_pwm", RESET_LOW_X_EXTRA_TURN_FASTER_PWM))
+    pwm_ceiling = _coerce_int(
+        extra_cfg.get("pwm_ceiling"),
+        max(115, int(faster_pwm)),
+        minimum=1,
+        maximum=255,
+    )
     curve = {
         "inner_pwm": int(slower_pwm),
         "outer_pwm": int(faster_pwm),
@@ -6305,7 +7670,10 @@ def _reset_small_turn_adjust(
         "faster_pwm": int(faster_pwm),
         "x_gap_mm": 0.0,
     }
-    actions = _scaled_actions(_turn_curve_actions(drive_mode="backward", cmd=turn_cmd, curve=curve))
+    raw_actions = _turn_curve_actions(drive_mode="backward", cmd=turn_cmd, curve=curve)
+    for action in raw_actions:
+        action["pwm_ceiling"] = int(pwm_ceiling)
+    actions = _scaled_actions(raw_actions)
     if not actions:
         return {"blocked": True, "reason": "reset_adjust_no_actions", "cmd": turn_cmd}
     return _send_reset_custom_actions_pwm(
@@ -6318,6 +7686,46 @@ def _reset_small_turn_adjust(
     )
 
 
+def _reset_sharp_turn_adjust(
+    robot: Robot,
+    *,
+    turn_cmd: str,
+    reading: dict,
+    duration_ms: int,
+    reset_cfg: dict,
+    reason: str,
+):
+    extra_cfg = _reset_low_x_extra_sharp_config(reset_cfg)
+    faster_pwm = int(extra_cfg.get("faster_pwm", RESET_LOW_X_EXTRA_TURN_FASTER_PWM))
+    pwm_ceiling = _coerce_int(
+        extra_cfg.get("pwm_ceiling"),
+        max(115, int(faster_pwm)),
+        minimum=1,
+        maximum=255,
+    )
+    curve = {
+        "inner_pwm": 0,
+        "outer_pwm": int(faster_pwm),
+        "slower_pwm": 0,
+        "faster_pwm": int(faster_pwm),
+        "x_gap_mm": 0.0,
+    }
+    raw_actions = _turn_curve_actions(drive_mode="backward", cmd=turn_cmd, curve=curve)
+    for action in raw_actions:
+        action["pwm_ceiling"] = int(pwm_ceiling)
+    actions = _scaled_actions(raw_actions)
+    if not actions:
+        return {"blocked": True, "reason": "reset_sharp_adjust_no_actions", "cmd": turn_cmd}
+    return _send_reset_custom_actions_pwm(
+        robot,
+        turn_cmd,
+        actions,
+        duration_ms=int(duration_ms),
+        reading=reading,
+        context=f"reset_sharp_adjust_{reason}_{turn_cmd}",
+    )
+
+
 def _recover_reset_visibility_with_backoff(
     vision: BrickDetector,
     robot: Robot,
@@ -6326,6 +7734,7 @@ def _recover_reset_visibility_with_backoff(
     context: str,
     attempts: int = 5,
     pulse_ms: int = 250,
+    back_budget: dict | None = None,
 ) -> dict:
     """Recover reset visibility after a forward polish likely moved too close."""
     current = reading if isinstance(reading, dict) else {}
@@ -6333,14 +7742,23 @@ def _recover_reset_visibility_with_backoff(
     for idx in range(max(0, int(attempts))):
         if isinstance(current, dict) and bool(current.get("confident")):
             return current
+        if _virtual_safety_dist_exceeded(current):
+            _stop_robot(robot)
+            print("[RESET] HARD STOP: virtual safety wall blocks visibility backoff.", flush=True)
+            return current
         print(
             f"[RESET] Visibility recovery {idx + 1}/{int(attempts)} after {context}: "
             f"backing away {int(pulse_ms)}ms to reacquire stack.",
             flush=True,
         )
+        duration_ms = _reset_back_budget_cap_ms(int(pulse_ms), back_budget, label="visibility_recovery")
+        if int(duration_ms) <= 0:
+            print("[RESET] Visibility recovery skipped: back budget exhausted.", flush=True)
+            break
         try:
-            robot.send_command_pwm("b", pwm, duration_ms=int(pulse_ms))
-            time.sleep(max(float(LOOP_S), float(pulse_ms) / 1000.0 + 0.15))
+            robot.send_command_pwm("b", pwm, duration_ms=int(duration_ms))
+            _reset_back_budget_consume(back_budget, duration_ms)
+            time.sleep(max(float(LOOP_S), float(duration_ms) / 1000.0 + 0.15))
         finally:
             _stop_robot(robot)
         _reset_follow_reading_history(vision, allow_large_dist_jump=True)
@@ -6365,6 +7783,7 @@ def _reset_read_after_adjustment(
     settle_s: float,
     context: str,
     fallback: dict,
+    back_budget: dict | None = None,
 ) -> dict:
     time.sleep(max(LOOP_S, (float(duration_ms) / 1000.0) + float(settle_s)))
     _stop_robot(robot)
@@ -6378,6 +7797,7 @@ def _reset_read_after_adjustment(
             robot,
             after,
             context=context,
+            back_budget=back_budget,
         )
     return after if isinstance(after, dict) else fallback
 
@@ -6389,6 +7809,7 @@ def _adjust_reset_until_xy_target(
     reading: dict,
     reset_cfg: dict,
     initial_turn_cmd: str,
+    back_budget: dict | None = None,
 ) -> tuple[dict, bool, int]:
     """Bounded reset polishing loop for dist + abs-x target."""
     cfg = _reset_adjustment_config(reset_cfg)
@@ -6400,15 +7821,30 @@ def _adjust_reset_until_xy_target(
     x_max = float(reset_cfg.get("x_offset_max_mm", RESET_X_OFFSET_MAX_MM))
     if x_min > x_max:
         x_min, x_max = x_max, x_min
+    target_abs_x = _coerce_float(
+        reset_cfg.get("target_abs_x_mm"),
+        (float(x_min) + float(x_max)) / 2.0,
+        minimum=0.0,
+    )
+    if target_abs_x < x_min or target_abs_x > x_max:
+        target_abs_x = (float(x_min) + float(x_max)) / 2.0
+    ready_min_x = max(float(x_min), float(target_abs_x) - float(RESET_FINAL_X_POLISH_MARGIN_MM))
     dist_target = float(reset_cfg.get("dist_target_mm", RESET_DIST_TARGET_MM))
     dist_tol = float(reset_cfg.get("dist_tol_mm", RESET_DIST_TOL_MM))
     dist_low = max(float(dist_target) - float(dist_tol), _reset_min_attempt_dist_mm(reset_cfg))
     settle_s = float(cfg.get("settle_s", 0.12))
     attempts = 0
+    max_attempts = max(
+        int(cfg.get("max_attempts", 0)),
+        10 if _active_game_profile() == "empty" else int(cfg.get("max_attempts", 0)),
+    )
+    stale_back_attempts = 0
+    back_progress_min_delta = float(cfg.get("back_progress_min_delta_mm", 3.0))
+    max_stale_back_attempts = int(cfg.get("max_stale_back_attempts", 2))
     turn_cmd = str(initial_turn_cmd or "r").strip().lower()
     turn_cmd = turn_cmd if turn_cmd in {"l", "r"} else "r"
 
-    for attempt_idx in range(int(cfg.get("max_attempts", 0))):
+    for attempt_idx in range(int(max_attempts)):
         if not isinstance(current, dict) or not bool(current.get("confident")):
             break
         try:
@@ -6420,10 +7856,27 @@ def _adjust_reset_until_xy_target(
         if _reset_xy_target_ready(current, reset_cfg):
             return current, True, attempts
 
-        if dist_mm < dist_low:
+        before_dist_mm = float(dist_mm)
+        dist_ready = bool(
+            _reset_primary_dist_target_ready(dist_mm, reset_cfg)
+            or _reset_xy_target_ready(current, reset_cfg)
+        )
+        if not bool(dist_ready) and dist_mm < dist_low:
             cmd = "b"
             gap = dist_low - dist_mm
             duration_ms = _reset_adjustment_pulse_ms(gap, cfg)
+            straight_cfg = _reset_straight_back_first_config(reset_cfg)
+            back_min_ms = _coerce_int(
+                straight_cfg.get("duration_min_ms"),
+                RESET_STRAIGHT_BACK_TARGET_MIN_MS,
+                minimum=0,
+                maximum=5000,
+            )
+            duration_ms = max(int(duration_ms), int(back_min_ms))
+            duration_ms = _reset_back_budget_cap_ms(duration_ms, back_budget, label="adjust_dist_back")
+            if int(duration_ms) <= 0:
+                print("[RESET] Adjustment skipped: dist_back back budget exhausted.", flush=True)
+                break
             send_result = guarded_send_command_pwm(
                 robot,
                 cmd,
@@ -6433,7 +7886,7 @@ def _adjust_reset_until_xy_target(
                 context="reset_adjust_dist_back",
             )
             reason = "dist_back"
-        elif dist_mm > dist_target + dist_tol:
+        elif not bool(dist_ready) and dist_mm > dist_target + dist_tol:
             cmd = "f"
             gap = dist_mm - (dist_target + dist_tol)
             duration_ms = _reset_adjustment_pulse_ms(gap, cfg)
@@ -6446,11 +7899,18 @@ def _adjust_reset_until_xy_target(
                 context="reset_adjust_dist_forward",
             )
             reason = "dist_forward"
-        elif abs_x < x_min:
-            gap = x_min - abs_x
-            duration_ms = _reset_adjustment_pulse_ms(gap, cfg)
+        elif abs_x < ready_min_x:
+            gap = max(0.0, float(target_abs_x) - float(abs_x))
+            duration_ms = max(
+                int(RESET_FINAL_X_POLISH_MAX_MS),
+                int(EMPTY_S1_CURVE_BREAKAWAY_MIN_MS),
+            )
+            duration_ms = _reset_back_budget_cap_ms(duration_ms, back_budget, label="adjust_increase_x")
+            if int(duration_ms) <= 0:
+                print("[RESET] Adjustment skipped: increase_x back budget exhausted.", flush=True)
+                break
             open_turn = _turn_cmd_to_open_x_gap(x_mm, turn_cmd)
-            send_result = _reset_small_turn_adjust(
+            send_result = _reset_sharp_turn_adjust(
                 robot,
                 turn_cmd=open_turn,
                 reading=current,
@@ -6462,6 +7922,10 @@ def _adjust_reset_until_xy_target(
         else:
             gap = abs_x - x_max
             duration_ms = _reset_adjustment_pulse_ms(gap, cfg)
+            duration_ms = _reset_back_budget_cap_ms(duration_ms, back_budget, label="adjust_reduce_x")
+            if int(duration_ms) <= 0:
+                print("[RESET] Adjustment skipped: reduce_x back budget exhausted.", flush=True)
+                break
             correction_turn = _turn_cmd_to_close_x_gap(x_mm) or ("l" if turn_cmd == "r" else "r")
             send_result = _reset_small_turn_adjust(
                 robot,
@@ -6476,6 +7940,8 @@ def _adjust_reset_until_xy_target(
         if isinstance(send_result, dict) and bool(send_result.get("blocked")):
             print(f"[RESET] Adjustment blocked: {reason} ({send_result.get('reason')})", flush=True)
             break
+        if reason in {"dist_back", "increase_x", "reduce_x"}:
+            _reset_back_budget_consume(back_budget, duration_ms)
         attempts += 1
         print(f"[RESET] Adjustment {attempt_idx + 1}: {reason} pulse={duration_ms}ms", flush=True)
         current = _reset_read_after_adjustment(
@@ -6485,7 +7951,31 @@ def _adjust_reset_until_xy_target(
             settle_s=settle_s,
             context=f"reset_adjust_{reason}",
             fallback=current,
+            back_budget=back_budget,
         )
+        if reason == "dist_back":
+            try:
+                after_dist_mm = float(current.get("dist_mm"))
+            except (TypeError, ValueError):
+                after_dist_mm = None
+            if after_dist_mm is None or after_dist_mm < before_dist_mm + back_progress_min_delta:
+                stale_back_attempts += 1
+                after_text = "N/A" if after_dist_mm is None else f"{after_dist_mm:.1f}mm"
+                print(
+                    "[RESET] Back adjustment made no trustworthy distance progress: "
+                    f"before={before_dist_mm:.1f}mm after={after_text} "
+                    f"stale={stale_back_attempts}/{max_stale_back_attempts}.",
+                    flush=True,
+                )
+                if stale_back_attempts >= max_stale_back_attempts:
+                    _stop_robot(robot)
+                    if isinstance(current, dict):
+                        current["_reset_adjustment_stop_reason"] = "dist_back_no_progress_stop"
+                    break
+            else:
+                stale_back_attempts = 0
+        else:
+            stale_back_attempts = 0
         if _reset_xy_target_ready(current, reset_cfg):
             return current, True, attempts
 
@@ -6499,6 +7989,7 @@ def _reset_final_x_offset_polish(
     reading: dict,
     reset_cfg: dict,
     initial_turn_cmd: str,
+    back_budget: dict | None = None,
 ) -> tuple[dict, bool, str]:
     """End reset with a visible x-offset polish after distance-only adjustments."""
     current = reading if isinstance(reading, dict) else {}
@@ -6556,6 +8047,10 @@ def _reset_final_x_offset_polish(
         int(RESET_FINAL_X_POLISH_MIN_MS),
         min(int(RESET_FINAL_X_POLISH_MAX_MS), int(duration_ms)),
     )
+    duration_ms = _reset_back_budget_cap_ms(duration_ms, back_budget, label="final_x_offset")
+    if int(duration_ms) <= 0:
+        print("[RESET] Final x-offset polish skipped: back budget exhausted.", flush=True)
+        return current, False, "back_budget_exhausted"
     turn_cmd = str(initial_turn_cmd or "r").strip().lower()
     turn_cmd = turn_cmd if turn_cmd in {"l", "r"} else "r"
     open_turn = _turn_cmd_to_open_x_gap(x_mm, turn_cmd)
@@ -6573,6 +8068,7 @@ def _reset_final_x_offset_polish(
             flush=True,
         )
         return current, False, "blocked"
+    _reset_back_budget_consume(back_budget, duration_ms)
 
     print(
         f"[RESET] Final x-offset polish: BACK_CURVE_{open_turn.upper()} "
@@ -6586,6 +8082,7 @@ def _reset_final_x_offset_polish(
         settle_s=float(cfg.get("settle_s", 0.12)),
         context="reset_final_x_offset_polish",
         fallback=current,
+        back_budget=back_budget,
     )
     return after if isinstance(after, dict) else current, True, "sent"
 
@@ -7233,19 +8730,28 @@ def _read_brick_measurement(vision: BrickDetector, *, jump_guard: bool = False) 
     _annotate_reading_with_vision_debug(vision, reading)
     frame = getattr(vision, "raw_frame", None)
     if _active_game_profile() == "empty":
+        _HOLDING_MASK_LOCK.reset()
         reading["holding"] = False
         reading["holding_reason"] = "empty_profile_skips_holding_mask"
         return _apply_temporal_filter_brick_reading(vision, reading, jump_guard=jump_guard)
-    holding_result = detect_holding_brick(frame)
+    holding_result = _HOLDING_MASK_LOCK.update(detect_holding_brick(frame))
     reading["holding"] = bool(holding_result.get("holding"))
     reading["holding_reason"] = holding_result.get("reason")
+    reading["holding_mask_locked"] = bool(holding_result.get("holding_mask_locked"))
+    reading["holding_mask_lock_misses"] = int(holding_result.get("holding_mask_lock_misses") or 0)
     if not bool(holding_result.get("holding")):
         return _apply_temporal_filter_brick_reading(vision, reading, jump_guard=jump_guard)
+    holding_target_cfg = _holding_target_vision_config()
     masked = _mask_held_brick_for_target_frame(frame, holding_result)
     if masked is None:
-        reading["target_masked_for_holding"] = False
-        return reading
-    holding_target_cfg = _holding_target_vision_config()
+        rejected = brick_motion_measurement_from_result(None)
+        rejected["holding"] = True
+        rejected["holding_reason"] = holding_result.get("reason")
+        rejected["target_masked_for_holding"] = False
+        rejected["held_brick_raw_target_suppressed"] = True
+        rejected["unmasked_target_reading"] = reading
+        rejected["reason"] = "holding_target_mask_unavailable"
+        return _apply_temporal_filter_brick_reading(vision, rejected, jump_guard=jump_guard)
     contour_result = detect_masked_target_brick_contour(masked, detector=vision)
     if bool(contour_result.get("found")):
         contour_reading = brick_motion_measurement_from_result(
@@ -7254,6 +8760,8 @@ def _read_brick_measurement(vision: BrickDetector, *, jump_guard: bool = False) 
         )
         contour_reading["holding"] = True
         contour_reading["holding_reason"] = holding_result.get("reason")
+        contour_reading["holding_mask_locked"] = bool(holding_result.get("holding_mask_locked"))
+        contour_reading["holding_mask_lock_misses"] = int(holding_result.get("holding_mask_lock_misses") or 0)
         contour_reading["target_masked_for_holding"] = True
         contour_reading["holding_target_relaxed_confidence"] = True
         contour_reading["holding_target_contour"] = contour_result
@@ -7273,8 +8781,14 @@ def _read_brick_measurement(vision: BrickDetector, *, jump_guard: bool = False) 
         masked_result = vision.read_frame(masked)
     except Exception as exc:
         log.warning("Holding-masked target read error: %s", exc)
-        reading["target_masked_for_holding"] = False
-        return reading
+        rejected = brick_motion_measurement_from_result(None)
+        rejected["holding"] = True
+        rejected["holding_reason"] = holding_result.get("reason")
+        rejected["target_masked_for_holding"] = False
+        rejected["held_brick_raw_target_suppressed"] = True
+        rejected["unmasked_target_reading"] = reading
+        rejected["reason"] = "holding_masked_target_read_error"
+        return _apply_temporal_filter_brick_reading(vision, rejected, jump_guard=jump_guard)
     finally:
         try:
             set_tuning = getattr(vision, "set_runtime_tuning", None)
@@ -7288,6 +8802,8 @@ def _read_brick_measurement(vision: BrickDetector, *, jump_guard: bool = False) 
     )
     masked_reading["holding"] = True
     masked_reading["holding_reason"] = holding_result.get("reason")
+    masked_reading["holding_mask_locked"] = bool(holding_result.get("holding_mask_locked"))
+    masked_reading["holding_mask_lock_misses"] = int(holding_result.get("holding_mask_lock_misses") or 0)
     masked_reading["target_masked_for_holding"] = True
     masked_reading["holding_target_relaxed_confidence"] = True
     masked_reading["unmasked_target_reading"] = reading
@@ -7421,6 +8937,12 @@ def _follow_dist_approach_policy() -> dict:
             raw.get("pingpong_confirm_abs_dist_err_mm"),
             DEFAULT_DIST_APPROACH_POLICY["pingpong_confirm_abs_dist_err_mm"],
             minimum=0.0,
+        ),
+        "pingpong_hard_stop_after_count": _coerce_int(
+            raw.get("pingpong_hard_stop_after_count"),
+            DEFAULT_DIST_APPROACH_POLICY["pingpong_hard_stop_after_count"],
+            minimum=1,
+            maximum=10,
         ),
         "micro_nudge_abs_dist_err_mm": _coerce_float(
             raw.get("micro_nudge_abs_dist_err_mm"),
@@ -8053,6 +9575,25 @@ def _fmt_gate_target(target: float | None, tol: float | None, *, signed: bool = 
     return f"{target_text} +/- {tol_text}"
 
 
+def _fmt_step2_gate_target(
+    targets: dict,
+    label: str,
+    value_key: str,
+    tol_key: str,
+    *,
+    signed: bool = False,
+) -> str:
+    if str(label) != "dist":
+        return _fmt_gate_target(targets.get(value_key), targets.get(tol_key), signed=signed)
+    if targets.get("dist_tol_minus_mm") is None and targets.get("dist_tol_plus_mm") is None:
+        return _fmt_gate_target(targets.get(value_key), targets.get(tol_key), signed=signed)
+    try:
+        minus_tol, plus_tol = _step2_axis_tolerance_pair(targets, "dist", "dist_tol_mm")
+    except (TypeError, ValueError):
+        return _fmt_gate_target(targets.get(value_key), targets.get(tol_key), signed=signed)
+    return f"{_fmt_mm(targets.get(value_key))} -{_fmt_mm(minus_tol)}/+{_fmt_mm(plus_tol)}"
+
+
 def _step2_gate_text(step2_cfg: dict | None = None) -> str:
     cfg = step2_cfg if isinstance(step2_cfg, dict) else _follow_step2_config()
     targets = cfg.get("targets") if isinstance(cfg.get("targets"), dict) else {}
@@ -8062,7 +9603,7 @@ def _step2_gate_text(step2_cfg: dict | None = None) -> str:
     parts = []
     for label, value_key, tol_key in _configured_step2_target_axes(cfg):
         parts.append(
-            f"{label}={_fmt_gate_target(targets.get(value_key), targets.get(tol_key), signed=(label != 'dist'))}"
+            f"{label}={_fmt_step2_gate_target(targets, label, value_key, tol_key, signed=(label != 'dist'))}"
         )
     return ", ".join(parts) if parts else "pending targets: targets"
 
@@ -8081,6 +9622,17 @@ def _step2_semi_happy_text(step2_cfg: dict | None = None) -> str:
 
 def _step3_gate_text(step3_cfg: dict | None = None) -> str:
     cfg = step3_cfg if isinstance(step3_cfg, dict) else _follow_step4_config()
+    if bool(cfg.get("fixed_lift_only", DEFAULT_STEP3_CONFIG["fixed_lift_only"])):
+        lift_cmd = str(cfg.get("lift_mast_cmd") or DEFAULT_STEP3_CONFIG["lift_mast_cmd"]).strip().upper()
+        if lift_cmd not in {"U", "D"}:
+            lift_cmd = DEFAULT_STEP3_CONFIG["lift_mast_cmd"].upper()
+        duration_ms = _coerce_int(
+            cfg.get("fixed_lift_duration_ms"),
+            DEFAULT_STEP3_CONFIG["fixed_lift_duration_ms"],
+            minimum=1,
+            maximum=_max_mast_act_ms(),
+        )
+        return f"blind mast {lift_cmd} {duration_ms}ms"
     targets = cfg.get("targets") if isinstance(cfg.get("targets"), dict) else {}
     missing = _step3_missing_target_keys(cfg)
     if missing:
@@ -8124,6 +9676,18 @@ def _success_gate_summary_lines() -> list[str]:
     )
     if reset_target_abs_x < reset_x_min or reset_target_abs_x > reset_x_max:
         reset_target_abs_x = (float(reset_x_min) + float(reset_x_max)) / 2.0
+    reset_hard_dist_tol = _coerce_float(
+        reset_cfg.get("hard_dist_tol_mm"),
+        RESET_HARD_DIST_TOL_MM,
+        minimum=0.0,
+    )
+    reset_hard_abs_x_tol = _coerce_float(
+        reset_cfg.get("hard_abs_x_tol_mm"),
+        RESET_HARD_ABS_X_TOL_MM,
+        minimum=0.0,
+    )
+    reset_hard_x_min = max(0.0, float(reset_target_abs_x) - float(reset_hard_abs_x_tol))
+    reset_hard_x_max = float(reset_target_abs_x) + float(reset_hard_abs_x_tol)
     y_gate = (
         f"y={_fmt_gate_target(y_cfg.get('win_target_mm'), _win_effective_tolerance(y_cfg.get('win_tol_mm')), signed=True)}"
         if bool(y_cfg.get("enabled"))
@@ -8184,10 +9748,12 @@ def _success_gate_summary_lines() -> list[str]:
         y_commit_gate,
         (
             "[GATES] Step 1 Reset / BACK_TURN_LR: "
-            f"dist={_fmt_gate_target(reset_cfg.get('dist_target_mm'), reset_cfg.get('dist_tol_mm'))}, "
+            f"soft dist={_fmt_gate_target(reset_cfg.get('dist_target_mm'), reset_cfg.get('dist_tol_mm'))}, "
             f"min_attempt_dist={_reset_min_attempt_dist_mm(reset_cfg):.1f}mm, "
-            f"|x|={reset_x_min:.1f}-{reset_x_max:.1f}mm "
-            f"(target {reset_target_abs_x:.1f}mm); "
+            f"soft |x|={reset_x_min:.1f}-{reset_x_max:.1f}mm "
+            f"(target {reset_target_abs_x:.1f}mm); hard stop dist="
+            f"{_fmt_gate_target(reset_cfg.get('dist_target_mm'), reset_hard_dist_tol)}, "
+            f"hard |x|={reset_hard_x_min:.1f}-{reset_hard_x_max:.1f}mm; "
             f"y={_fmt_gate_target(reset_cfg.get('y_target_mm'), reset_cfg.get('y_tol_mm'), signed=True)} "
             "is logged only, not a reset hit gate"
         ),
@@ -8518,6 +10084,8 @@ def _distance_micro_nudge_plan(reading: dict, *, dist_err: float, x_err: float, 
         maximum=_max_act_ms(),
     )
     duration_ms = max(int(duration_ms), int(micro_floor_ms), int(_min_motion_duration_ms(cmd)))
+    if _active_game_profile() == "empty" and cmd == "f":
+        duration_ms = min(int(duration_ms), max(80, min(100, int(_min_motion_duration_ms(cmd)))))
     pwm = max(int(pwm), int(_pwm_floor_for_cmd(cmd)))
     action_prefix = "BCK" if cmd == "b" else "FWD"
     if _win_axis_ok(float(x_err), _x_tol_mm()):
@@ -8570,6 +10138,8 @@ def _distance_micro_straight_plan(reading: dict, *, dist_err: float, x_err: floa
         maximum=_max_act_ms(),
     )
     duration_ms = max(int(duration_ms), int(micro_floor_ms), int(_min_motion_duration_ms(cmd)))
+    if _active_game_profile() == "empty" and cmd == "f":
+        duration_ms = min(int(duration_ms), max(80, min(100, int(_min_motion_duration_ms(cmd)))))
     action_prefix = "BCK" if cmd == "b" else "FWD"
     return _attach_mast_to_plan({
         "kind": "drive",
@@ -8841,6 +10411,8 @@ def _plan_commits_y_lowering(plan: dict | None) -> bool:
 
 
 def _y_axis_action_plan(reading: dict, *, dist_err: float, x_err: float) -> dict | None:
+    # Mast is locked during normal follow; scripted step handlers own the two exceptions.
+    return None
     y_cfg = _follow_y_axis_config()
     if not bool(y_cfg.get("enabled")):
         return None
@@ -9360,6 +10932,9 @@ def _prepare_next_step1_attempt(stats: dict) -> None:
 
 
 def _attach_mast_to_plan(plan: dict, y_plan: dict | None) -> dict:
+    # Do not piggyback mast motion on wheel motion. The only mast moves live in
+    # the explicit scripted step handlers allowed by _scripted_mast_allowed().
+    return plan
     if not isinstance(plan, dict) or not isinstance(y_plan, dict):
         return plan
     y_reason = str(y_plan.get("reason") or "")
@@ -9439,15 +11014,56 @@ def _x_dist_drive_bias_plan(
     if mode not in {"forward", "backward"}:
         mode = "forward"
     strength = _bias_strength_for_dist_x(dist_err=dist_err, x_err=x_err, x_outside_mm=x_outside)
+    if str(strength or "").strip().lower() == "adaptive":
+        strength = _bias_strength_for_x_outside(x_outside)
     duration_ms = _combined_drive_bias_duration_ms(dist_err, drive_mode=mode)
+    if mode == "backward":
+        if _active_game_profile() == "empty" and float(dist_err) < 0.0 and float(x_outside) > 0.0:
+            duration_ms = max(int(duration_ms), min(_max_act_ms(), 300))
+        return _attach_mast_to_plan({
+            "kind": "drive",
+            "cmd": "b",
+            "action": "BCK",
+            "dist_err": float(dist_err),
+            "x_err": float(x_err),
+            "x_outside_mm": float(x_outside),
+            "dist_outside_mm": float(dist_outside),
+            "duration_ms": int(duration_ms),
+            "distance_creep": True,
+            "reason": f"{reason}_straight_back_no_curve",
+        }, y_plan)
     skip_near_target_cap = False
     if _active_game_profile() == "empty":
-        if float(x_outside) >= float(_follow_combined_gap_policy().get("medium_x_outside_max_mm", 12.0)):
-            duration_ms = max(int(duration_ms), min(_max_act_ms(), int(EMPTY_S1_COMBINED_CURVE_STRONG_MS)))
+        if mode == "forward" and float(x_outside) > 0.0:
+            strength = _empty_step1_learning_curve_strength(float(x_outside))
+            if str(strength) == "superstrong" and float(dist_err) <= 0.0:
+                strength = "medium"
+            if str(strength) == "superstrong":
+                duration_ms = int(EMPTY_S1_LEARNING_CURVE_MS)
+                skip_near_target_cap = True
+        if str(strength).strip().lower() == "strong":
+            duration_ms = min(int(duration_ms), min(_max_act_ms(), int(EMPTY_S1_COMBINED_CURVE_STRONG_MS)))
+        elif str(strength).strip().lower() == "medium":
+            duration_ms = min(int(duration_ms), min(_max_act_ms(), int(EMPTY_S1_COMBINED_CURVE_MEDIUM_MS)))
+        elif float(x_outside) >= float(_follow_combined_gap_policy().get("medium_x_outside_max_mm", 12.0)):
+            duration_ms = min(int(duration_ms), min(_max_act_ms(), int(EMPTY_S1_COMBINED_CURVE_STRONG_MS)))
         elif float(x_outside) >= float(_follow_combined_gap_policy().get("gentle_x_outside_max_mm", 6.0)):
-            duration_ms = max(int(duration_ms), min(_max_act_ms(), int(EMPTY_S1_COMBINED_CURVE_MEDIUM_MS)))
+            duration_ms = min(int(duration_ms), min(_max_act_ms(), int(EMPTY_S1_COMBINED_CURVE_MEDIUM_MS)))
+        if mode == "backward" and float(dist_err) < 0.0:
+            duration_ms = min(
+                int(duration_ms),
+                min(_max_act_ms(), int(EMPTY_S1_TOO_CLOSE_BIAS_MAX_MS)),
+            )
         if int(duration_ms) > int(_follow_dist_approach_policy().get("near_target_max_pulse_ms", 80)):
             skip_near_target_cap = True
+        if mode == "forward" and float(dist_outside) <= 0.0 and float(x_outside) > 0.0:
+            # If Step 1 distance is already in the happy band, do not chase the
+            # exact distance target with a long curve. Split X polish into tiny
+            # observed moves and let the near-target crawl cap protect distance.
+            strength = _empty_step1_learning_curve_strength(float(x_outside))
+            if str(strength) == "superstrong" and float(dist_err) <= 0.0:
+                strength = "medium"
+            skip_near_target_cap = False
     return _attach_mast_to_plan({
         "kind": "drive_bias",
         "cmd": "b" if mode == "backward" else "f",
@@ -9461,7 +11077,41 @@ def _x_dist_drive_bias_plan(
         "dist_outside_mm": float(dist_outside),
         "duration_ms": int(duration_ms),
         "distance_creep": True,
+        "use_calibrated_turn_drive_curve": str(strength or "").strip().lower() not in {"micro", "superstrong"},
         "skip_near_target_crawl_cap": bool(skip_near_target_cap),
+        "reason": str(reason),
+    }, y_plan)
+
+
+def _make_room_for_forward_curve_plan(
+    *,
+    dist_err: float,
+    x_err: float,
+    x_outside: float,
+    dist_outside: float,
+    y_plan: dict | None,
+    reason: str,
+) -> dict:
+    target_far_err_mm = 20.0
+    gap_mm = max(0.0, float(target_far_err_mm) - float(dist_err))
+    duration_ms = _proportional_duration_ms(
+        gap_mm=gap_mm,
+        min_ms=250,
+        max_ms=min(_max_act_ms(), 450),
+        full_gap_mm=80.0,
+    )
+    duration_ms = max(int(duration_ms), min(_max_act_ms(), 300))
+    return _attach_mast_to_plan({
+        "kind": "drive",
+        "cmd": "b",
+        "action": "BCK_ROOM_FOR_FORWARD_CURVE",
+        "dist_err": float(dist_err),
+        "x_err": float(x_err),
+        "x_outside_mm": float(x_outside),
+        "dist_outside_mm": float(dist_outside),
+        "duration_ms": int(duration_ms),
+        "distance_creep": True,
+        "skip_near_target_crawl_cap": True,
         "reason": str(reason),
     }, y_plan)
 
@@ -9532,6 +11182,13 @@ def _x_only_turn_plan(
         "duration_ms": _x_turn_duration_ms(dist_err=dist_err, turn_cmd=turn_cmd),
         "reason": str(reason),
     }
+    if _active_game_profile() == "empty" and abs(float(dist_err)) <= float(_dist_tol_mm()):
+        plan["one_wheel_x_nudge"] = True
+        plan["duration_ms"] = 500
+        plan["allow_long_duration"] = True
+        plan["skip_near_target_crawl_cap"] = True
+        plan["strength"] = "one_wheel_500ms"
+        plan["reason"] = f"{reason}_one_wheel_500ms"
     if bool(use_production_curve):
         plan["use_production_turn_curve"] = True
         production_curve = _production_turn_curve_for_reading(
@@ -9557,7 +11214,7 @@ def _x_only_turn_plan(
     return _attach_mast_to_plan(plan, y_plan)
 
 
-def _follow_action_plan(reading: dict) -> dict:
+def _follow_action_plan(reading: dict, *, virtual_safety_armed: bool = True) -> dict:
     dist_mm = float(reading["dist_mm"])
     x_mm = float(reading["x_mm"])
     dist_err = dist_mm - _dist_target_mm()
@@ -9567,6 +11224,17 @@ def _follow_action_plan(reading: dict) -> dict:
     dist_happy_tol = _win_effective_tolerance(_dist_tol_mm())
     y_cfg = _follow_y_axis_config()
     y_err = _y_err_for_reading(reading, target=float(y_cfg.get("win_target_mm", Y_TARGET_MM)))
+    if _virtual_safety_dist_exceeded(reading):
+        if bool(virtual_safety_armed):
+            return _virtual_safety_stop_plan(reading, dist_err=dist_err, x_err=x_err, y_err=y_err)
+        if float(dist_err) > 0.0:
+            return _virtual_safety_forward_recovery_plan(
+                reading,
+                dist_err=dist_err,
+                x_err=x_err,
+                y_err=y_err,
+            )
+        return _virtual_safety_stop_plan(reading, dist_err=dist_err, x_err=x_err, y_err=y_err)
     if _pickup_suspected_reading(reading):
         return {
             "kind": "wait",
@@ -9589,27 +11257,63 @@ def _follow_action_plan(reading: dict) -> dict:
         return {"kind": "hold", "action": "HAPPY", "dist_err": dist_err, "x_err": x_err, "y_err": y_err}
     if isinstance(y_plan, dict) and str(y_plan.get("reason") or "") == "protect_lower_edge":
         return y_plan
+    if (
+        _active_game_profile() == "empty"
+        and dist_err < -_win_effective_tolerance(_dist_tol_mm())
+        and str(reading.get("vision_geometry_source") or "").strip().lower() == "green_edge_close_range_width"
+        and float(_dist_target_mm()) >= 180.0
+    ):
+        if not x_ok:
+            turn_cmd = _turn_cmd_to_close_x_gap(x_err) or "r"
+            return _x_dist_drive_bias_plan(
+                turn_cmd=turn_cmd,
+                drive_mode="backward",
+                dist_err=dist_err,
+                x_err=x_err,
+                x_outside=_x_outside_gate_mm(x_err),
+                dist_outside=_dist_outside_gate_mm(dist_err),
+                y_plan=y_plan,
+                reason="empty_s1_close_range_conflict_curve_recover",
+            )
+        return {
+            "kind": "drive",
+            "cmd": "b",
+            "action": "BCK",
+            "dist_err": float(dist_err),
+            "x_err": float(x_err),
+            "x_outside_mm": float(_x_outside_gate_mm(x_err)),
+            "dist_outside_mm": float(_dist_outside_gate_mm(dist_err)),
+            "duration_ms": min(int(_distance_correction_duration_ms(dist_err)), 250),
+            "distance_creep": True,
+            "reason": "empty_s1_close_range_conflict_backoff",
+        }
     if _active_game_profile() == "holding":
         holding_x_outside = _x_outside_gate_mm(x_err)
+        holding_dist_outside = _dist_outside_gate_mm(dist_err)
+        if not bool(dist_ok) and not bool(x_ok) and float(dist_err) > 0.0:
+            turn_cmd = _turn_cmd_to_close_x_gap(x_err) or "r"
+            return _x_dist_drive_bias_plan(
+                turn_cmd=turn_cmd,
+                drive_mode="forward",
+                dist_err=dist_err,
+                x_err=x_err,
+                x_outside=holding_x_outside,
+                dist_outside=holding_dist_outside,
+                y_plan=y_plan,
+                reason="holding_s1_close_dist_and_x_forward_curve",
+            )
         if dist_ok and not x_ok:
             turn_cmd = _turn_cmd_to_close_x_gap(x_err) or "r"
-            return _attach_mast_to_plan({
-                "kind": "drive_bias",
-                "cmd": "b",
-                "turn_cmd": turn_cmd,
-                "drive_mode": "backward",
-                "strength": "gentle",
-                "action": f"BIAS_{turn_cmd.upper()}_GENTLE_BACKOFF",
-                "dist_err": float(dist_err),
-                "x_err": float(x_err),
-                "x_outside_mm": float(holding_x_outside),
-                "dist_outside_mm": float(_dist_outside_gate_mm(dist_err)),
-                "duration_ms": int(HOLDING_S1_RETRY_BACKOFF_MS),
-                "distance_creep": True,
-                "allow_long_duration": True,
-                "skip_near_target_crawl_cap": True,
-                "reason": "holding_s1_dist_ok_x_retry_long_gentle_backoff",
-            }, y_plan)
+            return _x_dist_drive_bias_plan(
+                turn_cmd=turn_cmd,
+                drive_mode="forward",
+                dist_err=dist_err,
+                x_err=x_err,
+                x_outside=holding_x_outside,
+                dist_outside=holding_dist_outside,
+                y_plan=y_plan,
+                reason="holding_s1_dist_ok_x_forward_curve",
+            )
         holding_x_polish_dist_band_mm = min(10.0, max(3.0, float(_dist_tol_mm()) * 0.35))
         must_center_dist_before_x = (not bool(dist_ok)) or (
             not bool(x_ok) and abs(float(dist_err)) > float(holding_x_polish_dist_band_mm)
@@ -9640,6 +11344,44 @@ def _follow_action_plan(reading: dict) -> dict:
             ),
         }
     if dist_err < -dist_happy_tol:
+        if _active_game_profile() == "empty":
+            x_outside = _x_outside_gate_mm(x_err)
+            dist_outside = _dist_outside_gate_mm(dist_err)
+            duration_ms = max(
+                int(EMPTY_S1_CURVE_BREAKAWAY_MIN_MS),
+                int(_too_close_escape_duration_ms(dist_err)),
+                int(_min_effective_drive_duration_ms("b")),
+            )
+            duration_ms = min(int(duration_ms), 700)
+            if not x_ok and float(x_outside) > float(EMPTY_S1_GENTLE_X_OUTSIDE_MM):
+                turn_cmd = _turn_cmd_to_close_x_gap(x_err) or "r"
+                plan = _x_dist_drive_bias_plan(
+                    turn_cmd=turn_cmd,
+                    drive_mode="backward",
+                    dist_err=dist_err,
+                    x_err=x_err,
+                    x_outside=x_outside,
+                    dist_outside=dist_outside,
+                    y_plan=None,
+                    reason="empty_s1_too_close_x_back_curve",
+                )
+                plan["duration_ms"] = int(duration_ms)
+                plan["allow_long_duration"] = False
+                plan["skip_near_target_crawl_cap"] = True
+                return plan
+            return {
+                "kind": "drive",
+                "cmd": "b",
+                "action": "BCK_TOO_CLOSE",
+                "dist_err": float(dist_err),
+                "x_err": float(x_err),
+                "x_outside_mm": float(x_outside),
+                "dist_outside_mm": float(dist_outside),
+                "duration_ms": int(duration_ms),
+                "pwm": int(_too_close_escape_policy().get("pwm", _pwm_floor_for_cmd("b"))),
+                "distance_creep": True,
+                "reason": "empty_s1_too_close_back_to_band",
+            }
         if not x_ok:
             turn_cmd = _turn_cmd_to_close_x_gap(x_err) or "r"
             x_outside = _x_outside_gate_mm(x_err)
@@ -9695,6 +11437,28 @@ def _follow_action_plan(reading: dict) -> dict:
         turn_cmd = _turn_cmd_to_close_x_gap(x_err) or "r"
         x_outside = _x_outside_gate_mm(x_err)
         dist_outside = _dist_outside_gate_mm(dist_err)
+        if _active_game_profile() == "empty" and float(dist_err) > float(dist_happy_tol):
+            crawl_ms = int(_empty_step1_crawl_to_win_floor_ms(float(dist_err)))
+            plan = _x_dist_drive_bias_plan(
+                turn_cmd=turn_cmd,
+                drive_mode="forward",
+                dist_err=dist_err,
+                x_err=x_err,
+                x_outside=x_outside,
+                dist_outside=dist_outside,
+                y_plan=y_plan,
+                reason="empty_s1_far_dist_x_single_committed_curve",
+            )
+            learning_strength = _empty_step1_learning_curve_strength(float(x_outside))
+            plan["duration_ms"] = int(max(1, crawl_ms))
+            plan["strength"] = str(learning_strength)
+            plan["action"] = f"BIAS_{str(turn_cmd).upper()}_{str(learning_strength).upper()}"
+            plan["use_calibrated_turn_drive_curve"] = False
+            plan["allow_long_duration"] = False
+            plan["skip_near_target_crawl_cap"] = True
+            plan["gap_to_win_floor_mm"] = max(0.0, float(dist_err) - float(dist_happy_tol))
+            plan["reason"] = "empty_s1_crawl_to_win_floor_x_learning_curve"
+            return plan
         if (
             dist_err < -0.75 * float(dist_happy_tol)
             and x_outside <= float(_follow_combined_gap_policy().get("straight_x_outside_max_mm", 0.0))
@@ -9733,6 +11497,17 @@ def _follow_action_plan(reading: dict) -> dict:
                     "distance_creep": True,
                     "reason": "tiny_x_gap_forward_instead_of_turn",
                 }, y_plan)
+            if _active_game_profile() == "empty" and dist_ok:
+                return {
+                    "kind": "wait",
+                    "action": "EMPTY_S1_TINY_X_SETTLE",
+                    "dist_err": float(dist_err),
+                    "x_err": float(x_err),
+                    "x_outside_mm": float(x_outside),
+                    "dist_outside_mm": float(dist_outside),
+                    "duration_ms": 0,
+                    "reason": "empty_s1_tiny_x_settle_at_good_dist",
+                }
             if y_plan is not None:
                 return y_plan
             if bool(_follow_x_priority_policy().get("tiny_x_only_backoff_enabled", True)):
@@ -9773,23 +11548,40 @@ def _follow_action_plan(reading: dict) -> dict:
                 "reason": "tiny_x_gap_no_subfloor_turn",
             }
         if dist_ok and _active_game_profile() == "empty":
-            strength = _near_wide_x_turn_strength(abs(x_err))
+            duration_ms = int(_empty_step1_in_band_x_curve_ms(dist_err))
+            if duration_ms <= 0:
+                return {
+                    "kind": "wait",
+                    "action": "EMPTY_S1_X_UNSAFE_TO_POLISH",
+                    "dist_err": float(dist_err),
+                    "x_err": float(x_err),
+                    "x_outside_mm": float(x_outside),
+                    "dist_outside_mm": float(dist_outside),
+                    "duration_ms": 0,
+                    "reason": "empty_s1_dist_band_too_close_for_forward_x_curve",
+                }
+            strength = (
+                "superstrong"
+                if abs(float(x_err)) >= float(EMPTY_S1_IN_BAND_SUPERSTRONG_ABS_X_ERR_MM)
+                else "gentle"
+            )
             return _attach_mast_to_plan({
                 "kind": "drive_bias",
-                "cmd": "b",
-                "turn_cmd": turn_cmd,
-                "drive_mode": "backward",
-                "strength": strength,
-                "action": f"BIAS_{turn_cmd.upper()}_{strength.upper()}_BACKOFF",
+                "cmd": "f",
+                "turn_cmd": str(turn_cmd),
+                "drive_mode": "forward",
+                "strength": str(strength),
+                "action": f"BIAS_{str(turn_cmd).upper()}_{str(strength).upper()}_IN_BAND",
                 "dist_err": float(dist_err),
                 "x_err": float(x_err),
                 "x_outside_mm": float(x_outside),
                 "dist_outside_mm": float(dist_outside),
-                "duration_ms": int(EMPTY_S1_RETRY_BACKOFF_MS),
+                "duration_ms": int(duration_ms),
                 "distance_creep": True,
-                "allow_long_duration": True,
-                "skip_near_target_crawl_cap": True,
-                "reason": "empty_s1_dist_ok_x_retry_backoff_curve",
+                "use_calibrated_turn_drive_curve": False,
+                "allow_long_duration": False,
+                "skip_near_target_crawl_cap": False,
+                "reason": "empty_s1_dist_ok_x_smooth_forward_curve",
             }, y_plan)
         if dist_outside > 0.0:
             return _x_dist_drive_bias_plan(
@@ -9903,6 +11695,32 @@ def _follow_action_plan(reading: dict) -> dict:
         )
 
     dist_cmd = _dist_cmd_for_error(dist_err)
+    if (
+        _active_game_profile() == "empty"
+        and str(dist_cmd) == "f"
+        and float(dist_err) > float(dist_happy_tol)
+        and bool(x_ok)
+        and abs(float(x_err)) >= float(EMPTY_S1_X_PERFECTION_DEADBAND_MM)
+    ):
+        turn_cmd = _turn_cmd_to_close_x_gap(x_err) or "r"
+        x_bias_mm = abs(float(x_err))
+        plan = _x_dist_drive_bias_plan(
+            turn_cmd=turn_cmd,
+            drive_mode="forward",
+            dist_err=dist_err,
+            x_err=x_err,
+            x_outside=x_bias_mm,
+            dist_outside=_dist_outside_gate_mm(dist_err),
+            y_plan=y_plan,
+            reason="empty_s1_inband_x_gentle_curve_while_closing_dist",
+        )
+        plan["strength"] = "gentle"
+        plan["action"] = f"BIAS_{str(turn_cmd).upper()}_GENTLE"
+        plan["duration_ms"] = int(_empty_step1_inband_x_forward_curve_ms(dist_err))
+        plan["use_calibrated_turn_drive_curve"] = True
+        plan["allow_long_duration"] = False
+        plan["skip_near_target_crawl_cap"] = False
+        return plan
     nudge_plan = _distance_micro_nudge_plan(reading, dist_err=dist_err, x_err=x_err, y_plan=y_plan)
     if nudge_plan is not None:
         return nudge_plan
@@ -9916,6 +11734,48 @@ def _follow_action_plan(reading: dict) -> dict:
         "distance_creep": True,
         "reason": "dist_only_creep",
     }, y_plan)
+
+
+def _follow_plan_uses_reverse(plan: dict | None) -> bool:
+    if not isinstance(plan, dict):
+        return False
+    kind = str(plan.get("kind") or "").strip().lower()
+    if kind not in {"drive", "drive_bias", "drive_nudge", "turn"}:
+        return False
+    cmd = str(plan.get("cmd") or "").strip().lower()
+    drive_mode = str(plan.get("drive_mode") or "").strip().lower()
+    action = str(plan.get("action") or "").strip().upper()
+    return bool(
+        cmd == "b"
+        or drive_mode == "backward"
+        or action.startswith("BCK")
+        or "BACKOFF" in action
+    )
+
+
+def _block_reverse_gap_closing_plan(plan: dict | None) -> dict | None:
+    if not _follow_plan_uses_reverse(plan):
+        return plan
+    try:
+        dist_err = float((plan or {}).get("dist_err", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        dist_err = 0.0
+    # Backward motion closes the distance gap only when Leia is genuinely too
+    # close. In-band backoff is still gap widening, so block it too.
+    if dist_err < -_win_effective_tolerance(_dist_tol_mm()):
+        return plan
+    out = {
+        "kind": "wait",
+        "action": "REVERSE_GAP_CLOSING_BLOCKED",
+        "dist_err": float(dist_err),
+        "x_err": float((plan or {}).get("x_err", 0.0) or 0.0),
+        "duration_ms": 0,
+        "reason": "reverse_gap_closing_blocked",
+        "blocked_plan": dict(plan),
+    }
+    if isinstance(plan, dict) and plan.get("y_err") is not None:
+        out["y_err"] = plan.get("y_err")
+    return out
 
 
 def _holding_s1_transition_commit_plan(stats: dict, reading: dict, base_plan: dict | None = None) -> dict | None:
@@ -9953,7 +11813,7 @@ def _holding_s1_transition_commit_plan(stats: dict, reading: dict, base_plan: di
         "distance_creep": True,
         "allow_long_duration": True,
         "skip_near_target_crawl_cap": True,
-        "reason": "holding_s1_near_far_transition_commit_800ms",
+        "reason": f"holding_s1_near_far_transition_commit_{int(HOLDING_S1_TRANSITION_COMMIT_MS)}ms",
     }
 
 
@@ -9979,6 +11839,18 @@ def _execute_follow_action(robot: Robot, plan: dict, reading: dict) -> None:
             allow_long_duration=bool(plan.get("allow_long_duration")),
         )
     elif kind == "drive_bias":
+        if _active_game_profile() == "empty":
+            try:
+                dist_err = float(plan.get("dist_err", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                dist_err = 0.0
+            if float(dist_err) > 0.0:
+                plan = dict(plan)
+                plan["duration_ms"] = min(
+                    int(_coerce_int(plan.get("duration_ms"), PULSE_MS, minimum=1, maximum=2000)),
+                    int(EMPTY_S1_COMBINED_CURVE_STRONG_MS),
+                )
+                plan["allow_long_duration"] = False
         return _send_drive_bias(
             robot,
             turn_cmd=str(plan.get("turn_cmd") or "l"),
@@ -9995,6 +11867,7 @@ def _execute_follow_action(robot: Robot, plan: dict, reading: dict) -> None:
             mast_duration_ms=plan.get("mast_duration_ms"),
             recovery_boost_scale=plan.get("recovery_boost_scale"),
             allow_long_duration=bool(plan.get("allow_long_duration")),
+            use_calibrated_turn_drive_curve=bool(plan.get("use_calibrated_turn_drive_curve")),
         )
     elif kind == "drive_nudge":
         return _send_drive_nudge(
@@ -10010,6 +11883,28 @@ def _execute_follow_action(robot: Robot, plan: dict, reading: dict) -> None:
             recovery_boost_scale=plan.get("recovery_boost_scale"),
         )
     elif kind == "turn":
+        if bool(plan.get("one_wheel_x_nudge")):
+            cmd = str(plan.get("cmd") or "l").strip().lower()
+            duration_ms = _coerce_int(plan.get("duration_ms"), 500, minimum=1, maximum=1000)
+            pwm = _scaled_pwm_for_cmd("f", plan.get("pwm", 103))
+            if cmd == "l":
+                actions = [
+                    {"target": "l", "action": "s", "pwm": 0, "duration_ms": duration_ms},
+                    {"target": "r", "action": "f", "pwm": pwm, "duration_ms": duration_ms},
+                ]
+            else:
+                actions = [
+                    {"target": "l", "action": "f", "pwm": pwm, "duration_ms": duration_ms},
+                    {"target": "r", "action": "s", "pwm": 0, "duration_ms": duration_ms},
+                ]
+            return guarded_send_custom_actions_pwm(
+                robot,
+                "f",
+                actions,
+                duration_ms=duration_ms,
+                reading=reading,
+                context="follow_x_only_one_wheel_nudge",
+            )
         return _send_turn_curve(
             robot,
             cmd=str(plan.get("cmd") or "l"),
@@ -10050,6 +11945,10 @@ def _x_curve_for_plan(plan: dict, reading: dict) -> dict | None:
     drive_mode = str(plan.get("drive_mode") or _x_only_turn_drive_mode()).strip().lower()
     strength = str(plan.get("strength") or "").strip().lower()
     if kind == "drive_bias":
+        if bool(plan.get("use_calibrated_turn_drive_curve")):
+            curve = _calibrated_turn_drive_curve(drive_mode=drive_mode, strength=strength)
+            if curve is not None:
+                return dict(curve)
         return (
             _adaptive_turn_bias_curve_for_drive_mode(drive_mode, x_abs)
             if strength == "adaptive"
@@ -10122,6 +12021,112 @@ def _sent_motion_duration_text(plan: dict, send_result) -> str:
     return text
 
 
+def _decision_curve_label(plan: dict, reading: dict | None, send_result: dict | None = None) -> str:
+    if not isinstance(plan, dict):
+        return "unknown"
+    action = str(plan.get("action") or "UNKNOWN")
+    if bool(plan.get("one_wheel_x_nudge")):
+        try:
+            pwm = int(plan.get("pwm", 0) or 0)
+        except (TypeError, ValueError):
+            pwm = 0
+        return f"{action} one-wheel pwm {pwm}"
+    curve = None
+    if isinstance(send_result, dict) and isinstance(send_result.get("x_curve"), dict):
+        curve = send_result.get("x_curve")
+    if not isinstance(curve, dict):
+        curve = _x_curve_for_plan(plan, reading if isinstance(reading, dict) else {})
+    if isinstance(curve, dict):
+        label = (
+            curve.get("curve_label")
+            or curve.get("curve_name")
+            or curve.get("strength")
+            or curve.get("source")
+        )
+        if label:
+            return f"{action} / {label}"
+    strength = str(plan.get("strength") or "").strip()
+    drive_mode = str(plan.get("drive_mode") or plan.get("cmd") or "").strip()
+    return " ".join(part for part in (action, drive_mode, strength) if part)
+
+
+def _record_follow_decision(stats: dict, reading: dict, plan: dict, action: str, send_result: dict | None = None) -> None:
+    if not isinstance(stats, dict) or not isinstance(plan, dict):
+        return
+    kind = str(plan.get("kind") or "").strip().lower()
+    if kind not in {"drive", "drive_bias", "drive_nudge", "turn"}:
+        return
+    try:
+        t0 = float(stats.get("decision_log_t0", time.monotonic()))
+    except (TypeError, ValueError):
+        t0 = time.monotonic()
+    try:
+        timestamp_ms = int(max(0, round((time.monotonic() - t0) * 1000.0)))
+    except (TypeError, ValueError):
+        timestamp_ms = 0
+    try:
+        duration_ms = int(round(_sent_motion_duration_ms(plan, send_result)))
+    except (TypeError, ValueError):
+        duration_ms = int(plan.get("duration_ms", PULSE_MS) or PULSE_MS)
+    entry = {
+        "timestamp_ms": int(timestamp_ms),
+        "dist_err_mm": float(plan.get("dist_err", 0.0) or 0.0),
+        "x_err_mm": float(plan.get("x_err", 0.0) or 0.0),
+        "dist_mm": reading.get("dist_mm") if isinstance(reading, dict) else None,
+        "x_mm": reading.get("x_mm") if isinstance(reading, dict) else None,
+        "action": str(action or plan.get("action") or "UNKNOWN"),
+        "curve": _decision_curve_label(plan, reading, send_result),
+        "duration_ms": int(duration_ms),
+        "reason": str(plan.get("reason") or ""),
+    }
+    stats.setdefault("decision_log", []).append(entry)
+
+
+def _decision_axis_outcome(before_abs: float, after_abs: float) -> str:
+    delta = float(before_abs) - float(after_abs)
+    if delta > float(GAP_REGRESSION_EPSILON_MM):
+        return "improved"
+    if delta < -float(GAP_REGRESSION_EPSILON_MM):
+        return "worsened"
+    return "same"
+
+
+def _annotate_latest_decision_with_readback(stats: dict, pending: dict, reading: dict) -> None:
+    if not isinstance(stats, dict) or not isinstance(pending, dict) or not isinstance(reading, dict):
+        return
+    entries = stats.get("decision_log")
+    if not isinstance(entries, list) or not entries or not isinstance(entries[-1], dict):
+        return
+    entry = entries[-1]
+    if entry.get("readback_recorded"):
+        return
+    try:
+        before_dist_err = float(pending.get("dist_err"))
+        after_dist_err = float(reading.get("dist_mm")) - float(_dist_target_mm())
+        before_x_err = float(pending.get("x_err"))
+        after_x_err = float(reading.get("x_mm")) - float(_x_target_mm())
+    except (TypeError, ValueError):
+        return
+    before_dist_abs = abs(float(before_dist_err))
+    after_dist_abs = abs(float(after_dist_err))
+    before_x_abs = abs(float(before_x_err))
+    after_x_abs = abs(float(after_x_err))
+    before_total = before_dist_abs + before_x_abs
+    after_total = after_dist_abs + after_x_abs
+    entry.update({
+        "readback_recorded": True,
+        "after_dist_err_mm": float(after_dist_err),
+        "after_x_err_mm": float(after_x_err),
+        "after_dist_mm": reading.get("dist_mm"),
+        "after_x_mm": reading.get("x_mm"),
+        "dist_outcome": _decision_axis_outcome(before_dist_abs, after_dist_abs),
+        "x_outcome": _decision_axis_outcome(before_x_abs, after_x_abs),
+        "combined_outcome": _decision_axis_outcome(before_total, after_total),
+        "combined_before_abs_mm": float(before_total),
+        "combined_after_abs_mm": float(after_total),
+    })
+
+
 def _distance_bearing_plan(plan: dict | None) -> bool:
     if not isinstance(plan, dict):
         return False
@@ -10166,6 +12171,8 @@ def _should_stop_confirm_for_dist_pingpong(stats: dict, plan: dict) -> bool:
         return False
     if previous_dist_err * current_dist_err >= 0.0:
         return False
+    if abs(current_dist_err) <= float(_win_effective_tolerance(_dist_tol_mm())):
+        return False
     policy = _follow_dist_approach_policy()
     threshold = float(
         policy.get(
@@ -10182,6 +12189,11 @@ def _post_action_wait_s(plan: dict, send_result) -> float:
     duration_s = _sent_motion_duration_ms(plan, send_result) / 1000.0
     has_mast = str(plan.get("kind") or "").strip().lower() == "mast" or bool(plan.get("mast_cmd"))
     coast_s = _y_motion_coast_settle_s() if has_mast else 0.0
+    learning_settle_s = 0.0
+    if _active_game_profile() == "empty":
+        kind = str(plan.get("kind") or "").strip().lower()
+        if kind in {"drive", "drive_bias", "drive_nudge", "turn"}:
+            learning_settle_s = float(EMPTY_S1_LEARNING_POST_ACT_SETTLE_S)
     jump_stabilize_s = float(
         _vision_jump_guard_config().get(
             "post_act_stabilize_s",
@@ -10189,6 +12201,7 @@ def _post_action_wait_s(plan: dict, send_result) -> float:
         )
         or 0.0
     )
+    jump_stabilize_s = max(float(jump_stabilize_s), float(learning_settle_s))
     if not bool(plan.get("distance_creep")):
         if str(plan.get("kind") or "").strip().lower() == "turn":
             turn_settle_s = float(_follow_x_priority_policy().get("turn_settle_s", 0.0))
@@ -10228,15 +12241,16 @@ def _reset_x_offset_ready(
     x_max = float(cfg.get("x_offset_max_mm", RESET_X_OFFSET_MAX_MM))
     if x_min > x_max:
         x_min, x_max = x_max, x_min
+    # The configured min/max are the reset acceptance band. The target is a
+    # steering preference, not a hidden stricter floor for declaring reset clean.
+    ready_min_x = float(x_min)
     abs_x = abs(float(x_mm))
-    x_ok = float(x_min) <= float(abs_x) <= float(x_max)
+    x_ok = float(ready_min_x) <= float(abs_x) <= float(x_max)
     if dist_mm is None:
         return bool(x_ok)
 
     # Check distance
-    dist_target = float(cfg.get("dist_target_mm", RESET_DIST_TARGET_MM))
-    dist_tol = float(cfg.get("dist_tol_mm", RESET_DIST_TOL_MM))
-    dist_ok = abs(float(dist_mm) - dist_target) <= dist_tol
+    dist_ok = _reset_dist_target_ready(float(dist_mm), cfg)
     try:
         y_val = float(y_mm)
     except (TypeError, ValueError):
@@ -10246,6 +12260,25 @@ def _reset_x_offset_ready(
         return x_ok and dist_ok and y_ok
 
     return x_ok and dist_ok
+
+
+def _reset_xy_hard_target_ready(reading: dict, reset_cfg: dict) -> bool:
+    if not isinstance(reading, dict) or not bool(reading.get("confident")):
+        return False
+    try:
+        dist_mm = float(reading.get("dist_mm"))
+        x_mm = float(reading.get("x_mm"))
+    except (TypeError, ValueError):
+        return False
+    cfg = reset_cfg if isinstance(reset_cfg, dict) else {}
+    target_abs_x = float(cfg.get("target_abs_x_mm", RESET_TARGET_ABS_X_MM))
+    hard_abs_x_tol = float(cfg.get("hard_abs_x_tol_mm", RESET_HARD_ABS_X_TOL_MM))
+    abs_x = abs(float(x_mm))
+    dist_ok = _reset_dist_target_ready(float(dist_mm), cfg, hard=True)
+    x_low = max(0.0, float(target_abs_x) - float(hard_abs_x_tol))
+    x_high = float(target_abs_x) + float(hard_abs_x_tol)
+    x_ok = float(x_low) <= float(abs_x) <= float(x_high)
+    return bool(dist_ok and x_ok)
 
 
 def _reverse_turn_until_x_offset(
@@ -10262,6 +12295,7 @@ def _reverse_turn_until_x_offset(
 
     cfg = _reset_motion_config().get("reverse_turn")
     reset_cfg = cfg if isinstance(cfg, dict) else {}
+    back_budget = _reset_back_budget_state(reset_cfg)
     x_min = float(reset_cfg.get("x_offset_min_mm", RESET_X_OFFSET_MIN_MM))
     x_max = float(reset_cfg.get("x_offset_max_mm", RESET_X_OFFSET_MAX_MM))
     target_abs_x = _coerce_float(
@@ -10271,6 +12305,9 @@ def _reverse_turn_until_x_offset(
     )
     if target_abs_x < x_min or target_abs_x > x_max:
         target_abs_x = (float(x_min) + float(x_max)) / 2.0
+    # The configured x band is the operator-visible reset gate. Keep the target
+    # as steering preference only, so a documented 10-30mm band really means 10-30mm.
+    ready_min_x = float(x_min)
     dist_target = float(reset_cfg.get("dist_target_mm", RESET_DIST_TARGET_MM))
     dist_tol = float(reset_cfg.get("dist_tol_mm", RESET_DIST_TOL_MM))
     y_target = float(reset_cfg.get("y_target_mm", RESET_Y_TARGET_MM))
@@ -10284,6 +12321,12 @@ def _reverse_turn_until_x_offset(
         f"logged y={y_target:+.0f}±{y_tol:.0f}mm (not a hit gate)",
         flush=True,
     )
+
+    if isinstance(back_budget, dict):
+        print(
+            f"[RESET] Backward reset budget active: max_total_back={int(back_budget.get('max_ms', 0))}ms.",
+            flush=True,
+        )
 
     before_reading = _read_brick_measurement(vision)
     if not bool(before_reading.get("confident")):
@@ -10316,69 +12359,80 @@ def _reverse_turn_until_x_offset(
         return True, "target_already_ready", before_reading
 
     before_abs_x = abs(float(before_x))
-    if before_abs_x < float(x_min):
+    if before_abs_x < float(ready_min_x):
         turn_cmd = _turn_cmd_to_open_x_gap(before_x, turn_cmd)
     elif before_abs_x > float(x_max):
         turn_cmd = _turn_cmd_to_close_x_gap(before_x) or turn_cmd
 
     if before_dist > (float(dist_target) + float(dist_tol)) or before_abs_x > float(x_max):
+        if (
+            before_dist <= float(_virtual_safety_max_dist_mm())
+            and before_abs_x < float(ready_min_x)
+            and before_abs_x < float(target_abs_x) - float(RESET_FINAL_X_POLISH_MARGIN_MM)
+        ):
+            cfg = _reset_adjustment_config(reset_cfg)
+            gap = max(0.0, float(target_abs_x) - float(before_abs_x))
+            duration_ms = _reset_adjustment_pulse_ms(gap, cfg)
+            duration_ms = max(
+                int(RESET_FINAL_X_POLISH_MIN_MS),
+                min(int(RESET_FINAL_X_POLISH_MAX_MS), int(duration_ms)),
+            )
+            duration_ms = int(RESET_FINAL_X_POLISH_MAX_MS)
+            duration_ms = _reset_back_budget_cap_ms(duration_ms, back_budget, label="safe_x_offset_only")
+            if int(duration_ms) > 0:
+                open_turn = _turn_cmd_to_open_x_gap(before_x, turn_cmd)
+                print(
+                    "[RESET] Beyond reset distance but too centered; sending bounded x-offset polish only: "
+                    f"BACK_CURVE_{str(open_turn).upper()} {int(duration_ms)}ms "
+                    f"|x|={before_abs_x:.1f}->{target_abs_x:.1f}mm.",
+                    flush=True,
+                )
+                send_result = _reset_small_turn_adjust(
+                    robot,
+                    turn_cmd=open_turn,
+                    reading=before_reading,
+                    duration_ms=int(duration_ms),
+                    reset_cfg=reset_cfg,
+                    reason="safe_x_offset_only",
+                )
+                if isinstance(send_result, dict) and bool(send_result.get("blocked")):
+                    print(
+                        f"[RESET] X-offset-only polish blocked: {send_result.get('reason')}",
+                        flush=True,
+                    )
+                else:
+                    _reset_back_budget_consume(back_budget, duration_ms)
+                    after = _reset_read_after_adjustment(
+                        vision,
+                        robot,
+                        duration_ms=int(duration_ms),
+                        settle_s=float(cfg.get("settle_s", 0.12)),
+                        context="reset_safe_x_offset_only",
+                        fallback=before_reading,
+                        back_budget=back_budget,
+                    )
+                    return True, "safe_x_offset_only_polish", after if isinstance(after, dict) else before_reading
         print(
-            "[RESET] Skipping opening straight-back/curve because reset is already beyond the gate: "
-            f"dist={before_dist:.1f}mm x={before_x:+.1f}mm. Polishing directly toward the reset target.",
+            "[RESET] Outside reset gate; running bounded reset adjustment instead of accepting current pose: "
+            f"dist={before_dist:.1f}mm x={before_x:+.1f}mm.",
             flush=True,
         )
-        after_reading, target_met_xy, adjustment_attempts = _adjust_reset_until_xy_target(
+        adjusted, adjusted_target_met, adjustment_attempts = _adjust_reset_until_xy_target(
             vision,
             robot,
             reading=before_reading,
             reset_cfg=reset_cfg,
             initial_turn_cmd=turn_cmd,
+            back_budget=back_budget,
         )
-        if not bool(after_reading.get("confident")):
-            return False, "lost_confident_brick_after_reset_adjustment", after_reading
-        after_reading, final_x_polished, final_x_reason = _reset_final_x_offset_polish(
-            vision,
-            robot,
-            reading=after_reading,
-            reset_cfg=reset_cfg,
-            initial_turn_cmd=turn_cmd,
+        reason = (
+            f"outside_gate_adjusted_target_hit:{int(adjustment_attempts)}"
+            if bool(adjusted_target_met)
+            else f"outside_gate_adjustment_miss:{int(adjustment_attempts)}"
         )
-        if not bool(after_reading.get("confident")):
-            return False, "lost_confident_brick_after_final_x_polish", after_reading
-        target_met_xy = _reset_xy_target_ready(after_reading, reset_cfg)
-        try:
-            after_dist = float(after_reading["dist_mm"])
-            after_x = float(after_reading["x_mm"])
-        except (TypeError, ValueError):
-            return False, "invalid_reset_after_reading", after_reading
-        try:
-            after_y_text = f"{float(after_reading.get('y_mm')):+.1f}mm"
-        except (TypeError, ValueError):
-            after_y_text = "N/A"
-        closeness = _reset_closeness_from_reading(after_reading, reset_cfg)
-        close_text = ""
-        if closeness is not None:
-            dist_close, x_close, y_close, combined_close = closeness
-            y_text = "" if y_close is None else f" y_log={y_close:.0f}%"
-            close_text = (
-                f" close={combined_close:.0f}% "
-                f"(dist={dist_close:.0f}% x={x_close:.0f}%{y_text})"
-            )
-        print(
-            f"[RESET] Reset complete: dist={after_dist:.1f}mm x={after_x:+.1f}mm y={after_y_text} "
-            f"target_dist_abs_x={'hit' if bool(target_met_xy) else 'miss'} adjustments={int(adjustment_attempts)} "
-            f"final_x={'sent' if bool(final_x_polished) else 'skip:' + str(final_x_reason)}{close_text}",
-            flush=True,
-        )
-        if bool(target_met_xy):
-            reason = "adjusted_target_hit" if int(adjustment_attempts) > 0 else "target_hit"
-        elif int(adjustment_attempts) > 0:
-            reason = "adjustment_limit_complete"
-        else:
-            reason = "outside_gate_no_adjustment"
-        return True, reason, after_reading
+        return bool(adjusted_target_met), reason, adjusted if isinstance(adjusted, dict) else before_reading
 
-    reset_motion = _reset_reverse_turn(robot, turn_cmd, before_reading, rng=rng)
+    reset_motion = _reset_reverse_turn(robot, turn_cmd, before_reading, rng=rng, back_budget=back_budget)
     if reset_motion is None:
         _stop_robot(robot)
         return False, "reverse_turn_unavailable", before_reading
@@ -10390,7 +12444,7 @@ def _reverse_turn_until_x_offset(
     mast_text = f" mast_up={mast_up_ms}ms" if mast_up_ms > 0 else " mast_up=off"
 
     print(
-        f"[RESET] STRAIGHT_BACK sent before BACK_CURVE_{turn_cmd.upper()}: "
+        f"[RESET] STRAIGHT_BACK_ONLY sent: "
         f"before dist={before_dist:.1f}mm x={before_x:+.1f}mm y={before_y_text} "
         f"wheel_pulse={int(pulse_ms)}ms{mast_text}",
         flush=True,
@@ -10423,27 +12477,67 @@ def _reverse_turn_until_x_offset(
     except (TypeError, ValueError):
         print("[RESET] After STRAIGHT_BACK read: visible, numeric read unavailable.", flush=True)
 
-    after_reading, curve_meta = _reset_curve_until_x_goal_fraction(
-        vision,
-        robot,
-        direction=turn_cmd,
-        reading=after_reading,
-        reset_cfg=reset_cfg,
-        target_abs_x_mm=target_abs_x,
-    )
-    curve_abs = curve_meta.get("abs_x_mm") if isinstance(curve_meta, dict) else None
-    curve_goal = curve_meta.get("x_goal_mm") if isinstance(curve_meta, dict) else None
-    curve_abs_text = "N/A" if curve_abs is None else f"{float(curve_abs):.1f}mm"
-    curve_goal_text = "N/A" if curve_goal is None else f"{float(curve_goal):.1f}mm"
-    print(
-        f"[RESET] BACK_CURVE_{turn_cmd.upper()} complete: "
-        f"reason={curve_meta.get('reason') if isinstance(curve_meta, dict) else 'unknown'} "
-        f"elapsed={int(curve_meta.get('elapsed_ms', 0) if isinstance(curve_meta, dict) else 0)}ms "
-        f"|x|={curve_abs_text} goal80={curve_goal_text}",
-        flush=True,
-    )
-    if not bool(after_reading.get("confident")):
-        return False, "lost_confident_brick_after_reset_x_curve", after_reading
+    final_x_polished = False
+    final_x_reason = "not_needed"
+    try:
+        phase_x = float(after_reading.get("x_mm"))
+        phase_abs_x = abs(float(phase_x))
+    except (TypeError, ValueError):
+        phase_x = None
+        phase_abs_x = None
+    phase_ready_min_x = float(x_min)
+    if phase_abs_x is None:
+        final_x_reason = "invalid_after_straight_reading"
+        print("[RESET] BACK_CURVE skipped: invalid x read after straight-back.", flush=True)
+    elif float(phase_ready_min_x) <= float(phase_abs_x) <= float(x_max):
+        final_x_reason = "already_in_x_offset_band"
+        print(
+            f"[RESET] BACK_CURVE skipped: |x|={phase_abs_x:.1f}mm already in "
+            f"{float(phase_ready_min_x):.1f}-{float(x_max):.1f}mm reset-ready band.",
+            flush=True,
+        )
+    else:
+        phase_turn = (
+            _turn_cmd_to_open_x_gap(float(phase_x), turn_cmd)
+            if float(phase_abs_x) < float(phase_ready_min_x)
+            else (_turn_cmd_to_close_x_gap(float(phase_x)) or turn_cmd)
+        )
+        phase_ms = _reset_back_budget_cap_ms(int(RESET_FINAL_X_POLISH_MAX_MS), back_budget, label="two_phase_x_offset")
+        if int(phase_ms) <= 0:
+            final_x_reason = "back_budget_exhausted"
+            print("[RESET] BACK_CURVE skipped: back budget exhausted before x-offset phase.", flush=True)
+        else:
+            print(
+                f"[RESET] BACK_TWIST_{str(phase_turn).upper()} x-offset phase: "
+                f"{int(phase_ms)}ms |x|={phase_abs_x:.1f}mm target band "
+                f"{float(phase_ready_min_x):.1f}-{float(x_max):.1f}mm.",
+                flush=True,
+            )
+            send_result = _reset_sharp_turn_adjust(
+                robot,
+                turn_cmd=phase_turn,
+                reading=after_reading,
+                duration_ms=int(phase_ms),
+                reset_cfg=reset_cfg,
+                reason="two_phase_x_offset",
+            )
+            if isinstance(send_result, dict) and bool(send_result.get("blocked")):
+                final_x_reason = f"blocked:{send_result.get('reason')}"
+                print(f"[RESET] BACK_CURVE x-offset phase blocked: {send_result.get('reason')}", flush=True)
+            else:
+                final_x_polished = True
+                final_x_reason = f"two_phase_{str(phase_turn).upper()}_{int(phase_ms)}ms"
+                _reset_back_budget_consume(back_budget, phase_ms)
+                phase_cfg = _reset_adjustment_config(reset_cfg)
+                after_reading = _reset_read_after_adjustment(
+                    vision,
+                    robot,
+                    duration_ms=int(phase_ms),
+                    settle_s=float(phase_cfg.get("settle_s", 0.12)),
+                    context="reset_two_phase_x_offset",
+                    fallback=after_reading,
+                    back_budget=back_budget,
+                )
 
     pause_s = _reset_post_pause_s()
     if pause_s > 0.0:
@@ -10462,30 +12556,22 @@ def _reverse_turn_until_x_offset(
     if not bool(after_reading.get("confident")):
         return False, "lost_confident_brick_after_reset", after_reading
 
-    after_reading, target_met_xy, adjustment_attempts = _adjust_reset_until_xy_target(
-        vision,
-        robot,
-        reading=after_reading,
-        reset_cfg=reset_cfg,
-        initial_turn_cmd=turn_cmd,
-    )
-    if not bool(after_reading.get("confident")):
-        return False, "lost_confident_brick_after_reset_adjustment", after_reading
-    after_reading, final_x_polished, final_x_reason = _reset_final_x_offset_polish(
-        vision,
-        robot,
-        reading=after_reading,
-        reset_cfg=reset_cfg,
-        initial_turn_cmd=turn_cmd,
-    )
-    if not bool(after_reading.get("confident")):
-        return False, "lost_confident_brick_after_final_x_polish", after_reading
+    adjustment_attempts = 0
     target_met_xy = _reset_xy_target_ready(after_reading, reset_cfg)
+    if not bool(target_met_xy):
+        after_reading, target_met_xy, adjustment_attempts = _adjust_reset_until_xy_target(
+            vision,
+            robot,
+            reading=after_reading,
+            reset_cfg=reset_cfg,
+            initial_turn_cmd=turn_cmd,
+            back_budget=back_budget,
+        )
 
     try:
         after_dist = float(after_reading["dist_mm"])
         after_x = float(after_reading["x_mm"])
-    except (TypeError, ValueError):
+    except (KeyError, TypeError, ValueError):
         return False, "invalid_reset_after_reading", after_reading
     try:
         after_y_text = f"{float(after_reading.get('y_mm')):+.1f}mm"
@@ -10512,8 +12598,13 @@ def _reverse_turn_until_x_offset(
         f"final_x={'sent' if bool(final_x_polished) else 'skip:' + str(final_x_reason)}{close_text}",
         flush=True,
     )
+    adjustment_stop_reason = (
+        after_reading.get("_reset_adjustment_stop_reason") if isinstance(after_reading, dict) else None
+    )
     if target_met:
         reason = "target_hit" if int(adjustment_attempts) <= 0 else "adjusted_target_hit"
+    elif adjustment_stop_reason:
+        reason = str(adjustment_stop_reason)
     elif int(adjustment_attempts) > 0:
         reason = "adjustment_limit_complete"
     else:
@@ -10536,17 +12627,31 @@ def _run_reset_sequence(
         rng=random_source,
     )
     target_met = False
+    hard_target_met = False
     if isinstance(offset_reading, dict):
         cfg = _reset_motion_config().get("reverse_turn")
-        target_met = _reset_xy_target_ready(offset_reading, cfg if isinstance(cfg, dict) else {})
+        reset_cfg = cfg if isinstance(cfg, dict) else {}
+        target_met = _reset_xy_target_ready(offset_reading, reset_cfg)
+        hard_target_met = _reset_xy_hard_target_ready(offset_reading, reset_cfg)
+    success = bool(offset_ok and hard_target_met)
+    reason = offset_reason
+    if bool(offset_ok):
+        if bool(target_met):
+            reason = str(offset_reason)
+        elif bool(hard_target_met):
+            reason = f"soft_reset_target_miss_continue:{offset_reason}"
+        else:
+            reason = f"hard_reset_target_miss:{offset_reason}"
     result = {
-        "success": bool(offset_ok),
+        "success": success,
         "phase": "reverse_turn",
-        "reason": offset_reason,
+        "reason": reason,
         "turn_cmd": turn_cmd,
         "mast_up_sent": bool(offset_ok and _reset_mast_up_enabled()),
         "reading": offset_reading,
         "target_met": bool(target_met),
+        "soft_target_met": bool(target_met),
+        "hard_target_met": bool(hard_target_met),
     }
     return result
 
@@ -11037,6 +13142,238 @@ def _apply_stall_recovery_boost(stats: dict, plan: dict) -> dict:
     return out
 
 
+def _same_sign_or_zero(a: float, b: float) -> bool:
+    return bool(a == 0.0 or b == 0.0 or (float(a) > 0.0) == (float(b) > 0.0))
+
+
+def _empty_step1_forward_bias_plan(plan: dict) -> bool:
+    if not isinstance(plan, dict):
+        return False
+    if str(plan.get("kind") or "").strip().lower() != "drive_bias":
+        return False
+    if str(plan.get("cmd") or "").strip().lower() != "f":
+        return False
+    return str(plan.get("drive_mode") or "forward").strip().lower() == "forward"
+
+
+def _empty_step1_predictive_straight_plan(plan: dict, momentum: dict, *, predicted_abs: float) -> dict:
+    out = dict(plan)
+    out.update({
+        "kind": "drive",
+        "cmd": "f",
+        "action": "PREDICTIVE_X_BRAKE_FWD",
+        "duration_ms": min(
+            int(plan.get("duration_ms", EMPTY_S1_LEARNING_CURVE_MS) or EMPTY_S1_LEARNING_CURVE_MS),
+            int(_empty_step1_crawl_to_win_floor_ms(float(plan.get("dist_err", 0.0) or 0.0)) or EMPTY_S1_LEARNING_CURVE_MS),
+            int(EMPTY_S1_LEARNING_CURVE_MS),
+        ),
+        "pwm": int(_pwm_floor_for_cmd("f")),
+        "distance_creep": True,
+        "allow_long_duration": False,
+        "skip_near_target_crawl_cap": True,
+        "reason": "empty_s1_predictive_x_momentum_continue_straight",
+        "predictive_x_momentum": dict(momentum),
+        "predicted_abs_x_err_mm": float(predicted_abs),
+    })
+    for key in ("turn_cmd", "drive_mode", "strength", "use_calibrated_turn_drive_curve"):
+        out.pop(key, None)
+    return out
+
+
+def _apply_empty_step1_predictive_x_momentum(stats: dict, plan: dict, reading: dict) -> dict:
+    if not bool(EMPTY_S1_PREDICTIVE_X_ENABLED):
+        return plan
+    if _active_game_profile() != "empty" or not isinstance(stats, dict) or not isinstance(plan, dict):
+        return plan
+    if not _empty_step1_forward_bias_plan(plan):
+        return plan
+    momentum = stats.get("last_x_momentum")
+    if not isinstance(momentum, dict):
+        return plan
+    try:
+        x_err = float(plan.get("x_err"))
+        dist_err = float(plan.get("dist_err", 0.0) or 0.0)
+        reduction = float(momentum.get("x_err_reduction_mm"))
+        after_x_err = float(momentum.get("after_x_err"))
+    except (TypeError, ValueError):
+        return plan
+    if float(reduction) < float(EMPTY_S1_PREDICTIVE_MIN_REDUCTION_MM):
+        return plan
+    if not _same_sign_or_zero(float(after_x_err), float(x_err)):
+        if abs(float(x_err)) > float(_x_tol_mm()) + float(EMPTY_S1_PREDICTIVE_BRAKE_MARGIN_MM):
+            return plan
+    if float(dist_err) < -0.5 * float(_dist_tol_mm()):
+        return plan
+    if float(dist_err) <= float(_win_effective_tolerance(_dist_tol_mm())):
+        return plan
+
+    predicted_abs = max(0.0, abs(float(x_err)) - float(reduction))
+    brake_abs = float(_x_tol_mm()) + float(EMPTY_S1_PREDICTIVE_BRAKE_MARGIN_MM)
+    strength = str(plan.get("strength") or "").strip().lower()
+    turn_cmd = str(plan.get("turn_cmd") or "").strip().lower()
+    previous_turn = str(momentum.get("turn_cmd") or "").strip().lower()
+    if previous_turn and turn_cmd and previous_turn != turn_cmd and abs(float(x_err)) > brake_abs:
+        return plan
+
+    if predicted_abs <= brake_abs:
+        stats["last_x_momentum_consumed"] = dict(momentum)
+        stats["last_x_momentum"] = None
+        return _empty_step1_predictive_straight_plan(plan, momentum, predicted_abs=predicted_abs)
+
+    downshift_abs = float(_x_tol_mm()) + float(EMPTY_S1_PREDICTIVE_DOWN_SHIFT_MARGIN_MM)
+    if strength == "superstrong" and predicted_abs <= downshift_abs:
+        out = dict(plan)
+        out["strength"] = "medium"
+        out["action"] = f"BIAS_{str(turn_cmd or 'r').upper()}_MEDIUM"
+        out["duration_ms"] = int(EMPTY_S1_LEARNING_CURVE_MS)
+        out["reason"] = "empty_s1_predictive_x_momentum_downshift"
+        out["predictive_x_momentum"] = dict(momentum)
+        out["predicted_abs_x_err_mm"] = float(predicted_abs)
+        stats["last_x_momentum_consumed"] = dict(momentum)
+        stats["last_x_momentum"] = None
+        return out
+    return plan
+
+
+def _apply_empty_step1_predictive_dist_momentum(stats: dict, plan: dict, reading: dict) -> dict:
+    if not bool(EMPTY_S1_PREDICTIVE_DIST_ENABLED):
+        return plan
+    if _active_game_profile() != "empty" or not isinstance(stats, dict) or not isinstance(plan, dict):
+        return plan
+    if not _distance_bearing_plan(plan):
+        return plan
+    momentum = stats.get("last_dist_momentum")
+    if not isinstance(momentum, dict):
+        return plan
+    try:
+        dist_err = float(plan.get("dist_err"))
+        reduction = float(momentum.get("dist_err_reduction_mm"))
+        after_dist_err = float(momentum.get("after_dist_err"))
+    except (TypeError, ValueError):
+        return plan
+    cmd = str(plan.get("cmd") or "").strip().lower()
+    prev_cmd = str(momentum.get("cmd") or "").strip().lower()
+    if cmd not in {"f", "b"} or (prev_cmd and prev_cmd != cmd):
+        return plan
+    if float(reduction) < float(EMPTY_S1_PREDICTIVE_DIST_MIN_REDUCTION_MM):
+        return plan
+    if not _same_sign_or_zero(float(after_dist_err), float(dist_err)):
+        if abs(float(dist_err)) > float(EMPTY_S1_PREDICTIVE_DIST_TARGET_MARGIN_MM):
+            return plan
+    if (cmd == "f" and float(dist_err) <= 0.0) or (cmd == "b" and float(dist_err) >= 0.0):
+        return plan
+
+    predicted_abs = max(0.0, abs(float(dist_err)) - float(reduction))
+    margin = float(EMPTY_S1_PREDICTIVE_DIST_TARGET_MARGIN_MM)
+    if predicted_abs > margin:
+        return plan
+    try:
+        current_ms = int(plan.get("duration_ms", PULSE_MS) or PULSE_MS)
+    except (TypeError, ValueError):
+        current_ms = int(PULSE_MS)
+    if _active_game_profile() == "empty" and cmd == "f" and float(dist_err) > float(_win_effective_tolerance(_dist_tol_mm())):
+        desired_reduction = max(0.0, float(dist_err) - float(_win_effective_tolerance(_dist_tol_mm())))
+    else:
+        desired_reduction = max(0.0, abs(float(dist_err)) - margin)
+    if desired_reduction <= 0.0:
+        desired_ms = int(_min_effective_drive_duration_ms(cmd))
+    else:
+        desired_ms = int(round(float(current_ms) * min(1.0, float(desired_reduction) / float(reduction))))
+        desired_ms = max(int(_min_effective_drive_duration_ms(cmd)), int(desired_ms))
+    if int(desired_ms) >= int(current_ms) - 20:
+        return plan
+    out = dict(plan)
+    out["duration_ms"] = int(max(1, int(desired_ms)))
+    out["reason"] = f"{str(plan.get('reason') or 'dist')}_predictive_dist_brake"
+    out["predictive_dist_momentum"] = dict(momentum)
+    out["predicted_abs_dist_err_mm"] = float(predicted_abs)
+    stats["last_dist_momentum_consumed"] = dict(momentum)
+    stats["last_dist_momentum"] = None
+    return out
+
+
+def _empty_step1_action_is_wheel_motion(action: str | None) -> bool:
+    name = str(action or "").strip().upper()
+    if not name:
+        return False
+    return not name.startswith(("Y_", "MAST", "RESET"))
+
+
+def _update_empty_step1_worse_act_streak(stats: dict, pending: dict, reading: dict, *, action: str) -> dict | None:
+    if _active_game_profile() != "empty":
+        return None
+    if not isinstance(stats, dict) or not isinstance(pending, dict) or not isinstance(reading, dict):
+        return None
+    if int(stats.get("step1_win_count", 0) or 0) > 0:
+        return None
+    if not _empty_step1_action_is_wheel_motion(action):
+        return None
+
+    axis_samples = {}
+    for axis in ("dist", "x"):
+        sample = _axis_error_sample(pending, reading, axis=axis)
+        if sample is not None:
+            axis_samples[axis] = sample
+    if not {"dist", "x"}.issubset(axis_samples):
+        return None
+
+    dist_sample = axis_samples["dist"]
+    x_sample = axis_samples["x"]
+    trend_samples = stats.setdefault("step1_wrong_way_trend_samples", [])
+    trend_sample = {
+        "action": str(action or "UNKNOWN"),
+        "dist_reduction_mm": float(dist_sample.get("reduction", 0.0)),
+        "x_reduction_mm": float(x_sample.get("reduction", 0.0)),
+        "dist_regression_mm": float(dist_sample.get("regression_mm", 0.0)),
+        "x_regression_mm": float(x_sample.get("regression_mm", 0.0)),
+    }
+    if isinstance(trend_samples, list):
+        trend_samples.append(trend_sample)
+        del trend_samples[:-int(STEP1_WRONG_WAY_TREND_WINDOW)]
+    else:
+        trend_samples = [trend_sample]
+        stats["step1_wrong_way_trend_samples"] = trend_samples
+    trend_window = list(trend_samples[-int(STEP1_WRONG_WAY_TREND_WINDOW):])
+    avg_dist_reduction = sum(float(row.get("dist_reduction_mm", 0.0)) for row in trend_window) / max(1, len(trend_window))
+    avg_x_reduction = sum(float(row.get("x_reduction_mm", 0.0)) for row in trend_window) / max(1, len(trend_window))
+    avg_dist_regression = max(0.0, -float(avg_dist_reduction))
+    avg_x_regression = max(0.0, -float(avg_x_reduction))
+    confidently_worse = bool(
+        len(trend_window) >= int(STEP1_WRONG_WAY_TREND_WINDOW)
+        and avg_dist_regression >= float(STEP1_WRONG_WAY_TREND_MIN_AVG_REGRESSION_MM)
+        and avg_x_regression >= float(STEP1_WRONG_WAY_TREND_MIN_AVG_REGRESSION_MM)
+    )
+    if confidently_worse:
+        count = int(stats.get("step1_consecutive_worse_act_count", 0) or 0) + 1
+        _bump_stat_count(stats, "miss_reasons", "step1_suspected_wrong_way_act")
+    else:
+        count = 0
+    detail = {
+        "action": str(action or "UNKNOWN"),
+        "count": int(count),
+        "required": int(EMPTY_STEP1_CONFIDENT_WORSE_STOP_COUNT),
+        "dist_before_err": float(dist_sample.get("before_err", 0.0)),
+        "dist_after_err": float(dist_sample.get("after_err", 0.0)),
+        "dist_regression_mm": float(dist_sample.get("regression_mm", 0.0)),
+        "x_before_err": float(x_sample.get("before_err", 0.0)),
+        "x_after_err": float(x_sample.get("after_err", 0.0)),
+        "x_regression_mm": float(x_sample.get("regression_mm", 0.0)),
+        "trend_window": int(len(trend_window)),
+        "trend_required_window": int(STEP1_WRONG_WAY_TREND_WINDOW),
+        "avg_dist_reduction_mm": float(avg_dist_reduction),
+        "avg_x_reduction_mm": float(avg_x_reduction),
+        "avg_dist_regression_mm": float(avg_dist_regression),
+        "avg_x_regression_mm": float(avg_x_regression),
+        "noise_margin_mm": float(NOISE_MARGIN_MM),
+    }
+    stats["step1_consecutive_worse_act_count"] = int(count)
+    stats["step1_last_worse_act_detail"] = detail
+    if int(count) >= int(EMPTY_STEP1_CONFIDENT_WORSE_STOP_COUNT):
+        stats["step1_confident_worse_hard_stop"] = True
+        _bump_stat_count(stats, "miss_reasons", "step1_confident_wrong_way_3x")
+    return detail
+
+
 def _record_observed_after_pending_act(stats: dict, reading: dict) -> dict | None:
     if not isinstance(stats, dict):
         return None
@@ -11175,8 +13512,37 @@ def _record_observed_after_pending_act(stats: dict, reading: dict) -> dict | Non
             "outer_pwm": int(x_curve.get("outer_pwm", 0) or 0),
             "duration_ms": int(pending.get("duration_ms", 0) or 0),
         }
+        x_axis_sample = _axis_error_sample(pending, reading, axis="x")
+        if isinstance(x_axis_sample, dict):
+            sample.update({
+                "x_before_err_mm": float(x_axis_sample.get("before_err", 0.0)),
+                "x_after_err_mm": float(x_axis_sample.get("after_err", 0.0)),
+                "abs_x_before_err_mm": float(x_axis_sample.get("before_abs", 0.0)),
+                "abs_x_after_err_mm": float(x_axis_sample.get("after_abs", 0.0)),
+                "x_err_reduction_mm": float(x_axis_sample.get("reduction", 0.0)),
+                "x_err_overshot": bool(x_axis_sample.get("overshot")),
+                "turn_cmd": str(pending.get("turn_cmd") or x_curve.get("turn_cmd") or ""),
+            })
+            if float(x_axis_sample.get("reduction", 0.0)) >= float(EMPTY_S1_PREDICTIVE_MIN_REDUCTION_MM):
+                stats["last_x_momentum"] = {
+                    "action": action,
+                    "before_x_err": float(x_axis_sample.get("before_err", 0.0)),
+                    "after_x_err": float(x_axis_sample.get("after_err", 0.0)),
+                    "abs_before_x_err": float(x_axis_sample.get("before_abs", 0.0)),
+                    "abs_after_x_err": float(x_axis_sample.get("after_abs", 0.0)),
+                    "x_err_reduction_mm": float(x_axis_sample.get("reduction", 0.0)),
+                    "x_err_overshot": bool(x_axis_sample.get("overshot")),
+                    "turn_cmd": str(pending.get("turn_cmd") or x_curve.get("turn_cmd") or ""),
+                    "strength": str(x_curve.get("strength") or pending.get("strength") or ""),
+                    "drive_mode": str(x_curve.get("drive_mode") or pending.get("drive_mode") or ""),
+                    "duration_ms": int(pending.get("duration_ms", 0) or 0),
+                }
+            elif bool(x_axis_sample.get("regressed")):
+                stats["last_x_momentum"] = None
         stats.setdefault("x_curve_samples", []).append(sample)
+    _annotate_latest_decision_with_readback(stats, pending, reading)
     _record_gap_closure_sample(stats, pending, reading, action=action)
+    worse_detail = _update_empty_step1_worse_act_streak(stats, pending, reading, action=action)
     return {
         "action": action,
         "observed": bool(observed),
@@ -11185,6 +13551,7 @@ def _record_observed_after_pending_act(stats: dict, reading: dict) -> dict | Non
         "delta_y_mm": float(delta_y),
         "y_err": pending.get("y_err"),
         "streak": int(stats.get("no_observed_change_streak_count", 0) or 0),
+        "worse_detail": worse_detail,
     }
 
 
@@ -11259,6 +13626,22 @@ def _record_gap_closure_sample(stats: dict, pending: dict, reading: dict, *, act
             continue
         sample.update({"action": str(action or "UNKNOWN"), "duration_ms": int(pending.get("duration_ms", 0) or 0)})
         stats.setdefault("gap_closure_samples", []).append(sample)
+        if axis == "dist":
+            cmd_key = str(pending.get("cmd") or "").strip().lower()
+            if cmd_key in {"f", "b"} and float(sample.get("reduction", 0.0)) >= float(EMPTY_S1_PREDICTIVE_DIST_MIN_REDUCTION_MM):
+                stats["last_dist_momentum"] = {
+                    "action": str(action or "UNKNOWN"),
+                    "cmd": cmd_key,
+                    "before_dist_err": float(sample.get("before_err", 0.0)),
+                    "after_dist_err": float(sample.get("after_err", 0.0)),
+                    "abs_before_dist_err": float(sample.get("before_abs", 0.0)),
+                    "abs_after_dist_err": float(sample.get("after_abs", 0.0)),
+                    "dist_err_reduction_mm": float(sample.get("reduction", 0.0)),
+                    "dist_err_overshot": bool(sample.get("overshot")),
+                    "duration_ms": int(pending.get("duration_ms", 0) or 0),
+                }
+            elif bool(sample.get("regressed")):
+                stats["last_dist_momentum"] = None
 
 
 def _reset_closeness_from_reading(reading: dict, reset_cfg: dict | None = None) -> tuple[float, float, float | None, float] | None:
@@ -11383,7 +13766,11 @@ def _record_step2_stats(stats: dict, step2_result: dict) -> None:
                 dict(sample) for sample in precision_samples if isinstance(sample, dict)
             )
         for key, action in (
+            ("fwd", "STEP2_PRECISION_FWD"),
             ("bck", "STEP2_PRECISION_BCK"),
+            ("dist_x_curve", "STEP2_PRECISION_DIST_X_CURVE"),
+            ("turn_l", "STEP2_PRECISION_TURN_L"),
+            ("turn_r", "STEP2_PRECISION_TURN_R"),
             ("mast_u", "STEP2_PRECISION_MAST_U"),
             ("mast_d", "STEP2_PRECISION_MAST_D"),
         ):
@@ -11648,7 +14035,7 @@ def _gap_problem_candidate(sample: dict | None) -> dict | None:
         }
     if bool(sample.get("overshot_within_tolerance")):
         return None
-    if bool(sample.get("regressed")):
+    if bool(sample.get("regressed")) and float(sample.get("regression_mm", 0.0) or 0.0) >= float(NOISE_MARGIN_MM):
         regression = max(0.0, after_abs - before_abs)
         return {
             "severity": float(after_abs + excess + regression),
@@ -12081,6 +14468,144 @@ def _record_and_print_step1_win(stats: dict, reading: dict, plan: dict) -> tuple
     return dist_err, x_err, y_text, conf
 
 
+def _confirmed_step_result(result: dict | None) -> bool:
+    return bool(
+        isinstance(result, dict)
+        and bool(result.get("success"))
+        and bool(result.get("target_met"))
+    )
+
+
+def _stop_unconfirmed_transition(
+    robot: Robot,
+    stats: dict,
+    *,
+    previous_step: str,
+    next_step: str,
+) -> None:
+    _stop_robot(robot)
+    action = f"BLOCKED_{str(next_step).upper().replace(' ', '_')}_WITHOUT_{str(previous_step).upper().replace(' ', '_')}_CONFIRM"
+    stats["last_action"] = action
+    _bump_stat_count(stats, "miss_reasons", "unconfirmed_step_transition")
+    print(
+        f"[FLOW] Blocked {next_step}: {previous_step} was not confirmed from a stopped win. "
+        "Parking instead of continuing into the next scripted step.",
+        flush=True,
+    )
+
+
+def _step1_wheel_act_sent(stats: dict) -> bool:
+    sent_counts = stats.get("sent_act_counts") if isinstance(stats, dict) and isinstance(stats.get("sent_act_counts"), dict) else {}
+    return any(
+        int(count or 0) > 0
+        and not str(name or "").upper().startswith(("Y_", "MAST", "RESET"))
+        for name, count in sent_counts.items()
+    )
+
+
+def _empty_step1_confident_worse_stop_required(stats: dict) -> bool:
+    return bool(isinstance(stats, dict) and stats.get("step1_confident_worse_hard_stop"))
+
+
+def _stop_empty_step1_confident_worse(
+    robot: Robot,
+    stats: dict,
+    reading: dict,
+    plan: dict | None = None,
+    *,
+    action: str | None = None,
+    reason: str = "step1_confident_wrong_way_3x",
+) -> None:
+    _stop_robot(robot)
+    stats["step1_confident_worse_hard_stop"] = True
+    stats["happy_reject_terminated"] = True
+    stats["debug_stop_reading"] = dict(reading) if isinstance(reading, dict) else reading
+    stats["last_action"] = "STEP1_CONFIDENT_WORSE_HARD_STOP"
+    _bump_stat_count(stats, "miss_reasons", reason)
+    _record_non_win_stats(
+        stats,
+        reading,
+        plan if isinstance(plan, dict) else {},
+        action="STEP1_CONFIDENT_WORSE_HARD_STOP",
+        reason=reason,
+    )
+    detail = stats.get("step1_last_worse_act_detail") if isinstance(stats.get("step1_last_worse_act_detail"), dict) else {}
+    count = int(detail.get("count", stats.get("step1_consecutive_worse_act_count", 0)) or 0)
+    required = int(detail.get("required", EMPTY_STEP1_CONFIDENT_WORSE_STOP_COUNT) or EMPTY_STEP1_CONFIDENT_WORSE_STOP_COUNT)
+    print(
+        "[FOLLOW] HARD STOP: empty Step 1 got confidently worse for "
+        f"{count}/{required} consecutive movement acts; parked before another "
+        f"{str(action or (plan or {}).get('action') or detail.get('action') or 'motion')} act "
+        f"(dist {float(detail.get('dist_before_err', 0.0)):+.1f}->{float(detail.get('dist_after_err', 0.0)):+.1f}mm, "
+        f"x {float(detail.get('x_before_err', 0.0)):+.1f}->{float(detail.get('x_after_err', 0.0)):+.1f}mm).",
+        flush=True,
+    )
+
+
+def _earn_step1_motion_plan_if_needed(stats: dict, reading: dict, plan: dict, *, required: bool) -> dict:
+    if not bool(required) or not isinstance(plan, dict):
+        return plan
+    if str(plan.get("kind") or "").strip().lower() != "hold":
+        return plan
+    if _step1_wheel_act_sent(stats):
+        return plan
+    try:
+        dist_err = float(plan.get("dist_err"))
+        x_err = float(plan.get("x_err"))
+    except (TypeError, ValueError):
+        return plan
+    x_outside = _x_outside_gate_mm(x_err)
+    if float(dist_err) <= 0.0:
+        return {
+            "kind": "wait",
+            "action": "EARN_STEP1_TOO_CLOSE_NO_REVERSE",
+            "dist_err": float(dist_err),
+            "x_err": float(x_err),
+            "x_outside_mm": float(x_outside),
+            "dist_outside_mm": float(_dist_outside_gate_mm(dist_err)),
+            "duration_ms": 0,
+            "reason": "earn_step1_requires_forward_motion_not_reverse",
+        }
+    if float(x_outside) > 0.5:
+        earned = _x_dist_drive_bias_plan(
+            turn_cmd=_turn_cmd_to_close_x_gap(x_err) or "r",
+            drive_mode="forward",
+            dist_err=dist_err,
+            x_err=x_err,
+            x_outside=x_outside,
+            dist_outside=0.0,
+            y_plan=None,
+            reason="earn_step1_forward_curve_from_reset_pose",
+        )
+        earned["duration_ms"] = min(int(earned.get("duration_ms", PULSE_MS)), 180)
+        earned["action"] = f"EARN_STEP1_{earned.get('action', 'BIAS')}"
+        return earned
+    policy = _follow_dist_approach_policy()
+    duration_ms = min(
+        200,
+        _coerce_int(
+            policy.get("micro_nudge_pulse_ms"),
+            DEFAULT_DIST_APPROACH_POLICY["micro_nudge_pulse_ms"],
+            minimum=1,
+            maximum=_max_act_ms(),
+        ),
+    )
+    return {
+        "kind": "drive",
+        "cmd": "f",
+        "action": "EARN_STEP1_FWD_MICRO",
+        "dist_err": float(dist_err),
+        "x_err": float(x_err),
+        "duration_ms": int(duration_ms),
+        "pwm": max(
+            int(policy.get("micro_nudge_pwm", DEFAULT_DIST_APPROACH_POLICY["micro_nudge_pwm"])),
+            int(_pwm_floor_for_cmd("f")),
+        ),
+        "distance_creep": True,
+        "reason": "earn_step1_forward_micro_from_reset_pose",
+    }
+
+
 def _follow_loop(
     vision: BrickDetector,
     robot: Robot,
@@ -12093,6 +14618,7 @@ def _follow_loop(
     max_cycles: int | None = None,
     step2_probe_before_forward: bool = False,
     debug_mode: bool = False,
+    require_step1_motion_before_win: bool = False,
 ) -> dict:
     last_action = ""
     print_ticker = 0
@@ -12102,6 +14628,7 @@ def _follow_loop(
     step1_started_at = time.monotonic()
     step1_attempt_limit_s = _step_attempt_limit_s()
     stats = _new_game_stats()
+    stats["decision_log_t0"] = float(step1_started_at)
 
     while time.monotonic() < deadline:
         loop_start = time.monotonic()
@@ -12163,6 +14690,29 @@ def _follow_loop(
                 time.sleep(remaining)
             continue
 
+        if _virtual_safety_in_safe_zone(reading):
+            stats["virtual_safety_armed"] = True
+        virtual_safety_exceeded = _virtual_safety_dist_exceeded(reading)
+        if bool(stats.get("virtual_safety_armed")) and bool(virtual_safety_exceeded):
+            _stop_robot(robot)
+            stats["virtual_safety_stop"] = True
+            stats["debug_stop_reading"] = dict(reading) if isinstance(reading, dict) else reading
+            stats["last_action"] = "VIRTUAL_WALL_STOP"
+            _bump_stat_count(stats, "miss_reasons", "virtual_safety_dist_exceeded")
+            try:
+                dist_text = f"{float(reading.get('dist_mm')):.1f}mm"
+            except (TypeError, ValueError):
+                dist_text = "unknown"
+            print(
+                f"[FOLLOW] HARD STOP: virtual safety wall crossed: dist={dist_text} "
+                f"> {_virtual_safety_max_dist_mm():.1f}mm. No further motion.",
+                flush=True,
+            )
+            return stats
+        if bool(virtual_safety_exceeded):
+            stats["virtual_safety_started_beyond_wall"] = True
+            _bump_stat_count(stats, "miss_reasons", "virtual_safety_unarmed_forward_recovery")
+
         stats["confident_sample_count"] = int(stats.get("confident_sample_count", 0)) + 1
         observed_detail = _record_observed_after_pending_act(stats, reading)
         if bool(stats.get("stall_guard_triggered")):
@@ -12200,6 +14750,37 @@ def _follow_loop(
         conf = float(reading["conf"])
         dist_err_now = float(dist_mm - _dist_target_mm())
         x_err_now = float(x_mm - _x_target_mm())
+
+        if bool(stop_after_win):
+            live_plan = _follow_action_plan(
+                reading,
+                virtual_safety_armed=bool(stats.get("virtual_safety_armed")),
+            )
+            if str(live_plan.get("kind") or "").strip().lower() == "hold":
+                if bool(require_step1_motion_before_win) and not _step1_wheel_act_sent(stats):
+                    _stop_robot(robot)
+                    stats["last_action"] = "STEP1_FALSE_WIN_GUARD"
+                    stats["debug_stop_reading"] = dict(reading) if isinstance(reading, dict) else reading
+                    _bump_stat_count(stats, "miss_reasons", "step1_false_win_guard_no_motion")
+                    _record_non_win_stats(
+                        stats,
+                        reading,
+                        live_plan,
+                        action="STEP1_FALSE_WIN_GUARD",
+                        reason="step1_false_win_guard_no_motion",
+                    )
+                    print(
+                        "[FOLLOW] HARD STOP: Step 1 happy pose was seen before any Step 1 wheel act; "
+                        "not counting reset pose as an earned win.",
+                        flush=True,
+                    )
+                    return stats
+                _stop_robot(robot)
+                _update_latest_step1_gap(stats, reading, live_plan, action="HAPPY", reason="park_happy_live_hit")
+                _record_and_print_step1_win(stats, reading, live_plan)
+                last_action = "HAPPY"
+                stats["stop_after_win_triggered"] = True
+                break
 
         if bool(stats.get("y_commit_active")) and not (
             _win_axis_ok(dist_err_now, _dist_tol_mm()) and _win_axis_ok(x_err_now, _x_tol_mm())
@@ -12273,6 +14854,7 @@ def _follow_loop(
             _record_follow_attempt_stats(stats, reading, plan)
             send_result = _execute_follow_action(robot, plan, reading)
             _record_send_result(stats, action, send_result)
+            _record_follow_decision(stats, reading, plan, action, send_result)
             if not _send_result_blocked(send_result):
                 _record_mast_up_budget(stats, plan, send_result)
             duration_text = _sent_motion_duration_text(plan, send_result)
@@ -12358,12 +14940,24 @@ def _follow_loop(
                 _stop_robot(robot)
             continue
 
-        plan = _follow_action_plan(reading)
+        plan = _follow_action_plan(
+            reading,
+            virtual_safety_armed=bool(stats.get("virtual_safety_armed")),
+        )
         transition_plan = _holding_s1_transition_commit_plan(stats, reading, plan)
         if transition_plan is not None:
             plan = transition_plan
             stats["holding_s1_transition_commit_sent"] = True
             _bump_stat_count(stats, "miss_reasons", "holding_s1_transition_commit")
+        plan = _block_reverse_gap_closing_plan(plan)
+        plan = _earn_step1_motion_plan_if_needed(
+            stats,
+            reading,
+            plan,
+            required=bool(require_step1_motion_before_win),
+        )
+        plan = _apply_empty_step1_predictive_x_momentum(stats, plan, reading)
+        plan = _apply_empty_step1_predictive_dist_momentum(stats, plan, reading)
         dist_err = float(plan["dist_err"])
         x_err = float(plan["x_err"])
         action = str(plan.get("action") or "HOLD")
@@ -12372,6 +14966,42 @@ def _follow_loop(
             _stop_robot(robot)
             wait_reason = str(plan.get("reason") or "wait")
             _bump_stat_count(stats, "miss_reasons", wait_reason)
+            if wait_reason in {
+                "virtual_safety_dist_exceeded",
+                "reverse_gap_closing_blocked",
+                "unsafe_forward_bias_too_close",
+                "empty_s1_too_close_no_reverse_training",
+            }:
+                stats["debug_stop_reading"] = dict(reading) if isinstance(reading, dict) else reading
+                stats["last_action"] = action
+                _record_non_win_stats(stats, reading, plan, action=action, reason=wait_reason)
+                if wait_reason == "reverse_gap_closing_blocked":
+                    blocked = plan.get("blocked_plan") if isinstance(plan.get("blocked_plan"), dict) else {}
+                    print(
+                        "[FOLLOW] HARD STOP: reverse/backoff gap-closing was planned "
+                        f"({blocked.get('action', 'UNKNOWN')}); parked instead of widening space.",
+                        flush=True,
+                    )
+                elif wait_reason == "unsafe_forward_bias_too_close":
+                    print(
+                        "[FOLLOW] HARD STOP: forward curve was requested while distance was already "
+                        f"too close or at target (dist_err={dist_err:+.1f}mm, x_err={x_err:+.1f}mm).",
+                        flush=True,
+                    )
+                elif wait_reason == "empty_s1_too_close_no_reverse_training":
+                    print(
+                        "[FOLLOW] HARD STOP: empty Step 1 is past the close edge "
+                        f"(dist_err={dist_err:+.1f}mm, x_err={x_err:+.1f}mm); "
+                        "parked instead of trying reverse recovery during the drill.",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"[FOLLOW] HARD STOP: virtual safety wall crossed: dist={dist_mm:.1f}mm "
+                        f"> {_virtual_safety_max_dist_mm():.1f}mm. No further motion.",
+                        flush=True,
+                    )
+                return stats
             if wait_reason == "pickup_suspected_far_low":
                 confirmed_pickup, confirmed_reading, pickup_samples = _confirm_pickup_suspected_reading(
                     vision,
@@ -12468,7 +15098,47 @@ def _follow_loop(
                     stats["debug_mode_terminated"] = True
                 return stats
 
-        if (bool(debug_mode) or bool(stop_after_win)) and _should_stop_confirm_for_dist_pingpong(stats, plan):
+        dist_pingpong_now = _should_stop_confirm_for_dist_pingpong(stats, plan)
+        if bool(dist_pingpong_now):
+            pingpong_count = int(stats.get("dist_pingpong_consecutive_count", 0) or 0) + 1
+            stats["dist_pingpong_consecutive_count"] = int(pingpong_count)
+            hard_stop_after = int(
+                _follow_dist_approach_policy().get(
+                    "pingpong_hard_stop_after_count",
+                    DEFAULT_DIST_APPROACH_POLICY["pingpong_hard_stop_after_count"],
+                )
+            )
+            if int(pingpong_count) >= int(hard_stop_after):
+                previous_dist_err = float(stats.get("last_distance_act_dist_err"))
+                previous_action = str(stats.get("last_distance_act_action") or "DIST")
+                _stop_robot(robot)
+                stats["dist_pingpong_guard_terminated"] = True
+                stats["dist_pingpong_hard_stop_terminated"] = True
+                stats["happy_reject_terminated"] = True
+                stats["debug_stop_reading"] = dict(reading) if isinstance(reading, dict) else reading
+                stats["last_action"] = "DIST_PINGPONG_HARD_STOP"
+                _bump_stat_count(stats, "miss_reasons", "dist_pingpong_hard_stop")
+                _record_non_win_stats(
+                    stats,
+                    reading,
+                    plan,
+                    action="DIST_PINGPONG_HARD_STOP",
+                    reason="dist_pingpong_hard_stop",
+                )
+                if bool(debug_mode):
+                    stats["debug_mode_terminated"] = True
+                print(
+                    f"[FOLLOW] DIST_PINGPONG_HARD_STOP count={int(pingpong_count)} "
+                    f"(limit={int(hard_stop_after)}) previous={previous_action} "
+                    f"prev_dist_err={previous_dist_err:+.1f}mm now_dist_err={dist_err:+.1f}mm; "
+                    "stopped before another opposite distance correction.",
+                    flush=True,
+                )
+                return stats
+        elif _distance_bearing_plan(plan):
+            stats["dist_pingpong_consecutive_count"] = 0
+
+        if (bool(debug_mode) or bool(stop_after_win)) and bool(dist_pingpong_now):
             previous_dist_err = float(stats.get("last_distance_act_dist_err"))
             previous_action = str(stats.get("last_distance_act_action") or "DIST")
             print(
@@ -12530,6 +15200,25 @@ def _follow_loop(
 
         if str(plan.get("kind")) == "hold":
             action = "HAPPY"
+            if bool(require_step1_motion_before_win):
+                if not _step1_wheel_act_sent(stats):
+                    _stop_robot(robot)
+                    stats["last_action"] = "STEP1_FALSE_WIN_GUARD"
+                    stats["debug_stop_reading"] = dict(reading) if isinstance(reading, dict) else reading
+                    _bump_stat_count(stats, "miss_reasons", "step1_false_win_guard_no_motion")
+                    _record_non_win_stats(
+                        stats,
+                        reading,
+                        plan,
+                        action="STEP1_FALSE_WIN_GUARD",
+                        reason="step1_false_win_guard_no_motion",
+                    )
+                    print(
+                        "[FOLLOW] HARD STOP: Step 1 happy pose was seen before any Step 1 wheel act; "
+                        "not counting reset pose as an earned win.",
+                        flush=True,
+                    )
+                    return stats
             if bool(_win_confirmation_config().get("accept_live_happy_after_stop", False)):
                 _stop_robot(robot)
                 dist_err, x_err, y_text, conf = _record_and_print_step1_win(stats, reading, plan)
@@ -12574,6 +15263,8 @@ def _follow_loop(
                     f"{rejected_y_text} conf={rejected_conf:.0f}%",
                     flush=True,
                 )
+                if _active_game_profile() == "empty" and _step1_wheel_act_sent(stats):
+                    _bump_stat_count(stats, "miss_reasons", "step1_happy_reject_after_motion")
                 last_action = "HAPPY_REJECT"
                 elapsed = time.monotonic() - loop_start
                 if (remaining := LOOP_S - elapsed) > 0:
@@ -12582,6 +15273,7 @@ def _follow_loop(
             reading = confirmed_reading if isinstance(confirmed_reading, dict) else reading
             plan = confirmed_plan if isinstance(confirmed_plan, dict) else plan
             dist_err, x_err, y_text, conf = _record_and_print_step1_win(stats, reading, plan)
+            step1_confirmed = True
             if bool(debug_mode):
                 _stop_robot(robot)
                 stats["debug_mode_terminated"] = True
@@ -12594,6 +15286,25 @@ def _follow_loop(
                 break
             if bool(_follow_motion_config().get("step2_suspended", False)):
                 if bool(reset_after_win):
+                    if ran_step3_retreat:
+                        _set_game_profile("empty")
+                        print(
+                            "[PROFILE] Holding place/retreat complete; retreat is the holding reset "
+                            "(no extra reset); next game profile is empty.",
+                            flush=True,
+                        )
+                        completed_cycles += 1
+                        if max_cycles is not None and completed_cycles >= int(max_cycles):
+                            last_action = "E2E_CYCLES_DONE"
+                            break
+                        step1_started_at = time.monotonic()
+                        last_action = "HOLDING_RETREAT_RESET"
+                        stats["y_lock_on_armed"] = True
+                        print_ticker = 0
+                        elapsed = time.monotonic() - loop_start
+                        if (remaining := LOOP_S - elapsed) > 0:
+                            time.sleep(remaining)
+                        continue
                     reset_result = _run_reset_sequence(vision, robot)
                     _record_reset_stats(stats, reset_result)
                     _print_reset_stats(stats)
@@ -12616,6 +15327,14 @@ def _follow_loop(
                     continue
                 last_action = "STEP2_SUSPENDED"
                 break
+            if not bool(step1_confirmed):
+                _stop_unconfirmed_transition(
+                    robot,
+                    stats,
+                    previous_step="Step 1",
+                    next_step="Step 2",
+                )
+                return stats
             step2_result = _run_step2_seat_sequence(
                 vision,
                 robot,
@@ -12656,6 +15375,7 @@ def _follow_loop(
                 print("[STEP2] Not starting step 3 until step 2 is an honest target hit.", flush=True)
                 last_action = "STEP2_NEEDS_WORK"
                 break
+            step2_confirmed = _confirmed_step_result(step2_result)
             if bool(debug_mode):
                 _stop_robot(robot)
                 stats["debug_mode_terminated"] = True
@@ -12665,6 +15385,14 @@ def _follow_loop(
             if _game_complete_after_step2():
                 ran_step3_retreat = False
                 if _step3_kind() == "retreat":
+                    if not bool(step2_confirmed):
+                        _stop_unconfirmed_transition(
+                            robot,
+                            stats,
+                            previous_step="Step 2",
+                            next_step="Step 3 retreat",
+                        )
+                        return stats
                     ran_step3_retreat = True
                     step3_result = _run_step3_retreat_sequence(vision, robot)
                     step3_reading = step3_result.get("reading") if isinstance(step3_result, dict) else None
@@ -12692,10 +15420,16 @@ def _follow_loop(
                     if not bool(step3_result.get("success")):
                         print(f"[STEP3] Failed gracefully: {step3_result.get('reason')}", flush=True)
                         break
-                    if not bool(step3_result.get("target_met")):
+                    if not (bool(step3_result.get("target_met")) or bool(step3_result.get("soft_reset_complete"))):
                         print("[STEP3] Not resetting until retreat target is honestly reached; parked.", flush=True)
                         last_action = "STEP3_RETREAT_NEEDS_WORK"
                         break
+                    if bool(step3_result.get("soft_reset_complete")):
+                        print(
+                            "[STEP3] Holding retreat hit its capped reset duration; "
+                            "continuing as a soft reset without claiming the distance target was seen.",
+                            flush=True,
+                        )
                 if bool(reset_after_win):
                     reset_result = _run_reset_sequence(vision, robot)
                     _record_reset_stats(stats, reset_result)
@@ -12731,6 +15465,14 @@ def _follow_loop(
                 last_action = "STEP2_PARK"
                 stats["stop_after_step2_triggered"] = True
                 break
+            if not bool(step2_confirmed):
+                _stop_unconfirmed_transition(
+                    robot,
+                    stats,
+                    previous_step="Step 2",
+                    next_step="Step 3",
+                )
+                return stats
             step3_result = _run_step3_seat_sequence(vision, robot)
             step3_reading = step3_result.get("reading") if isinstance(step3_result, dict) else None
             step3_dist = step3_x = step3_y = "N/A"
@@ -12760,6 +15502,7 @@ def _follow_loop(
                 print("[STEP3] Not starting step 4 until step 3 is an honest target hit.", flush=True)
                 last_action = "STEP3_NEEDS_WORK"
                 break
+            step3_confirmed = _confirmed_step_result(step3_result)
             if bool(complete_after_step3):
                 stats["step3_win_count"] = int(stats.get("step3_win_count", 0)) + 1
                 print("[STEP3] Step 3 complete (steps 1-3 drill); skipping step 4 lift.", flush=True)
@@ -12794,6 +15537,14 @@ def _follow_loop(
                 stats["debug_mode_terminated"] = True
                 stats["last_action"] = "DEBUG_STEP3_TERMINATE"
                 print("[DEBUG] Robot stopped after Step 3 win; waiting for operator confirmation.", flush=True)
+                return stats
+            if not bool(step3_confirmed):
+                _stop_unconfirmed_transition(
+                    robot,
+                    stats,
+                    previous_step="Step 3",
+                    next_step="Step 4",
+                )
                 return stats
             step4_result = _run_step3_lift_sequence(vision, robot)
             step4_reading = step4_result.get("reading") if isinstance(step4_result, dict) else None
@@ -12884,9 +15635,19 @@ def _follow_loop(
                     flush=True,
                 )
                 return stats
+            if _empty_step1_confident_worse_stop_required(stats):
+                _stop_empty_step1_confident_worse(
+                    robot,
+                    stats,
+                    reading,
+                    plan,
+                    action=action,
+                )
+                return stats
             _record_follow_attempt_stats(stats, reading, plan)
             send_result = _execute_follow_action(robot, plan, reading)
             _record_send_result(stats, action, send_result)
+            _record_follow_decision(stats, reading, plan, action, send_result)
             if not _send_result_blocked(send_result):
                 _record_mast_up_budget(stats, plan, send_result)
                 _consume_unreliable_spool_probe(stats, plan)
@@ -12903,6 +15664,9 @@ def _follow_loop(
                     "x_mm": x_mm,
                     "y_mm": y_mm,
                     "cmd": plan.get("cmd"),
+                    "turn_cmd": plan.get("turn_cmd"),
+                    "drive_mode": plan.get("drive_mode"),
+                    "strength": plan.get("strength"),
                     "mast_cmd": plan.get("mast_cmd"),
                     "dist_err": plan.get("dist_err", dist_err),
                     "x_err": plan.get("x_err", x_err),
@@ -13017,7 +15781,7 @@ def _parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument(
         "--e2e-max-attempts",
         type=int,
-        default=5,
+        default=2,
         help="Maximum reset-and-retry attempts for an e2e trial before parking as a last resort.",
     )
     parser.add_argument(
@@ -13176,11 +15940,13 @@ def _supervise_run(args: argparse.Namespace) -> int:
     worker = None
     bypass_preflight = bool(args.skip_vision_preflight)
     pregame_recovery_attempts = 0
+    crash_recovery_attempts = 0
     max_attempts = (
         1
         + int(VISION_RECOVERY_RETRIES)
         + 1
         + int(PREGAME_VISIBILITY_RECOVERY_RETRIES)
+        + int(WORKER_CRASH_RECOVERY_RETRIES)
     )
     for attempt in range(1, max_attempts + 1):
         print(
@@ -13251,6 +16017,29 @@ def _supervise_run(args: argparse.Namespace) -> int:
                 f"[FOLLOW] Worker exited with code {returncode}; recovered with stop.",
                 flush=True,
             )
+        one_shot_mode = bool(
+            args.reset_only
+            or args.park_happy
+            or args.park_step2
+            or args.step2_seat_once
+            or args.step2_lock_once
+            or args.step2_settle_only
+            or args.step2_probe_before_forward
+            or args.step3_lift_once
+            or args.step3_seat_once
+            or args.step3_retreat_once
+            or args.step4_lift_once
+            or args.e2e_trial
+        )
+        crash_like_exit = bool(returncode < 0 or returncode in {1, 134, 137, 139})
+        if bool(crash_like_exit) and not bool(one_shot_mode):
+            crash_recovery_attempts += 1
+            if crash_recovery_attempts <= int(WORKER_CRASH_RECOVERY_RETRIES):
+                _recover_pregame_visibility(
+                    f"worker crash/exit {returncode}",
+                    attempt=crash_recovery_attempts,
+                )
+                continue
         return 1
     _emergency_stop_robot()
     print("[FOLLOW] Worker did not recover after vision startup retries; recovered with stop.", flush=True)
@@ -13334,29 +16123,52 @@ def _run_worker(args: argparse.Namespace) -> int:
             print("[E2E] Starting end-to-end trial: initial reset, empty game, holding game, final reset.", flush=True)
             print(
                 "[E2E] No global trial timer; each step gets its configured budget, "
-                f"and misses reset/retry up to {int(max(1, args.e2e_max_attempts))} attempt(s) before parking.",
+                f"and misses reset/retry up to {int(max(1, min(2, args.e2e_max_attempts)))} attempt(s) before parking.",
                 flush=True,
             )
             stats = None
-            max_attempts = int(max(1, args.e2e_max_attempts))
+            start_beyond_virtual_wall = _virtual_safety_dist_exceeded(pregame_reading)
+            if bool(start_beyond_virtual_wall):
+                try:
+                    dist_text = f"{float(pregame_reading.get('dist_mm')):.1f}mm"
+                except (TypeError, ValueError):
+                    dist_text = "N/A"
+                print(
+                    "[E2E] Pregame starts beyond the virtual wall "
+                    f"(dist={dist_text} > {_virtual_safety_max_dist_mm():.1f}mm). "
+                    "Continuing forward-only into the game; the wall arms after the first safe-zone read.",
+                    flush=True,
+                )
+            max_attempts = int(max(1, min(2, args.e2e_max_attempts)))
             for e2e_attempt in range(1, max_attempts + 1):
                 _set_game_profile("empty")
                 if e2e_attempt > 1:
                     print(f"[E2E] Retry {e2e_attempt}/{max_attempts}: reset and run the script again.", flush=True)
-                reset_result = _run_reset_sequence(vision, robot)
-                if bool(reset_result.get("success")):
+                skip_reset_this_attempt = bool(start_beyond_virtual_wall and e2e_attempt == 1)
+                if bool(skip_reset_this_attempt):
                     print(
-                        f"[E2E] Reset before attempt {e2e_attempt} done: "
-                        f"turn={str(reset_result.get('turn_cmd')).upper()} reason={reset_result.get('reason')}",
+                        f"[E2E] Skipping reset before attempt {e2e_attempt}: start pose is already too far, "
+                        "so the safe recovery is to close distance forward.",
                         flush=True,
                     )
                 else:
-                    print(
-                        f"[E2E] Reset before attempt {e2e_attempt} failed during {reset_result.get('phase')}: "
-                        f"{reset_result.get('reason')}; trying next reset if budget remains.",
-                        flush=True,
-                    )
-                    continue
+                    reset_result = _run_reset_sequence(vision, robot)
+                    if bool(reset_result.get("success")):
+                        print(
+                            f"[E2E] Reset before attempt {e2e_attempt} done: "
+                            f"turn={str(reset_result.get('turn_cmd')).upper()} reason={reset_result.get('reason')}",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"[E2E] Reset before attempt {e2e_attempt} failed during {reset_result.get('phase')}: "
+                            f"{reset_result.get('reason')}; trying next reset if budget remains.",
+                            flush=True,
+                        )
+                        if _virtual_safety_result_triggered(reset_result):
+                            print("[E2E] HARD STOP: virtual safety wall tripped during reset; no retry.", flush=True)
+                            return 1
+                        continue
                 stats = _follow_loop(
                     vision,
                     robot,
@@ -13367,6 +16179,7 @@ def _run_worker(args: argparse.Namespace) -> int:
                     step2_probe_before_forward=False,
                     debug_mode=False,
                     max_cycles=1,
+                    require_step1_motion_before_win=True,
                 )
                 print(f"[RESULTS attempt {e2e_attempt}/{max_attempts}]", flush=True)
                 print(_format_game_results_table(stats), flush=True)
@@ -13375,6 +16188,12 @@ def _run_worker(args: argparse.Namespace) -> int:
                     return 0
                 last_action = str(stats.get("last_action") or "unknown")
                 print(f"[E2E] Attempt {e2e_attempt}/{max_attempts} missed: {last_action}", flush=True)
+                if _virtual_safety_result_triggered(stats):
+                    print("[E2E] HARD STOP: virtual safety wall tripped during follow; no retry.", flush=True)
+                    return 1
+                if last_action == "REVERSE_GAP_CLOSING_BLOCKED":
+                    print("[E2E] HARD STOP: reverse gap-closing was requested; no retry.", flush=True)
+                    return 1
                 if bool(stats.get("pickup_suspected_stop")):
                     print("[E2E] Pickup suspected; parking as the last-resort safety stop.", flush=True)
                     return 1
@@ -13382,6 +16201,22 @@ def _run_worker(args: argparse.Namespace) -> int:
             print(f"[E2E] Trial parked after {max_attempts} attempt(s): {last}", flush=True)
             return 1
         if bool(args.reset_only):
+            if _active_game_profile() == "holding" and _step3_kind() == "retreat":
+                reset_result = _run_step3_retreat_sequence(vision, robot)
+                if bool(reset_result.get("success")) and (
+                    bool(reset_result.get("target_met")) or bool(reset_result.get("soft_reset_complete"))
+                ):
+                    print(
+                        f"[RESET] Holding retreat reset done: reason={reset_result.get('reason')} "
+                        f"duration={int(reset_result.get('drive_duration_ms', 0) or 0)}ms",
+                        flush=True,
+                    )
+                    return 0
+                print(
+                    f"[RESET] Holding retreat reset failed: {reset_result.get('reason')}",
+                    flush=True,
+                )
+                return 1
             reset_result = _run_reset_sequence(vision, robot)
             if bool(reset_result.get("success")):
                 print(
