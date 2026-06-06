@@ -965,10 +965,10 @@
             ]
           },
           "confirm_frames": 2,
-          "dist_target_mm": 135.0,
-          "dist_tol_mm": 50.0,
+          "dist_target_mm": 175.0,
+          "dist_tol_mm": 0.0,
           "hard_abs_x_tol_mm": 90.0,
-          "hard_dist_tol_mm": 90.0,
+          "hard_dist_tol_mm": 0.0,
           "holding_pulse_scale": 1.0,
           "low_x_extra_sharp_turn": {
             "duration_ms": 150,
@@ -978,6 +978,7 @@
             "threshold_abs_x_mm": 35.0
           },
           "max_total_back_ms": 1500,
+          "min_attempt_dist_mm": 175.0,
           "post_pause_s": 2.0,
           "pulse_ms": 4455,
           "settle_s": 0.06,
@@ -1122,10 +1123,10 @@
         ]
       },
       "confirm_frames": 2,
-      "dist_target_mm": 135.0,
-      "dist_tol_mm": 50.0,
+      "dist_target_mm": 175.0,
+      "dist_tol_mm": 0.0,
       "hard_abs_x_tol_mm": 90.0,
-      "hard_dist_tol_mm": 90.0,
+      "hard_dist_tol_mm": 0.0,
       "holding_pulse_scale": 0.5,
       "low_x_extra_sharp_turn": {
         "duration_ms": 150,
@@ -1135,6 +1136,7 @@
         "threshold_abs_x_mm": 35.0
       },
       "max_total_back_ms": 1500,
+      "min_attempt_dist_mm": 175.0,
       "post_pause_s": 2.0,
       "pulse_ms": 4455,
       "settle_s": 0.06,

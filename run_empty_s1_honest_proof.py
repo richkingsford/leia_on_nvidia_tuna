@@ -72,6 +72,22 @@ def _step1_met(reading: dict | None) -> bool:
     return bool(frozen._evaluate_reading(reading, "step1").get("target_met"))
 
 
+def _confirmed_step1_win_reading(stats: dict | None, fallback: dict | None = None) -> dict:
+    """Use the follow loop's confirmed win read instead of a later model-switch read."""
+    snapshot = (stats or {}).get("last_step1_win") if isinstance(stats, dict) else None
+    if not isinstance(snapshot, dict):
+        return dict(fallback) if isinstance(fallback, dict) else {}
+    out = dict(fallback) if isinstance(fallback, dict) else {}
+    for key in ("dist_mm", "x_mm", "y_mm"):
+        if snapshot.get(key) is not None:
+            out[key] = snapshot.get(key)
+    out["confident"] = True
+    out["visible"] = True
+    out["reason"] = "confirmed_follow_loop_step1_win"
+    out["follow_loop_confirmed_win_read"] = True
+    return out
+
+
 def _step1_dist_lower_bound_mm() -> float:
     return float(follow._dist_target_mm()) - float(follow._dist_tol_mm())
 
@@ -79,12 +95,7 @@ def _step1_dist_lower_bound_mm() -> float:
 def _reset_dist_lower_bound_mm() -> float:
     reset_cfg = follow._reset_motion_config().get("reverse_turn")
     reset_cfg = reset_cfg if isinstance(reset_cfg, dict) else {}
-    try:
-        target = float(reset_cfg.get("dist_target_mm"))
-        tol = float(reset_cfg.get("dist_tol_mm"))
-    except (TypeError, ValueError):
-        return _step1_dist_lower_bound_mm()
-    return max(0.0, target - tol)
+    return float(follow._reset_dist_floor_mm(reset_cfg))
 
 
 def _reset_pose_met(reading: dict | None) -> bool:
@@ -627,7 +638,7 @@ def _open_x_offset_once(
     except (TypeError, ValueError):
         return reading
     turn_cmd = follow._turn_cmd_to_open_x_gap(x_mm, "l")
-    send_result = follow._reset_small_turn_adjust(
+    send_result = follow._reset_sharp_turn_adjust(
         robot,
         turn_cmd=turn_cmd,
         reading=reading,
@@ -775,8 +786,32 @@ def _ensure_honest_reset(
     except (TypeError, ValueError):
         pass
 
+    reset_cfg = follow._reset_motion_config().get("reverse_turn")
+    reset_cfg = reset_cfg if isinstance(reset_cfg, dict) else {}
+
     dist_after_reset = _dist_value(reading)
-    if dist_after_reset is not None and dist_after_reset < _reset_dist_lower_bound_mm():
+    reset_lower_bound = _reset_dist_lower_bound_mm()
+    if dist_after_reset is not None and dist_after_reset < reset_lower_bound:
+        print(
+            "[RESET] Proof reset distance polish: "
+            f"dist={dist_after_reset:.1f}mm is below true reset floor {reset_lower_bound:.1f}mm; "
+            "running bounded reset adjustment before scoring.",
+            flush=True,
+        )
+        adjusted, _target_met, adjustment_attempts = follow._adjust_reset_until_xy_target(
+            vision,
+            robot,
+            reading=reading,
+            reset_cfg=reset_cfg,
+            initial_turn_cmd="l",
+            back_budget=None,
+        )
+        if isinstance(adjusted, dict):
+            reading = adjusted
+            reason = f"{reason};proof_dist_back_adjust_{int(adjustment_attempts)}"
+            dist_after_reset = _dist_value(reading)
+
+    if dist_after_reset is not None and dist_after_reset < reset_lower_bound:
         reason = f"reset_too_close_for_step1:{reason}"
         _capture(
             site,
@@ -791,6 +826,37 @@ def _ensure_honest_reset(
             mast_attempts=len(robot.mast_attempts),
         )
         return False, reading if isinstance(reading, dict) else {}, reason
+
+    try:
+        x_min = float(reset_cfg.get("x_offset_min_mm", 0.0))
+        x_max = float(reset_cfg.get("x_offset_max_mm", x_min))
+    except (TypeError, ValueError):
+        x_min = 0.0
+        x_max = 0.0
+    if x_min > x_max:
+        x_min, x_max = x_max, x_min
+    for polish_idx in range(2):
+        if _reset_pose_met(reading):
+            break
+        try:
+            abs_x = abs(float((reading or {}).get("x_mm")))
+        except (TypeError, ValueError):
+            break
+        if abs_x >= x_min:
+            break
+        print(
+            "[RESET] Proof reset x-offset polish: "
+            f"|x|={abs_x:.1f}mm is below reset band {x_min:.1f}-{x_max:.1f}mm; "
+            f"sending bounded {int(follow.RESET_FINAL_X_POLISH_MAX_MS)}ms reset turn.",
+            flush=True,
+        )
+        reading = _open_x_offset_once(
+            vision,
+            robot,
+            reading,
+            duration_ms=int(follow.RESET_FINAL_X_POLISH_MAX_MS),
+        )
+        reason = f"{reason};proof_x_offset_polish_{polish_idx + 1}"
 
     clean_reset = _reset_pose_met(reading)
     honest = bool(clean_reset and not _step1_met(reading))
@@ -917,7 +983,11 @@ def run(args: argparse.Namespace) -> int:
                 debug_mode=False,
                 require_step1_motion_before_win=True,
             )
-            step1_reading = _read_confident(vision)
+            fallback_reading = _read_confident(vision)
+            if int(stats.get("win_count", 0) or 0) >= 1:
+                step1_reading = _confirmed_step1_win_reading(stats, fallback=fallback_reading)
+            else:
+                step1_reading = fallback_reading
             step1_ok = int(stats.get("win_count", 0) or 0) >= 1 and _step1_met(step1_reading)
             step1_reason = str(stats.get("last_action") or "step1_follow_loop_done")
             if not step1_ok:
@@ -959,6 +1029,11 @@ def run(args: argparse.Namespace) -> int:
 
             if bool(args.skip_post_win_reset):
                 wins += 1
+                trial_reason = (
+                    "current non-happy pose -> earned Step 1; stopped before post-win reset by request"
+                    if bool(args.skip_pre_reset)
+                    else "clean reset -> earned Step 1; stopped before post-win reset by request"
+                )
                 _capture(
                     site,
                     vision,
@@ -966,7 +1041,7 @@ def run(args: argparse.Namespace) -> int:
                     attempt=attempt,
                     phase="trial",
                     status="win",
-                    reason="clean reset -> earned Step 1; stopped before post-win reset by request",
+                    reason=trial_reason,
                     reading=step1_reading,
                     honest_trial=True,
                     mast_attempts=len(robot.mast_attempts),

@@ -753,57 +753,51 @@ class ProgressSite:
             tol = _float_or_none(data.get("tol_mm"))
             err = _float_or_none(data.get("err_mm"))
             score = _float_or_none(data.get("closeness_pct"))
-            score_text = "score unavailable" if score is None or value_raw is None else f"score {max(0.0, min(100.0, score)):.0f}%"
-            read_score = f"read {value} | {score_text}"
+            detail_title = "not scored"
             marker_html = ""
             gauge_labels = ""
             state_class = ""
             if target is None or tol is None or tol <= 0.0:
-                range_text = "not scored"
-                phrase = read_score
-                sub = ""
+                detail_title = value if value_raw is not None else "no read"
             else:
                 low_val = float(target) - float(tol)
                 high_val = float(target) + float(tol)
                 low = _fmt_mm(low_val, signed=signed_axis)
                 high = _fmt_mm(high_val, signed=signed_axis)
-                range_text = f"happy {low} to {high}"
                 if value_raw is None:
-                    phrase = "no read"
-                    sub = "score unavailable; marker unavailable"
+                    detail_title = f"no read; target range {low} to {high}"
                 else:
                     marker_pct = 50.0 + ((float(value_raw) - float(target)) / (float(tol) * 3.0) * 50.0)
                     marker_pct = max(0.0, min(100.0, marker_pct))
+                    edge_class = " edge-left" if marker_pct <= 4.0 else (" edge-right" if marker_pct >= 96.0 else "")
                     marker_html = (
-                        f'<span class="gauge-marker" style="left:{marker_pct:.1f}%">'
-                        f'<span class="gauge-label gauge-read">read {value}</span></span>'
+                        f'<span class="gauge-marker{edge_class}" style="left:{marker_pct:.1f}%">'
+                        f'<span class="gauge-label gauge-read">{value}</span></span>'
                     )
                     gauge_labels = (
                         f'<span class="gauge-tick gauge-floor"><span>floor {low}</span></span>'
                         f'<span class="gauge-tick gauge-ceiling"><span>ceiling {high}</span></span>'
                     )
                     if bool(data.get("ok")):
-                        phrase = f"happy: {value} is between"
                         state_class = " happy-shot"
                     elif float(value_raw) < low_val:
-                        miss = low_val - float(value_raw)
-                        phrase = f"undershot: {value} is below"
-                        sub = f"{_fmt_mm(miss)} mm below happy"
                         state_class = " undershot"
                     else:
-                        miss = float(value_raw) - high_val
-                        phrase = f"overshot: {value} is above"
-                        sub = f"{_fmt_mm(miss)} mm above happy"
                         state_class = " overshot"
-                    if bool(data.get("ok")):
-                        sub = f"err {_fmt_mm(err, signed=True)} mm, target {_fmt_mm(target, signed=signed_axis)}"
+                    detail_bits = [
+                        f"read {value}",
+                        f"range {low} to {high}",
+                    ]
+                    if err is not None:
+                        detail_bits.append(f"err {_fmt_mm(err, signed=True)} mm")
+                    if score is not None:
+                        detail_bits.append(f"score {max(0.0, min(100.0, score)):.0f}%")
+                    detail_title = "; ".join(detail_bits)
             wrapper = "mini-axis" if compact else "axis"
             return (
-                f'<div class="{wrapper}{ok_class}{locked}{state_class}">'
-                f'<div class="axis-top"><b>{html.escape(axis.upper())}</b><span>{html.escape(read_score)}</span></div>'
-                f'<div class="axis-phrase">{html.escape(phrase)}</div>'
+                f'<div class="{wrapper}{ok_class}{locked}{state_class}" title="{html.escape(detail_title)}">'
+                f'<div class="axis-top"><b>{html.escape(axis.upper())}</b></div>'
                 f'<div class="gauge"><span class="gauge-zone"></span><span class="gauge-center"></span>{gauge_labels}{marker_html}</div>'
-                f'<div class="axis-sub">{html.escape(range_text)}{(" | " + html.escape(sub)) if sub else ""}</div>'
                 "</div>"
             )
 
@@ -1143,46 +1137,33 @@ class ProgressSite:
                     def step_photo(step_label: str, position: str, row: dict | None) -> str:
                         image = str((row or {}).get("image") or "")
                         caption = f"{step_label} {position}"
-                        axes_for_photo = ("dist", "x") if step_label in {"S1", "S2"} else ("dist",)
-                        step_key = {"S1": "step1", "S2": "step2", "S3": "step3"}.get(step_label, "step1")
-
-                        def photo_read_score() -> str:
-                            if not isinstance(row, dict):
-                                return '<div class="photo-read">read unavailable<br>score unavailable</div>'
-                            reading = row.get("reading") if isinstance(row.get("reading"), dict) else {}
-                            evaluation = row.get("evaluation") if isinstance(row.get("evaluation"), dict) else {}
-                            if not evaluation.get("axes"):
-                                evaluation = _evaluate_reading(reading, step_key)
-                            axes_eval = evaluation.get("axes") if isinstance(evaluation.get("axes"), dict) else {}
-                            conf_val = _float_or_none(reading.get("conf"))
-                            conf_text = "N/A" if conf_val is None else f"{conf_val:.0f}%"
-                            read_text = (
-                                f"read dist {_fmt_mm(reading.get('dist_mm'))} | "
-                                f"x {_fmt_mm(reading.get('x_mm'), signed=True)} | "
-                                f"y {_fmt_mm(reading.get('y_mm'), signed=True)} | "
-                                f"conf {conf_text}"
-                            )
-                            score_bits = []
-                            for axis_name in axes_for_photo:
-                                data = axes_eval.get(axis_name) if isinstance(axes_eval.get(axis_name), dict) else {}
-                                score = _float_or_none(data.get("closeness_pct"))
-                                score_text = "N/A" if score is None or data.get("value_mm") is None else f"{score:.0f}%"
-                                score_bits.append(f"{axis_name} {score_text}")
-                            return (
-                                f'<div class="photo-read">{html.escape(read_text)}<br>'
-                                f'score {html.escape(", ".join(score_bits))}</div>'
-                            )
-
-                        read_html = photo_read_score()
                         if not image:
                             return (
                                 f'<figure class="proof-photo step-photo"><figcaption>{html.escape(caption)}</figcaption>'
-                                f'<span class="muted">no photo</span>{read_html}</figure>'
+                                f'<span class="muted">no photo</span></figure>'
                             )
                         return (
                             f'<figure class="proof-photo step-photo"><figcaption>{html.escape(caption)}</figcaption>'
                             f'<a href="{html.escape(image)}"><img src="{html.escape(image)}" '
-                            f'alt="{html.escape(caption)}"></a>{read_html}</figure>'
+                            f'alt="{html.escape(caption)}"></a></figure>'
+                        )
+
+                    def photo_panel(
+                        step_label: str,
+                        position: str,
+                        row: dict | None,
+                        axes: tuple[str, ...],
+                        *,
+                        badge_html: str = "",
+                    ) -> str:
+                        bars = "".join(mini_axis(row, axis) for axis in axes)
+                        badge_block = f'<div class="photo-badges">{badge_html}</div>' if badge_html else ""
+                        return (
+                            f'<div class="proof-photo-panel">'
+                            f'{step_photo(step_label, position, row)}'
+                            f'{badge_block}'
+                            f'<div class="photo-bars">{bars}</div>'
+                            f'</div>'
                         )
 
                     def step_block(
@@ -1206,23 +1187,30 @@ class ProgressSite:
                                 reset_read_clean = bool(follow._reset_xy_target_ready(reset_reading, reset_cfg))
                             except Exception:
                                 reset_read_clean = False
+                            reset_reason = str((start_row or {}).get("reason") or "")
                             if reset_status == "win" and reset_read_clean:
                                 reset_badge = '<span class="reset-badge clean">Clean reset</span>'
+                            elif reset_status == "info" and "no_pre_reset" in reset_reason:
+                                reset_badge = '<span class="reset-badge info">No reset</span>'
                             elif reset_status in {"win", "fail"}:
                                 reset_badge = '<span class="reset-badge failed">Failed reset</span>'
-                        bars = (
-                            reading_line(step_row)
-                            + "".join(mini_axis(step_row, axis) for axis in axes)
-                            + decision_log_html(step_row)
+                        start_panel = photo_panel(
+                            step_label,
+                            "start",
+                            start_row,
+                            axes,
+                            badge_html=reset_badge,
                         )
+                        end_panel = photo_panel(step_label, "end", step_row, axes)
+                        decision_html = decision_log_html(step_row)
                         return (
                             f'<div class="proof-step">'
-                            f'<div class="step-status-stack">{reset_badge}'
+                            f'<div class="step-status-stack">'
                             f'<span class="status {html.escape(status)}">{html.escape(step_label)} {html.escape(status or "pending")}</span>'
                             f'</div>'
-                            f'{step_photo(step_label, "start", start_row)}'
-                            f'<div class="proof-bars">{bars}</div>'
-                            f'{step_photo(step_label, "end", step_row)}'
+                            f'{start_panel}'
+                            f'{end_panel}'
+                            f'<div class="proof-log">{decision_html}</div>'
                             f'</div>'
                         )
 
@@ -1341,7 +1329,7 @@ class ProgressSite:
     .axis {{ min-width: 180px; }}
     .axis-top {{ display: flex; gap: 8px; justify-content: space-between; font-size: 12px; }}
     .axis-phrase {{ margin-top: 2px; color: #17202a; font-size: 12px; }}
-    .gauge {{ position: relative; height: 18px; margin: 16px 0 18px; background: #edf1f4; border: 1px solid #ccd6df; border-radius: 999px; overflow: visible; }}
+    .gauge {{ position: relative; height: 18px; margin: 12px 0 14px; background: #edf1f4; border: 1px solid #ccd6df; border-radius: 999px; overflow: visible; }}
     .gauge-zone {{ position: absolute; left: 33.333%; width: 33.333%; top: 0; bottom: 0; background: #cfeeda; border-left: 1px solid #8dc7a3; border-right: 1px solid #8dc7a3; }}
     .gauge-center {{ position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: rgba(23, 32, 42, 0.25); }}
     .gauge-marker {{ position: absolute; top: -1px; bottom: -1px; width: 3px; margin-left: -1.5px; background: #17202a; box-shadow: 0 0 0 1px rgba(255,255,255,0.75); }}
@@ -1349,14 +1337,16 @@ class ProgressSite:
     .gauge-floor {{ left: 33.333%; }}
     .gauge-ceiling {{ left: 66.666%; }}
     .gauge-label {{ position: absolute; left: 50%; transform: translateX(-50%); white-space: nowrap; font-size: 10px; line-height: 1; font-weight: 700; color: #33485b; background: rgba(255,255,255,0.9); border: 1px solid #d9e0e8; border-radius: 4px; padding: 1px 3px; pointer-events: none; }}
-    .gauge-tick .gauge-label, .gauge-tick span {{ position: absolute; left: 50%; bottom: -15px; transform: translateX(-50%); white-space: nowrap; font-size: 10px; line-height: 1; font-weight: 700; color: #46606f; background: rgba(255,255,255,0.9); border: 1px solid #d9e0e8; border-radius: 4px; padding: 1px 3px; pointer-events: none; }}
-    .gauge-read {{ top: -14px; color: #17202a; }}
+    .gauge-tick .gauge-label, .gauge-tick span {{ position: absolute; left: 50%; bottom: -13px; transform: translateX(-50%); white-space: nowrap; font-size: 10px; line-height: 1; font-weight: 700; color: #46606f; background: rgba(255,255,255,0.92); border: 1px solid #d9e0e8; border-radius: 4px; padding: 1px 3px; pointer-events: none; }}
+    .gauge-read {{ top: -11px; color: #17202a; }}
+    .gauge-marker.edge-left .gauge-read {{ left: 0; transform: translateX(0); }}
+    .gauge-marker.edge-right .gauge-read {{ left: 100%; transform: translateX(-100%); }}
     .axis-ok .gauge-marker {{ background: #17633a; }}
     .overshot .gauge-marker, .undershot .gauge-marker {{ background: #9f3327; }}
     .axis-sub {{ color: #566574; font-size: 12px; }}
     .locked .axis-top b::after {{ content: " locked"; color: #5d6b78; font-weight: 600; text-transform: none; }}
-    .iteration-grid {{ display: grid; grid-template-columns: 1fr; gap: 10px; }}
-    .iteration-card {{ background: white; border: 1px solid #d9e0e8; border-radius: 6px; padding: 10px; }}
+    .iteration-grid {{ display: grid; grid-template-columns: 1fr; gap: 10px; min-width: 0; }}
+    .iteration-card {{ background: white; border: 1px solid #d9e0e8; border-radius: 6px; padding: 10px; min-width: 0; overflow-wrap: anywhere; }}
     .iteration-head {{ display: flex; align-items: center; justify-content: space-between; gap: 8px; }}
     .experiment-name {{ margin-top: 6px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; color: #33485b; overflow-wrap: anywhere; }}
     .experiment-line {{ margin-top: 4px; color: #253341; }}
@@ -1366,22 +1356,27 @@ class ProgressSite:
     .iteration-images {{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }}
     .iteration-images img {{ width: 76px; height: 54px; object-fit: cover; }}
     .proof-grid {{ display: grid; gap: 10px; margin-top: 10px; }}
-    .trial-proof {{ display: grid; grid-template-columns: minmax(180px, 24%) 1fr minmax(180px, 24%); gap: 12px; align-items: stretch; border: 1px solid #d9e0e8; border-radius: 6px; padding: 10px; background: #fbfcfd; }}
+    .trial-proof {{ display: grid; grid-template-columns: 1fr; gap: 12px; align-items: stretch; border: 1px solid #d9e0e8; border-radius: 6px; padding: 10px; background: #fbfcfd; min-width: 0; }}
     .trial-proof-head {{ grid-column: 1 / -1; font-weight: 700; margin-bottom: 0; }}
     .proof-photo {{ margin: 0; padding: 0; border: 0; background: transparent; }}
     .proof-photo img {{ width: 100%; height: 220px; max-height: none; object-fit: cover; }}
     .proof-photo figcaption {{ margin: 0 0 6px; font-size: 12px; font-weight: 700; color: #566574; text-transform: uppercase; }}
     .photo-read {{ margin-top: 6px; padding: 6px 7px; background: #fff; border: 1px solid #d9e0e8; border-radius: 5px; color: #33485b; font-size: 11px; line-height: 1.3; overflow-wrap: anywhere; }}
-    .proof-mid {{ grid-column: 1 / -1; display: grid; align-content: start; gap: 12px; }}
-    .proof-step {{ display: grid; grid-template-columns: 78px minmax(150px, 22%) 1fr minmax(150px, 22%); gap: 10px; align-items: center; border-top: 1px solid #e6ebf0; padding-top: 10px; }}
+    .proof-mid {{ grid-column: 1 / -1; display: grid; align-content: start; gap: 12px; min-width: 0; }}
+    .proof-step {{ display: grid; grid-template-columns: 78px minmax(230px, 1fr) minmax(230px, 1fr); gap: 12px; align-items: start; border-top: 1px solid #e6ebf0; padding-top: 10px; min-width: 0; }}
     .proof-step:first-child {{ border-top: 0; padding-top: 0; }}
     .step-status-stack {{ display: grid; gap: 5px; justify-items: start; align-content: center; }}
     .reset-badge {{ display: inline-block; min-width: 72px; padding: 3px 7px; border-radius: 999px; text-align: center; font-size: 11px; font-weight: 800; }}
     .reset-badge.clean {{ background: #d9f4e4; color: #075d35; }}
     .reset-badge.failed {{ background: #ffe0d8; color: #8d2a1b; }}
+    .reset-badge.info {{ background: #e4eefc; color: #1d4f8f; }}
     .proof-bars {{ display: grid; gap: 5px; }}
+    .proof-photo-panel {{ display: grid; gap: 7px; align-content: start; min-width: 0; }}
+    .photo-badges {{ display: flex; gap: 6px; flex-wrap: wrap; align-items: center; min-height: 20px; }}
+    .photo-bars {{ display: grid; gap: 5px; }}
+    .proof-log {{ grid-column: 2 / 4; min-width: 0; }}
     .read-line {{ padding: 6px 8px; border: 1px solid #d9e0e8; border-radius: 5px; background: #fff; color: #33485b; font-size: 12px; overflow-wrap: anywhere; }}
-    .decision-log {{ margin-top: 3px; padding: 7px 8px; border: 1px solid #d9e0e8; border-radius: 5px; background: #fff; font-size: 11px; color: #253341; }}
+    .decision-log {{ margin-top: 3px; padding: 7px 8px; border: 1px solid #d9e0e8; border-radius: 5px; background: #fff; font-size: 11px; color: #253341; overflow-wrap: anywhere; }}
     .decision-log summary {{ cursor: pointer; font-weight: 700; color: #33485b; }}
     .decision-log ol {{ margin: 6px 0 0 18px; padding: 0; display: grid; gap: 4px; }}
     .decision-time {{ font-family: ui-monospace, SFMono-Regular, Consolas, monospace; color: #5b6570; }}
@@ -1403,7 +1398,7 @@ class ProgressSite:
     .step-photo img {{ height: 150px; }}
     .mini-axis .axis-top {{ display: flex; justify-content: space-between; gap: 6px; font-size: 11px; color: #566574; }}
     .mini-axis .axis-phrase {{ justify-content: flex-start; color: #17202a; font-size: 12px; }}
-    .mini-axis .gauge {{ height: 14px; margin: 4px 0; }}
+    .mini-axis .gauge {{ height: 14px; margin: 10px 0 12px; }}
     .mini-axis .axis-sub {{ font-size: 11px; }}
     .muted {{ color: #6b7785; font-size: 12px; }}
     .gallery {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-top: 10px; }}
@@ -1413,6 +1408,7 @@ class ProgressSite:
     @media (max-width: 760px) {{
       .trial-proof {{ grid-template-columns: 1fr; }}
       .proof-step {{ grid-template-columns: 1fr; }}
+      .proof-log {{ grid-column: 1; }}
       .proof-photo img {{ height: 210px; }}
     }}
   </style>

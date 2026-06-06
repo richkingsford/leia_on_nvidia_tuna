@@ -146,7 +146,6 @@ EMPTY_S1_CURVE_BREAKAWAY_MIN_MS = 450
 EMPTY_S1_SUPERSTRONG_X_OUTSIDE_MM = 20.0
 EMPTY_S1_GENTLE_X_OUTSIDE_MM = 8.0
 EMPTY_S1_IN_BAND_SUPERSTRONG_ABS_X_ERR_MM = 10.0
-EMPTY_S1_X_PERFECTION_DEADBAND_MM = 2.0
 EMPTY_S1_PREDICTIVE_X_ENABLED = False
 EMPTY_S1_PREDICTIVE_MIN_REDUCTION_MM = 2.5
 EMPTY_S1_PREDICTIVE_BRAKE_MARGIN_MM = 3.0
@@ -3494,6 +3493,23 @@ def _turn_cmd_to_open_x_gap(x_mm: float, fallback_direction: str) -> str:
     return fallback_cmd if fallback_cmd in {"l", "r"} else "l"
 
 
+def _reset_backward_turn_cmd_to_open_x_gap(x_mm: float, fallback_direction: str) -> str:
+    """Backward reset turns invert the signed-x effect of the forward turn helpers."""
+    cmd = _turn_cmd_to_close_x_gap(float(x_mm))
+    if cmd in {"l", "r"}:
+        return cmd
+    fallback_cmd = str(fallback_direction or "").strip().lower()
+    return fallback_cmd if fallback_cmd in {"l", "r"} else "r"
+
+
+def _reset_backward_turn_cmd_to_close_x_gap(x_mm: float, fallback_direction: str) -> str:
+    cmd = _turn_cmd_to_open_x_gap(float(x_mm), fallback_direction)
+    if cmd in {"l", "r"}:
+        return cmd
+    fallback_cmd = str(fallback_direction or "").strip().lower()
+    return fallback_cmd if fallback_cmd in {"l", "r"} else "l"
+
+
 def _turn_curve_for_drive_mode(drive_mode: str, strength: str) -> dict:
     cfg = _follow_motion_config()
     turn_curves = cfg.get("turn_curves") if isinstance(cfg.get("turn_curves"), dict) else {}
@@ -4640,7 +4656,7 @@ def _reset_min_attempt_dist_mm(reset_cfg: dict | None = None) -> float:
     configured = raw.get("min_attempt_dist_mm")
     if configured is not None:
         return _coerce_float(configured, 0.0, minimum=0.0)
-    return max(0.0, _profile_step1_dist_target_mm("empty") - _profile_step1_dist_tol_mm("empty"))
+    return max(0.0, _profile_step1_dist_target_mm("empty"))
 
 
 def _follow_step4_config() -> dict:
@@ -7119,7 +7135,7 @@ def _reset_reverse_turn(
         duration_ms = int(round(float(random_source.uniform(float(min_duration_ms), float(max_duration_ms)))))
     else:
         duration_ms = _coerce_int(straight_cfg.get("duration_ms"), DEFAULT_RESET_STRAIGHT_BACK_FIRST_CONFIG["duration_ms"], minimum=1)
-    dist_target = float(reset_cfg.get("dist_target_mm", RESET_DIST_TARGET_MM))
+    dist_target = float(_reset_dist_floor_mm(reset_cfg))
     if (
         before_dist_for_duration is not None
         and _reset_xy_target_ready(reading, reset_cfg)
@@ -7577,40 +7593,37 @@ def _reset_xy_target_ready(reading: dict, reset_cfg: dict) -> bool:
     try:
         dist_mm = float(reading.get("dist_mm"))
         x_mm = float(reading.get("x_mm"))
-        if dist_mm < _reset_min_attempt_dist_mm(reset_cfg):
+        if not _reset_dist_target_ready(dist_mm, reset_cfg):
             return False
         return bool(_reset_x_offset_ready(x_mm, dist_mm, reset_cfg, y_mm=None))
     except (TypeError, ValueError):
         return False
 
 
-def _reset_primary_dist_target_ready(dist_mm: float, reset_cfg: dict | None = None, *, hard: bool = False) -> bool:
+def _reset_dist_floor_mm(reset_cfg: dict | None = None) -> float:
     cfg = reset_cfg if isinstance(reset_cfg, dict) else {}
-    try:
-        dist_val = float(dist_mm)
-    except (TypeError, ValueError):
-        return False
-    dist_target = float(cfg.get("dist_target_mm", RESET_DIST_TARGET_MM))
-    tol_key = "hard_dist_tol_mm" if bool(hard) else "dist_tol_mm"
-    default_tol = RESET_HARD_DIST_TOL_MM if bool(hard) else RESET_DIST_TOL_MM
-    dist_tol = float(cfg.get(tol_key, default_tol))
-    return bool(abs(float(dist_val) - float(dist_target)) <= float(dist_tol))
-
-
-def _reset_dist_target_ready(dist_mm: float, reset_cfg: dict | None = None, *, hard: bool = False) -> bool:
-    cfg = reset_cfg if isinstance(reset_cfg, dict) else {}
-    try:
-        dist_val = float(dist_mm)
-    except (TypeError, ValueError):
-        return False
-    if _reset_primary_dist_target_ready(float(dist_val), cfg, hard=hard):
-        return True
     if _active_game_profile() == "empty":
-        step1_low = float(_profile_step1_dist_target_mm("empty")) - float(_profile_step1_dist_tol_mm("empty"))
-        step1_high = float(_profile_step1_dist_target_mm("empty")) + float(_profile_step1_dist_tol_mm("empty"))
-        step1_low = max(float(step1_low), float(_reset_min_attempt_dist_mm(cfg)))
-        return bool(float(step1_low) <= float(dist_val) <= float(step1_high))
-    return False
+        return max(0.0, float(_reset_min_attempt_dist_mm(cfg)) - float(NOISE_MARGIN_MM))
+    dist_target = float(cfg.get("dist_target_mm", RESET_DIST_TARGET_MM))
+    dist_tol = float(cfg.get("dist_tol_mm", RESET_DIST_TOL_MM))
+    return max(0.0, float(dist_target) - float(dist_tol))
+
+
+def _reset_dist_ceiling_mm(reset_cfg: dict | None = None) -> float:
+    cfg = reset_cfg if isinstance(reset_cfg, dict) else {}
+    if _active_game_profile() == "empty":
+        return float(_virtual_safety_max_dist_mm())
+    dist_target = float(cfg.get("dist_target_mm", RESET_DIST_TARGET_MM))
+    return float(dist_target) + float(cfg.get("dist_tol_mm", RESET_DIST_TOL_MM))
+
+
+def _reset_dist_target_ready(dist_mm: float, reset_cfg: dict | None = None) -> bool:
+    cfg = reset_cfg if isinstance(reset_cfg, dict) else {}
+    try:
+        dist_val = float(dist_mm)
+    except (TypeError, ValueError):
+        return False
+    return bool(float(_reset_dist_floor_mm(cfg)) <= float(dist_val) <= float(_reset_dist_ceiling_mm(cfg)))
 
 
 def _reset_adjustment_config(reset_cfg: dict) -> dict:
@@ -7829,9 +7842,7 @@ def _adjust_reset_until_xy_target(
     if target_abs_x < x_min or target_abs_x > x_max:
         target_abs_x = (float(x_min) + float(x_max)) / 2.0
     ready_min_x = max(float(x_min), float(target_abs_x) - float(RESET_FINAL_X_POLISH_MARGIN_MM))
-    dist_target = float(reset_cfg.get("dist_target_mm", RESET_DIST_TARGET_MM))
-    dist_tol = float(reset_cfg.get("dist_tol_mm", RESET_DIST_TOL_MM))
-    dist_low = max(float(dist_target) - float(dist_tol), _reset_min_attempt_dist_mm(reset_cfg))
+    dist_low = float(_reset_dist_floor_mm(reset_cfg))
     settle_s = float(cfg.get("settle_s", 0.12))
     attempts = 0
     max_attempts = max(
@@ -7843,6 +7854,7 @@ def _adjust_reset_until_xy_target(
     max_stale_back_attempts = int(cfg.get("max_stale_back_attempts", 2))
     turn_cmd = str(initial_turn_cmd or "r").strip().lower()
     turn_cmd = turn_cmd if turn_cmd in {"l", "r"} else "r"
+    x_direction_inverted = False
 
     for attempt_idx in range(int(max_attempts)):
         if not isinstance(current, dict) or not bool(current.get("confident")):
@@ -7852,15 +7864,21 @@ def _adjust_reset_until_xy_target(
             x_mm = float(current.get("x_mm"))
         except (TypeError, ValueError):
             break
+        if _virtual_safety_dist_exceeded(current):
+            _stop_robot(robot)
+            current["_reset_adjustment_stop_reason"] = "virtual_safety_dist_exceeded"
+            print(
+                f"[RESET] HARD STOP: reset read dist={dist_mm:.1f}mm exceeds "
+                f"virtual wall {_virtual_safety_max_dist_mm():.1f}mm.",
+                flush=True,
+            )
+            break
         abs_x = abs(float(x_mm))
         if _reset_xy_target_ready(current, reset_cfg):
             return current, True, attempts
 
         before_dist_mm = float(dist_mm)
-        dist_ready = bool(
-            _reset_primary_dist_target_ready(dist_mm, reset_cfg)
-            or _reset_xy_target_ready(current, reset_cfg)
-        )
+        dist_ready = bool(_reset_dist_target_ready(dist_mm, reset_cfg))
         if not bool(dist_ready) and dist_mm < dist_low:
             cmd = "b"
             gap = dist_low - dist_mm
@@ -7886,30 +7904,29 @@ def _adjust_reset_until_xy_target(
                 context="reset_adjust_dist_back",
             )
             reason = "dist_back"
-        elif not bool(dist_ready) and dist_mm > dist_target + dist_tol:
-            cmd = "f"
-            gap = dist_mm - (dist_target + dist_tol)
-            duration_ms = _reset_adjustment_pulse_ms(gap, cfg)
-            send_result = guarded_send_command_pwm(
-                robot,
-                cmd,
-                _approved_straight_drive_pwm(cmd),
-                duration_ms=duration_ms,
-                reading=current,
-                context="reset_adjust_dist_forward",
+        elif not bool(dist_ready):
+            _stop_robot(robot)
+            current["_reset_adjustment_stop_reason"] = "reset_dist_outside_gate_no_forward_correction"
+            print(
+                "[RESET] Reset distance is not clean, but reset will not drive forward to fix distance: "
+                f"dist={dist_mm:.1f}mm floor={float(dist_low):.1f}mm wall={_virtual_safety_max_dist_mm():.1f}mm.",
+                flush=True,
             )
-            reason = "dist_forward"
+            break
         elif abs_x < ready_min_x:
             gap = max(0.0, float(target_abs_x) - float(abs_x))
+            duration_ms = _reset_adjustment_pulse_ms(gap, cfg)
             duration_ms = max(
-                int(RESET_FINAL_X_POLISH_MAX_MS),
-                int(EMPTY_S1_CURVE_BREAKAWAY_MIN_MS),
+                int(RESET_FINAL_X_POLISH_MIN_MS),
+                min(int(RESET_FINAL_X_POLISH_MAX_MS), int(duration_ms)),
             )
             duration_ms = _reset_back_budget_cap_ms(duration_ms, back_budget, label="adjust_increase_x")
             if int(duration_ms) <= 0:
                 print("[RESET] Adjustment skipped: increase_x back budget exhausted.", flush=True)
                 break
-            open_turn = _turn_cmd_to_open_x_gap(x_mm, turn_cmd)
+            open_turn = _reset_backward_turn_cmd_to_open_x_gap(x_mm, turn_cmd)
+            if bool(x_direction_inverted):
+                open_turn = _opposite_turn_cmd(open_turn) or open_turn
             send_result = _reset_sharp_turn_adjust(
                 robot,
                 turn_cmd=open_turn,
@@ -7926,7 +7943,9 @@ def _adjust_reset_until_xy_target(
             if int(duration_ms) <= 0:
                 print("[RESET] Adjustment skipped: reduce_x back budget exhausted.", flush=True)
                 break
-            correction_turn = _turn_cmd_to_close_x_gap(x_mm) or ("l" if turn_cmd == "r" else "r")
+            correction_turn = _reset_backward_turn_cmd_to_close_x_gap(x_mm, turn_cmd)
+            if bool(x_direction_inverted):
+                correction_turn = _opposite_turn_cmd(correction_turn) or correction_turn
             send_result = _reset_small_turn_adjust(
                 robot,
                 turn_cmd=correction_turn,
@@ -7976,6 +7995,24 @@ def _adjust_reset_until_xy_target(
                 stale_back_attempts = 0
         else:
             stale_back_attempts = 0
+        if reason in {"increase_x", "reduce_x"}:
+            try:
+                after_abs_x = abs(float(current.get("x_mm")))
+            except (TypeError, ValueError):
+                after_abs_x = None
+            if after_abs_x is not None:
+                wrong_way = (
+                    reason == "increase_x" and float(after_abs_x) < float(abs_x) - 1.0
+                ) or (
+                    reason == "reduce_x" and float(after_abs_x) > float(abs_x) + 1.0
+                )
+                if bool(wrong_way):
+                    x_direction_inverted = not bool(x_direction_inverted)
+                    print(
+                        "[RESET] X adjustment went wrong way; inverting reset turn direction for next pulse: "
+                        f"{reason} |x| {float(abs_x):.1f}->{float(after_abs_x):.1f}mm.",
+                        flush=True,
+                    )
         if _reset_xy_target_ready(current, reset_cfg):
             return current, True, attempts
 
@@ -8013,13 +8050,19 @@ def _reset_final_x_offset_polish(
     if target_abs_x < x_min or target_abs_x > x_max:
         target_abs_x = (float(x_min) + float(x_max)) / 2.0
 
-    dist_target = float(reset_cfg.get("dist_target_mm", RESET_DIST_TARGET_MM))
-    dist_tol = float(reset_cfg.get("dist_tol_mm", RESET_DIST_TOL_MM))
-    dist_low = max(float(dist_target) - float(dist_tol), _reset_min_attempt_dist_mm(reset_cfg))
-    if dist_mm < dist_low or dist_mm > (float(dist_target) + float(dist_tol)):
+    dist_low = float(_reset_dist_floor_mm(reset_cfg))
+    if _virtual_safety_dist_exceeded(current):
+        _stop_robot(robot)
         print(
-            f"[RESET] Final x-offset polish skipped: dist={dist_mm:.1f}mm outside reset-ready band "
-            f"{dist_low:.1f}-{float(dist_target) + float(dist_tol):.1f}mm.",
+            f"[RESET] Final x-offset polish blocked by virtual wall: "
+            f"dist={dist_mm:.1f}mm > {_virtual_safety_max_dist_mm():.1f}mm.",
+            flush=True,
+        )
+        return current, False, "virtual_safety_dist_exceeded"
+    if dist_mm < dist_low:
+        print(
+            f"[RESET] Final x-offset polish skipped: dist={dist_mm:.1f}mm below reset floor "
+            f"{dist_low:.1f}mm.",
             flush=True,
         )
         return current, False, "dist_not_ready"
@@ -8053,7 +8096,7 @@ def _reset_final_x_offset_polish(
         return current, False, "back_budget_exhausted"
     turn_cmd = str(initial_turn_cmd or "r").strip().lower()
     turn_cmd = turn_cmd if turn_cmd in {"l", "r"} else "r"
-    open_turn = _turn_cmd_to_open_x_gap(x_mm, turn_cmd)
+    open_turn = _reset_backward_turn_cmd_to_open_x_gap(x_mm, turn_cmd)
     send_result = _reset_small_turn_adjust(
         robot,
         turn_cmd=open_turn,
@@ -9517,6 +9560,18 @@ def _win_effective_tolerance(tolerance: float) -> float:
     return max(0.0, float(tol) * (1.0 - (float(min_close) / 100.0)))
 
 
+def _step1_dist_x_target_ready(reading: dict | None) -> bool:
+    """True when the robot is already in the Step 1 dist+x happy gate."""
+    if not isinstance(reading, dict) or not bool(reading.get("confident")):
+        return False
+    try:
+        dist_err = float(reading.get("dist_mm")) - float(_dist_target_mm())
+        x_err = float(reading.get("x_mm")) - float(_x_target_mm())
+    except (TypeError, ValueError):
+        return False
+    return bool(_win_axis_ok(dist_err, _dist_tol_mm()) and _win_axis_ok(x_err, _x_tol_mm()))
+
+
 def _band_target_closeness_pct(value: float, *, target: float, minimum: float, maximum: float) -> float:
     try:
         val = float(value)
@@ -9676,18 +9731,8 @@ def _success_gate_summary_lines() -> list[str]:
     )
     if reset_target_abs_x < reset_x_min or reset_target_abs_x > reset_x_max:
         reset_target_abs_x = (float(reset_x_min) + float(reset_x_max)) / 2.0
-    reset_hard_dist_tol = _coerce_float(
-        reset_cfg.get("hard_dist_tol_mm"),
-        RESET_HARD_DIST_TOL_MM,
-        minimum=0.0,
-    )
-    reset_hard_abs_x_tol = _coerce_float(
-        reset_cfg.get("hard_abs_x_tol_mm"),
-        RESET_HARD_ABS_X_TOL_MM,
-        minimum=0.0,
-    )
-    reset_hard_x_min = max(0.0, float(reset_target_abs_x) - float(reset_hard_abs_x_tol))
-    reset_hard_x_max = float(reset_target_abs_x) + float(reset_hard_abs_x_tol)
+    reset_dist_floor = float(_reset_dist_floor_mm(reset_cfg))
+    reset_dist_ceiling = float(_reset_dist_ceiling_mm(reset_cfg))
     y_gate = (
         f"y={_fmt_gate_target(y_cfg.get('win_target_mm'), _win_effective_tolerance(y_cfg.get('win_tol_mm')), signed=True)}"
         if bool(y_cfg.get("enabled"))
@@ -9748,12 +9793,9 @@ def _success_gate_summary_lines() -> list[str]:
         y_commit_gate,
         (
             "[GATES] Step 1 Reset / BACK_TURN_LR: "
-            f"soft dist={_fmt_gate_target(reset_cfg.get('dist_target_mm'), reset_cfg.get('dist_tol_mm'))}, "
-            f"min_attempt_dist={_reset_min_attempt_dist_mm(reset_cfg):.1f}mm, "
-            f"soft |x|={reset_x_min:.1f}-{reset_x_max:.1f}mm "
-            f"(target {reset_target_abs_x:.1f}mm); hard stop dist="
-            f"{_fmt_gate_target(reset_cfg.get('dist_target_mm'), reset_hard_dist_tol)}, "
-            f"hard |x|={reset_hard_x_min:.1f}-{reset_hard_x_max:.1f}mm; "
+            f"dist floor={reset_dist_floor:.1f}mm, virtual wall<={reset_dist_ceiling:.1f}mm; "
+            f"|x|={reset_x_min:.1f}-{reset_x_max:.1f}mm "
+            f"(target {reset_target_abs_x:.1f}mm); no reset-forward distance correction; "
             f"y={_fmt_gate_target(reset_cfg.get('y_target_mm'), reset_cfg.get('y_tol_mm'), signed=True)} "
             "is logged only, not a reset hit gate"
         ),
@@ -11695,32 +11737,6 @@ def _follow_action_plan(reading: dict, *, virtual_safety_armed: bool = True) -> 
         )
 
     dist_cmd = _dist_cmd_for_error(dist_err)
-    if (
-        _active_game_profile() == "empty"
-        and str(dist_cmd) == "f"
-        and float(dist_err) > float(dist_happy_tol)
-        and bool(x_ok)
-        and abs(float(x_err)) >= float(EMPTY_S1_X_PERFECTION_DEADBAND_MM)
-    ):
-        turn_cmd = _turn_cmd_to_close_x_gap(x_err) or "r"
-        x_bias_mm = abs(float(x_err))
-        plan = _x_dist_drive_bias_plan(
-            turn_cmd=turn_cmd,
-            drive_mode="forward",
-            dist_err=dist_err,
-            x_err=x_err,
-            x_outside=x_bias_mm,
-            dist_outside=_dist_outside_gate_mm(dist_err),
-            y_plan=y_plan,
-            reason="empty_s1_inband_x_gentle_curve_while_closing_dist",
-        )
-        plan["strength"] = "gentle"
-        plan["action"] = f"BIAS_{str(turn_cmd).upper()}_GENTLE"
-        plan["duration_ms"] = int(_empty_step1_inband_x_forward_curve_ms(dist_err))
-        plan["use_calibrated_turn_drive_curve"] = True
-        plan["allow_long_duration"] = False
-        plan["skip_near_target_crawl_cap"] = False
-        return plan
     nudge_plan = _distance_micro_nudge_plan(reading, dist_err=dist_err, x_err=x_err, y_plan=y_plan)
     if nudge_plan is not None:
         return nudge_plan
@@ -12262,31 +12278,13 @@ def _reset_x_offset_ready(
     return x_ok and dist_ok
 
 
-def _reset_xy_hard_target_ready(reading: dict, reset_cfg: dict) -> bool:
-    if not isinstance(reading, dict) or not bool(reading.get("confident")):
-        return False
-    try:
-        dist_mm = float(reading.get("dist_mm"))
-        x_mm = float(reading.get("x_mm"))
-    except (TypeError, ValueError):
-        return False
-    cfg = reset_cfg if isinstance(reset_cfg, dict) else {}
-    target_abs_x = float(cfg.get("target_abs_x_mm", RESET_TARGET_ABS_X_MM))
-    hard_abs_x_tol = float(cfg.get("hard_abs_x_tol_mm", RESET_HARD_ABS_X_TOL_MM))
-    abs_x = abs(float(x_mm))
-    dist_ok = _reset_dist_target_ready(float(dist_mm), cfg, hard=True)
-    x_low = max(0.0, float(target_abs_x) - float(hard_abs_x_tol))
-    x_high = float(target_abs_x) + float(hard_abs_x_tol)
-    x_ok = float(x_low) <= float(abs_x) <= float(x_high)
-    return bool(dist_ok and x_ok)
-
-
 def _reverse_turn_until_x_offset(
     vision: BrickDetector,
     robot: Robot,
     *,
     direction: str,
     rng=None,
+    honest_step1_reset: bool = False,
 ) -> tuple[bool, str, dict | None]:
     """Reset sequence: straight back, then bounded strong curve to open x."""
     turn_cmd = str(direction or "").strip().lower()
@@ -12308,15 +12306,15 @@ def _reverse_turn_until_x_offset(
     # The configured x band is the operator-visible reset gate. Keep the target
     # as steering preference only, so a documented 10-30mm band really means 10-30mm.
     ready_min_x = float(x_min)
-    dist_target = float(reset_cfg.get("dist_target_mm", RESET_DIST_TARGET_MM))
-    dist_tol = float(reset_cfg.get("dist_tol_mm", RESET_DIST_TOL_MM))
+    dist_floor = float(_reset_dist_floor_mm(reset_cfg))
+    dist_wall = float(_virtual_safety_max_dist_mm())
     y_target = float(reset_cfg.get("y_target_mm", RESET_Y_TARGET_MM))
     y_tol = float(reset_cfg.get("y_tol_mm", Y_TOL_MM))
     settle_s = float(reset_cfg.get("settle_s", RESET_REVERSE_TURN_SETTLE_S))
 
     print(
         f"[RESET] Two-phase reset: STRAIGHT_BACK then BACK_CURVE_{turn_cmd.upper()} "
-        f"target dist={dist_target:.0f}±{dist_tol:.0f}mm, "
+        f"dist floor={dist_floor:.0f}mm, wall<={dist_wall:.0f}mm, "
         f"|x|~{target_abs_x:.0f}mm ({x_min:.0f}-{x_max:.0f}mm), "
         f"logged y={y_target:+.0f}±{y_tol:.0f}mm (not a hit gate)",
         flush=True,
@@ -12346,72 +12344,94 @@ def _reverse_turn_until_x_offset(
     except (TypeError, ValueError):
         _stop_robot(robot)
         return False, "invalid_reset_start_reading", before_reading
+    if _virtual_safety_dist_exceeded(before_reading):
+        _stop_robot(robot)
+        print(
+            f"[RESET] HARD STOP: reset start dist={before_dist:.1f}mm exceeds "
+            f"virtual wall {_virtual_safety_max_dist_mm():.1f}mm.",
+            flush=True,
+        )
+        return False, "virtual_safety_dist_exceeded", before_reading
     try:
         before_y_text = f"{float(before_reading.get('y_mm')):+.1f}mm"
     except (TypeError, ValueError):
         before_y_text = "N/A"
+    before_abs_x = abs(float(before_x))
 
-    if _reset_xy_target_ready(before_reading, reset_cfg):
+    before_step1_ready = _step1_dist_x_target_ready(before_reading)
+    if _reset_xy_target_ready(before_reading, reset_cfg) and not (
+        bool(honest_step1_reset) and bool(before_step1_ready)
+    ):
         print(
             f"[RESET] Already inside reset gate: dist={before_dist:.1f}mm x={before_x:+.1f}mm y={before_y_text}",
             flush=True,
         )
         return True, "target_already_ready", before_reading
+    if bool(honest_step1_reset) and bool(before_step1_ready):
+        print(
+            "[RESET] Current pose is already Step 1 happy; honest reset requires real reset motion.",
+            flush=True,
+        )
+    if bool(honest_step1_reset) and _reset_xy_target_ready(before_reading, reset_cfg) and not bool(before_step1_ready):
+        print(
+            "[RESET] Already inside reset gate and outside Step 1; accepting as honest reset: "
+            f"dist={before_dist:.1f}mm x={before_x:+.1f}mm y={before_y_text}",
+            flush=True,
+        )
+        return True, "target_already_honest_continue", before_reading
 
-    before_abs_x = abs(float(before_x))
+    if bool(honest_step1_reset) and bool(before_step1_ready):
+        cfg = _reset_adjustment_config(reset_cfg)
+        gap = max(0.0, float(target_abs_x) - float(before_abs_x))
+        duration_ms = _reset_adjustment_pulse_ms(gap, cfg)
+        duration_ms = max(
+            int(RESET_FINAL_X_POLISH_MIN_MS),
+            min(int(RESET_FINAL_X_POLISH_MAX_MS), int(duration_ms)),
+        )
+        duration_ms = _reset_back_budget_cap_ms(duration_ms, back_budget, label="honest_step1_x_offset")
+        if int(duration_ms) <= 0:
+            _stop_robot(robot)
+            return False, "honest_reset_back_budget_exhausted", before_reading
+        open_turn = _reset_backward_turn_cmd_to_open_x_gap(before_x, turn_cmd)
+        print(
+            "[RESET] Honest reset x-offset: opening out of Step 1 happy with "
+            f"BACK_TWIST_{str(open_turn).upper()} {int(duration_ms)}ms "
+            f"|x|={before_abs_x:.1f}->{target_abs_x:.1f}mm.",
+            flush=True,
+        )
+        send_result = _reset_sharp_turn_adjust(
+            robot,
+            turn_cmd=open_turn,
+            reading=before_reading,
+            duration_ms=int(duration_ms),
+            reset_cfg=reset_cfg,
+            reason="honest_step1_x_offset",
+        )
+        if isinstance(send_result, dict) and bool(send_result.get("blocked")):
+            _stop_robot(robot)
+            return False, f"honest_step1_x_offset_blocked:{send_result.get('reason')}", before_reading
+        _reset_back_budget_consume(back_budget, duration_ms)
+        after = _reset_read_after_adjustment(
+            vision,
+            robot,
+            duration_ms=int(duration_ms),
+            settle_s=float(cfg.get("settle_s", 0.12)),
+            context="reset_honest_step1_x_offset",
+            fallback=before_reading,
+            back_budget=back_budget,
+        )
+        return True, "honest_step1_x_offset_reset", after if isinstance(after, dict) else before_reading
+
     if before_abs_x < float(ready_min_x):
-        turn_cmd = _turn_cmd_to_open_x_gap(before_x, turn_cmd)
+        turn_cmd = _reset_backward_turn_cmd_to_open_x_gap(before_x, turn_cmd)
     elif before_abs_x > float(x_max):
-        turn_cmd = _turn_cmd_to_close_x_gap(before_x) or turn_cmd
+        turn_cmd = _reset_backward_turn_cmd_to_close_x_gap(before_x, turn_cmd)
 
-    if before_dist > (float(dist_target) + float(dist_tol)) or before_abs_x > float(x_max):
-        if (
-            before_dist <= float(_virtual_safety_max_dist_mm())
-            and before_abs_x < float(ready_min_x)
-            and before_abs_x < float(target_abs_x) - float(RESET_FINAL_X_POLISH_MARGIN_MM)
-        ):
-            cfg = _reset_adjustment_config(reset_cfg)
-            gap = max(0.0, float(target_abs_x) - float(before_abs_x))
-            duration_ms = _reset_adjustment_pulse_ms(gap, cfg)
-            duration_ms = max(
-                int(RESET_FINAL_X_POLISH_MIN_MS),
-                min(int(RESET_FINAL_X_POLISH_MAX_MS), int(duration_ms)),
-            )
-            duration_ms = int(RESET_FINAL_X_POLISH_MAX_MS)
-            duration_ms = _reset_back_budget_cap_ms(duration_ms, back_budget, label="safe_x_offset_only")
-            if int(duration_ms) > 0:
-                open_turn = _turn_cmd_to_open_x_gap(before_x, turn_cmd)
-                print(
-                    "[RESET] Beyond reset distance but too centered; sending bounded x-offset polish only: "
-                    f"BACK_CURVE_{str(open_turn).upper()} {int(duration_ms)}ms "
-                    f"|x|={before_abs_x:.1f}->{target_abs_x:.1f}mm.",
-                    flush=True,
-                )
-                send_result = _reset_small_turn_adjust(
-                    robot,
-                    turn_cmd=open_turn,
-                    reading=before_reading,
-                    duration_ms=int(duration_ms),
-                    reset_cfg=reset_cfg,
-                    reason="safe_x_offset_only",
-                )
-                if isinstance(send_result, dict) and bool(send_result.get("blocked")):
-                    print(
-                        f"[RESET] X-offset-only polish blocked: {send_result.get('reason')}",
-                        flush=True,
-                    )
-                else:
-                    _reset_back_budget_consume(back_budget, duration_ms)
-                    after = _reset_read_after_adjustment(
-                        vision,
-                        robot,
-                        duration_ms=int(duration_ms),
-                        settle_s=float(cfg.get("settle_s", 0.12)),
-                        context="reset_safe_x_offset_only",
-                        fallback=before_reading,
-                        back_budget=back_budget,
-                    )
-                    return True, "safe_x_offset_only_polish", after if isinstance(after, dict) else before_reading
+    if (
+        not (bool(honest_step1_reset) and bool(before_step1_ready))
+        and _reset_dist_target_ready(before_dist, reset_cfg)
+        and not _reset_x_offset_ready(before_x, before_dist, reset_cfg, y_mm=None)
+    ):
         print(
             "[RESET] Outside reset gate; running bounded reset adjustment instead of accepting current pose: "
             f"dist={before_dist:.1f}mm x={before_x:+.1f}mm.",
@@ -12498,9 +12518,9 @@ def _reverse_turn_until_x_offset(
         )
     else:
         phase_turn = (
-            _turn_cmd_to_open_x_gap(float(phase_x), turn_cmd)
+            _reset_backward_turn_cmd_to_open_x_gap(float(phase_x), turn_cmd)
             if float(phase_abs_x) < float(phase_ready_min_x)
-            else (_turn_cmd_to_close_x_gap(float(phase_x)) or turn_cmd)
+            else _reset_backward_turn_cmd_to_close_x_gap(float(phase_x), turn_cmd)
         )
         phase_ms = _reset_back_budget_cap_ms(int(RESET_FINAL_X_POLISH_MAX_MS), back_budget, label="two_phase_x_offset")
         if int(phase_ms) <= 0:
@@ -12617,6 +12637,7 @@ def _run_reset_sequence(
     robot: Robot,
     *,
     rng=None,
+    honest_step1_reset: bool = False,
 ) -> dict:
     random_source = rng if rng is not None else random
     turn_cmd = random_source.choice(("l", "r"))
@@ -12625,23 +12646,30 @@ def _run_reset_sequence(
         robot,
         direction=turn_cmd,
         rng=random_source,
+        honest_step1_reset=bool(honest_step1_reset),
     )
     target_met = False
-    hard_target_met = False
+    step1_target_met = False
     if isinstance(offset_reading, dict):
         cfg = _reset_motion_config().get("reverse_turn")
         reset_cfg = cfg if isinstance(cfg, dict) else {}
         target_met = _reset_xy_target_ready(offset_reading, reset_cfg)
-        hard_target_met = _reset_xy_hard_target_ready(offset_reading, reset_cfg)
-    success = bool(offset_ok and hard_target_met)
+        step1_target_met = _step1_dist_x_target_ready(offset_reading)
+    success = bool(offset_ok and target_met)
+    if bool(honest_step1_reset):
+        success = bool(offset_ok and target_met and not step1_target_met)
     reason = offset_reason
     if bool(offset_ok):
-        if bool(target_met):
+        if bool(honest_step1_reset) and bool(step1_target_met):
+            reason = f"dishonest_reset_still_step1_happy:{offset_reason}"
+        elif bool(honest_step1_reset) and bool(target_met):
             reason = str(offset_reason)
-        elif bool(hard_target_met):
-            reason = f"soft_reset_target_miss_continue:{offset_reason}"
+        elif bool(honest_step1_reset):
+            reason = f"honest_reset_target_miss:{offset_reason}"
+        elif bool(target_met):
+            reason = str(offset_reason)
         else:
-            reason = f"hard_reset_target_miss:{offset_reason}"
+            reason = f"reset_target_miss:{offset_reason}"
     result = {
         "success": success,
         "phase": "reverse_turn",
@@ -12651,7 +12679,9 @@ def _run_reset_sequence(
         "reading": offset_reading,
         "target_met": bool(target_met),
         "soft_target_met": bool(target_met),
-        "hard_target_met": bool(hard_target_met),
+        "hard_target_met": bool(target_met),
+        "step1_target_met": bool(step1_target_met),
+        "honest_step1_reset": bool(honest_step1_reset),
     }
     return result
 
@@ -13156,6 +13186,91 @@ def _empty_step1_forward_bias_plan(plan: dict) -> bool:
     return str(plan.get("drive_mode") or "forward").strip().lower() == "forward"
 
 
+def _empty_step1_x_sign_key(x_err: float) -> str:
+    return "pos" if float(x_err) > 0.0 else "neg"
+
+
+def _remember_empty_step1_bad_x_turn(stats: dict, pending: dict, sample: dict, x_curve: dict) -> None:
+    if _active_game_profile() != "empty" or not isinstance(stats, dict):
+        return
+    if not isinstance(pending, dict) or not isinstance(sample, dict) or not isinstance(x_curve, dict):
+        return
+    if str(pending.get("cmd") or "").strip().lower() != "f":
+        return
+    if str(pending.get("drive_mode") or x_curve.get("drive_mode") or "").strip().lower() != "forward":
+        return
+    turn_cmd = str(pending.get("turn_cmd") or x_curve.get("turn_cmd") or "").strip().lower()
+    if turn_cmd not in {"l", "r"}:
+        return
+    try:
+        before_err = float(sample.get("before_err"))
+        before_abs = float(sample.get("before_abs"))
+        regression_mm = float(sample.get("regression_mm", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return
+    if before_abs <= float(_x_tol_mm()) or regression_mm < float(NOISE_MARGIN_MM):
+        return
+    sign_key = _empty_step1_x_sign_key(before_err)
+    memory = stats.setdefault("empty_step1_bad_x_turn_by_sign", {})
+    bad_turns = memory.get(sign_key) if isinstance(memory, dict) else None
+    if not isinstance(bad_turns, list):
+        bad_turns = []
+    if turn_cmd not in bad_turns:
+        bad_turns.append(turn_cmd)
+    memory[sign_key] = bad_turns[-2:]
+    stats["empty_step1_last_bad_x_turn"] = {
+        "sign": sign_key,
+        "turn_cmd": turn_cmd,
+        "before_x_err": float(before_err),
+        "after_x_err": float(sample.get("after_err", 0.0) or 0.0),
+        "regression_mm": float(regression_mm),
+        "action": str(pending.get("action") or "UNKNOWN"),
+    }
+
+
+def _apply_empty_step1_bad_x_turn_memory(stats: dict, plan: dict, reading: dict) -> dict:
+    if _active_game_profile() != "empty" or not isinstance(stats, dict) or not isinstance(plan, dict):
+        return plan
+    if not _empty_step1_forward_bias_plan(plan):
+        return plan
+    turn_cmd = str(plan.get("turn_cmd") or "").strip().lower()
+    if turn_cmd not in {"l", "r"}:
+        return plan
+    try:
+        x_err = float(plan.get("x_err"))
+    except (TypeError, ValueError):
+        return plan
+    if abs(float(x_err)) <= float(_x_tol_mm()):
+        return plan
+    memory = stats.get("empty_step1_bad_x_turn_by_sign")
+    if not isinstance(memory, dict):
+        return plan
+    bad_turns = memory.get(_empty_step1_x_sign_key(x_err))
+    if not isinstance(bad_turns, list) or turn_cmd not in bad_turns:
+        return plan
+    alternate = _opposite_turn_cmd(turn_cmd)
+    if alternate in {"l", "r"} and alternate not in bad_turns:
+        out = dict(plan)
+        out["turn_cmd"] = alternate
+        strength = str(out.get("strength") or "").strip().upper()
+        suffix = "_IN_BAND" if "IN_BAND" in str(out.get("action") or "").upper() else ""
+        out["action"] = f"BIAS_{alternate.upper()}_{strength or 'GENTLE'}{suffix}"
+        out["reason"] = f"{str(plan.get('reason') or 'x_curve')}_flipped_after_wrong_way_x"
+        out["bad_x_turn_flipped_from"] = turn_cmd
+        return out
+    return {
+        "kind": "wait",
+        "action": "EMPTY_S1_X_TURN_DIRECTION_UNTRUSTED",
+        "dist_err": float(plan.get("dist_err", 0.0) or 0.0),
+        "x_err": float(x_err),
+        "x_outside_mm": float(plan.get("x_outside_mm", max(0.0, abs(float(x_err)) - float(_x_tol_mm()))) or 0.0),
+        "dist_outside_mm": float(plan.get("dist_outside_mm", 0.0) or 0.0),
+        "duration_ms": 0,
+        "reason": "empty_s1_both_x_turn_directions_worsened",
+        "blocked_plan": dict(plan),
+    }
+
+
 def _empty_step1_predictive_straight_plan(plan: dict, momentum: dict, *, predicted_abs: float) -> dict:
     out = dict(plan)
     out.update({
@@ -13539,6 +13654,7 @@ def _record_observed_after_pending_act(stats: dict, reading: dict) -> dict | Non
                 }
             elif bool(x_axis_sample.get("regressed")):
                 stats["last_x_momentum"] = None
+                _remember_empty_step1_bad_x_turn(stats, pending, x_axis_sample, x_curve)
         stats.setdefault("x_curve_samples", []).append(sample)
     _annotate_latest_decision_with_readback(stats, pending, reading)
     _record_gap_closure_sample(stats, pending, reading, action=action)
@@ -13654,8 +13770,6 @@ def _reset_closeness_from_reading(reading: dict, reset_cfg: dict | None = None) 
         abs_x = abs(float(reading.get("x_mm")))
     except (TypeError, ValueError):
         return None
-    dist_target = _coerce_float(cfg.get("dist_target_mm"), RESET_DIST_TARGET_MM, minimum=0.0)
-    dist_tol = _coerce_float(cfg.get("dist_tol_mm"), RESET_DIST_TOL_MM, minimum=0.0)
     x_min = _coerce_float(cfg.get("x_offset_min_mm"), RESET_X_OFFSET_MIN_MM, minimum=0.0)
     x_max = _coerce_float(cfg.get("x_offset_max_mm"), RESET_X_OFFSET_MAX_MM, minimum=0.0)
     if x_min > x_max:
@@ -13667,7 +13781,13 @@ def _reset_closeness_from_reading(reading: dict, reset_cfg: dict | None = None) 
     )
     if target_abs_x < x_min or target_abs_x > x_max:
         target_abs_x = (float(x_min) + float(x_max)) / 2.0
-    dist_closeness = _target_closeness_pct(dist_mm - dist_target, dist_tol)
+    dist_low = float(_reset_dist_floor_mm(cfg))
+    dist_high = float(_reset_dist_ceiling_mm(cfg))
+    if dist_high < dist_low:
+        dist_low, dist_high = dist_high, dist_low
+    dist_mid = (float(dist_low) + float(dist_high)) / 2.0
+    dist_tol = max(0.0, (float(dist_high) - float(dist_low)) / 2.0)
+    dist_closeness = _target_closeness_pct(dist_mm - dist_mid, dist_tol)
     x_closeness = _band_target_closeness_pct(
         abs_x,
         target=target_abs_x,
@@ -14956,6 +15076,7 @@ def _follow_loop(
             plan,
             required=bool(require_step1_motion_before_win),
         )
+        plan = _apply_empty_step1_bad_x_turn_memory(stats, plan, reading)
         plan = _apply_empty_step1_predictive_x_momentum(stats, plan, reading)
         plan = _apply_empty_step1_predictive_dist_momentum(stats, plan, reading)
         dist_err = float(plan["dist_err"])
@@ -14971,6 +15092,7 @@ def _follow_loop(
                 "reverse_gap_closing_blocked",
                 "unsafe_forward_bias_too_close",
                 "empty_s1_too_close_no_reverse_training",
+                "empty_s1_both_x_turn_directions_worsened",
             }:
                 stats["debug_stop_reading"] = dict(reading) if isinstance(reading, dict) else reading
                 stats["last_action"] = action
@@ -14993,6 +15115,12 @@ def _follow_loop(
                         "[FOLLOW] HARD STOP: empty Step 1 is past the close edge "
                         f"(dist_err={dist_err:+.1f}mm, x_err={x_err:+.1f}mm); "
                         "parked instead of trying reverse recovery during the drill.",
+                        flush=True,
+                    )
+                elif wait_reason == "empty_s1_both_x_turn_directions_worsened":
+                    print(
+                        "[FOLLOW] HARD STOP: both forward X-turn directions widened X for this sign; "
+                        "parked before guessing.",
                         flush=True,
                     )
                 else:
@@ -15711,6 +15839,276 @@ def _follow_loop(
     return stats
 
 
+_CUSTOM_SEQUENCE_ALIASES = {
+    "r": "reset",
+    "reset": "reset",
+    "s1": "step1",
+    "step1": "step1",
+    "happy": "step1",
+    "park_happy": "step1",
+    "s2": "step2",
+    "step2": "step2",
+    "seat": "step2",
+    "s3": "step3",
+    "step3": "step3",
+    "crawl": "step3",
+    "retreat": "step3",
+    "s4": "step4",
+    "step4": "step4",
+    "lift": "step4",
+    "park": "park",
+    "stop": "park",
+    "empty": "profile_empty",
+    "profile_empty": "profile_empty",
+    "profile:empty": "profile_empty",
+    "holding": "profile_holding",
+    "profile_holding": "profile_holding",
+    "profile:holding": "profile_holding",
+}
+
+
+def _normalize_custom_sequence(raw: str | None) -> tuple[list[str], list[str]]:
+    text = str(raw or "").strip().lower()
+    if not text:
+        return [], []
+    text = text.replace("->", ",").replace("|", ",")
+    raw_tokens = [part.strip() for part in re.split(r"[,\s;]+", text) if part.strip()]
+    sequence: list[str] = []
+    errors: list[str] = []
+    for raw_token in raw_tokens:
+        token = raw_token.replace("-", "_")
+        normalized = _CUSTOM_SEQUENCE_ALIASES.get(token)
+        if normalized is None:
+            errors.append(raw_token)
+            continue
+        sequence.append(normalized)
+    return sequence, errors
+
+
+def _custom_sequence_reading_text(reading: dict | None) -> str:
+    if not isinstance(reading, dict):
+        return "read=N/A"
+
+    def fmt(key: str, *, signed: bool = False) -> str:
+        try:
+            value = float(reading.get(key))
+        except (TypeError, ValueError):
+            return "N/A"
+        return f"{value:+.1f}" if bool(signed) else f"{value:.1f}"
+
+    return (
+        f"dist={fmt('dist_mm')}mm "
+        f"x={fmt('x_mm', signed=True)}mm "
+        f"y={fmt('y_mm', signed=True)}mm "
+        f"conf={fmt('conf')}%"
+    )
+
+
+def _custom_sequence_result(
+    *,
+    success: bool,
+    item: str,
+    index: int,
+    reason: str,
+    reading: dict | None = None,
+    stats: dict | None = None,
+    result: dict | None = None,
+) -> dict:
+    return {
+        "success": bool(success),
+        "item": str(item),
+        "index": int(index),
+        "reason": str(reason),
+        "reading": reading if isinstance(reading, dict) else None,
+        "stats": stats if isinstance(stats, dict) else None,
+        "result": result if isinstance(result, dict) else None,
+    }
+
+
+def _run_custom_sequence(
+    vision: BrickDetector,
+    robot: Robot,
+    sequence: list[str],
+    *,
+    duration_s: float,
+    debug_mode: bool = False,
+    step2_probe_before_forward: bool = False,
+) -> dict:
+    if not sequence:
+        return {"success": False, "reason": "empty_sequence", "items": []}
+
+    completed: list[dict] = []
+    print(f"[SEQUENCE] Running custom game sequence: {' -> '.join(sequence)}", flush=True)
+    for index, item in enumerate(sequence, start=1):
+        print(f"[SEQUENCE] {index}/{len(sequence)} {item}: start", flush=True)
+
+        if item == "profile_empty":
+            _set_game_profile("empty")
+            result = _custom_sequence_result(
+                success=True,
+                item=item,
+                index=index,
+                reason="profile_set_empty",
+            )
+        elif item == "profile_holding":
+            _set_game_profile("holding")
+            result = _custom_sequence_result(
+                success=True,
+                item=item,
+                index=index,
+                reason="profile_set_holding",
+            )
+        elif item == "park":
+            _stop_robot(robot)
+            result = _custom_sequence_result(
+                success=True,
+                item=item,
+                index=index,
+                reason="parked",
+            )
+        elif item == "reset":
+            if _active_game_profile() == "holding" and _step3_kind() == "retreat":
+                reset_result = _run_step3_retreat_sequence(vision, robot)
+                reading = reset_result.get("reading") if isinstance(reset_result, dict) else None
+                ok = bool(reset_result.get("success")) and (
+                    bool(reset_result.get("target_met"))
+                    or bool(reset_result.get("soft_reset_complete"))
+                )
+                reason = str(reset_result.get("reason") if isinstance(reset_result, dict) else "holding_reset_failed")
+            else:
+                reset_result = _run_reset_sequence(vision, robot, honest_step1_reset=True)
+                reading = reset_result.get("reading") if isinstance(reset_result, dict) else None
+                ok = bool(reset_result.get("success"))
+                reason = str(reset_result.get("reason") if isinstance(reset_result, dict) else "reset_failed")
+            result = _custom_sequence_result(
+                success=ok,
+                item=item,
+                index=index,
+                reason=reason,
+                reading=reading,
+                result=reset_result if isinstance(reset_result, dict) else None,
+            )
+        elif item == "step1":
+            stats = _follow_loop(
+                vision,
+                robot,
+                duration_s=float(duration_s),
+                reset_after_win=False,
+                stop_after_win=True,
+                stop_after_step2=False,
+                step2_probe_before_forward=False,
+                debug_mode=bool(debug_mode),
+            )
+            ok = bool(int(stats.get("win_count", 0) or 0) >= 1) and not bool(
+                stats.get("step1_confident_worse_hard_stop")
+            )
+            reason = "step1_win" if ok else str(stats.get("last_action") or "step1_no_win")
+            reading = stats.get("last_step1_win") if isinstance(stats.get("last_step1_win"), dict) else None
+            if reading is None:
+                reading = stats.get("debug_stop_reading") if isinstance(stats.get("debug_stop_reading"), dict) else None
+            print("[SEQUENCE][STEP1 RESULTS]", flush=True)
+            print(_format_game_results_table(stats), flush=True)
+            result = _custom_sequence_result(
+                success=ok,
+                item=item,
+                index=index,
+                reason=reason,
+                reading=reading,
+                stats=stats,
+            )
+        elif item == "step2":
+            step2_result = _run_step2_seat_sequence(
+                vision,
+                robot,
+                probe_before_forward=bool(step2_probe_before_forward),
+            )
+            stats = _new_game_stats()
+            _record_step2_stats(stats, step2_result)
+            ok = _confirmed_step_result(step2_result)
+            reason = str(step2_result.get("reason") if isinstance(step2_result, dict) else "step2_failed")
+            reading = step2_result.get("reading") if isinstance(step2_result, dict) else None
+            print("[SEQUENCE][STEP2 RESULTS]", flush=True)
+            print(_format_game_results_table(stats), flush=True)
+            result = _custom_sequence_result(
+                success=ok,
+                item=item,
+                index=index,
+                reason=reason,
+                reading=reading,
+                stats=stats,
+                result=step2_result,
+            )
+        elif item == "step3":
+            if _step3_kind() == "retreat":
+                step3_result = _run_step3_retreat_sequence(vision, robot)
+                ok = bool(step3_result.get("success")) and (
+                    bool(step3_result.get("target_met"))
+                    or bool(step3_result.get("soft_reset_complete"))
+                )
+            else:
+                step3_result = _run_step3_seat_sequence(vision, robot)
+                ok = _confirmed_step_result(step3_result)
+            reason = str(step3_result.get("reason") if isinstance(step3_result, dict) else "step3_failed")
+            reading = step3_result.get("reading") if isinstance(step3_result, dict) else None
+            result = _custom_sequence_result(
+                success=ok,
+                item=item,
+                index=index,
+                reason=reason,
+                reading=reading,
+                result=step3_result,
+            )
+        elif item == "step4":
+            step4_result = _run_step3_lift_sequence(vision, robot)
+            if bool(step4_result.get("holding")):
+                _set_game_profile("holding")
+            ok = bool(step4_result.get("success"))
+            reason = str(step4_result.get("reason") if isinstance(step4_result, dict) else "step4_failed")
+            reading = step4_result.get("reading") if isinstance(step4_result, dict) else None
+            result = _custom_sequence_result(
+                success=ok,
+                item=item,
+                index=index,
+                reason=reason,
+                reading=reading,
+                result=step4_result,
+            )
+        else:
+            result = _custom_sequence_result(
+                success=False,
+                item=item,
+                index=index,
+                reason="unsupported_sequence_item",
+            )
+
+        completed.append(result)
+        reading_text = _custom_sequence_reading_text(result.get("reading"))
+        print(
+            f"[SEQUENCE] {index}/{len(sequence)} {item}: "
+            f"{'OK' if bool(result.get('success')) else 'FAIL'} "
+            f"reason={result.get('reason')} {reading_text}",
+            flush=True,
+        )
+        if not bool(result.get("success")):
+            _stop_robot(robot)
+            print(
+                f"[SEQUENCE] Stopped at item {index}/{len(sequence)} ({item}); "
+                f"reason={result.get('reason')}",
+                flush=True,
+            )
+            return {
+                "success": False,
+                "reason": str(result.get("reason") or "sequence_failed"),
+                "failed_item": item,
+                "failed_index": int(index),
+                "items": completed,
+            }
+
+    _stop_robot(robot)
+    print("[SEQUENCE] Complete: all requested items succeeded.", flush=True)
+    return {"success": True, "reason": "sequence_complete", "items": completed}
+
+
 def _parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -15722,6 +16120,14 @@ def _parse_args(argv=None) -> argparse.Namespace:
         "--reset-only",
         action="store_true",
         help="Run only the reset: one random backward-turn act, then observe the result.",
+    )
+    parser.add_argument(
+        "--sequence",
+        default="",
+        help=(
+            "Run a custom game sequence and stop at the first failed item. "
+            "Examples: --sequence reset,step1,reset,step1 or --sequence reset,s1,s2."
+        ),
     )
     parser.add_argument(
         "--park-happy",
@@ -15827,6 +16233,8 @@ def _worker_argv(args: argparse.Namespace, *, skip_vision_preflight: bool | None
     ]
     if bool(args.reset_only):
         argv.append("--reset-only")
+    if str(getattr(args, "sequence", "") or "").strip():
+        argv.extend(["--sequence", str(args.sequence)])
     if bool(args.park_happy):
         argv.append("--park-happy")
     if bool(args.park_step2):
@@ -16019,6 +16427,7 @@ def _supervise_run(args: argparse.Namespace) -> int:
             )
         one_shot_mode = bool(
             args.reset_only
+            or str(getattr(args, "sequence", "") or "").strip()
             or args.park_happy
             or args.park_step2
             or args.step2_seat_once
@@ -16049,6 +16458,33 @@ def _supervise_run(args: argparse.Namespace) -> int:
 def _run_worker(args: argparse.Namespace) -> int:
     logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
     requested_profile = "empty" if bool(args.e2e_trial) else str(args.game_profile)
+    custom_sequence, sequence_errors = _normalize_custom_sequence(getattr(args, "sequence", ""))
+    if sequence_errors:
+        print(
+            "[SEQUENCE] Invalid sequence item(s): "
+            + ", ".join(sequence_errors)
+            + ". Allowed examples: reset, step1/s1, step2/s2, step3/s3, step4/s4, empty, holding, park.",
+            flush=True,
+        )
+        return 2
+    if custom_sequence:
+        conflicting_modes = bool(
+            args.reset_only
+            or args.park_happy
+            or args.park_step2
+            or args.step2_seat_once
+            or args.step2_lock_once
+            or args.step2_settle_only
+            or args.step2_probe_before_forward
+            or args.step3_lift_once
+            or args.step3_seat_once
+            or args.step3_retreat_once
+            or args.step4_lift_once
+            or args.e2e_trial
+        )
+        if conflicting_modes:
+            print("[SEQUENCE] --sequence cannot be combined with other one-shot/e2e modes.", flush=True)
+            return 2
     _set_game_profile("empty" if requested_profile == "auto" else requested_profile)
 
     if not bool(args.skip_vision_preflight):
@@ -16118,6 +16554,16 @@ def _run_worker(args: argparse.Namespace) -> int:
             print("[RESULTS]", flush=True)
             print(_format_game_results_table(stats), flush=True)
             return PREGAME_VISIBILITY_BLOCK_EXIT
+        if custom_sequence:
+            sequence_result = _run_custom_sequence(
+                vision,
+                robot,
+                custom_sequence,
+                duration_s=float(args.duration_s),
+                debug_mode=bool(args.debug_mode),
+                step2_probe_before_forward=bool(args.step2_probe_before_forward),
+            )
+            return 0 if bool(sequence_result.get("success")) else 1
         if bool(args.e2e_trial):
             _set_game_profile("empty")
             print("[E2E] Starting end-to-end trial: initial reset, empty game, holding game, final reset.", flush=True)
