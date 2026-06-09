@@ -31,6 +31,8 @@ from helper_brick_detector_yolo import (
     COLOR_ONLY_CONF_PCT,
     CYAN_HSV_BALANCED_LOWER,
     CYAN_HSV_BALANCED_UPPER,
+    CYAN_HSV_WIDE_LOWER,
+    CYAN_HSV_WIDE_UPPER,
     DEFAULT_FRAME_H,
     DEFAULT_FRAME_W,
     FOCAL_PX_REF,
@@ -97,6 +99,24 @@ GREEN_EDGE_MIN_COVERAGE = 0.05
 GREEN_EDGE_COL_ACTIVE_FRAC = 0.15
 GREEN_EDGE_CONF_PCT = 95.0
 GREEN_EDGE_MAX_DIST_MM = 220.0
+GREEN_EDGE_TOP_STRIP_ENABLED = True
+GREEN_EDGE_TOP_STRIP_MAX_Y_RATIO = 0.18
+GREEN_EDGE_TOP_STRIP_MIN_HEIGHT_PX = 12
+GREEN_EDGE_TOP_STRIP_MIN_WIDTH_PX = 120
+GREEN_EDGE_TOP_STRIP_CONF_PCT = 88.0
+GREEN_EDGE_TOP_STRIP_ROW_ACTIVE_FRAC = 0.08
+GREEN_EDGE_TOP_STRIP_COL_ACTIVE_FRAC = 0.35
+GREEN_EDGE_PAINTED_COLUMN_ENABLED = True
+GREEN_EDGE_PAINTED_COLUMN_MIN_HEIGHT_FRAC = 0.30
+GREEN_EDGE_PAINTED_COLUMN_MIN_COVERAGE = 0.035
+GREEN_EDGE_PAINTED_COLUMN_COL_ACTIVE_FRAC = 0.18
+GREEN_EDGE_PAINTED_COLUMN_CONF_PCT = 92.0
+GREEN_EDGE_PAINTED_CLOSE_CALIBRATION_ENABLED = True
+GREEN_EDGE_PAINTED_CLOSE_CALIBRATION_POINTS = (
+    (69.0, 90.0),
+    (89.0, 100.0),
+    (116.0, 150.0),
+)
 # Green-edge becomes the PRIMARY distance source (overriding the rectangle path) once
 # the stack is wide enough to mean close range. The rectangle path returns unreliable
 # (often garbage) distances at close range without failing cleanly, so we can't wait for
@@ -108,6 +128,31 @@ NATIVE_RECT_MAX_WIDTH_RATIO_JUMP = 0.42
 NATIVE_RECT_PREFERRED_LOCK_DIST_MM = 170.0
 NATIVE_RECT_MAX_INITIAL_ABS_Y_MM = 130.0
 NATIVE_RECT_MAX_INITIAL_ABS_X_MM = 420.0
+
+
+def _calibrate_painted_close_green_edge_dist(raw_dist_mm: float) -> float:
+    if not bool(GREEN_EDGE_PAINTED_CLOSE_CALIBRATION_ENABLED):
+        return float(raw_dist_mm)
+    points = sorted((float(x), float(y)) for x, y in GREEN_EDGE_PAINTED_CLOSE_CALIBRATION_POINTS)
+    if len(points) < 2:
+        return float(raw_dist_mm)
+    raw = float(raw_dist_mm)
+    if raw <= points[0][0]:
+        left, right = points[0], points[1]
+    elif raw >= points[-1][0]:
+        left, right = points[-2], points[-1]
+    else:
+        left, right = points[0], points[1]
+        for idx in range(len(points) - 1):
+            a, b = points[idx], points[idx + 1]
+            if raw <= b[0]:
+                left, right = a, b
+                break
+    dx = float(right[0]) - float(left[0])
+    if abs(dx) < 1e-6:
+        return float(raw)
+    fraction = (raw - float(left[0])) / dx
+    return float(left[1]) + fraction * (float(right[1]) - float(left[1]))
 
 
 class NativeOakBrickDetector:
@@ -359,29 +404,12 @@ class NativeOakBrickDetector:
         self._detector.current_frame = frame
         self._sync_frame_shape(frame)
 
-        # Close-range PRIMARY: when the green stack is wide enough to be clearly close
-        # range, trust the stable green-edge width over the rectangle path (which returns
-        # unreliable distances at close range without failing cleanly).
-        green_primary = self._green_edge_close_range_result(frame, require_close=True)
-        if green_primary is not None:
-            self._detector.last_raw_prediction_count = 1
-            self._detector.last_candidate_count = 1
-            self._detector.last_nms_count = 1
-            self.current_frame = frame.copy()
-            self._detector.current_frame = self.current_frame
-            return green_primary
-
         primary, candidates = self._detect_color_rectangle_candidate(frame)
         self._detector.last_raw_prediction_count = int(len(candidates))
         self._detector.last_candidate_count = int(len(candidates))
         self._detector.last_nms_count = int(len(candidates))
 
         if primary is None:
-            green_result = self._green_edge_close_range_result(frame)
-            if green_result is not None:
-                self.current_frame = frame.copy()
-                self._detector.current_frame = self.current_frame
-                return green_result
             self._mark_not_found(str(getattr(self._detector, "last_status", "shape mismatch")))
             self.current_frame = frame.copy()
             self._detector.current_frame = self.current_frame
@@ -846,28 +874,84 @@ class NativeOakBrickDetector:
         detector = self._detector
         try:
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            mask = cv2.inRange(
+            balanced_mask = cv2.inRange(
                 hsv,
                 np.array(CYAN_HSV_BALANCED_LOWER, dtype=np.uint8),
                 np.array(CYAN_HSV_BALANCED_UPPER, dtype=np.uint8),
             )
+            wide_mask = cv2.inRange(
+                hsv,
+                np.array(CYAN_HSV_WIDE_LOWER, dtype=np.uint8),
+                np.array(CYAN_HSV_WIDE_UPPER, dtype=np.uint8),
+            )
+            mask = cv2.bitwise_or(balanced_mask, wide_mask)
         except Exception:
             return None
         h, w = mask.shape[:2]
         if h <= 0 or w <= 0:
             return None
-        coverage = float(np.count_nonzero(mask)) / float(h * w)
-        if coverage < float(GREEN_EDGE_MIN_COVERAGE):
-            return None
-        col_counts = np.count_nonzero(mask, axis=0)
-        col_thr = max(8, int(float(GREEN_EDGE_COL_ACTIVE_FRAC) * float(h)))
-        active = np.where(col_counts > col_thr)[0]
+        top_strip = False
+        painted_column = False
+        active = np.asarray([], dtype=np.int64)
+        if bool(GREEN_EDGE_TOP_STRIP_ENABLED):
+            row_counts = np.count_nonzero(mask, axis=1)
+            row_thr = max(8, int(round(float(w) * float(GREEN_EDGE_TOP_STRIP_ROW_ACTIVE_FRAC))))
+            active_rows = np.where(row_counts > row_thr)[0]
+            if active_rows.size > 0:
+                top_y = int(active_rows[0])
+                top_limit = int(round(float(h) * float(GREEN_EDGE_TOP_STRIP_MAX_Y_RATIO)))
+                contiguous = [int(top_y)]
+                for row_idx in active_rows[1:]:
+                    if int(row_idx) > top_limit:
+                        break
+                    if int(row_idx) > int(contiguous[-1]) + 2:
+                        break
+                    contiguous.append(int(row_idx))
+                bottom_y = int(contiguous[-1]) + 1
+                strip_h = int(bottom_y - top_y)
+                if (
+                    top_y <= top_limit
+                    and strip_h >= int(GREEN_EDGE_TOP_STRIP_MIN_HEIGHT_PX)
+                ):
+                    strip = mask[int(top_y):int(bottom_y), :]
+                    strip_counts = np.count_nonzero(strip, axis=0)
+                    strip_thr = max(3, int(round(float(strip_h) * float(GREEN_EDGE_TOP_STRIP_COL_ACTIVE_FRAC))))
+                    strip_active = np.where(strip_counts >= strip_thr)[0]
+                    if strip_active.size >= 6:
+                        strip_left = int(np.percentile(strip_active, 2))
+                        strip_right = int(np.percentile(strip_active, 98))
+                        if int(strip_right - strip_left) >= int(GREEN_EDGE_TOP_STRIP_MIN_WIDTH_PX):
+                            active = strip_active
+                            top_strip = True
+        if not bool(top_strip):
+            coverage = float(np.count_nonzero(mask)) / float(h * w)
+            coverage_floor = float(GREEN_EDGE_MIN_COVERAGE)
+            if bool(GREEN_EDGE_PAINTED_COLUMN_ENABLED):
+                coverage_floor = min(coverage_floor, float(GREEN_EDGE_PAINTED_COLUMN_MIN_COVERAGE))
+            if coverage < coverage_floor:
+                return None
+            col_counts = np.count_nonzero(mask, axis=0)
+            col_active_frac = float(GREEN_EDGE_COL_ACTIVE_FRAC)
+            if bool(GREEN_EDGE_PAINTED_COLUMN_ENABLED):
+                col_active_frac = min(col_active_frac, float(GREEN_EDGE_PAINTED_COLUMN_COL_ACTIVE_FRAC))
+            col_thr = max(8, int(col_active_frac * float(h)))
+            active = np.where(col_counts > col_thr)[0]
+            if bool(GREEN_EDGE_PAINTED_COLUMN_ENABLED) and active.size >= 6:
+                left_probe = int(np.percentile(active, 2))
+                right_probe = int(np.percentile(active, 98))
+                band = mask[:, max(0, left_probe):min(w, right_probe + 1)]
+                active_rows = np.where(np.count_nonzero(band, axis=1) > 0)[0]
+                if active_rows.size > 0:
+                    run_height = int(active_rows[-1]) - int(active_rows[0]) + 1
+                    painted_column = bool(float(run_height) >= (float(h) * float(GREEN_EDGE_PAINTED_COLUMN_MIN_HEIGHT_FRAC)))
         if active.size < 6:
             return None
         left = int(np.percentile(active, 2))
         right = int(np.percentile(active, 98))
         width_px = right - left
         if width_px < int(GREEN_EDGE_MIN_WIDTH_PX):
+            return None
+        if bool(top_strip) and width_px < int(GREEN_EDGE_TOP_STRIP_MIN_WIDTH_PX):
             return None
         # When used to override the rectangle path, require the stack to be wide
         # enough to be unambiguously close range.
@@ -880,6 +964,9 @@ class NativeOakBrickDetector:
         raw_dist = detector._estimate_distance_from_width(float(width_px))
         if raw_dist is None or not (0.0 < float(raw_dist) <= float(GREEN_EDGE_MAX_DIST_MM)):
             return None
+        calibrated_raw_dist = float(raw_dist)
+        if bool(top_strip) or bool(painted_column):
+            calibrated_raw_dist = _calibrate_painted_close_green_edge_dist(float(raw_dist))
         gate_primary = {
             "shape_profile": "native_rect",
             "native_rect_confidence_pct": float(GREEN_EDGE_CONF_PCT),
@@ -888,9 +975,9 @@ class NativeOakBrickDetector:
         if prev_for_dist is None:
             prev_for_dist = self._native_last_good_dist
         detector.last_raw_dist = float(raw_dist)
-        detector.last_bbox_dist = float(raw_dist)
+        detector.last_bbox_dist = float(calibrated_raw_dist)
         detector.last_bbox_distance_source = "green_edge_close_range"
-        dist = self._native_rect_distance_from_raw(float(raw_dist), prev_for_dist, gate_primary)
+        dist = float(calibrated_raw_dist)
         detector._prev_dist = dist
         detector.last_final_dist = dist
         self._native_last_good_dist = float(dist)
@@ -905,11 +992,23 @@ class NativeOakBrickDetector:
         raw_cam_height = detector._estimate_cam_height(cy, dist)
         cam_height = detector._smooth(raw_cam_height, detector._prev_offset_y)
         detector._prev_offset_y = cam_height
-        conf_pct = float(GREEN_EDGE_CONF_PCT)
+        if bool(top_strip):
+            conf_pct = float(GREEN_EDGE_TOP_STRIP_CONF_PCT)
+        elif bool(painted_column):
+            conf_pct = float(GREEN_EDGE_PAINTED_COLUMN_CONF_PCT)
+        else:
+            conf_pct = float(GREEN_EDGE_CONF_PCT)
         detector.last_primary_confidence = conf_pct / 100.0
         detector.last_max_confidence = conf_pct / 100.0
-        detector.last_geometry_source = "green_edge_close_range_width"
-        detector.last_status = "target locked (green-edge close range)"
+        if bool(top_strip):
+            detector.last_geometry_source = "green_edge_top_strip_width"
+            detector.last_status = "target locked (green-edge top strip width)"
+        elif bool(painted_column):
+            detector.last_geometry_source = "green_edge_painted_column_width"
+            detector.last_status = "target locked (painted green column width)"
+        else:
+            detector.last_geometry_source = "green_edge_close_range_width"
+            detector.last_status = "target locked (green-edge close range)"
         self.last_status = detector.last_status
         detector.last_candidate_count = 1
         detector.last_raw_prediction_count = 1
@@ -927,6 +1026,12 @@ class NativeOakBrickDetector:
 
     def _result_from_candidate(self, frame, primary: dict, candidates: list[dict]):
         detector = self._detector
+        if str(primary.get("shape_profile") or "") == "native_rect":
+            # Model lock: do not swap to the green-edge close/top-strip/painted-column
+            # distance model mid-run. That switch caused 250mm poses to jump to
+            # about 90mm and made the follow game dishonest.
+            primary = dict(primary)
+            primary["native_rect_distance_fallback_only"] = True
         raw_angle = detector._refine_angle_for_primary(frame, primary)
         angle = detector._smooth_angle(raw_angle, detector._prev_angle)
         detector._prev_angle = angle
@@ -957,7 +1062,7 @@ class NativeOakBrickDetector:
             detector.last_pre_depth_dist = raw_dist
             detector.last_depth_dist = None
             detector.last_depth_stats = {}
-            detector.last_geometry_source = "native_rect_width"
+            detector.last_geometry_source = "native_rect_width_fallback_only"
         else:
             raw_dist = detector._estimate_distance_from_box(
                 bbox_w,
@@ -979,7 +1084,10 @@ class NativeOakBrickDetector:
         prev_for_dist = detector._prev_dist
         if prev_for_dist is None:
             prev_for_dist = self._native_last_good_dist
-        dist = self._native_rect_distance_from_raw(raw_dist, prev_for_dist, primary)
+        if str(primary.get("shape_profile") or "") == "native_rect":
+            dist = float(raw_dist)
+        else:
+            dist = self._native_rect_distance_from_raw(raw_dist, prev_for_dist, primary)
         detector._prev_dist = dist
         detector.last_final_dist = dist
         if (
@@ -1241,33 +1349,9 @@ class NativeOakBrickDetector:
         self._detector.last_stable_dist_published_mm = None
         self._detector.last_stable_dist_publish_limited = False
 
-        if (
-            inlier_count >= int(NATIVE_RECT_DIST_MIN_INLIERS)
-            and spread <= float(NATIVE_RECT_DIST_STABLE_SPREAD_MM)
-        ):
-            stable_unlimited = float(self._trimmed_mean(inliers))
-            stable = float(stable_unlimited)
-            publish_limited = False
-            try:
-                previous_published = float(self._native_last_good_dist)
-            except (TypeError, ValueError):
-                previous_published = None
-            if previous_published is not None:
-                delta = float(stable) - float(previous_published)
-                max_step = float(NATIVE_RECT_DIST_MAX_PUBLISH_STEP_MM)
-                if max_step > 0.0 and abs(delta) > max_step:
-                    stable = float(previous_published) + (max_step if delta > 0.0 else -max_step)
-                    publish_limited = True
-                    self._detector.last_geometry_source = "native_rect_width_stable_avg_step_limited"
-                else:
-                    self._detector.last_geometry_source = "native_rect_width_stable_avg"
-            else:
-                self._detector.last_geometry_source = "native_rect_width_stable_avg"
-            self._detector.last_stable_dist_unlimited_mm = float(stable_unlimited)
-            self._detector.last_stable_dist_published_mm = float(stable)
-            self._detector.last_stable_dist_publish_limited = bool(publish_limited)
-            self._native_last_stable_dist = float(stable)
-            return float(stable)
+        # Disabled for now: this stable-average publisher can disagree with the
+        # livestream/top-strip distance model at close range and make follow
+        # trials act on a different distance than the operator sees.
 
         # While the window is warming or contains a rejected transition, use a
         # robust median. This avoids the old artificial 8mm/frame staircase.
