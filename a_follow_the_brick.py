@@ -2436,6 +2436,23 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         step2["precision_settle_enabled"] = bool(raw_profile_step2.get("precision_settle_enabled"))
     if "blind_mast_only" in raw_profile_step2:
         step2["blind_mast_only"] = bool(raw_profile_step2.get("blind_mast_only"))
+    if "post_win_forward_creep_ms" in raw_profile_step2:
+        step2["post_win_forward_creep_ms"] = _coerce_int(
+            raw_profile_step2.get("post_win_forward_creep_ms"),
+            step2.get("post_win_forward_creep_ms", DEFAULT_STEP2_CONFIG["post_win_forward_creep_ms"]),
+            minimum=0,
+            maximum=1000,
+        )
+    if "post_win_forward_creep_pwm" in raw_profile_step2:
+        step2["post_win_forward_creep_pwm"] = _coerce_int(
+            raw_profile_step2.get("post_win_forward_creep_pwm"),
+            step2.get(
+                "post_win_forward_creep_pwm",
+                step2.get("seat_drive_pwm", DEFAULT_STEP2_CONFIG["post_win_forward_creep_pwm"]),
+            ),
+            minimum=1,
+            maximum=255,
+        )
     for key in (
         "precision_max_attempts",
         "post_precision_recovery_cycles",
