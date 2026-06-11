@@ -19,12 +19,11 @@ SEQUENCE = (
     ("step1", "step1"),
     ("step2", "step2"),
     ("step3_lift", None),
-    ("post_lift_pause", None),
     ("profile_holding", None),
     ("holding_step2_drop", None),
 )
 
-POST_LIFT_PAUSE_S = 5.0
+POST_LIFT_PAUSE_S = 0.0
 
 
 FULL_E2E_EXPERIMENT_SUMMARY = (
