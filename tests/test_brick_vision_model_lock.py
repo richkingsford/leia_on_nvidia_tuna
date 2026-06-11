@@ -15,11 +15,13 @@ def _source_between(text: str, start: str, end: str) -> str:
 
 
 class TestBrickVisionModelLock(unittest.TestCase):
-    def test_read_frame_does_not_use_green_edge_primary_or_fallback(self):
+    def test_read_frame_uses_green_edge_only_as_close_fallback(self):
         text = DETECTOR.read_text(encoding="utf-8")
         read_frame = _source_between(text, "    def read_frame(self, frame):", "    def _detect_color_rectangle_candidate")
 
-        self.assertNotIn("_green_edge_close_range_result", read_frame)
+        self.assertIn("_green_edge_close_range_result(frame, require_close=True)", read_frame)
+        self.assertIn("if primary is None:", read_frame)
+        self.assertNotIn("require_close=False", read_frame)
 
     def test_native_rect_result_path_does_not_switch_to_green_edge_distance(self):
         text = DETECTOR.read_text(encoding="utf-8")

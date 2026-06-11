@@ -284,10 +284,11 @@ def _float_or_none(value) -> float | None:
         return None
 
 
-def _target_entry(target, tol, *, locked: bool = False) -> dict:
+def _target_entry(target, tol, *, locked: bool = False, lower_tol=None) -> dict:
     return {
         "target_mm": _float_or_none(target),
         "tol_mm": _float_or_none(tol),
+        "lower_tol_mm": _float_or_none(lower_tol),
         "locked": bool(locked),
     }
 
@@ -301,14 +302,19 @@ def _current_targets() -> dict:
     step3_targets = step3.get("targets") if isinstance(step3.get("targets"), dict) else {}
     locked_y = _float_or_none(Y_LOCK_TARGET_MM)
     locked_tol = _float_or_none(Y_LOCK_TOL_MM)
+    step1_y_enabled = bool(y_cfg.get("enabled"))
     return {
         "step1": {
-            "dist": _target_entry(follow._dist_target_mm(), follow._dist_tol_mm()),
+            "dist": _target_entry(
+                follow._dist_target_mm(),
+                follow._dist_tol_mm(),
+                lower_tol=follow._dist_lower_tol_mm(),
+            ),
             "x": _target_entry(follow._x_target_mm(), DIRECT_STEP1_X_TOL_MM),
             "y": _target_entry(
-                locked_y if locked_y is not None else y_cfg.get("win_target_mm"),
-                locked_tol if locked_y is not None else y_cfg.get("win_tol_mm"),
-                locked=locked_y is not None,
+                locked_y if locked_y is not None else (y_cfg.get("win_target_mm") if step1_y_enabled else None),
+                locked_tol if locked_y is not None else (y_cfg.get("win_tol_mm") if step1_y_enabled else None),
+                locked=locked_y is not None or not step1_y_enabled,
             ),
         },
         "step2": {
@@ -344,6 +350,7 @@ def _evaluate_reading(reading: dict | None, step: str | None) -> dict:
         spec = targets.get(axis) if isinstance(targets, dict) else {}
         target = _float_or_none((spec or {}).get("target_mm"))
         tol = _float_or_none((spec or {}).get("tol_mm"))
+        lower_tol = _float_or_none((spec or {}).get("lower_tol_mm"))
         value = _float_or_none(summary.get(f"{axis}_mm"))
         locked = bool((spec or {}).get("locked"))
         axis_ok = False
@@ -352,8 +359,10 @@ def _evaluate_reading(reading: dict | None, step: str | None) -> dict:
         has_target = target is not None and tol is not None and tol > 0.0
         if has_target and value is not None:
             err = float(value) - float(target)
-            closeness = max(0.0, min(100.0, 100.0 * (1.0 - (abs(err) / float(tol)))))
-            axis_ok = abs(err) <= float(tol)
+            active_tol = float(lower_tol) if lower_tol is not None and err < 0.0 else float(tol)
+            active_tol = max(0.001, active_tol)
+            closeness = max(0.0, min(100.0, 100.0 * (1.0 - (abs(err) / active_tol))))
+            axis_ok = abs(err) <= active_tol
             if not locked:
                 any_axis = True
         elif has_target and not locked:
@@ -364,9 +373,10 @@ def _evaluate_reading(reading: dict | None, step: str | None) -> dict:
                 all_ok = False
         axes[axis] = {
             "value_mm": value,
-            "target_mm": target,
-            "tol_mm": tol,
-            "err_mm": err,
+                "target_mm": target,
+                "tol_mm": tol,
+                "lower_tol_mm": lower_tol,
+                "err_mm": err,
             "closeness_pct": round(closeness, 1),
             "ok": bool(axis_ok),
             "locked": bool(locked),
@@ -751,6 +761,7 @@ class ProgressSite:
             value = _fmt_mm(value_raw, signed=signed_axis)
             target = _float_or_none(data.get("target_mm"))
             tol = _float_or_none(data.get("tol_mm"))
+            lower_tol = _float_or_none(data.get("lower_tol_mm"))
             err = _float_or_none(data.get("err_mm"))
             score = _float_or_none(data.get("closeness_pct"))
             detail_title = "not scored"
@@ -760,18 +771,22 @@ class ProgressSite:
             if target is None or tol is None or tol <= 0.0:
                 detail_title = value if value_raw is not None else "no read"
             else:
-                low_val = float(target) - float(tol)
+                low_side_tol = float(lower_tol) if lower_tol is not None else float(tol)
+                low_val = float(target) - float(low_side_tol)
                 high_val = float(target) + float(tol)
                 low = _fmt_mm(low_val, signed=signed_axis)
                 high = _fmt_mm(high_val, signed=signed_axis)
                 if value_raw is None:
                     detail_title = f"no read; target range {low} to {high}"
                 else:
-                    marker_pct = 50.0 + ((float(value_raw) - float(target)) / (float(tol) * 3.0) * 50.0)
+                    visual_span = max(1.0, (float(high_val) - float(low_val)) * 1.5)
+                    visual_min = float(target) - (visual_span / 2.0)
+                    marker_pct = ((float(value_raw) - visual_min) / visual_span) * 100.0
                     marker_pct = max(0.0, min(100.0, marker_pct))
-                    edge_class = " edge-left" if marker_pct <= 4.0 else (" edge-right" if marker_pct >= 96.0 else "")
+                    visual_pct = 100.0 - marker_pct if axis == "x" else marker_pct
+                    edge_class = " edge-left" if visual_pct <= 4.0 else (" edge-right" if visual_pct >= 96.0 else "")
                     marker_html = (
-                        f'<span class="gauge-marker{edge_class}" style="left:{marker_pct:.1f}%">'
+                        f'<span class="gauge-marker{edge_class}" style="left:{visual_pct:.1f}%">'
                         f'<span class="gauge-label gauge-read">{value}</span></span>'
                     )
                     gauge_labels = (
@@ -794,9 +809,11 @@ class ProgressSite:
                         detail_bits.append(f"score {max(0.0, min(100.0, score)):.0f}%")
                     detail_title = "; ".join(detail_bits)
             wrapper = "mini-axis" if compact else "axis"
+            axis_class = f" axis-{html.escape(axis)}"
+            axis_label = "X (+left)" if axis == "x" else axis.upper()
             return (
-                f'<div class="{wrapper}{ok_class}{locked}{state_class}" title="{html.escape(detail_title)}">'
-                f'<div class="axis-top"><b>{html.escape(axis.upper())}</b></div>'
+                f'<div class="{wrapper}{axis_class}{ok_class}{locked}{state_class}" title="{html.escape(detail_title)}">'
+                f'<div class="axis-top"><b>{html.escape(axis_label)}</b></div>'
                 f'<div class="gauge"><span class="gauge-zone"></span><span class="gauge-center"></span>{gauge_labels}{marker_html}</div>'
                 "</div>"
             )
@@ -1048,27 +1065,6 @@ class ProgressSite:
                     x_icon = axis_timeline_icon(x_err, prev_x_err)
                     dist_icon_html = f'<span class="decision-icon">{dist_icon}</span>' if dist_icon else ""
                     x_icon_html = f'<span class="decision-icon">{x_icon}</span>' if x_icon else ""
-                    outcome_icon = {"improved": "&#128994;", "worsened": "&#128308;", "same": "&#9898;"}
-                    dist_after = _float_or_none(entry.get("after_dist_mm"))
-                    x_after = _float_or_none(entry.get("after_x_mm"))
-                    after_parts = []
-                    if dist_after is not None:
-                        dist_outcome_icon = outcome_icon.get(str(entry.get("dist_outcome") or ""), "")
-                        after_parts.append(
-                            f'dist=<span class="decision-read dist">{html.escape(_fmt_mm(dist_after))}</span>'
-                            f'<span class="decision-icon">{dist_outcome_icon}</span>'
-                        )
-                    if x_after is not None:
-                        x_outcome_icon = outcome_icon.get(str(entry.get("x_outcome") or ""), "")
-                        after_parts.append(
-                            f'x=<span class="decision-read x">{html.escape(_fmt_mm(x_after, signed=True))}</span>'
-                            f'<span class="decision-icon">{x_outcome_icon}</span>'
-                        )
-                    after_html = (
-                        f' <span class="decision-after-wrap">After act read [{", ".join(after_parts)}].</span>'
-                        if after_parts
-                        else ""
-                    )
                     curve = str(entry.get("curve") or entry.get("action") or "unknown")
                     reason = str(entry.get("reason") or "").strip()
                     reason_html = f' <span class="decision-reason">({html.escape(reason)})</span>' if reason else ""
@@ -1088,7 +1084,6 @@ class ProgressSite:
                         'for '
                         f'<span class="decision-num ms">{duration}ms</span>.'
                         f'{reason_html}'
-                        f'{after_html}'
                         '</li>'
                     )
                     previous_entry = entry
@@ -1336,6 +1331,8 @@ class ProgressSite:
     .gauge-tick {{ position: absolute; top: -1px; bottom: -1px; width: 1px; background: #6fa686; z-index: 2; }}
     .gauge-floor {{ left: 33.333%; }}
     .gauge-ceiling {{ left: 66.666%; }}
+    .axis-x .gauge-floor {{ left: 66.666%; }}
+    .axis-x .gauge-ceiling {{ left: 33.333%; }}
     .gauge-label {{ position: absolute; left: 50%; transform: translateX(-50%); white-space: nowrap; font-size: 10px; line-height: 1; font-weight: 700; color: #33485b; background: rgba(255,255,255,0.9); border: 1px solid #d9e0e8; border-radius: 4px; padding: 1px 3px; pointer-events: none; }}
     .gauge-tick .gauge-label, .gauge-tick span {{ position: absolute; left: 50%; bottom: -13px; transform: translateX(-50%); white-space: nowrap; font-size: 10px; line-height: 1; font-weight: 700; color: #46606f; background: rgba(255,255,255,0.92); border: 1px solid #d9e0e8; border-radius: 4px; padding: 1px 3px; pointer-events: none; }}
     .gauge-read {{ top: -11px; color: #17202a; }}

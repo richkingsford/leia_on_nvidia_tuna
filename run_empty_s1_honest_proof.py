@@ -529,6 +529,7 @@ def _recover_inside_virtual_wall(
     next_reading: dict | None = dict(initial_reading) if isinstance(initial_reading, dict) else None
     wrong_way_streak = 0
     no_progress_streak = 0
+    saturated_far_streak = 0
     for attempt in range(1, int(max_attempts) + 1):
         if isinstance(next_reading, dict) and _wall_recovery_pose_ok(next_reading):
             reading = dict(next_reading)
@@ -544,13 +545,25 @@ def _recover_inside_virtual_wall(
             reason = "virtual_wall_recovery_no_stable_wall_pose"
             break
 
-        plan = follow._virtual_safety_forward_recovery_plan(
-            reading,
-            dist_err=dist_mm - float(follow._dist_target_mm()),
-            x_err=_x_value(reading),
-            y_err=None,
-        )
-        plan = dict(plan)
+        if no_progress_streak > 0:
+            plan = {
+                "kind": "drive",
+                "cmd": "f",
+                "action": "VIRTUAL_WALL_RECOVERY_FWD",
+                "dist_err": dist_mm - float(follow._dist_target_mm()),
+                "x_err": _x_value(reading),
+                "duration_ms": 250,
+                "distance_creep": True,
+                "reason": "virtual_wall_recovery_dist_first_after_no_progress",
+            }
+        else:
+            plan = follow._virtual_safety_forward_recovery_plan(
+                reading,
+                dist_err=dist_mm - float(follow._dist_target_mm()),
+                x_err=_x_value(reading),
+                y_err=None,
+            )
+            plan = dict(plan)
         before_x = _x_value(reading)
         duration_ms = int(plan.get("duration_ms", 180) or 180)
         if dist_mm > (float(follow._virtual_safety_max_dist_mm()) + 50.0):
@@ -605,6 +618,24 @@ def _recover_inside_virtual_wall(
                 break
         else:
             wrong_way_streak = 0
+
+        saturated_far_read = (
+            after_dist >= (float(follow._virtual_safety_max_dist_mm()) + 20.0)
+            and abs(float(dist_mm) - float(after_dist)) <= 0.5
+            and str(plan.get("action") or "").endswith("_FWD")
+        )
+        if saturated_far_read:
+            saturated_far_streak += 1
+            no_progress_streak = max(1, no_progress_streak)
+            reason = (
+                f"virtual_wall_recovery_far_dist_saturated_streak_{saturated_far_streak}_"
+                f"dist_{float(dist_mm):.1f}_to_{float(after_dist):.1f}_via_{plan.get('action')}"
+            )
+            if saturated_far_streak >= 12:
+                break
+            next_reading = dict(after)
+            continue
+        saturated_far_streak = 0
 
         made_progress = dist_delta > 0.5 or x_abs_delta > 1.5
         if not made_progress:
@@ -836,17 +867,23 @@ def _ensure_honest_reset(
     if x_min > x_max:
         x_min, x_max = x_max, x_min
     for polish_idx in range(2):
-        if _reset_pose_met(reading):
+        reset_clean = _reset_pose_met(reading)
+        already_step1 = _step1_met(reading)
+        if reset_clean and not already_step1:
             break
         try:
             abs_x = abs(float((reading or {}).get("x_mm")))
         except (TypeError, ValueError):
             break
-        if abs_x >= x_min:
+        if reset_clean and already_step1:
+            polish_reason = "already_step1_happy"
+        elif abs_x < x_min:
+            polish_reason = "below_reset_band"
+        else:
             break
         print(
             "[RESET] Proof reset x-offset polish: "
-            f"|x|={abs_x:.1f}mm is below reset band {x_min:.1f}-{x_max:.1f}mm; "
+            f"|x|={abs_x:.1f}mm reason={polish_reason} reset band {x_min:.1f}-{x_max:.1f}mm; "
             f"sending bounded {int(follow.RESET_FINAL_X_POLISH_MAX_MS)}ms reset turn.",
             flush=True,
         )

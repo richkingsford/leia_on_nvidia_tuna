@@ -98,6 +98,11 @@ CYAN_SHADE_HEXES = (
     "26772F",
     "0B6023",
     "2D7A3C",
+    # Measured 2026-06-05 with new lamp on
+    "93E885",
+    "7AE686",
+    "4ECE7A",
+    "7EED97",
 )
 
 
@@ -144,9 +149,9 @@ def _cyan_palette_hsv_range(
 # very low-saturation washed highlight sample.
 CYAN_HSV_TIGHT_LOWER: tuple[int, int, int] = (68, 120, 58)
 CYAN_HSV_TIGHT_UPPER: tuple[int, int, int] = (83, 255, 255)
-CYAN_HSV_BALANCED_LOWER: tuple[int, int, int] = (62, 97, 33)
+CYAN_HSV_BALANCED_LOWER: tuple[int, int, int] = (55, 97, 33)
 CYAN_HSV_BALANCED_UPPER: tuple[int, int, int] = (87, 255, 255)
-CYAN_HSV_WIDE_LOWER: tuple[int, int, int] = (60, 15, 8)
+CYAN_HSV_WIDE_LOWER: tuple[int, int, int] = (55, 15, 8)
 CYAN_HSV_WIDE_UPPER: tuple[int, int, int] = (93, 255, 255)
 
 CYAN_HSV_LOWER = np.array(CYAN_HSV_BALANCED_LOWER)

@@ -233,6 +233,12 @@ def require_confident_brick_for_motion(
     allow_virtual_safety_forward_recovery: bool = False,
 ) -> bool:
     """Return true only when the current reading allows non-stop motion."""
+    if (
+        str(context or "").startswith("reset_")
+        and isinstance(reading, dict)
+        and str(reading.get("reason") or "") == "blind_reset_no_start_visibility"
+    ):
+        return True
     if brick_motion_allowed(
         reading,
         allow_virtual_safety_forward_recovery=allow_virtual_safety_forward_recovery,

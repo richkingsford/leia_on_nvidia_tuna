@@ -722,6 +722,15 @@ def _apply_step2_like_config(raw_cfg: dict | None, step_cfg: dict) -> dict:
             step_cfg[key] = _coerce_int(raw.get(key), step_cfg.get(key), minimum=1, maximum=255)
     if "drive_pwm" in raw:
         step_cfg["drive_pwm"] = _coerce_int(raw.get("drive_pwm"), step_cfg.get("drive_pwm", 103), minimum=1, maximum=255)
+    if "retreat_turn_cmd" in raw:
+        turn_mode = str(raw.get("retreat_turn_cmd") or "").strip().lower()
+        if turn_mode in {"l", "r"}:
+            step_cfg["retreat_turn_cmd"] = turn_mode
+        elif turn_mode in {"", "none", "off", "straight"}:
+            step_cfg["retreat_turn_cmd"] = None
+    for key in ("retreat_inner_pwm", "retreat_outer_pwm", "retreat_pwm_ceiling"):
+        if key in raw:
+            step_cfg[key] = _coerce_int(raw.get(key), step_cfg.get(key, 0), minimum=0, maximum=255)
     if "seat_mast_duration_ms" in raw:
         step_cfg["seat_mast_duration_ms"] = _cap_mast_duration_ms(
             step_cfg.get("seat_mast_cmd"),
@@ -6926,6 +6935,21 @@ def _run_step3_retreat_sequence(vision: BrickDetector, robot: Robot) -> dict:
     min_duration_ms = int(_min_motion_duration_ms(cmd))
     chunk_ms = max(int(chunk_ms), int(min_duration_ms))
 
+    retreat_turn_cmd = str(step3.get("retreat_turn_cmd") or "").strip().lower()
+    if retreat_turn_cmd not in {"l", "r"}:
+        retreat_turn_cmd = None
+    retreat_inner_pwm = _coerce_int(step3.get("retreat_inner_pwm"), 93, minimum=0, maximum=255)
+    retreat_outer_pwm = _coerce_int(step3.get("retreat_outer_pwm"), 155, minimum=1, maximum=255)
+    retreat_pwm_ceiling = _coerce_int(
+        step3.get("retreat_pwm_ceiling"),
+        max(int(retreat_outer_pwm), 115),
+        minimum=1,
+        maximum=255,
+    )
+    if retreat_outer_pwm < retreat_inner_pwm:
+        retreat_inner_pwm, retreat_outer_pwm = retreat_outer_pwm, retreat_inner_pwm
+    retreat_drive_mode = "backward" if cmd == "b" else "forward"
+
     before = _read_brick_measurement(vision)
     if not bool(before.get("confident")):
         before = _wait_for_visibility_recovery(
@@ -6947,11 +6971,19 @@ def _run_step3_retreat_sequence(vision: BrickDetector, robot: Robot) -> dict:
             "attempts": 0,
         }
 
-    print(
-        f"[STEP3] Retreat: straight {cmd.upper()} until dist>={target_dist:.1f}mm "
-        f"or {int(max_duration_ms)}ms max.",
-        flush=True,
-    )
+    if retreat_turn_cmd is not None:
+        print(
+            f"[STEP3] Retreat: {retreat_drive_mode} arc-turn {retreat_turn_cmd.upper()} "
+            f"(inner={retreat_inner_pwm}/outer={retreat_outer_pwm} pwm) until "
+            f"dist>={target_dist:.1f}mm or {int(max_duration_ms)}ms max.",
+            flush=True,
+        )
+    else:
+        print(
+            f"[STEP3] Retreat: straight {cmd.upper()} until dist>={target_dist:.1f}mm "
+            f"or {int(max_duration_ms)}ms max.",
+            flush=True,
+        )
 
     current = before
     elapsed_ms = 0
@@ -6964,14 +6996,37 @@ def _run_step3_retreat_sequence(vision: BrickDetector, robot: Robot) -> dict:
         if remaining_ms < min_duration_ms:
             break
         duration_ms = min(int(chunk_ms), int(remaining_ms))
-        send_result = guarded_send_command_pwm(
-            robot,
-            cmd,
-            pwm,
-            duration_ms=duration_ms,
-            reading=current,
-            context="step3_retreat",
-        )
+        if retreat_turn_cmd is not None:
+            curve = {
+                "inner_pwm": int(retreat_inner_pwm),
+                "outer_pwm": int(retreat_outer_pwm),
+                "drive_mode": retreat_drive_mode,
+                "strength": "retreat_arc",
+            }
+            raw_actions = _turn_curve_actions(
+                drive_mode=retreat_drive_mode,
+                cmd=retreat_turn_cmd,
+                curve=curve,
+            )
+            for action in raw_actions:
+                action["pwm_ceiling"] = int(retreat_pwm_ceiling)
+            send_result = guarded_send_custom_actions_pwm(
+                robot,
+                cmd,
+                _scaled_actions(raw_actions),
+                duration_ms=duration_ms,
+                reading=current,
+                context=f"step3_retreat_arc_{retreat_turn_cmd}",
+            )
+        else:
+            send_result = guarded_send_command_pwm(
+                robot,
+                cmd,
+                pwm,
+                duration_ms=duration_ms,
+                reading=current,
+                context="step3_retreat",
+            )
         if isinstance(send_result, dict) and bool(send_result.get("blocked")):
             _stop_robot(robot)
             return {
@@ -10577,6 +10632,35 @@ def _distance_micro_straight_plan(reading: dict, *, dist_err: float, x_err: floa
     }, y_plan)
 
 
+def _empty_s1_tiny_x_happy_dist_curve_plan(
+    *,
+    turn_cmd: str,
+    dist_err: float,
+    x_err: float,
+    x_outside: float,
+    dist_outside: float,
+    y_plan: dict | None,
+    reason: str = "empty_s1_tiny_x_happy_dist_short_forward_curve",
+) -> dict:
+    plan = _x_dist_drive_bias_plan(
+        turn_cmd=turn_cmd,
+        drive_mode="forward",
+        dist_err=dist_err,
+        x_err=x_err,
+        x_outside=x_outside,
+        dist_outside=dist_outside,
+        y_plan=y_plan,
+        reason=reason,
+    )
+    plan["duration_ms"] = int(max(120, min(190, _empty_step1_in_band_x_curve_ms(float(dist_err)))))
+    plan["strength"] = "gentle"
+    plan["action"] = _shiny_curve_label("forward", turn_cmd, "gentle", suffix="_in_band")
+    plan["use_calibrated_turn_drive_curve"] = True
+    plan["allow_long_duration"] = False
+    plan["skip_near_target_crawl_cap"] = True
+    return plan
+
+
 def _finish_y_dist_ok(dist_err: float, y_cfg: dict | None = None) -> bool:
     cfg = y_cfg if isinstance(y_cfg, dict) else _follow_y_axis_config()
     dist_fallback = _coerce_float(
@@ -11672,8 +11756,23 @@ def _follow_action_plan(reading: dict, *, virtual_safety_armed: bool = True) -> 
         else _win_axis_ok(float(y_err), float(y_cfg.get("win_tol_mm", Y_TOL_MM)))
     )
 
-    if x_ok and dist_ok and y_ok:
-        return {"kind": "hold", "action": "HAPPY", "dist_err": dist_err, "x_err": x_err, "y_err": y_err}
+    x_outside_for_noise_grace = _x_outside_gate_mm(x_err)
+    x_ok_with_noise_grace = bool(x_ok) or (
+        _active_game_profile() == "empty"
+        and bool(dist_ok)
+        and _tiny_x_outside_no_turn(float(x_outside_for_noise_grace))
+    )
+    if x_ok_with_noise_grace and dist_ok and y_ok:
+        reason = "happy" if bool(x_ok) else "empty_s1_tiny_x_noise_grace"
+        return {
+            "kind": "hold",
+            "action": "HAPPY",
+            "dist_err": dist_err,
+            "x_err": x_err,
+            "y_err": y_err,
+            "x_outside_mm": float(x_outside_for_noise_grace),
+            "reason": reason,
+        }
     if isinstance(y_plan, dict) and str(y_plan.get("reason") or "") == "protect_lower_edge":
         return y_plan
     if (
@@ -11945,16 +12044,14 @@ def _follow_action_plan(reading: dict, *, virtual_safety_armed: bool = True) -> 
                     "reason": "tiny_x_gap_forward_instead_of_turn",
                 }, y_plan)
             if _active_game_profile() == "empty" and dist_ok:
-                return {
-                    "kind": "wait",
-                    "action": "EMPTY_S1_TINY_X_SETTLE",
-                    "dist_err": float(dist_err),
-                    "x_err": float(x_err),
-                    "x_outside_mm": float(x_outside),
-                    "dist_outside_mm": float(dist_outside),
-                    "duration_ms": 0,
-                    "reason": "empty_s1_tiny_x_settle_at_good_dist",
-                }
+                return _empty_s1_tiny_x_happy_dist_curve_plan(
+                    turn_cmd=turn_cmd,
+                    dist_err=dist_err,
+                    x_err=x_err,
+                    x_outside=x_outside,
+                    dist_outside=dist_outside,
+                    y_plan=y_plan,
+                )
             if y_plan is not None:
                 return y_plan
             if bool(_follow_x_priority_policy().get("tiny_x_only_backoff_enabled", True)):
@@ -12000,16 +12097,15 @@ def _follow_action_plan(reading: dict, *, virtual_safety_armed: bool = True) -> 
             }
         if dist_ok and _active_game_profile() == "empty":
             if float(x_outside) <= float(NOISE_MARGIN_MM):
-                return {
-                    "kind": "wait",
-                    "action": "EMPTY_S1_TINY_X_SETTLE",
-                    "dist_err": float(dist_err),
-                    "x_err": float(x_err),
-                    "x_outside_mm": float(x_outside),
-                    "dist_outside_mm": float(dist_outside),
-                    "duration_ms": 0,
-                    "reason": "empty_s1_tiny_x_settle_at_good_dist",
-                }
+                return _empty_s1_tiny_x_happy_dist_curve_plan(
+                    turn_cmd=turn_cmd,
+                    dist_err=dist_err,
+                    x_err=x_err,
+                    x_outside=x_outside,
+                    dist_outside=dist_outside,
+                    y_plan=y_plan,
+                    reason="empty_s1_noise_margin_x_happy_dist_short_forward_curve",
+                )
             if float(x_outside) >= float(EMPTY_S1_GENTLE_X_OUTSIDE_MM):
                 return _x_only_turn_plan(
                     reading=reading,

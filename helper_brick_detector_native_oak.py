@@ -410,6 +410,9 @@ class NativeOakBrickDetector:
         self._detector.last_nms_count = int(len(candidates))
 
         if primary is None:
+            green_edge_result = self._green_edge_close_range_result(frame, require_close=True)
+            if isinstance(green_edge_result, tuple) and len(green_edge_result) >= 1 and bool(green_edge_result[0]):
+                return green_edge_result
             self._mark_not_found(str(getattr(self._detector, "last_status", "shape mismatch")))
             self.current_frame = frame.copy()
             self._detector.current_frame = self.current_frame

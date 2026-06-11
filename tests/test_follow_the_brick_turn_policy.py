@@ -111,6 +111,165 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertEqual(result["mast_up_ms"], 0)
         self.assertFalse(any(action.get("target") == "m" for action in result["actions"]))
 
+    def test_reset_reverse_turn_obeys_total_back_budget(self):
+        old_reset_motion_config = follow._reset_motion_config
+        old_send_custom = follow.guarded_send_custom_actions_pwm
+        try:
+            follow._reset_motion_config = lambda: {
+                "reverse_turn": {
+                    "max_total_back_ms": 120,
+                    "straight_back_first": {
+                        "enabled": True,
+                        "duration_ms": 500,
+                        "pwm": 103,
+                    },
+                },
+            }
+            follow.guarded_send_custom_actions_pwm = lambda *_args, **_kwargs: {
+                "cmd_sent": "b",
+                "duration_ms": _kwargs.get("duration_ms"),
+            }
+            back_budget = follow._reset_back_budget_state({"max_total_back_ms": 120})
+
+            result = follow._reset_reverse_turn(
+                _FakeRobot(),
+                "r",
+                {"dist_mm": 80.0, "x_mm": 0.0, "y_mm": -25.0},
+                back_budget=back_budget,
+            )
+        finally:
+            follow._reset_motion_config = old_reset_motion_config
+            follow.guarded_send_custom_actions_pwm = old_send_custom
+
+        self.assertEqual(result["wheel_ms"], 120)
+        self.assertEqual(back_budget["used_ms"], 120)
+
+    def test_reset_distance_cap_respects_straight_back_min_duration(self):
+        old_reset_motion_config = follow._reset_motion_config
+        old_send_custom = follow.guarded_send_custom_actions_pwm
+        try:
+            follow._reset_motion_config = lambda: {
+                "reverse_turn": {
+                    "dist_target_mm": 183.4,
+                    "dist_tol_mm": 30.0,
+                    "straight_back_first": {
+                        "enabled": True,
+                        "duration_ms": 3000,
+                        "duration_min_ms": 800,
+                        "duration_max_ms": 1500,
+                        "pwm": 125,
+                    },
+                },
+            }
+            follow.guarded_send_custom_actions_pwm = lambda *_args, **_kwargs: {
+                "cmd_sent": "b",
+                "duration_ms": _kwargs.get("duration_ms"),
+            }
+
+            result = follow._reset_reverse_turn(
+                _FakeRobot(),
+                "r",
+                {"dist_mm": 111.8, "x_mm": 9.9, "y_mm": -33.1},
+                rng=type("FixedRng", (), {"uniform": lambda *_args: 1200.0})(),
+            )
+        finally:
+            follow._reset_motion_config = old_reset_motion_config
+            follow.guarded_send_custom_actions_pwm = old_send_custom
+
+        self.assertEqual(result["wheel_ms"], 800)
+
+    def test_reset_step1_band_distance_still_backs_up_when_x_offset_not_ready(self):
+        old_reset_motion_config = follow._reset_motion_config
+        old_send_custom = follow.guarded_send_custom_actions_pwm
+        try:
+            follow._reset_motion_config = lambda: {
+                "reverse_turn": {
+                    "dist_target_mm": 183.4,
+                    "dist_tol_mm": 30.0,
+                    "target_abs_x_mm": 20.0,
+                    "x_offset_min_mm": 18.0,
+                    "x_offset_max_mm": 30.0,
+                    "straight_back_first": {
+                        "enabled": True,
+                        "duration_ms": 3000,
+                        "duration_min_ms": 800,
+                        "duration_max_ms": 1500,
+                        "pwm": 125,
+                    },
+                },
+            }
+            follow.guarded_send_custom_actions_pwm = lambda *_args, **_kwargs: {
+                "cmd_sent": "b",
+                "duration_ms": _kwargs.get("duration_ms"),
+            }
+
+            result = follow._reset_reverse_turn(
+                _FakeRobot(),
+                "r",
+                {"dist_mm": 135.6, "x_mm": 14.2, "y_mm": -37.2},
+                rng=type("FixedRng", (), {"uniform": lambda *_args: 1200.0})(),
+            )
+        finally:
+            follow._reset_motion_config = old_reset_motion_config
+            follow.guarded_send_custom_actions_pwm = old_send_custom
+
+        self.assertEqual(result["wheel_ms"], 800)
+
+    def test_reset_straight_back_uses_configured_pwm_ceiling(self):
+        old_reset_motion_config = follow._reset_motion_config
+        old_send_custom = follow.guarded_send_custom_actions_pwm
+        sent_actions = []
+        try:
+            follow._reset_motion_config = lambda: {
+                "reverse_turn": {
+                    "dist_target_mm": 183.4,
+                    "dist_tol_mm": 30.0,
+                    "straight_back_first": {
+                        "enabled": True,
+                        "duration_ms": 800,
+                        "duration_min_ms": 800,
+                        "pwm": 115,
+                        "pwm_ceiling": 115,
+                    },
+                },
+            }
+
+            def _capture_send(*args, **kwargs):
+                sent_actions.append(list(args[2]))
+                return {"cmd_sent": "b", "duration_ms": kwargs.get("duration_ms")}
+
+            follow.guarded_send_custom_actions_pwm = _capture_send
+
+            follow._reset_reverse_turn(
+                _FakeRobot(),
+                "r",
+                {"dist_mm": 111.8, "x_mm": 9.9, "y_mm": -33.1},
+            )
+        finally:
+            follow._reset_motion_config = old_reset_motion_config
+            follow.guarded_send_custom_actions_pwm = old_send_custom
+
+        self.assertTrue(sent_actions)
+        wheel_pwms = [
+            int(action.get("pwm", 0))
+            for action in sent_actions[0]
+            if str(action.get("action")) in {"f", "b"}
+        ]
+        self.assertEqual(wheel_pwms, [115, 115])
+
+    def test_reset_adjustment_config_has_stale_back_guard(self):
+        cfg = follow._reset_adjustment_config(
+            {
+                "adjustment": {
+                    "back_progress_min_delta_mm": 3.0,
+                    "max_stale_back_attempts": 2,
+                }
+            }
+        )
+
+        self.assertEqual(cfg["back_progress_min_delta_mm"], 3.0)
+        self.assertEqual(cfg["max_stale_back_attempts"], 2)
+
     def test_reset_visibility_recovery_does_not_mast_down(self):
         old_visibility_recovery_config = follow._visibility_recovery_config
         old_read = follow._read_brick_measurement
@@ -192,6 +351,108 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertEqual(plan["cmd"], "f")
         self.assertNotIn("mast_cmd", plan)
         self.assertNotIn("MAST_U", plan["action"])
+
+    def test_empty_step1_inband_x_uses_gentle_curve_while_closing_dist(self):
+        reading = {
+            "visible": True,
+            "confident": True,
+            "dist_mm": follow._dist_target_mm() + 30.0,
+            "x_mm": follow._x_target_mm() + 4.5,
+            "y_mm": -37.0,
+            "conf": 95.0,
+        }
+
+        plan = follow._follow_action_plan(reading)
+
+        self.assertEqual(plan["kind"], "drive_bias")
+        self.assertEqual(plan["cmd"], "f")
+        self.assertEqual(plan["strength"], "gentle")
+        self.assertIn("BIAS_", plan["action"])
+        self.assertNotEqual(plan["action"], "FWD")
+        self.assertLessEqual(plan["duration_ms"], 120)
+        self.assertEqual(plan["reason"], "empty_s1_inband_x_gentle_curve_while_closing_dist")
+
+    def test_empty_step1_forward_micro_is_short_near_new_dist_floor(self):
+        old_dist_tol = follow._dist_tol_mm
+        try:
+            follow._dist_tol_mm = lambda: 5.0
+            reading = {
+                "visible": True,
+                "confident": True,
+                "dist_mm": follow._dist_target_mm() + 24.5,
+                "x_mm": follow._x_target_mm() + 1.3,
+                "y_mm": -37.0,
+                "conf": 95.0,
+            }
+
+            plan = follow._follow_action_plan(reading)
+        finally:
+            follow._dist_tol_mm = old_dist_tol
+
+        self.assertEqual(plan["kind"], "drive")
+        self.assertEqual(plan["action"], "FWD_MICRO")
+        self.assertLessEqual(plan["duration_ms"], 100)
+
+    def test_empty_step1_micro_dist_with_residual_x_uses_gentle_curve(self):
+        old_dist_tol = follow._dist_tol_mm
+        try:
+            follow._dist_tol_mm = lambda: 5.0
+            reading = {
+                "visible": True,
+                "confident": True,
+                "dist_mm": follow._dist_target_mm() + 6.2,
+                "x_mm": follow._x_target_mm() - 2.3,
+                "y_mm": -37.0,
+                "conf": 95.0,
+            }
+
+            plan = follow._follow_action_plan(reading)
+        finally:
+            follow._dist_tol_mm = old_dist_tol
+
+        self.assertEqual(plan["kind"], "drive_bias")
+        self.assertEqual(plan["cmd"], "f")
+        self.assertEqual(plan["strength"], "gentle")
+        self.assertIn("BIAS_", plan["action"])
+        self.assertNotEqual(plan["action"], "FWD_MICRO")
+        self.assertLessEqual(plan["duration_ms"], 70)
+        self.assertEqual(plan["reason"], "empty_s1_inband_x_gentle_curve_while_closing_dist")
+
+    def test_empty_step1_learning_curve_strength_uses_gentle_for_small_x_misses(self):
+        self.assertEqual(follow._empty_step1_learning_curve_strength(3.0), "gentle")
+        self.assertEqual(follow._empty_step1_learning_curve_strength(8.0), "medium")
+        self.assertEqual(follow._empty_step1_learning_curve_strength(14.0), "strong")
+
+    def test_reset_sharp_x_offset_uses_configured_breakaway_pwm(self):
+        captured = {}
+        old_send = follow._send_reset_custom_actions_pwm
+        try:
+            def _capture(_robot, cmd, action_specs, **kwargs):
+                captured["cmd"] = cmd
+                captured["actions"] = list(action_specs)
+                captured["duration_ms"] = kwargs.get("duration_ms")
+                return {"cmd_sent": cmd, "duration_ms": kwargs.get("duration_ms")}
+
+            follow._send_reset_custom_actions_pwm = _capture
+
+            follow._reset_sharp_turn_adjust(
+                _FakeRobot(),
+                turn_cmd="r",
+                reading={"dist_mm": 150.0, "x_mm": 0.0, "confident": True},
+                duration_ms=250,
+                reset_cfg={
+                    "low_x_extra_sharp_turn": {
+                        "slower_pwm": 103,
+                        "faster_pwm": 162,
+                    }
+                },
+                reason="test",
+            )
+        finally:
+            follow._send_reset_custom_actions_pwm = old_send
+
+        self.assertEqual(captured["duration_ms"], 250)
+        self.assertTrue(any(int(action.get("pwm", 0)) >= 160 for action in captured["actions"]))
 
     def test_empty_profile_near_gate_low_y_holds_without_mast_up(self):
         plan = follow._follow_action_plan(
@@ -359,11 +620,11 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
             "confidence": 0.99,
         }
 
-    def test_extreme_far_low_confident_reading_is_pickup_suspect_stop(self):
+    def test_extreme_far_low_confident_reading_hits_virtual_wall_before_pickup_stop(self):
         reading = {
             "visible": True,
             "confident": True,
-            "dist_mm": 301.0,
+            "dist_mm": 501.0,
             "x_mm": follow._x_target_mm(),
             "y_mm": -91.0,
             "conf": 99.0,
@@ -373,8 +634,8 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
 
         self.assertTrue(follow._pickup_suspected_reading(reading))
         self.assertEqual(plan["kind"], "wait")
-        self.assertEqual(plan["action"], "PICKUP_SUSPECT_STOP")
-        self.assertEqual(plan["reason"], "pickup_suspected_far_low")
+        self.assertEqual(plan["action"], "VIRTUAL_WALL_STOP")
+        self.assertEqual(plan["reason"], "virtual_safety_dist_exceeded")
 
     def test_shifted_visible_low_reading_is_recoverable_not_pickup_suspect(self):
         reading = {
@@ -407,14 +668,79 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertNotEqual(plan.get("reason"), "pickup_suspected_far_low")
 
     def test_uses_combined_bias_until_dist_gap_is_tiny(self):
+        follow._set_game_profile("holding")
         plan = follow._follow_action_plan(
             self._reading_for_gap(dist_gap_mm=100.0, x_gap_mm=11.0)
         )
 
-        self.assertEqual(plan["kind"], "drive")
+        self.assertEqual(plan["kind"], "drive_bias")
         self.assertEqual(plan["cmd"], "f")
-        self.assertEqual(plan["reason"], "dist_only_creep")
+        self.assertEqual(plan["drive_mode"], "forward")
+        self.assertEqual(plan["strength"], "strong")
+        self.assertEqual(plan["reason"], "holding_s1_close_dist_and_x_forward_curve")
         self.assertFalse(plan.get("use_production_turn_curve", False))
+
+    def test_empty_close_range_width_conflict_does_not_reverse(self):
+        plan = follow._follow_action_plan(
+            {
+                "visible": True,
+                "confident": True,
+                "dist_mm": 79.1,
+                "x_mm": -3.5,
+                "y_mm": -24.5,
+                "conf": 95.0,
+                "vision_geometry_source": "green_edge_close_range_width",
+            }
+        )
+
+        self.assertEqual(plan["kind"], "wait")
+        self.assertEqual(plan["action"], "VISION_CLOSE_RANGE_CONFLICT_STOP")
+        self.assertNotEqual(plan.get("cmd"), "b")
+
+    def test_virtual_safety_wall_stops_follow_plan(self):
+        plan = follow._follow_action_plan(
+            {
+                "visible": True,
+                "confident": True,
+                "dist_mm": 301.0,
+                "x_mm": follow._x_target_mm(),
+                "y_mm": -24.5,
+                "conf": 95.0,
+            }
+        )
+
+        self.assertEqual(plan["kind"], "wait")
+        self.assertEqual(plan["action"], "VIRTUAL_WALL_STOP")
+        self.assertEqual(plan["reason"], "virtual_safety_dist_exceeded")
+
+    def test_reverse_gap_closing_plan_is_blocked_before_execution(self):
+        plan = {
+            "kind": "drive_bias",
+            "cmd": "b",
+            "drive_mode": "backward",
+            "action": "BIAS_L_GENTLE_BACKOFF",
+            "dist_err": follow._win_effective_tolerance(follow._dist_tol_mm()) + 10.0,
+            "x_err": 3.7,
+        }
+
+        blocked = follow._block_reverse_gap_closing_plan(plan)
+
+        self.assertEqual(blocked["kind"], "wait")
+        self.assertEqual(blocked["action"], "REVERSE_GAP_CLOSING_BLOCKED")
+        self.assertEqual(blocked["reason"], "reverse_gap_closing_blocked")
+        self.assertEqual(blocked["blocked_plan"]["action"], "BIAS_L_GENTLE_BACKOFF")
+
+    def test_reverse_bias_is_allowed_when_too_close_to_stack(self):
+        plan = {
+            "kind": "drive_bias",
+            "cmd": "b",
+            "drive_mode": "backward",
+            "action": "BIAS_L_STRONG",
+            "dist_err": -60.0,
+            "x_err": 19.0,
+        }
+
+        self.assertIs(follow._block_reverse_gap_closing_plan(plan), plan)
 
     def test_left_of_crosshair_avoids_forward_left_bias(self):
         plan = follow._follow_action_plan(
@@ -456,10 +782,175 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
             self._reading_for_gap(dist_gap_mm=0.0, x_gap_mm=20.0)
         )
 
-        self.assertEqual(plan["kind"], "turn")
-        self.assertEqual(plan["drive_mode"], "backward")
-        self.assertTrue(plan.get("use_production_turn_curve"))
-        self.assertEqual(plan["reason"], "sharp_x_only_tiny_dist")
+        self.assertEqual(plan["kind"], "drive_bias")
+        self.assertEqual(plan["cmd"], "f")
+        self.assertEqual(plan["drive_mode"], "forward")
+        self.assertEqual(plan["reason"], "empty_s1_dist_ok_x_forward_curve_no_pivot")
+        self.assertNotIn("BACKOFF", plan["action"])
+
+    def test_holding_dist_ok_x_gap_uses_forward_curve(self):
+        follow._set_game_profile("holding")
+
+        plan = follow._follow_action_plan(
+            self._reading_for_gap(dist_gap_mm=0.0, x_gap_mm=20.0)
+        )
+
+        self.assertEqual(plan["kind"], "drive_bias")
+        self.assertEqual(plan["cmd"], "f")
+        self.assertEqual(plan["drive_mode"], "forward")
+        self.assertEqual(plan["reason"], "holding_s1_dist_ok_x_forward_curve")
+        self.assertNotIn("BACKOFF", plan["action"])
+
+    def test_empty_too_close_x_bias_uses_bounded_back_recovery(self):
+        plan = follow._follow_action_plan(
+            self._reading_for_gap(dist_gap_mm=-54.0, x_gap_mm=-40.0)
+        )
+
+        self.assertIn(plan["kind"], {"drive", "drive_bias"})
+        self.assertEqual(plan["cmd"], "b")
+        if plan["kind"] == "drive_bias":
+            self.assertEqual(plan["drive_mode"], "backward")
+        self.assertGreaterEqual(plan["duration_ms"], follow.EMPTY_S1_CURVE_BREAKAWAY_MIN_MS)
+        self.assertLessEqual(plan["duration_ms"], 700)
+
+    def test_drive_bias_forward_gentle_and_strong_use_leia_forward_polarity(self):
+        gentle = follow._turn_bias_curve_for_drive_mode("forward", "gentle")
+        strong = follow._turn_bias_curve_for_drive_mode("forward", "strong")
+
+        gentle_actions = follow._turn_bias_actions(
+            drive_mode="forward",
+            turn_cmd="l",
+            curve=gentle,
+        )
+        strong_actions = follow._turn_bias_actions(
+            drive_mode="forward",
+            turn_cmd="l",
+            curve=strong,
+        )
+
+        self.assertEqual([row["action"] for row in gentle_actions], ["b", "f"])
+        self.assertEqual([row["action"] for row in strong_actions], ["b", "f"])
+        self.assertEqual(gentle_actions[0]["pwm"], gentle["inner_pwm"])
+        self.assertEqual(gentle_actions[1]["pwm"], gentle["outer_pwm"])
+        self.assertEqual(strong_actions[0]["pwm"], strong["inner_pwm"])
+        self.assertEqual(strong_actions[1]["pwm"], strong["outer_pwm"])
+        self.assertGreater(strong["outer_pwm"], gentle["outer_pwm"])
+
+    def test_drive_bias_medium_uses_validated_duty_curve_ticks(self):
+        reading = self._reading_for_gap(dist_gap_mm=35.0, x_gap_mm=-18.0)
+        reading.update({"visible": True, "confident": True, "conf": 90.0, "min_confidence_pct": 75.0})
+        robot = _FakeRobot()
+
+        send_result = follow._send_drive_bias(
+            robot,
+            turn_cmd="r",
+            drive_mode="forward",
+            strength="medium",
+            duration_ms=300,
+            reading=reading,
+            context="unit",
+        )
+
+        self.assertEqual(len(robot.custom_commands), 2)
+        self.assertEqual(send_result["duty_curve"]["curve_label"], "fr_medium")
+        first_actions = robot.custom_commands[0][1]
+        second_actions = robot.custom_commands[1][1]
+        self.assertEqual([row["action"] for row in first_actions], ["b", "f"])
+        self.assertEqual([row["action"] for row in second_actions], ["b", "s"])
+        self.assertGreater(first_actions[0]["pwm"], 0)
+        self.assertGreater(first_actions[1]["pwm"], 0)
+        self.assertGreater(second_actions[0]["pwm"], 0)
+        self.assertEqual(second_actions[1]["pwm"], 0)
+        self.assertEqual(first_actions[0]["pwm"], 104)
+        self.assertEqual(first_actions[1]["pwm"], 104)
+        self.assertEqual(second_actions[0]["pwm"], 104)
+
+    def test_wheel_pwm_scaler_caps_to_crawl_ceiling(self):
+        self.assertEqual(follow._wheel_pwm_ceiling(), 104)
+        self.assertLessEqual(follow._scaled_pwm_for_cmd("f", 160), 104)
+        self.assertLessEqual(follow._scaled_pwm_for_cmd("b", 160), 104)
+
+    def test_duty_drive_bias_packets_are_capped_to_crawl_speed(self):
+        reading = self._reading_for_gap(dist_gap_mm=35.0, x_gap_mm=28.0)
+        reading.update({"visible": True, "confident": True, "conf": 90.0, "min_confidence_pct": 75.0})
+        robot = _FakeRobot()
+
+        follow._send_drive_bias(
+            robot,
+            turn_cmd="r",
+            drive_mode="forward",
+            strength="strong",
+            duration_ms=300,
+            reading=reading,
+            context="unit",
+        )
+
+        self.assertTrue(robot.custom_commands)
+        for _cmd, actions, _duration_ms in robot.custom_commands:
+            for action in actions:
+                if str(action.get("action")) in {"f", "b", "l", "r"}:
+                    self.assertLessEqual(int(action.get("pwm", 0)), 104)
+
+    def test_duty_turn_curve_config_excludes_failed_tank_curves(self):
+        cfg = follow._duty_turn_curve_config()
+
+        self.assertTrue(cfg["enabled"])
+        self.assertEqual(cfg["tick_ms"], 150)
+        self.assertEqual(cfg["ramp_pwm_min"], 104)
+        self.assertEqual(cfg["ramp_pwm_max"], 104)
+        self.assertEqual(set(cfg["strengths"]), {"gentle", "medium", "strong", "superstrong"})
+        self.assertNotIn("tank", cfg["strengths"])
+        self.assertEqual(cfg["strengths"]["gentle"]["pwm"], 104)
+        self.assertEqual(cfg["strengths"]["medium"]["pwm"], 104)
+        self.assertEqual(cfg["strengths"]["strong"]["pwm"], 104)
+        self.assertEqual(cfg["strengths"]["superstrong"]["pwm"], 115)
+        self.assertEqual(cfg["strengths"]["superstrong"]["pwm_ceiling"], 115)
+
+    def test_superstrong_duty_curve_uses_calibrated_extra_umph(self):
+        reading = self._reading_for_gap(dist_gap_mm=45.0, x_gap_mm=80.0)
+        reading.update({"visible": True, "confident": True, "conf": 95.0, "min_confidence_pct": 75.0})
+        robot = _FakeRobot()
+
+        follow._send_drive_bias(
+            robot,
+            turn_cmd="r",
+            drive_mode="forward",
+            strength="superstrong",
+            duration_ms=300,
+            reading=reading,
+            context="unit",
+        )
+
+        self.assertTrue(robot.custom_commands)
+        for _cmd, actions, _duration_ms in robot.custom_commands:
+            outside = [row for row in actions if str(row.get("target")) == "l"]
+            self.assertEqual(len(outside), 1)
+            self.assertEqual(int(outside[0].get("pwm", 0)), 115)
+
+    def test_empty_far_big_positive_x_uses_right_superstrong_learning_curve(self):
+        reading = self._reading_for_gap(dist_gap_mm=45.0, x_gap_mm=80.0)
+        reading.update({"visible": True, "confident": True, "conf": 95.0, "min_confidence_pct": 75.0})
+
+        plan = follow._follow_action_plan(reading, virtual_safety_armed=False)
+
+        self.assertEqual(plan["kind"], "drive_bias")
+        self.assertEqual(plan["turn_cmd"], "r")
+        self.assertEqual(plan["strength"], "superstrong")
+        self.assertEqual(plan["duration_ms"], follow.EMPTY_S1_LEARNING_CURVE_MS)
+        self.assertTrue(plan["skip_near_target_crawl_cap"])
+        self.assertFalse(plan["use_calibrated_turn_drive_curve"])
+
+    def test_virtual_wall_recovery_with_big_x_curves_instead_of_straight(self):
+        reading = self._reading_for_gap(dist_gap_mm=90.0, x_gap_mm=80.0)
+        reading.update({"visible": True, "confident": True, "conf": 95.0, "min_confidence_pct": 75.0})
+
+        plan = follow._follow_action_plan(reading, virtual_safety_armed=False)
+
+        self.assertEqual(plan["kind"], "drive_bias")
+        self.assertEqual(plan["action"], "VIRTUAL_WALL_RECOVERY_BIAS_R_SUPERSTRONG")
+        self.assertEqual(plan["turn_cmd"], "r")
+        self.assertEqual(plan["strength"], "superstrong")
+        self.assertEqual(plan["duration_ms"], follow.EMPTY_S1_LEARNING_CURVE_MS)
 
     def test_near_target_dist_micro_uses_micro_drive_floor(self):
         plan = follow._follow_action_plan(
@@ -471,6 +962,38 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertEqual(plan["duration_ms"], follow._follow_dist_approach_policy()["micro_nudge_min_effective_pulse_ms"])
         self.assertGreaterEqual(plan["pwm"], follow._pwm_floor_for_cmd("f"))
 
+    def test_empty_step1_crawl_to_floor_avoids_twitch_pulses(self):
+        self.assertGreaterEqual(
+            follow._empty_step1_crawl_to_win_floor_ms(follow._dist_tol_mm() + 2.0),
+            follow.EMPTY_S1_CURVE_BREAKAWAY_MIN_MS,
+        )
+        self.assertGreaterEqual(
+            follow._empty_step1_crawl_to_win_floor_ms(follow._dist_tol_mm() + 12.0),
+            follow.EMPTY_S1_CURVE_BREAKAWAY_MIN_MS,
+        )
+
+    def test_empty_step1_near_floor_x_curve_uses_breakaway_packet(self):
+        plan = follow._follow_action_plan(
+            self._reading_for_gap(dist_gap_mm=follow._dist_tol_mm() + 6.0, x_gap_mm=follow._x_tol_mm() + 5.0)
+        )
+
+        self.assertEqual(plan["kind"], "drive_bias")
+        self.assertEqual(plan["cmd"], "f")
+        self.assertGreaterEqual(plan["duration_ms"], follow.EMPTY_S1_CURVE_BREAKAWAY_MIN_MS)
+        self.assertEqual(plan["reason"], "empty_s1_crawl_to_win_floor_x_learning_curve")
+
+    def test_empty_step1_dist_ok_x_cleanup_uses_forward_smooth_curve(self):
+        x_gap = follow._x_tol_mm() + 12.0
+        plan = follow._follow_action_plan(
+            self._reading_for_gap(dist_gap_mm=8.0, x_gap_mm=x_gap)
+        )
+
+        self.assertEqual(plan["kind"], "drive_bias")
+        self.assertEqual(plan["cmd"], "f")
+        self.assertEqual(plan["drive_mode"], "forward")
+        self.assertIn("IN_BAND", plan["action"])
+        self.assertGreaterEqual(plan["duration_ms"], 150)
+
     def test_tiny_x_outside_gap_does_not_plan_turn_polish(self):
         x_gap = follow._x_tol_mm() + 1.0
         plan = follow._follow_action_plan(
@@ -481,16 +1004,62 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertEqual(plan["cmd"], "f")
         self.assertEqual(plan["reason"], "tiny_x_dist_micro_straight")
 
-    def test_tiny_x_only_gap_backs_off_instead_of_subfloor_turn(self):
+    def test_tiny_x_only_gap_settles_instead_of_chasing_noise(self):
         x_gap = follow._x_tol_mm() + 1.0
         plan = follow._follow_action_plan(
             self._reading_for_gap(dist_gap_mm=0.0, x_gap_mm=x_gap)
         )
 
+        self.assertEqual(plan["kind"], "wait")
+        self.assertEqual(plan["action"], "EMPTY_S1_TINY_X_SETTLE")
+        self.assertEqual(plan["reason"], "empty_s1_tiny_x_settle_at_good_dist")
+
+    def test_empty_step1_near_target_wide_x_uses_superstrong_brief_curve(self):
+        plan = follow._follow_action_plan(
+            self._reading_for_gap(dist_gap_mm=8.0, x_gap_mm=follow._x_tol_mm() + 12.0)
+        )
+
+        self.assertEqual(plan["kind"], "drive_bias")
+        self.assertEqual(plan["cmd"], "f")
+        self.assertEqual(plan["strength"], "superstrong")
+        self.assertEqual(plan["reason"], "empty_s1_dist_ok_x_smooth_forward_curve")
+
+    def test_empty_step1_in_band_x_cleanup_uses_abs_error_not_band_sliver(self):
+        plan = follow._follow_action_plan(
+            self._reading_for_gap(dist_gap_mm=-5.6, x_gap_mm=11.7)
+        )
+
+        self.assertEqual(plan["kind"], "drive_bias")
+        self.assertEqual(plan["turn_cmd"], "r")
+        self.assertEqual(plan["strength"], "superstrong")
+        self.assertLessEqual(plan["duration_ms"], 150)
+
+    def test_dist_pingpong_guard_ignores_center_crossing_inside_happy_band(self):
+        stats = {
+            "last_distance_act_dist_err": 0.9,
+            "last_distance_act_action": "BIAS_R_SUPERSTRONG_IN_BAND",
+            "last_distance_act_cmd": "f",
+        }
+        plan = {
+            "kind": "drive_bias",
+            "cmd": "f",
+            "distance_creep": True,
+            "dist_err": -1.4,
+        }
+
+        self.assertFalse(follow._should_stop_confirm_for_dist_pingpong(stats, plan))
+
+    def test_empty_step1_too_close_backs_up_to_reenter_band(self):
+        plan = follow._follow_action_plan(
+            self._reading_for_gap(dist_gap_mm=-60.0, x_gap_mm=0.0)
+        )
+
         self.assertEqual(plan["kind"], "drive")
         self.assertEqual(plan["cmd"], "b")
-        self.assertEqual(plan["reason"], "tiny_x_only_backoff_instead_of_turn")
-        self.assertGreaterEqual(plan["duration_ms"], follow._min_effective_drive_duration_ms("b"))
+        self.assertEqual(plan["action"], "BCK_TOO_CLOSE")
+        self.assertGreaterEqual(plan["duration_ms"], follow.EMPTY_S1_CURVE_BREAKAWAY_MIN_MS)
+        self.assertLessEqual(plan["duration_ms"], 700)
+        self.assertEqual(plan["reason"], "empty_s1_too_close_back_to_band")
 
     def test_no_observed_wheel_motion_arms_next_same_action_boost(self):
         stats = follow._new_game_stats()
@@ -512,6 +1081,66 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertEqual(stats["stall_recovery_boost"]["action"], "BIAS_L_ADAPTIVE")
         self.assertAlmostEqual(stats["stall_recovery_boost"]["scale"], 1.1)
 
+    def test_empty_step1_wrong_way_uses_four_act_average_not_one_mm_jitter(self):
+        stats = follow._new_game_stats()
+        for index in range(4):
+            stats["pending_observation"] = {
+                "action": "BIAS_R_SUPERSTRONG_IN_BAND",
+                "cmd": "f",
+                "dist_err": 20.0,
+                "x_err": 14.0,
+                "dist_mm": follow._dist_target_mm() + 20.0,
+                "x_mm": follow._x_target_mm() + 14.0,
+                "y_mm": -30.0,
+                "duration_ms": 170,
+            }
+            result = follow._record_observed_after_pending_act(
+                stats,
+                {
+                    "dist_mm": follow._dist_target_mm() + 21.0 + (0.1 * index),
+                    "x_mm": follow._x_target_mm() + 15.0 + (0.1 * index),
+                    "y_mm": -30.0,
+                },
+            )
+
+            self.assertIsNotNone(result)
+
+        self.assertFalse(stats.get("step1_confident_worse_hard_stop", False))
+        self.assertEqual(stats.get("step1_consecutive_worse_act_count"), 0)
+        detail = stats.get("step1_last_worse_act_detail")
+        self.assertIsInstance(detail, dict)
+        self.assertLess(detail["avg_dist_regression_mm"], follow.NOISE_MARGIN_MM)
+        self.assertLess(detail["avg_x_regression_mm"], follow.NOISE_MARGIN_MM)
+
+    def test_empty_step1_wrong_way_requires_four_act_average_beyond_noise(self):
+        stats = follow._new_game_stats()
+        for _index in range(6):
+            stats["pending_observation"] = {
+                "action": "BIAS_R_SUPERSTRONG_IN_BAND",
+                "cmd": "f",
+                "dist_err": 20.0,
+                "x_err": 14.0,
+                "dist_mm": follow._dist_target_mm() + 20.0,
+                "x_mm": follow._x_target_mm() + 14.0,
+                "y_mm": -30.0,
+                "duration_ms": 170,
+            }
+            follow._record_observed_after_pending_act(
+                stats,
+                {
+                    "dist_mm": follow._dist_target_mm() + 26.0,
+                    "x_mm": follow._x_target_mm() + 20.0,
+                    "y_mm": -30.0,
+                },
+            )
+
+        self.assertTrue(stats.get("step1_confident_worse_hard_stop"))
+        detail = stats.get("step1_last_worse_act_detail")
+        self.assertIsInstance(detail, dict)
+        self.assertEqual(detail["trend_window"], follow.STEP1_WRONG_WAY_TREND_WINDOW)
+        self.assertGreaterEqual(detail["avg_dist_regression_mm"], follow.NOISE_MARGIN_MM)
+        self.assertGreaterEqual(detail["avg_x_regression_mm"], follow.NOISE_MARGIN_MM)
+
     def test_recovery_boost_increases_drive_bias_pwm_above_floor(self):
         reading = self._reading_for_gap(dist_gap_mm=17.0, x_gap_mm=21.0)
         reading.update({"visible": True, "confident": True, "conf": 90.0, "min_confidence_pct": 75.0})
@@ -526,8 +1155,12 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         send_result = follow._execute_follow_action(robot, boosted_plan, reading)
 
         self.assertEqual(boosted_plan["recovery_boost_scale"], 1.1)
-        self.assertEqual(len(robot.custom_commands), 1)
-        _cmd, boosted_actions, _duration_ms = robot.custom_commands[0]
+        self.assertGreaterEqual(len(robot.custom_commands), 1)
+        boosted_actions = [
+            row
+            for _cmd, actions, _duration_ms in robot.custom_commands
+            for row in actions
+        ]
         boosted_pwms = [int(row["pwm"]) for row in boosted_actions if int(row.get("pwm", 0) or 0) > 0]
         self.assertTrue(boosted_pwms)
         self.assertTrue(
@@ -651,11 +1284,11 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertEqual(final["x_mm"], 4.0)
         self.assertEqual(len(robot.custom_commands), 1)
 
-    def test_step2_precision_attaches_mast_down_to_forward_when_high(self):
+    def test_step2_precision_lowers_high_mast_before_distance(self):
         step2 = {
             "precision_settle_enabled": True,
-            "precision_max_attempts": 3,
-            "precision_hard_max_attempts": 5,
+            "precision_max_attempts": 1,
+            "precision_hard_max_attempts": 1,
             "precision_settle_s": 0.0,
             "precision_drive_min_pulse_ms": 80,
             "precision_drive_max_pulse_ms": 180,
@@ -678,8 +1311,8 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
             "x_mm": 4.0,
             "y_mm": -28.0,
         }
-        after = dict(before, dist_mm=149.0, y_mm=-36.2)
-        readings = iter([after, after])
+        after = dict(before, y_mm=-36.2)
+        readings = iter([after])
         old_read = follow._read_brick_measurement
         old_reset = follow._reset_follow_reading_history
         old_sleep = follow.time.sleep
@@ -695,13 +1328,59 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
             follow._reset_follow_reading_history = old_reset
             follow.time.sleep = old_sleep
 
-        self.assertEqual(counts["fwd"], 1)
+        self.assertEqual(counts["fwd"], 0)
         self.assertEqual(counts["mast_d"], 1)
-        self.assertEqual(final["dist_mm"], 149.0)
         self.assertEqual(final["y_mm"], -36.2)
-        self.assertEqual(len(robot.custom_commands), 1)
-        _cmd, actions, _duration_ms = robot.custom_commands[0]
-        self.assertTrue(any(row["target"] == "m" and row["action"] == "d" for row in actions))
+        self.assertEqual(len(robot.commands), 1)
+        self.assertEqual(robot.commands[0][0], "d")
+
+    def test_step2_precision_raises_low_mast_before_distance(self):
+        step2 = {
+            "precision_settle_enabled": True,
+            "precision_max_attempts": 1,
+            "precision_hard_max_attempts": 1,
+            "precision_settle_s": 0.0,
+            "precision_mast_pulse_ms": 250,
+            "freeze_xz_after_xz_target": False,
+            "targets": {
+                "dist_mm": 149.0,
+                "dist_tol_mm": 5.0,
+                "x_mm": 5.9,
+                "x_tol_mm": 3.0,
+                "y_mm": -42.7,
+                "y_tol_mm": 5.0,
+            },
+        }
+        before = {
+            "visible": True,
+            "confident": True,
+            "conf": 95.0,
+            "dist_mm": 202.7,
+            "x_mm": 5.9,
+            "y_mm": -59.6,
+        }
+        after = dict(before, y_mm=-48.0)
+        readings = iter([after])
+        old_read = follow._read_brick_measurement
+        old_reset = follow._reset_follow_reading_history
+        old_sleep = follow.time.sleep
+        try:
+            follow._read_brick_measurement = lambda _vision: next(readings)
+            follow._reset_follow_reading_history = lambda *_args, **_kwargs: None
+            follow.time.sleep = lambda _seconds: None
+            robot = _FakeRobot()
+
+            final, counts = follow._step2_precision_settle_to_targets(object(), robot, before, step2)
+        finally:
+            follow._read_brick_measurement = old_read
+            follow._reset_follow_reading_history = old_reset
+            follow.time.sleep = old_sleep
+
+        self.assertEqual(counts["mast_u"], 1)
+        self.assertEqual(counts["bck"], 0)
+        self.assertEqual(final["y_mm"], -48.0)
+        self.assertEqual(len(robot.commands), 1)
+        self.assertEqual(robot.commands[0][0], "u")
 
     def test_step2_precision_distance_only_ignores_low_y(self):
         step2 = {
@@ -770,19 +1449,19 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertIsNone(targets["y_mm"])
         self.assertIsNone(targets["y_tol_mm"])
 
-    def test_empty_step2_requires_x_alignment_with_distance(self):
+    def test_empty_step2_requires_x_y_alignment_with_distance(self):
         follow._set_game_profile("empty")
 
         cfg = follow._follow_step2_config()
         targets = cfg["targets"]
 
-        self.assertEqual(cfg["nickname"], "close dist+x")
+        self.assertEqual(cfg["nickname"], "close dist+x+y")
         self.assertEqual(targets["dist_mm"], 149.0)
         self.assertEqual(targets["dist_tol_mm"], 5.0)
         self.assertEqual(targets["x_mm"], follow._x_target_mm())
         self.assertEqual(targets["x_tol_mm"], follow._x_tol_mm())
-        self.assertIsNone(targets["y_mm"])
-        self.assertIsNone(targets["y_tol_mm"])
+        self.assertEqual(targets["y_mm"], -18.0)
+        self.assertEqual(targets["y_tol_mm"], 5.0)
 
         ready, _reason, closeness = follow._step2_targets_ready(
             {
@@ -791,7 +1470,7 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
                 "conf": 95.0,
                 "dist_mm": 149.0,
                 "x_mm": 15.0,
-                "y_mm": -28.0,
+                "y_mm": targets["y_mm"],
             },
             cfg,
         )
@@ -799,6 +1478,22 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertFalse(ready)
         self.assertIsInstance(closeness, dict)
         self.assertLess(closeness["x_target_closeness_pct"], 100.0)
+
+        ready, _reason, closeness = follow._step2_targets_ready(
+            {
+                "visible": True,
+                "confident": True,
+                "conf": 95.0,
+                "dist_mm": 149.0,
+                "x_mm": targets["x_mm"],
+                "y_mm": -42.7,
+            },
+            cfg,
+        )
+
+        self.assertFalse(ready)
+        self.assertIsInstance(closeness, dict)
+        self.assertLess(closeness["y_target_closeness_pct"], 100.0)
 
     def test_step2_x_polish_uses_committed_turn_when_x_is_far(self):
         old_curve = follow._production_turn_curve_for_reading
@@ -999,6 +1694,112 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertEqual(len(robot.commands), 0)
         self.assertEqual(len(robot.custom_commands), 0)
         self.assertGreaterEqual(robot.stops, 1)
+
+    def test_empty_step1_predictive_momentum_continues_straight_when_curve_would_enter_band(self):
+        stats = follow._new_game_stats()
+        stats["last_x_momentum"] = {
+            "after_x_err": 18.0,
+            "x_err_reduction_mm": 8.0,
+            "turn_cmd": "r",
+            "strength": "superstrong",
+        }
+        plan = {
+            "kind": "drive_bias",
+            "cmd": "f",
+            "turn_cmd": "r",
+            "drive_mode": "forward",
+            "strength": "superstrong",
+            "action": "BIAS_R_SUPERSTRONG",
+            "dist_err": 35.0,
+            "x_err": 11.0,
+            "duration_ms": follow.EMPTY_S1_LEARNING_CURVE_MS,
+        }
+
+        out = follow._apply_empty_step1_predictive_x_momentum(
+            stats,
+            plan,
+            self._reading_for_gap(dist_gap_mm=35.0, x_gap_mm=11.0),
+        )
+
+        self.assertEqual(out["kind"], "drive")
+        self.assertEqual(out["cmd"], "f")
+        self.assertEqual(out["action"], "PREDICTIVE_X_BRAKE_FWD")
+        self.assertIsNone(stats["last_x_momentum"])
+
+    def test_empty_step1_predictive_momentum_downshifts_superstrong_before_overcorrection(self):
+        stats = follow._new_game_stats()
+        stats["last_x_momentum"] = {
+            "after_x_err": 35.0,
+            "x_err_reduction_mm": 8.0,
+            "turn_cmd": "r",
+            "strength": "superstrong",
+        }
+        plan = {
+            "kind": "drive_bias",
+            "cmd": "f",
+            "turn_cmd": "r",
+            "drive_mode": "forward",
+            "strength": "superstrong",
+            "action": "BIAS_R_SUPERSTRONG",
+            "dist_err": 35.0,
+            "x_err": 25.0,
+            "duration_ms": follow.EMPTY_S1_LEARNING_CURVE_MS,
+        }
+
+        out = follow._apply_empty_step1_predictive_x_momentum(
+            stats,
+            plan,
+            self._reading_for_gap(dist_gap_mm=35.0, x_gap_mm=25.0),
+        )
+
+        self.assertEqual(out["kind"], "drive_bias")
+        self.assertEqual(out["strength"], "medium")
+        self.assertEqual(out["action"], "BIAS_R_MEDIUM")
+        self.assertEqual(out["reason"], "empty_s1_predictive_x_momentum_downshift")
+        self.assertIsNone(stats["last_x_momentum"])
+
+    def test_empty_step1_predictive_dist_momentum_shortens_forward_act(self):
+        stats = follow._new_game_stats()
+        stats["last_dist_momentum"] = {
+            "cmd": "f",
+            "after_dist_err": 25.0,
+            "dist_err_reduction_mm": 30.0,
+            "duration_ms": 250,
+        }
+        plan = {
+            "kind": "drive",
+            "cmd": "f",
+            "action": "FWD",
+            "dist_err": 20.0,
+            "x_err": 0.0,
+            "duration_ms": 250,
+            "distance_creep": True,
+            "reason": "dist_only_creep",
+        }
+
+        out = follow._apply_empty_step1_predictive_dist_momentum(
+            stats,
+            plan,
+            self._reading_for_gap(dist_gap_mm=20.0, x_gap_mm=0.0),
+        )
+
+        self.assertEqual(out["kind"], "drive")
+        self.assertEqual(out["cmd"], "f")
+        self.assertLess(out["duration_ms"], plan["duration_ms"])
+        self.assertEqual(out["reason"], "dist_only_creep_predictive_dist_brake")
+        self.assertIsNone(stats["last_dist_momentum"])
+
+    def test_empty_step1_post_action_wait_includes_learning_settle(self):
+        plan = {
+            "kind": "drive",
+            "cmd": "f",
+            "duration_ms": 100,
+            "distance_creep": True,
+        }
+
+        wait_s = follow._post_action_wait_s(plan, {"duration_ms": 100})
+
+        self.assertGreaterEqual(wait_s, 0.1 + follow.EMPTY_S1_LEARNING_POST_ACT_SETTLE_S)
 
 
 if __name__ == "__main__":
