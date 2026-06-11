@@ -298,10 +298,14 @@
     "x_axis": {
      "positive_error_turn_cmd": "r",
      "win_target_mm": 5.9,
-     "win_tol_mm": 4.0
+     "win_tol_mm": 7.0
     },
     "x_dist_curve_policy": {
      "combined_x_dist_strength": "strong",
+     "dist_ok_close_side_max_reverse_recovery_acts": 3,
+     "dist_ok_close_side_min_abs_dist_err_mm": 35.0,
+     "dist_ok_close_side_x_drive_mode": "backward",
+     "dist_ok_x_only_min_x_outside_mm": 2.0,
      "large_dist_small_x_strength": "gentle",
      "near_wide_x_strength": "strong",
      "too_close_wide_x_drive_mode": "backward"
@@ -560,7 +564,7 @@
    "min_confidence_pct": 40.0,
    "require_cyan_shape": true,
    "trust_detector_boxes": false,
-   "use_unmasked_stack_xz": true
+   "use_unmasked_stack_xz": false
   },
   "holding_target_distance_calibration": {
    "enabled": true,
@@ -591,35 +595,38 @@
    "enabled": true,
    "tick_ms": 150,
    "ramp_pwm_min": 104,
-   "ramp_pwm_max": 104,
+   "ramp_pwm_max": 160,
    "strengths": {
     "gentle": {
      "every_n": 4,
      "mode": "skip_on",
      "phase_offset": 3,
-     "pwm": 104,
+     "pwm": 0,
+     "pwm_ceiling": 160,
      "skip_pwm": 0
     },
     "medium": {
      "every_n": 2,
      "mode": "skip_on",
      "phase_offset": 1,
-     "pwm": 104,
+     "pwm": 0,
+     "pwm_ceiling": 160,
      "skip_pwm": 0
     },
     "strong": {
      "every_n": 3,
      "mode": "run_on",
      "phase_offset": 2,
-     "pwm": 104,
+     "pwm": 0,
+     "pwm_ceiling": 160,
      "skip_pwm": 0
     },
     "superstrong": {
      "every_n": 1,
      "mode": "hold_zero",
      "phase_offset": 0,
-     "pwm": 115,
-     "pwm_ceiling": 115,
+     "pwm": 0,
+     "pwm_ceiling": 160,
      "skip_pwm": 0
     }
    }
@@ -853,6 +860,10 @@
   },
   "x_dist_curve_policy": {
    "combined_x_dist_strength": "adaptive",
+   "dist_ok_close_side_max_reverse_recovery_acts": 3,
+   "dist_ok_close_side_min_abs_dist_err_mm": 35.0,
+   "dist_ok_close_side_x_drive_mode": "backward",
+   "dist_ok_x_only_min_x_outside_mm": 2.0,
    "large_dist_gap_mm": 60.0,
    "large_dist_small_x_strength": "gentle",
    "near_dist_gap_mm": 12.0,
@@ -1067,14 +1078,15 @@
       "enabled": true,
       "mode": "faster_wheel_only"
      },
-     "straight_back_first": {
-      "duration_max_ms": 1500,
-      "duration_min_ms": 800,
-      "duration_ms": 2000,
-      "enabled": true,
-      "mast_up_delay_fraction": 0.5,
-      "pwm": 103
-     },
+      "straight_back_first": {
+       "duration_max_ms": 1500,
+       "duration_min_ms": 800,
+       "duration_ms": 2000,
+       "enabled": true,
+       "mast_up_delay_fraction": 0.5,
+       "pwm": 115,
+       "pwm_ceiling": 115
+      },
      "target_abs_x_mm": 20.0,
      "timeout_s": 4.455,
      "x_offset_max_mm": 80.0,

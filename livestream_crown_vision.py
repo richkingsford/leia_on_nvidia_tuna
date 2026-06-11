@@ -25,7 +25,10 @@ from helper_brick_detector_yolo import (
 )
 from helper_manual_config import load_manual_training_config
 from helper_holding_brick import HoldingMaskLock, detect_holding_brick
-from helper_holding_distance_calibration import apply_holding_distance_calibration_to_result
+from helper_holding_distance_calibration import (
+    apply_holding_distance_calibration_to_result,
+    should_keep_unmasked_holding_distance,
+)
 
 try:
     from helper_holding_brick import (
@@ -229,6 +232,33 @@ def _holding_result_for_vision_context(raw_holding_result, vision_context, holdi
     if bool(holding_result.get("raw_holding")):
         holding_result["reason"] = "empty_context_uses_normal_model"
     return holding_result
+
+
+def _result_dist_mm(result) -> float | None:
+    if not isinstance(result, tuple) or len(result) < 3 or not bool(result[0]):
+        return None
+    try:
+        return float(result[2])
+    except (TypeError, ValueError):
+        return None
+
+
+def _choose_holding_target_result(masked_result, raw_unmasked_result, *, calibrated_dist):
+    unmasked_dist = _result_dist_mm(raw_unmasked_result)
+    masked_dist = calibrated_dist if calibrated_dist is not None else _result_dist_mm(masked_result)
+    if should_keep_unmasked_holding_distance(masked_dist, unmasked_dist):
+        return raw_unmasked_result, {
+            "used_unmasked": True,
+            "raw_unmasked_dist_mm": unmasked_dist,
+            "masked_dist_mm": masked_dist,
+            "reason": "unmasked_mid_far_disagreement_gate",
+        }
+    return masked_result, {
+        "used_unmasked": False,
+        "raw_unmasked_dist_mm": unmasked_dist,
+        "masked_dist_mm": masked_dist,
+        "reason": "masked_holding_target",
+    }
 
 
 def _profile_settings(profile_key: str) -> tuple[str, dict]:
@@ -458,21 +488,30 @@ class CrownVisionLivestream:
                     if masked is not None:
                         contour_result = detect_masked_target_brick_contour(masked, detector=self.vision)
                         if bool(contour_result.get("found")):
-                            result = contour_target_result_tuple(contour_result)
-                            result, raw_dist, calibrated_dist, calibrated = apply_holding_distance_calibration_to_result(result)
+                            masked_result = contour_target_result_tuple(contour_result)
+                            masked_result, raw_dist, calibrated_dist, calibrated = apply_holding_distance_calibration_to_result(masked_result)
+                            result, choice = _choose_holding_target_result(
+                                masked_result,
+                                raw_unmasked_result,
+                                calibrated_dist=calibrated_dist,
+                            )
                             self._last_holding_distance_calibration = {
                                 "raw_dist_mm": raw_dist,
                                 "calibrated_dist_mm": calibrated_dist,
                                 "calibrated": calibrated,
+                                **choice,
                             }
                             try:
-                                draw_result = dict(contour_result)
-                                if calibrated_dist is not None:
-                                    draw_result["raw_dist_mm"] = raw_dist
-                                    draw_result["dist_mm"] = calibrated_dist
-                                self.vision.current_frame = draw_masked_target_contour(raw_frame, draw_result)
                                 suffix = "locked mask" if bool(holding_result.get("holding_mask_locked")) else "mask"
-                                self.vision.last_status = f"target locked below held brick ({suffix})"
+                                if bool(choice.get("used_unmasked")):
+                                    self.vision.last_status = "target locked by normal stack read (holding mask bypassed: mid/far disagreement)"
+                                else:
+                                    draw_result = dict(contour_result)
+                                    if calibrated_dist is not None:
+                                        draw_result["raw_dist_mm"] = raw_dist
+                                        draw_result["dist_mm"] = calibrated_dist
+                                    self.vision.current_frame = draw_masked_target_contour(raw_frame, draw_result)
+                                    self.vision.last_status = f"target locked below held brick ({suffix})"
                             except Exception:
                                 pass
                             self._publish(result)
@@ -486,16 +525,24 @@ class CrownVisionLivestream:
                         finally:
                             self.vision.set_runtime_tuning(**dict(settings))
                         if isinstance(masked_result, tuple) and len(masked_result) >= 1 and bool(masked_result[0]):
-                            result = masked_result
-                            result, raw_dist, calibrated_dist, calibrated = apply_holding_distance_calibration_to_result(result)
+                            masked_result, raw_dist, calibrated_dist, calibrated = apply_holding_distance_calibration_to_result(masked_result)
+                            result, choice = _choose_holding_target_result(
+                                masked_result,
+                                raw_unmasked_result,
+                                calibrated_dist=calibrated_dist,
+                            )
                             self._last_holding_distance_calibration = {
                                 "raw_dist_mm": raw_dist,
                                 "calibrated_dist_mm": calibrated_dist,
                                 "calibrated": calibrated,
+                                **choice,
                             }
                             try:
                                 suffix = "locked mask" if bool(holding_result.get("holding_mask_locked")) else "mask"
-                                self.vision.last_status = f"target locked below held brick ({suffix} model fallback)"
+                                if bool(choice.get("used_unmasked")):
+                                    self.vision.last_status = "target locked by normal stack read (holding mask fallback bypassed: mid/far disagreement)"
+                                else:
+                                    self.vision.last_status = f"target locked below held brick ({suffix} model fallback)"
                             except Exception:
                                 pass
                         else:
@@ -746,7 +793,19 @@ class CrownVisionLivestream:
                 ]
             )
             holding_cal = getattr(self, "_last_holding_distance_calibration", {}) or {}
-            if holding and bool(holding_cal.get("calibrated")):
+            if holding and bool(holding_cal.get("used_unmasked")):
+                lines.insert(
+                    -2,
+                    {
+                        "text": (
+                            "  holding mask bypassed: "
+                            f"masked {_num_text(holding_cal.get('masked_dist_mm'), 0, 'mm')} vs "
+                            f"normal {_num_text(holding_cal.get('raw_unmasked_dist_mm'), 0, 'mm')}"
+                        ),
+                        "color": "#a8d8ff",
+                    },
+                )
+            elif holding and bool(holding_cal.get("calibrated")):
                 lines.insert(
                     -2,
                     {

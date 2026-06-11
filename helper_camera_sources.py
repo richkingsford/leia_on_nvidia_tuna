@@ -62,6 +62,19 @@ def _env_enabled(name: str, default: bool = True) -> bool:
     return str(raw).strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _env_int(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    raw = os.getenv(name)
+    try:
+        value = int(str(raw).strip()) if raw is not None else int(default)
+    except (TypeError, ValueError):
+        value = int(default)
+    if minimum is not None:
+        value = max(int(minimum), int(value))
+    if maximum is not None:
+        value = min(int(maximum), int(value))
+    return int(value)
+
+
 class DepthAICapture:
     """Small OpenCV VideoCapture-like wrapper for DepthAI/OAK RGB frames."""
 
@@ -108,6 +121,7 @@ class DepthAICapture:
                 dai.CameraBoardSocket.CAM_A,
             )
             cam = self._pipeline.create(dai.node.Camera).build(board_socket)
+            self._configure_color_camera_control(dai, cam)
             output = cam.requestOutput((self._width, self._height), fps=self._fps)
             self._queue = output.createOutputQueue(maxSize=4, blocking=False)
             self._configure_intrinsics(dai, board_socket)
@@ -117,6 +131,59 @@ class DepthAICapture:
             self._opened = True
         except Exception:
             self.release()
+
+    def _configure_color_camera_control(self, dai, cam) -> None:
+        """Set conservative OAK RGB controls before streaming frames.
+
+        The default OAK-D-Lite auto-exposure can underexpose Leia's dark tabletop
+        scene, which then makes green segmentation brittle. Keep auto-exposure on
+        but bias it brighter. Every value is environment-overridable so field
+        tuning does not require code edits.
+        """
+        try:
+            ctrl = cam.initialControl
+        except Exception:
+            return
+        try:
+            ctrl.setAutoExposureEnable()
+        except Exception:
+            pass
+        try:
+            ctrl.setAutoExposureCompensation(
+                _env_int("LEIA_DEPTHAI_AE_COMP", 1, minimum=-9, maximum=9)
+            )
+        except Exception:
+            pass
+        try:
+            ctrl.setAutoExposureLimit(
+                _env_int("LEIA_DEPTHAI_AE_LIMIT_US", 33000, minimum=1000, maximum=33000)
+            )
+        except Exception:
+            pass
+        try:
+            ctrl.setAntiBandingMode(dai.CameraControl.AntiBandingMode.MAINS_60_HZ)
+        except Exception:
+            pass
+        try:
+            ctrl.setAutoWhiteBalanceMode(dai.CameraControl.AutoWhiteBalanceMode.AUTO)
+        except Exception:
+            pass
+        try:
+            ctrl.setBrightness(_env_int("LEIA_DEPTHAI_BRIGHTNESS", 0, minimum=-10, maximum=10))
+        except Exception:
+            pass
+        try:
+            ctrl.setContrast(_env_int("LEIA_DEPTHAI_CONTRAST", 1, minimum=-10, maximum=10))
+        except Exception:
+            pass
+        try:
+            ctrl.setSaturation(_env_int("LEIA_DEPTHAI_SATURATION", 1, minimum=-10, maximum=10))
+        except Exception:
+            pass
+        try:
+            ctrl.setSharpness(_env_int("LEIA_DEPTHAI_SHARPNESS", 1, minimum=0, maximum=4))
+        except Exception:
+            pass
 
     def _configure_intrinsics(self, dai, board_socket) -> None:
         if self._device is None:

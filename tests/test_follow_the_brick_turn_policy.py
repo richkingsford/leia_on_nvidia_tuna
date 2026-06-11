@@ -1004,15 +1004,16 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertEqual(plan["cmd"], "f")
         self.assertEqual(plan["reason"], "tiny_x_dist_micro_straight")
 
-    def test_tiny_x_only_gap_settles_instead_of_chasing_noise(self):
+    def test_tiny_x_only_gap_closes_instead_of_claiming_happy(self):
         x_gap = follow._x_tol_mm() + 1.0
         plan = follow._follow_action_plan(
             self._reading_for_gap(dist_gap_mm=0.0, x_gap_mm=x_gap)
         )
 
-        self.assertEqual(plan["kind"], "wait")
-        self.assertEqual(plan["action"], "EMPTY_S1_TINY_X_SETTLE")
-        self.assertEqual(plan["reason"], "empty_s1_tiny_x_settle_at_good_dist")
+        self.assertNotEqual(plan["kind"], "hold")
+        self.assertNotEqual(plan["action"], "HAPPY")
+        self.assertEqual(plan["kind"], "drive_bias")
+        self.assertEqual(plan["reason"], "empty_s1_tiny_x_happy_dist_short_forward_curve")
 
     def test_empty_step1_near_target_wide_x_uses_superstrong_brief_curve(self):
         plan = follow._follow_action_plan(

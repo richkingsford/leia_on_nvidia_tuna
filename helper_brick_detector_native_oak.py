@@ -111,6 +111,8 @@ GREEN_EDGE_PAINTED_COLUMN_MIN_HEIGHT_FRAC = 0.30
 GREEN_EDGE_PAINTED_COLUMN_MIN_COVERAGE = 0.035
 GREEN_EDGE_PAINTED_COLUMN_COL_ACTIVE_FRAC = 0.18
 GREEN_EDGE_PAINTED_COLUMN_CONF_PCT = 92.0
+GREEN_EDGE_PAINTED_COLUMN_MAX_DIST_MM = 320.0
+GREEN_EDGE_PAINTED_COLUMN_MAX_RAW_CALIBRATION_MM = 130.0
 GREEN_EDGE_PAINTED_CLOSE_CALIBRATION_ENABLED = True
 GREEN_EDGE_PAINTED_CLOSE_CALIBRATION_POINTS = (
     (69.0, 90.0),
@@ -410,7 +412,7 @@ class NativeOakBrickDetector:
         self._detector.last_nms_count = int(len(candidates))
 
         if primary is None:
-            green_edge_result = self._green_edge_close_range_result(frame, require_close=True)
+            green_edge_result = self._green_edge_close_range_result(frame, require_close=False)
             if isinstance(green_edge_result, tuple) and len(green_edge_result) >= 1 and bool(green_edge_result[0]):
                 return green_edge_result
             self._mark_not_found(str(getattr(self._detector, "last_status", "shape mismatch")))
@@ -895,6 +897,9 @@ class NativeOakBrickDetector:
             return None
         top_strip = False
         painted_column = False
+        painted_column_raw_dist = None
+        painted_column_bbox = None
+        painted_column_active_rows = None
         active = np.asarray([], dtype=np.int64)
         if bool(GREEN_EDGE_TOP_STRIP_ENABLED):
             row_counts = np.count_nonzero(mask, axis=1)
@@ -923,7 +928,18 @@ class NativeOakBrickDetector:
                     if strip_active.size >= 6:
                         strip_left = int(np.percentile(strip_active, 2))
                         strip_right = int(np.percentile(strip_active, 98))
-                        if int(strip_right - strip_left) >= int(GREEN_EDGE_TOP_STRIP_MIN_WIDTH_PX):
+                        strip_width = int(strip_right - strip_left)
+                        margin = int(GREEN_EDGE_FRAME_MARGIN_PX)
+                        edges_inside = (
+                            int(strip_left) > int(margin)
+                            and int(strip_right) < int(w - margin)
+                        )
+                        not_full_frame_artifact = float(strip_width) <= float(w) * 0.78
+                        if (
+                            strip_width >= int(GREEN_EDGE_TOP_STRIP_MIN_WIDTH_PX)
+                            and bool(edges_inside)
+                            and bool(not_full_frame_artifact)
+                        ):
                             active = strip_active
                             top_strip = True
         if not bool(top_strip):
@@ -939,14 +955,59 @@ class NativeOakBrickDetector:
                 col_active_frac = min(col_active_frac, float(GREEN_EDGE_PAINTED_COLUMN_COL_ACTIVE_FRAC))
             col_thr = max(8, int(col_active_frac * float(h)))
             active = np.where(col_counts > col_thr)[0]
-            if bool(GREEN_EDGE_PAINTED_COLUMN_ENABLED) and active.size >= 6:
-                left_probe = int(np.percentile(active, 2))
-                right_probe = int(np.percentile(active, 98))
-                band = mask[:, max(0, left_probe):min(w, right_probe + 1)]
-                active_rows = np.where(np.count_nonzero(band, axis=1) > 0)[0]
-                if active_rows.size > 0:
-                    run_height = int(active_rows[-1]) - int(active_rows[0]) + 1
-                    painted_column = bool(float(run_height) >= (float(h) * float(GREEN_EDGE_PAINTED_COLUMN_MIN_HEIGHT_FRAC)))
+            if bool(GREEN_EDGE_PAINTED_COLUMN_ENABLED):
+                # The permissive wide mask is excellent for true close top-strip
+                # reads, but at reset distance it can glue the painted stack to
+                # wall/table artifacts and publish a fake ~90mm distance.  For
+                # the painted-column fallback, measure the actual saturated
+                # green component instead.
+                balanced_labels = None
+                try:
+                    balanced_labels = cv2.connectedComponentsWithStats(balanced_mask, 8)
+                except Exception:
+                    balanced_labels = None
+                best_component = None
+                if balanced_labels is not None:
+                    comp_count, _labels, stats, _centroids = balanced_labels
+                    min_height = float(h) * float(GREEN_EDGE_PAINTED_COLUMN_MIN_HEIGHT_FRAC)
+                    min_area = max(120.0, float(h * w) * 0.002)
+                    for comp_idx in range(1, int(comp_count)):
+                        x0, y0, cw, ch, area = stats[comp_idx]
+                        if float(area) < float(min_area):
+                            continue
+                        if float(ch) < float(min_height):
+                            continue
+                        if int(cw) < int(GREEN_EDGE_MIN_WIDTH_PX):
+                            continue
+                        raw_component_dist = detector._estimate_distance_from_width(float(cw))
+                        if raw_component_dist is None or float(raw_component_dist) <= 0.0:
+                            continue
+                        # Prefer the tall green column/stack component over
+                        # floor reflections.  Rows high in the image are the
+                        # supply stack; bottom-only blobs are usually reflection.
+                        top_weight = max(0.0, 1.0 - (float(y0) / max(1.0, float(h))))
+                        score = (float(area) * 0.02) + float(ch) + (float(cw) * 0.5) + (top_weight * 120.0)
+                        if best_component is None or score > float(best_component["score"]):
+                            best_component = {
+                                "score": float(score),
+                                "bbox": (int(x0), int(y0), int(cw), int(ch)),
+                                "raw_dist": float(raw_component_dist),
+                            }
+                if best_component is not None:
+                    bx, by, bw, bh = best_component["bbox"]
+                    painted_column = True
+                    painted_column_bbox = (int(bx), int(by), int(bw), int(bh))
+                    painted_column_raw_dist = float(best_component["raw_dist"])
+                    painted_column_active_rows = np.arange(int(by), int(by + bh), dtype=np.int64)
+                    active = np.arange(int(bx), int(bx + bw), dtype=np.int64)
+                elif active.size >= 6:
+                    left_probe = int(np.percentile(active, 2))
+                    right_probe = int(np.percentile(active, 98))
+                    band = mask[:, max(0, left_probe):min(w, right_probe + 1)]
+                    active_rows = np.where(np.count_nonzero(band, axis=1) > 0)[0]
+                    if active_rows.size > 0:
+                        run_height = int(active_rows[-1]) - int(active_rows[0]) + 1
+                        painted_column = bool(float(run_height) >= (float(h) * float(GREEN_EDGE_PAINTED_COLUMN_MIN_HEIGHT_FRAC)))
         if active.size < 6:
             return None
         left = int(np.percentile(active, 2))
@@ -964,11 +1025,23 @@ class NativeOakBrickDetector:
         # Both side edges must sit inside the frame, else the width is cut off.
         if left <= margin or right >= (w - margin):
             return None
-        raw_dist = detector._estimate_distance_from_width(float(width_px))
-        if raw_dist is None or not (0.0 < float(raw_dist) <= float(GREEN_EDGE_MAX_DIST_MM)):
+        raw_dist = (
+            float(painted_column_raw_dist)
+            if bool(painted_column) and painted_column_raw_dist is not None
+            else detector._estimate_distance_from_width(float(width_px))
+        )
+        max_green_edge_dist = (
+            float(GREEN_EDGE_PAINTED_COLUMN_MAX_DIST_MM)
+            if bool(painted_column)
+            else float(GREEN_EDGE_MAX_DIST_MM)
+        )
+        if raw_dist is None or not (0.0 < float(raw_dist) <= float(max_green_edge_dist)):
             return None
         calibrated_raw_dist = float(raw_dist)
-        if bool(top_strip) or bool(painted_column):
+        if bool(top_strip) or (
+            bool(painted_column)
+            and float(raw_dist) <= float(GREEN_EDGE_PAINTED_COLUMN_MAX_RAW_CALIBRATION_MM)
+        ):
             calibrated_raw_dist = _calibrate_painted_close_green_edge_dist(float(raw_dist))
         gate_primary = {
             "shape_profile": "native_rect",
@@ -986,9 +1059,27 @@ class NativeOakBrickDetector:
         self._native_last_good_dist = float(dist)
         self._native_miss_count = 0
         cx = float(left + right) / 2.0
-        band = mask[:, int(left):int(right)]
-        rows = np.where(np.count_nonzero(band, axis=1) > 0)[0]
+        if bool(painted_column) and painted_column_active_rows is not None:
+            rows = painted_column_active_rows
+        else:
+            band = mask[:, int(left):int(right)]
+            rows = np.where(np.count_nonzero(band, axis=1) > 0)[0]
         cy = float(rows.mean()) if rows.size > 0 else float(h) / 2.0
+        if bool(painted_column) and painted_column_bbox is not None:
+            box_x, box_y, box_w, box_h = [int(v) for v in painted_column_bbox]
+        else:
+            box_x = int(left)
+            box_y = int(rows[0]) if rows.size > 0 else 0
+            box_w = max(1, int(right) - int(left))
+            box_h = max(1, (int(rows[-1]) - int(rows[0]) + 1) if rows.size > 0 else int(h))
+        detector.last_bbox_w_px = int(box_w)
+        detector.last_bbox_h_px = int(box_h)
+        detector.last_bbox_eff_w_px = int(box_w)
+        detector.last_bbox_eff_h_px = int(box_h)
+        detector.last_bbox_width_dist = float(raw_dist)
+        detector.last_bbox_height_dist = None
+        detector.last_bbox_calibrated_height_dist = None
+        detector.last_distance_display_text = f"{float(dist):.0f}mm"
         raw_offset_x = detector._estimate_offset_x_mm(cx, dist)
         offset_x = detector._smooth(raw_offset_x, detector._prev_offset)
         detector._prev_offset = offset_x
@@ -1016,6 +1107,28 @@ class NativeOakBrickDetector:
         detector.last_candidate_count = 1
         detector.last_raw_prediction_count = 1
         detector.last_nms_count = 1
+        debug_frame = frame.copy()
+        if bool(self.debug):
+            pt1 = (max(0, int(box_x)), max(0, int(box_y)))
+            pt2 = (
+                min(int(w) - 1, int(box_x + box_w)),
+                min(int(h) - 1, int(box_y + box_h)),
+            )
+            cv2.rectangle(debug_frame, pt1, pt2, (0, 255, 0), 2)
+            center = (int(round(cx)), int(round(cy)))
+            cv2.circle(debug_frame, center, 4, (0, 255, 255), 2)
+            cv2.putText(
+                debug_frame,
+                f"{detector.last_geometry_source} dist={float(dist):.0f} x={float(offset_x):+.1f}",
+                (max(4, pt1[0]), max(18, pt1[1] - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.42,
+                (255, 0, 255),
+                1,
+                cv2.LINE_AA,
+            )
+        self.current_frame = debug_frame
+        detector.current_frame = debug_frame
         return (
             True,
             0.0,

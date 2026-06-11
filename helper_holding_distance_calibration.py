@@ -10,6 +10,9 @@ from typing import Any
 
 ROBOT_MODEL_FILE = Path(__file__).resolve().parent / "world_model_robot.json"
 CONFIG_KEY = "holding_target_distance_calibration"
+UNMASKED_MID_FAR_MIN_MM = 140.0
+MASKED_CLOSE_MAX_MM = 130.0
+UNMASKED_MASKED_MIN_DISAGREE_MM = 45.0
 
 
 def _coerce_float(value: Any, fallback: float | None = None) -> float | None:
@@ -97,6 +100,31 @@ def calibrate_holding_distance_mm(
     fraction = (float(reported) - float(left[0])) / dx
     calibrated = float(left[1]) + fraction * (float(right[1]) - float(left[1]))
     return float(calibrated), True
+
+
+def should_keep_unmasked_holding_distance(
+    masked_dist_mm: Any,
+    unmasked_dist_mm: Any,
+    *,
+    unmasked_mid_far_min_mm: float = UNMASKED_MID_FAR_MIN_MM,
+    masked_close_max_mm: float = MASKED_CLOSE_MAX_MM,
+    min_disagree_mm: float = UNMASKED_MASKED_MIN_DISAGREE_MM,
+) -> bool:
+    """Return True when the held-brick mask produced a fake close read.
+
+    The masked/holding model is valuable for true close-up placement, but
+    partial painted-column contours can collapse to a bogus ~90mm estimate
+    while the normal stack detector still sees a plausible mid/far distance.
+    """
+    masked = _coerce_float(masked_dist_mm)
+    unmasked = _coerce_float(unmasked_dist_mm)
+    if masked is None or unmasked is None:
+        return False
+    return bool(
+        float(unmasked) >= float(unmasked_mid_far_min_mm)
+        and float(masked) <= float(masked_close_max_mm)
+        and (float(unmasked) - float(masked)) >= float(min_disagree_mm)
+    )
 
 
 def apply_holding_distance_calibration_to_reading(
