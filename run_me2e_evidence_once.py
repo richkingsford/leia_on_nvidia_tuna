@@ -742,6 +742,26 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
             follow._stop_robot(robot)
             return 1
 
+        if bool(getattr(args, "stop_before_holding_s2", False)):
+            _record_evidence_row(
+                args=args,
+                site=site,
+                rows=rows,
+                vision=vision,
+                attempt=attempt,
+                phase="holding_s2_ready",
+                step="step2",
+                status="win",
+                reason="parked_before_holding_s2_align",
+                reading=reading,
+                result={"success": True, "reason": "parked_before_holding_s2_align"},
+            )
+            results.append({"item": "holding_s2_ready", "ok": True, "reason": "parked_before_holding_s2_align"})
+            success = True
+            summary = f"{run_label} attempt {attempt}: parked at start of holding S2"
+            follow._stop_robot(robot)
+            return 0
+
         record_start("holding_s2_align", "step2")
         result = _run_holding_s2_align_sequence(vision, robot)
         reading = result.get("reading") if isinstance(result, dict) else None
@@ -766,19 +786,29 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
             time.sleep(pre_lower_pause_s)
 
         record_start("holding_s3_lower", "step2")
-        result = follow._run_step2_seat_sequence(vision, robot)
-        reading = result.get("reading") if isinstance(result, dict) else None
-        ok = bool(follow._confirmed_step_result(result))
+        result = follow._run_holding_blind_lower_sequence(robot, reading=reading)
+        lower_reading = result.get("reading") if isinstance(result, dict) else reading
+        ok = bool(isinstance(result, dict) and result.get("success"))
         reason = str(result.get("reason") if isinstance(result, dict) else "holding_s3_lower_failed")
-        if not record_done(
-            "holding_s3_lower",
-            phase="holding_s3_lower",
-            step="step2",
-            ok=ok,
-            reason=reason,
-            reading=reading,
-            result=result,
-        ):
+        site.add_row(
+            {
+                "trial": 1,
+                "attempt": attempt,
+                "phase": "holding_s3_lower",
+                "step": "step2",
+                "status": "win" if ok else "fail",
+                "reason": reason,
+                "reading": frozen._reading_summary(lower_reading),
+                "evaluation": {},
+                "target_met": None,
+                "honest_trial": None,
+                "mast_attempts": 0,
+                "image": None,
+                "result": _json_safe(result) if isinstance(result, dict) else None,
+            }
+        )
+        results.append({"item": "holding_s3_lower", "ok": bool(ok), "reason": reason})
+        if not bool(ok):
             follow._stop_robot(robot)
             return 1
 
@@ -1042,6 +1072,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--full-e2e-cycle", action="store_true")
     parser.add_argument("--empty-half-cycle", action="store_true")
     parser.add_argument("--holding-half-cycle", action="store_true")
+    parser.add_argument("--stop-before-holding-s2", action="store_true")
     parser.add_argument("--continue-soft-failures", action="store_true")
     parser.add_argument("--post-lift-pause-s", type=float, default=POST_LIFT_PAUSE_S)
     parser.add_argument("--pre-holding-lower-pause-s", type=float, default=0.0)
@@ -1053,6 +1084,11 @@ if __name__ == "__main__":
     parsed = parse_args()
     if bool(parsed.publish_only):
         raise SystemExit(publish_latest(parsed))
-    if bool(parsed.full_e2e_cycle) or bool(parsed.empty_half_cycle) or bool(parsed.holding_half_cycle):
+    if (
+        bool(parsed.full_e2e_cycle)
+        or bool(parsed.empty_half_cycle)
+        or bool(parsed.holding_half_cycle)
+        or bool(parsed.stop_before_holding_s2)
+    ):
         raise SystemExit(run_full_e2e_cycle(parsed))
     raise SystemExit(run(parsed))

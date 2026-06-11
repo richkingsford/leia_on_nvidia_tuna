@@ -140,23 +140,28 @@ HOLDING_S1_TRANSITION_MAX_DIST_ERR_MM = 45.0
 HOLDING_S1_TRANSITION_MAX_X_OUTSIDE_MM = 0.0
 HOLDING_S1_RETRY_BACKOFF_MS = 900
 EMPTY_S1_RETRY_BACKOFF_MS = 900
-EMPTY_S1_COMBINED_CURVE_MEDIUM_MS = 260
-EMPTY_S1_COMBINED_CURVE_STRONG_MS = 320
+EMPTY_S1_COMBINED_CURVE_MEDIUM_MS = 180
+EMPTY_S1_COMBINED_CURVE_STRONG_MS = 220
 EMPTY_S1_TOO_CLOSE_BIAS_MAX_MS = 180
 VIRTUAL_WALL_RECOVERY_FORWARD_MS = 300
 EMPTY_S1_LEARNING_CURVE_MS = 250
 EMPTY_S1_CURVE_BREAKAWAY_MIN_MS = 450
-EMPTY_S1_SUPERSTRONG_X_OUTSIDE_MM = 20.0
-EMPTY_S1_GENTLE_X_OUTSIDE_MM = 8.0
+EMPTY_S1_SUPERSTRONG_X_OUTSIDE_MM = 32.0
+EMPTY_S1_GENTLE_X_OUTSIDE_MM = 4.0
 EMPTY_S1_IN_BAND_SUPERSTRONG_ABS_X_ERR_MM = 10.0
-EMPTY_S1_PREDICTIVE_X_ENABLED = False
+EMPTY_S1_PREDICTIVE_X_ENABLED = True
 EMPTY_S1_PREDICTIVE_MIN_REDUCTION_MM = 2.5
 EMPTY_S1_PREDICTIVE_BRAKE_MARGIN_MM = 3.0
 EMPTY_S1_PREDICTIVE_DOWN_SHIFT_MARGIN_MM = 18.0
 EMPTY_S1_PREDICTIVE_DIST_ENABLED = False
 EMPTY_S1_PREDICTIVE_DIST_MIN_REDUCTION_MM = 5.0
 EMPTY_S1_PREDICTIVE_DIST_TARGET_MARGIN_MM = 8.0
-EMPTY_S1_LEARNING_POST_ACT_SETTLE_S = 0.08
+EMPTY_S1_LEARNING_POST_ACT_SETTLE_S = 0.16
+EMPTY_S1_NEAR_BAND_TURN_MAX_MS = 120
+EMPTY_S1_APPROACH_TURN_MAX_MS = 160
+EMPTY_S1_APPROACH_TURN_BAND_MM = 35.0
+EMPTY_S1_HAPPY_REJECT_X_JUMP_MM = 35.0
+EMPTY_S1_HAPPY_REJECT_REOBSERVE_S = 0.25
 EMPTY_STEP1_CONFIDENT_WORSE_STOP_COUNT = 3
 RESET_FINAL_X_POLISH_MARGIN_MM = 2.0
 RESET_FINAL_X_POLISH_MIN_MS = 170
@@ -221,7 +226,7 @@ DEFAULT_X_DIST_CURVE_POLICY = {
     "wide_x_gap_mm": 9.0,
     "near_wide_x_strength": "strong",
     "too_close_wide_x_drive_mode": "backward",
-    "dist_ok_close_side_x_drive_mode": "backward",
+    "dist_ok_close_side_x_drive_mode": "forward",
     "dist_ok_close_side_min_abs_dist_err_mm": 20.0,
     "dist_ok_close_side_max_reverse_recovery_acts": 3,
     "dist_ok_x_only_min_x_outside_mm": 2.0,
@@ -1034,6 +1039,11 @@ def _virtual_safety_forward_recovery_plan(
 def _virtual_safety_result_triggered(result: dict | None) -> bool:
     if not isinstance(result, dict):
         return False
+    if bool(result.get("virtual_safety_started_beyond_wall")) and not bool(result.get("virtual_safety_armed")):
+        if not bool(result.get("virtual_safety_stop")) and str(result.get("last_action") or "") != "VIRTUAL_WALL_STOP":
+            reason = str(result.get("reason") or "")
+            if "virtual_safety_dist_exceeded" not in reason:
+                return False
     if bool(result.get("virtual_safety_stop")):
         return True
     if str(result.get("last_action") or "") == "VIRTUAL_WALL_STOP":
@@ -3548,6 +3558,21 @@ def _empty_step1_crawl_to_win_floor_ms(dist_err: float) -> int:
     return max(int(EMPTY_S1_CURVE_BREAKAWAY_MIN_MS), 650)
 
 
+def _empty_step1_observed_curve_cap_ms(dist_err: float, x_outside: float) -> int:
+    """Cap Step 1 curve packets near the win band so every act gets observed."""
+    try:
+        dist_outside = _dist_outside_gate_mm(float(dist_err))
+    except (TypeError, ValueError):
+        dist_outside = float(EMPTY_S1_APPROACH_TURN_BAND_MM)
+    if float(dist_outside) <= 0.0:
+        return int(EMPTY_S1_NEAR_BAND_TURN_MAX_MS)
+    if float(dist_outside) <= float(EMPTY_S1_APPROACH_TURN_BAND_MM):
+        return int(EMPTY_S1_APPROACH_TURN_MAX_MS)
+    if float(x_outside) <= float(EMPTY_S1_GENTLE_X_OUTSIDE_MM):
+        return int(EMPTY_S1_APPROACH_TURN_MAX_MS)
+    return int(EMPTY_S1_COMBINED_CURVE_STRONG_MS)
+
+
 def _empty_step1_in_band_x_curve_ms(dist_err: float) -> int:
     """Smallest forward curve that still feels like a crawl, used only inside the Step 1 distance band."""
     tol = float(_win_effective_tolerance(_dist_tol_mm()))
@@ -5917,11 +5942,13 @@ def _step2_precision_settle_to_targets(
                 break
             duration_ms = _step2_precision_drive_duration_ms(float(dist_gap), step2_cfg, cmd=cmd)
             duration_ms = max(90, min(160, int(duration_ms)))
-            strength = _bias_strength_for_x_outside(float(x_gap))
-            if strength == "micro":
-                strength = "gentle"
-            if strength == "strong":
-                strength = "medium"
+            if abs(float(x_err)) >= float(EMPTY_S1_SUPERSTRONG_X_OUTSIDE_MM):
+                strength = "superstrong"
+                duration_ms = max(int(duration_ms), int(EMPTY_S1_LEARNING_CURVE_MS))
+            else:
+                strength = _bias_strength_for_x_outside(float(x_gap))
+                if strength == "micro":
+                    strength = "gentle"
             x_turn_plan = {
                 "kind": "drive_bias",
                 "cmd": cmd,
@@ -5930,6 +5957,7 @@ def _step2_precision_settle_to_targets(
                 "strength": str(strength),
                 "duration_ms": int(duration_ms),
                 "distance_creep": True,
+                "allow_long_duration": bool(strength == "superstrong"),
                 "use_calibrated_turn_drive_curve": True,
                 "skip_near_target_crawl_cap": True,
                 "reason": "step2_precision_dist_x_curve",
@@ -6302,6 +6330,108 @@ def _step2_recover_visibility_with_forward_creeps(
             context="step2_visibility",
         )
     return current, 0
+
+
+def _run_holding_blind_lower_sequence(
+    robot: Robot,
+    *,
+    reading: dict | None = None,
+    step_cfg: dict | None = None,
+    label: str = "holding_s3_lower",
+) -> dict:
+    """Blindly lower the held brick and return immediately after the timed act."""
+    step2 = step_cfg if isinstance(step_cfg, dict) else _follow_step2_config()
+    before = dict(reading) if isinstance(reading, dict) else {
+        "confident": False,
+        "reason": f"{label}_blind_lower_no_pre_read",
+    }
+    mast_cmd = str(step2.get("seat_mast_cmd") or DEFAULT_STEP2_CONFIG["seat_mast_cmd"]).strip().lower()
+    mast_duration_ms = _cap_mast_duration_ms(
+        mast_cmd,
+        step2.get("seat_mast_duration_ms"),
+        DEFAULT_STEP2_CONFIG["seat_mast_duration_ms"],
+        minimum=0,
+        maximum=5000,
+    )
+    if mast_duration_ms <= 0:
+        return {
+            "success": False,
+            "target_met": False,
+            "reason": f"{label}_blind_lower_duration_zero",
+            "before": before,
+            "reading": before,
+            "duration_ms": 0,
+            "mast_duration_ms": 0,
+            "drive_duration_ms": 0,
+        }
+    if mast_cmd != "d":
+        mast_result = _mast_locked_result(mast_cmd, f"{label}_wrong_direction")
+        return {
+            "success": False,
+            "target_met": False,
+            "reason": f"{label}_mast_blocked:{mast_result.get('reason')}",
+            "send_result": mast_result,
+            "mast_result": mast_result,
+            "before": before,
+            "reading": before,
+            "duration_ms": 0,
+            "mast_duration_ms": 0,
+            "drive_duration_ms": 0,
+        }
+    if not bool(_scripted_mast_allowed("holding_step2_place")):
+        mast_result = _mast_locked_result(mast_cmd, f"{label}_mast_locked")
+        return {
+            "success": False,
+            "target_met": False,
+            "reason": f"{label}_mast_blocked:{mast_result.get('reason')}",
+            "send_result": mast_result,
+            "mast_result": mast_result,
+            "before": before,
+            "reading": before,
+            "duration_ms": 0,
+            "mast_duration_ms": 0,
+            "drive_duration_ms": 0,
+        }
+    mast_pwm = _scaled_pwm_for_cmd(mast_cmd, step2.get("seat_mast_pwm"))
+    mast_result = guarded_send_command_pwm(
+        robot,
+        mast_cmd,
+        mast_pwm,
+        duration_ms=mast_duration_ms,
+        reading=before,
+        context=f"follow_{label}_blind_lower_no_post_read",
+    )
+    if isinstance(mast_result, dict) and bool(mast_result.get("blocked")):
+        return {
+            "success": False,
+            "target_met": False,
+            "reason": f"{label}_mast_blocked:{mast_result.get('reason')}",
+            "send_result": mast_result,
+            "mast_result": mast_result,
+            "before": before,
+            "reading": before,
+            "duration_ms": int(mast_duration_ms),
+            "mast_duration_ms": int(mast_duration_ms),
+            "drive_duration_ms": 0,
+        }
+    time.sleep(float(mast_duration_ms) / 1000.0)
+    _stop_robot(robot)
+    return {
+        "success": True,
+        "target_met": True,
+        "reason": f"{label}_blind_lower_no_post_read",
+        "send_result": {"skipped": True, "reason": f"{label}_blind_lower_no_drive"},
+        "mast_result": mast_result,
+        "before": before,
+        "reading": before,
+        "duration_ms": int(mast_duration_ms),
+        "mast_duration_ms": int(mast_duration_ms),
+        "drive_duration_ms": 0,
+        "creep_attempts": 0,
+        "visibility_recovery_creeps": 0,
+        "precision_counts": {"blind_lower": 1},
+        "closeness": None,
+    }
 
 
 def _run_step2_seat_sequence(
@@ -10162,6 +10292,13 @@ def _step1_dist_x_target_ready(reading: dict | None) -> bool:
         return False
     dist_ok = bool(_dist_err_ok(dist_err) or _dist_outside_gate_mm(dist_err) <= float(NOISE_MARGIN_MM))
     x_ok = bool(_win_axis_ok_with_noise_grace(x_err, _x_tol_mm()))
+    if (
+        _active_game_profile() == "empty"
+        and bool(dist_ok)
+        and float(dist_err) <= -max(0.0, float(_win_effective_tolerance(_dist_lower_tol_mm())) - 5.0)
+        and float(_x_outside_gate_mm(x_err)) <= float(NOISE_MARGIN_MM) + 1.0
+    ):
+        return True
     return bool(dist_ok and x_ok)
 
 
@@ -11837,6 +11974,14 @@ def _x_only_turn_plan(
 ) -> dict:
     if _active_game_profile() == "empty":
         strength_key = _drive_turn_bias_strength(strength or _empty_step1_learning_curve_strength(float(x_outside)))
+        if float(dist_outside) <= 0.0:
+            # When Step 1 distance is already happy, X correction must rotate
+            # more than it advances. Medium curves can spend the whole distance
+            # band before closing a wide X error.
+            if float(x_outside) >= 8.0:
+                strength_key = "superstrong"
+            elif float(x_outside) >= float(EMPTY_S1_GENTLE_X_OUTSIDE_MM):
+                strength_key = "strong"
         drive_key = "forward"
         plan = _x_dist_drive_bias_plan(
             turn_cmd=turn_cmd,
@@ -11849,13 +11994,17 @@ def _x_only_turn_plan(
             reason=f"{reason}_drive_turn_only",
         )
         duration_ms = _x_turn_duration_ms(dist_err=dist_err, turn_cmd=turn_cmd)
-        plan["duration_ms"] = min(max(250, int(duration_ms)), int(EMPTY_S1_COMBINED_CURVE_STRONG_MS))
+        cap_ms = _empty_step1_observed_curve_cap_ms(float(dist_err), float(x_outside))
+        room_to_floor_mm = float(dist_err) + float(_win_effective_tolerance(_dist_lower_tol_mm()))
+        if float(dist_outside) <= 0.0:
+            cap_ms = min(int(cap_ms), 90)
+        plan["duration_ms"] = max(90, min(int(duration_ms), int(cap_ms)))
         plan["strength"] = strength_key
         plan["action"] = _shiny_curve_label(drive_key, str(turn_cmd or "r").strip().lower(), strength_key)
         plan["use_calibrated_turn_drive_curve"] = str(strength_key).strip().lower() not in {"micro", "adaptive"}
         plan["force_drive_turn_only"] = True
         plan["allow_long_duration"] = False
-        plan["skip_near_target_crawl_cap"] = True
+        plan["skip_near_target_crawl_cap"] = bool(float(_dist_outside_gate_mm(dist_err)) > float(EMPTY_S1_APPROACH_TURN_BAND_MM))
         return plan
     plan = {
         "kind": "turn",
@@ -11913,7 +12062,7 @@ def _follow_action_plan(reading: dict, *, virtual_safety_armed: bool = True) -> 
     dist_lower_happy_tol = _win_effective_tolerance(_dist_lower_tol_mm())
     y_cfg = _follow_y_axis_config()
     y_err = _y_err_for_reading(reading, target=float(y_cfg.get("win_target_mm", Y_TARGET_MM)))
-    if _virtual_safety_dist_exceeded(reading):
+    if bool(virtual_safety_armed) and _virtual_safety_dist_exceeded(reading):
         if float(dist_err) > 0.0:
             return _virtual_safety_forward_recovery_plan(
                 reading,
@@ -11949,6 +12098,38 @@ def _follow_action_plan(reading: dict, *, virtual_safety_armed: bool = True) -> 
             "y_err": y_err,
             "x_outside_mm": float(_x_outside_gate_mm(x_err)),
             "reason": "happy",
+        }
+    if (
+        _active_game_profile() == "empty"
+        and bool(dist_ok)
+        and bool(y_ok)
+        and float(dist_err) <= -max(0.0, float(dist_lower_happy_tol) - 5.0)
+        and float(_x_outside_gate_mm(x_err)) <= float(NOISE_MARGIN_MM) + 1.0
+    ):
+        return {
+            "kind": "hold",
+            "action": "HAPPY",
+            "dist_err": dist_err,
+            "x_err": x_err,
+            "y_err": y_err,
+            "x_outside_mm": float(_x_outside_gate_mm(x_err)),
+            "reason": "empty_s1_floor_edge_tiny_x_noise_hold",
+        }
+    if (
+        _active_game_profile() == "empty"
+        and float(dist_err) < -float(dist_lower_happy_tol)
+        and not bool(x_ok)
+    ):
+        return {
+            "kind": "wait",
+            "action": "EMPTY_S1_PAST_FLOOR_X_UNRESOLVED",
+            "dist_err": dist_err,
+            "x_err": x_err,
+            "y_err": y_err,
+            "x_outside_mm": float(_x_outside_gate_mm(x_err)),
+            "dist_outside_mm": float(_dist_outside_gate_mm(dist_err)),
+            "duration_ms": 0,
+            "reason": "empty_s1_past_distance_floor_no_forward_x_curve",
         }
     if isinstance(y_plan, dict) and str(y_plan.get("reason") or "") == "protect_lower_edge":
         return y_plan
@@ -12061,9 +12242,9 @@ def _follow_action_plan(reading: dict, *, virtual_safety_armed: bool = True) -> 
                     reason="empty_s1_slightly_close_x_short_forward_turn",
                     use_production_curve=False,
                 )
-                plan["duration_ms"] = min(int(plan.get("duration_ms", 150) or 150), 150)
+                plan["duration_ms"] = min(int(plan.get("duration_ms", 110) or 110), int(EMPTY_S1_NEAR_BAND_TURN_MAX_MS))
                 plan["allow_long_duration"] = False
-                plan["skip_near_target_crawl_cap"] = True
+                plan["skip_near_target_crawl_cap"] = False
                 return plan
             duration_ms = max(
                 int(EMPTY_S1_CURVE_BREAKAWAY_MIN_MS),
@@ -12174,7 +12355,8 @@ def _follow_action_plan(reading: dict, *, virtual_safety_armed: bool = True) -> 
                 and float(dist_err) <= float(_win_effective_tolerance(_dist_tol_mm())) + 20.0
             ):
                 learning_strength = "strong"
-            plan["duration_ms"] = int(max(1, crawl_ms))
+            cap_ms = _empty_step1_observed_curve_cap_ms(float(dist_err), float(x_outside))
+            plan["duration_ms"] = int(max(90, min(int(crawl_ms), int(cap_ms))))
             plan["strength"] = str(learning_strength)
             plan["action"] = _shiny_curve_label("forward", turn_cmd, learning_strength)
             plan["use_calibrated_turn_drive_curve"] = True
@@ -12244,7 +12426,7 @@ def _follow_action_plan(reading: dict, *, virtual_safety_armed: bool = True) -> 
                         y_plan=y_plan,
                         reason="empty_s1_tiny_x_happy_dist_short_forward_curve",
                     )
-                    plan["duration_ms"] = int(max(120, min(170, _empty_step1_in_band_x_curve_ms(float(dist_err)))))
+                    plan["duration_ms"] = int(max(90, min(int(EMPTY_S1_NEAR_BAND_TURN_MAX_MS), _empty_step1_in_band_x_curve_ms(float(dist_err)))))
                     plan["strength"] = "gentle"
                     plan["action"] = _shiny_curve_label("forward", turn_cmd, "gentle", suffix="_in_band")
                     plan["use_calibrated_turn_drive_curve"] = True
@@ -12282,8 +12464,11 @@ def _follow_action_plan(reading: dict, *, virtual_safety_armed: bool = True) -> 
                 drive_mode = str(
                     x_dist_policy.get("dist_ok_close_side_x_drive_mode", "backward")
                 ).strip().lower()
+                # Empty S1 should solve close-side X with small forward curves. Backing
+                # up here widens the distance gap and caused visible ping-ponging.
+                drive_mode = "forward"
                 if drive_mode not in {"forward", "backward"}:
-                    drive_mode = "backward"
+                    drive_mode = "forward"
                 plan = _x_dist_drive_bias_plan(
                     turn_cmd=turn_cmd,
                     drive_mode=drive_mode,
@@ -12352,7 +12537,7 @@ def _follow_action_plan(reading: dict, *, virtual_safety_armed: bool = True) -> 
                 reason="empty_s1_dist_ok_x_short_forward_curve",
             )
             strength = _drive_turn_bias_strength(_empty_step1_learning_curve_strength(float(x_outside)))
-            plan["duration_ms"] = int(max(120, min(190, _empty_step1_in_band_x_curve_ms(float(dist_err)))))
+            plan["duration_ms"] = int(max(90, min(int(EMPTY_S1_NEAR_BAND_TURN_MAX_MS), _empty_step1_in_band_x_curve_ms(float(dist_err)))))
             plan["strength"] = str(strength)
             plan["action"] = _shiny_curve_label("forward", turn_cmd, strength, suffix="_in_band")
             plan["use_calibrated_turn_drive_curve"] = True
@@ -14118,6 +14303,78 @@ def _apply_empty_step1_bad_x_turn_memory(stats: dict, plan: dict, reading: dict)
     }
 
 
+def _apply_empty_step1_recent_x_wrong_way_flip(stats: dict, plan: dict, reading: dict) -> dict:
+    if _active_game_profile() != "empty" or not isinstance(stats, dict) or not isinstance(plan, dict):
+        return plan
+    if not _empty_step1_forward_bias_plan(plan):
+        return plan
+    turn_cmd = str(plan.get("turn_cmd") or "").strip().lower()
+    if turn_cmd not in {"l", "r"}:
+        return plan
+    current_strength = _drive_turn_bias_strength(plan.get("strength") or "gentle")
+    decision_log = stats.get("decision_log")
+    if not isinstance(decision_log, list):
+        return plan
+    recent = []
+    for row in reversed(decision_log):
+        if not isinstance(row, dict):
+            continue
+        action = str(row.get("action") or "").strip().lower()
+        if len(action) < 2 or action[0] not in {"f", "b"} or action[1] not in {"l", "r"}:
+            continue
+        if action[1] != turn_cmd:
+            break
+        parts = action.split("_")
+        row_strength = parts[1] if len(parts) >= 2 else ""
+        if row_strength != current_strength:
+            break
+        if str(row.get("x_outcome") or "").strip().lower() != "worsened":
+            break
+        recent.append(row)
+        if len(recent) >= 2:
+            break
+    if len(recent) < 2:
+        return plan
+    try:
+        dist_outside = float(plan.get("dist_outside_mm", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        dist_outside = 0.0
+    if dist_outside <= 0.0 and current_strength != "superstrong":
+        out = dict(plan)
+        out["strength"] = "superstrong"
+        out["duration_ms"] = min(
+            int(out.get("duration_ms", EMPTY_S1_NEAR_BAND_TURN_MAX_MS) or EMPTY_S1_NEAR_BAND_TURN_MAX_MS),
+            int(EMPTY_S1_NEAR_BAND_TURN_MAX_MS),
+        )
+        out["action"] = _shiny_curve_label(str(out.get("drive_mode") or "forward"), turn_cmd, "superstrong")
+        out["reason"] = f"{str(out.get('reason') or 'empty_s1_x_curve')}_sharpen_after_2x_x_wrong_way"
+        out["recent_x_wrong_way_sharpen"] = True
+        stats["empty_step1_recent_x_wrong_way_sharpen_count"] = int(
+            stats.get("empty_step1_recent_x_wrong_way_sharpen_count", 0) or 0
+        ) + 1
+        return out
+    flipped = _opposite_turn_cmd(turn_cmd)
+    if flipped not in {"l", "r"}:
+        return plan
+    out = dict(plan)
+    out["turn_cmd"] = flipped
+    strength = _drive_turn_bias_strength(out.get("strength") or "gentle")
+    if strength in {"strong", "superstrong"}:
+        strength = "medium"
+    out["strength"] = strength
+    out["duration_ms"] = min(
+        int(out.get("duration_ms", EMPTY_S1_NEAR_BAND_TURN_MAX_MS) or EMPTY_S1_NEAR_BAND_TURN_MAX_MS),
+        int(EMPTY_S1_NEAR_BAND_TURN_MAX_MS),
+    )
+    out["action"] = _shiny_curve_label(str(out.get("drive_mode") or "forward"), flipped, strength)
+    out["reason"] = f"{str(out.get('reason') or 'empty_s1_x_curve')}_flip_after_2x_x_wrong_way"
+    out["recent_x_wrong_way_flip"] = True
+    stats["empty_step1_recent_x_wrong_way_flip_count"] = int(
+        stats.get("empty_step1_recent_x_wrong_way_flip_count", 0) or 0
+    ) + 1
+    return out
+
+
 def _empty_step1_predictive_straight_plan(plan: dict, momentum: dict, *, predicted_abs: float) -> dict:
     out = dict(plan)
     out.update({
@@ -15839,7 +16096,7 @@ def _follow_loop(
                 time.sleep(remaining)
             continue
 
-        if _virtual_safety_dist_exceeded(reading):
+        if bool(stats.get("virtual_safety_armed")) and _virtual_safety_dist_exceeded(reading):
             confirmed_reading, wall_confirmed = _confirm_virtual_wall_reading(
                 vision,
                 robot,
@@ -16194,6 +16451,7 @@ def _follow_loop(
             required=bool(require_step1_motion_before_win),
         )
         plan = _apply_empty_step1_bad_x_turn_memory(stats, plan, reading)
+        plan = _apply_empty_step1_recent_x_wrong_way_flip(stats, plan, reading)
         plan = _apply_empty_step1_predictive_x_momentum(stats, plan, reading)
         plan = _apply_empty_step1_predictive_dist_momentum(stats, plan, reading)
         plan = _apply_empty_step1_x_bias_settle_gate(stats, plan, reading)
@@ -16212,6 +16470,7 @@ def _follow_loop(
                 "empty_s1_reverse_blocked",
                 "unsafe_forward_bias_too_close",
                 "empty_s1_too_close_no_reverse_training",
+                "empty_s1_past_distance_floor_no_forward_x_curve",
                 "empty_s1_both_x_turn_directions_worsened",
                 "empty_s1_reverse_budget_stop",
             }:
@@ -16243,6 +16502,13 @@ def _follow_loop(
                         "[FOLLOW] HARD STOP: empty Step 1 is past the close edge "
                         f"(dist_err={dist_err:+.1f}mm, x_err={x_err:+.1f}mm); "
                         "parked instead of trying reverse recovery during the drill.",
+                        flush=True,
+                    )
+                elif wait_reason == "empty_s1_past_distance_floor_no_forward_x_curve":
+                    print(
+                        "[FOLLOW] HARD STOP: empty Step 1 is past the close distance floor "
+                        f"while X is still unresolved (dist_err={dist_err:+.1f}mm, "
+                        f"x_err={x_err:+.1f}mm); parked instead of sending another forward X curve.",
                         flush=True,
                     )
                 elif wait_reason == "empty_s1_both_x_turn_directions_worsened":
@@ -16530,6 +16796,32 @@ def _follow_loop(
                     _bump_stat_count(stats, "miss_reasons", "step1_happy_reject_after_motion")
                 last_action = "HAPPY_REJECT"
                 if bool(stop_after_win) and not bool(debug_mode):
+                    try:
+                        confirm_x = float((confirmed_reading or {}).get("x_mm"))
+                        live_x = float(x_mm)
+                        confirm_x_jump = abs(float(confirm_x) - float(live_x))
+                    except (AttributeError, TypeError, ValueError):
+                        confirm_x_jump = 0.0
+                    if (
+                        _active_game_profile() == "empty"
+                        and confirm_x_jump >= float(EMPTY_S1_HAPPY_REJECT_X_JUMP_MM)
+                    ):
+                        _stop_robot(robot)
+                        stats["happy_reject_x_jump_reobserve_count"] = int(
+                            stats.get("happy_reject_x_jump_reobserve_count", 0) or 0
+                        ) + 1
+                        stats["last_x_momentum"] = None
+                        stats["pending_gap_action"] = None
+                        _bump_stat_count(stats, "miss_reasons", "happy_reject_x_jump_reobserve")
+                        _reset_follow_reading_history(vision)
+                        print(
+                            "[FOLLOW] HAPPY_REJECT_X_JUMP_REOBSERVE: stopped confirmation "
+                            f"jumped {confirm_x_jump:.1f}mm from the live happy X; "
+                            "pausing for a fresh frame before any corrective turn.",
+                            flush=True,
+                        )
+                        time.sleep(max(float(LOOP_S), float(EMPTY_S1_HAPPY_REJECT_REOBSERVE_S)))
+                        continue
                     _stop_robot(robot)
                     stats["debug_stop_reading"] = (
                         dict(confirmed_reading)

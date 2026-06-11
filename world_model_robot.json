@@ -94,11 +94,11 @@
    "pregame_timeout_s": 12.0
   },
   "combined_gap_policy": {
-   "gentle_x_outside_max_mm": 6.0,
-   "medium_x_outside_max_mm": 14.0,
+  "gentle_x_outside_max_mm": 10.0,
+  "medium_x_outside_max_mm": 22.0,
    "micro_x_outside_max_mm": 0.0,
    "straight_dist_outside_min_mm": 8.0,
-   "straight_x_outside_max_mm": 5.0
+  "straight_x_outside_max_mm": 4.0
   },
   "curve_strength_abs_x_err_mm": {
    "medium": 10.0,
@@ -139,7 +139,7 @@
     "dist_axis": {
      "win_target_mm": 175.0,
      "win_tol_mm": 25.0,
-     "lower_win_tol_mm": 175.0
+     "lower_win_tol_mm": 25.0
     },
     "holding": false,
     "nickname": "align x/dist",
@@ -301,11 +301,11 @@
      "win_tol_mm": 7.0
     },
     "x_dist_curve_policy": {
-     "combined_x_dist_strength": "strong",
+   "combined_x_dist_strength": "adaptive",
      "dist_ok_close_side_max_reverse_recovery_acts": 3,
      "dist_ok_close_side_min_abs_dist_err_mm": 35.0,
-     "dist_ok_close_side_x_drive_mode": "backward",
-     "dist_ok_x_only_min_x_outside_mm": 2.0,
+     "dist_ok_close_side_x_drive_mode": "forward",
+  "dist_ok_x_only_min_x_outside_mm": 4.0,
      "large_dist_small_x_strength": "gentle",
      "near_wide_x_strength": "strong",
      "too_close_wide_x_drive_mode": "backward"
@@ -525,7 +525,7 @@
     },
     "x_dist_curve_policy": {
      "combined_bias_max_pulse_ms": 180,
-     "combined_x_dist_strength": "strong",
+    "combined_x_dist_strength": "adaptive",
      "near_wide_x_strength": "medium"
     },
     "x_priority_policy": {
@@ -862,8 +862,8 @@
    "combined_x_dist_strength": "adaptive",
    "dist_ok_close_side_max_reverse_recovery_acts": 3,
    "dist_ok_close_side_min_abs_dist_err_mm": 35.0,
-   "dist_ok_close_side_x_drive_mode": "backward",
-   "dist_ok_x_only_min_x_outside_mm": 2.0,
+   "dist_ok_close_side_x_drive_mode": "forward",
+  "dist_ok_x_only_min_x_outside_mm": 4.0,
    "large_dist_gap_mm": 60.0,
    "large_dist_small_x_strength": "gentle",
    "near_dist_gap_mm": 12.0,
@@ -889,7 +889,7 @@
    "simultaneous_dist_outside_min_mm": 8.0,
    "simultaneous_x_abs_max_mm": 12.0,
    "tiny_x_only_backoff_enabled": true,
-   "tiny_x_outside_no_turn_mm": 0.5,
+  "tiny_x_outside_no_turn_mm": 4.0,
    "x_first_turn_strength": "adaptive"
   },
   "y_axis": {
@@ -981,7 +981,7 @@
       ]
      },
      "confirm_frames": 2,
-     "dist_target_mm": 175.0,
+     "dist_target_mm": 215.0,
      "dist_tol_mm": 0.0,
      "hard_abs_x_tol_mm": 90.0,
      "hard_dist_tol_mm": 0.0,
@@ -994,7 +994,7 @@
       "threshold_abs_x_mm": 35.0
      },
      "max_total_back_ms": 2500,
-     "min_attempt_dist_mm": 175.0,
+     "min_attempt_dist_mm": 215.0,
      "post_pause_s": 2.0,
      "pulse_ms": 4455,
      "settle_s": 0.06,
@@ -1140,7 +1140,7 @@
     ]
    },
    "confirm_frames": 2,
-   "dist_target_mm": 175.0,
+  "dist_target_mm": 215.0,
    "dist_tol_mm": 0.0,
    "hard_abs_x_tol_mm": 90.0,
    "hard_dist_tol_mm": 0.0,
@@ -1153,7 +1153,7 @@
     "threshold_abs_x_mm": 35.0
    },
    "max_total_back_ms": 2500,
-   "min_attempt_dist_mm": 175.0,
+  "min_attempt_dist_mm": 215.0,
    "post_pause_s": 2.0,
    "pulse_ms": 4455,
    "settle_s": 0.06,

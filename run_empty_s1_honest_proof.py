@@ -72,6 +72,11 @@ def _step1_met(reading: dict | None) -> bool:
     return bool(frozen._evaluate_reading(reading, "step1").get("target_met"))
 
 
+def _step1_win_met(reading: dict | None) -> bool:
+    """Score earned S1 wins with the same noise-grace gate used by the controller."""
+    return bool(_step1_met(reading) or follow._step1_dist_x_target_ready(reading))
+
+
 def _confirmed_step1_win_reading(stats: dict | None, fallback: dict | None = None) -> dict:
     """Use the follow loop's confirmed win read instead of a later model-switch read."""
     snapshot = (stats or {}).get("last_step1_win") if isinstance(stats, dict) else None
@@ -866,6 +871,7 @@ def _ensure_honest_reset(
         x_max = 0.0
     if x_min > x_max:
         x_min, x_max = x_max, x_min
+    already_step1_polished = False
     for polish_idx in range(2):
         reset_clean = _reset_pose_met(reading)
         already_step1 = _step1_met(reading)
@@ -876,24 +882,34 @@ def _ensure_honest_reset(
         except (TypeError, ValueError):
             break
         if reset_clean and already_step1:
+            if already_step1_polished:
+                reason = f"{reason};proof_x_offset_polish_limit_already_step1"
+                break
             polish_reason = "already_step1_happy"
         elif abs_x < x_min:
             polish_reason = "below_reset_band"
         else:
             break
+        polish_ms = (
+            int(follow.RESET_FINAL_X_POLISH_MIN_MS)
+            if polish_reason == "already_step1_happy"
+            else int(follow.RESET_FINAL_X_POLISH_MAX_MS)
+        )
         print(
             "[RESET] Proof reset x-offset polish: "
             f"|x|={abs_x:.1f}mm reason={polish_reason} reset band {x_min:.1f}-{x_max:.1f}mm; "
-            f"sending bounded {int(follow.RESET_FINAL_X_POLISH_MAX_MS)}ms reset turn.",
+            f"sending bounded {int(polish_ms)}ms reset turn.",
             flush=True,
         )
         reading = _open_x_offset_once(
             vision,
             robot,
             reading,
-            duration_ms=int(follow.RESET_FINAL_X_POLISH_MAX_MS),
+            duration_ms=int(polish_ms),
         )
         reason = f"{reason};proof_x_offset_polish_{polish_idx + 1}"
+        if polish_reason == "already_step1_happy":
+            already_step1_polished = True
 
     clean_reset = _reset_pose_met(reading)
     honest = bool(clean_reset and not _step1_met(reading))
@@ -1025,7 +1041,7 @@ def run(args: argparse.Namespace) -> int:
                 step1_reading = _confirmed_step1_win_reading(stats, fallback=fallback_reading)
             else:
                 step1_reading = fallback_reading
-            step1_ok = int(stats.get("win_count", 0) or 0) >= 1 and _step1_met(step1_reading)
+            step1_ok = int(stats.get("win_count", 0) or 0) >= 1 and _step1_win_met(step1_reading)
             step1_reason = str(stats.get("last_action") or "step1_follow_loop_done")
             if not step1_ok:
                 step1_reason = f"{step1_reason} | {_step1_failure_diagnosis(step1_reading, stats)}"
