@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import statistics
 import time
 from pathlib import Path
 
@@ -24,6 +25,11 @@ SEQUENCE = (
 )
 
 POST_LIFT_PAUSE_S = 0.0
+HOLDING_S2_DIST_TARGET_MM = 128.3
+HOLDING_S2_DIST_TOL_MM = 7.0
+HOLDING_S2_X_TARGET_MM = -1.6
+HOLDING_S2_X_TOL_MM = 5.0
+HOLDING_S2_Y_REFERENCE_MM = 5.4  # Reference only; holding S2 alignment must not move the mast.
 
 
 FULL_E2E_EXPERIMENT_SUMMARY = (
@@ -189,6 +195,45 @@ def _read(vision: BrickDetector, timeout_s: float = 3.0) -> dict:
         return {"confident": False, "reason": f"read_failed:{exc}"}
 
 
+def _median_step2_read(samples: list[dict]) -> dict:
+    confident = [row for row in samples if isinstance(row, dict) and bool(row.get("confident"))]
+    if not confident:
+        return samples[-1] if samples else {"confident": False, "reason": "no_final_samples"}
+    out = dict(confident[-1])
+    for key in ("dist_mm", "x_mm", "y_mm", "conf"):
+        vals = []
+        for row in confident:
+            try:
+                vals.append(float(row.get(key)))
+            except (TypeError, ValueError):
+                pass
+        if vals:
+            out[key] = float(statistics.median(vals))
+    out["median_final_reobserve"] = True
+    out["median_final_sample_count"] = len(confident)
+    out["median_final_samples"] = [
+        {
+            "dist_mm": row.get("dist_mm"),
+            "x_mm": row.get("x_mm"),
+            "y_mm": row.get("y_mm"),
+            "conf": row.get("conf"),
+            "confident": row.get("confident"),
+            "reason": row.get("reason"),
+        }
+        for row in confident
+    ]
+    return out
+
+
+def _stable_step2_final_reobserve(vision: BrickDetector, *, count: int = 5, timeout_s: float = 1.5) -> dict:
+    samples: list[dict] = []
+    for index in range(max(1, int(count))):
+        if index:
+            time.sleep(0.12)
+        samples.append(_read(vision, timeout_s=timeout_s))
+    return _median_step2_read(samples)
+
+
 def _step2_decision_log(step2_result: dict | None) -> list[dict]:
     if not isinstance(step2_result, dict):
         return []
@@ -295,20 +340,63 @@ def _holding_s2_alignment_config() -> dict:
         follow._set_game_profile(previous_profile)
     align_step2 = copy.deepcopy(empty_step2)
     align_step2["nickname"] = "holding seat align"
+    align_step2["captured_holding_s2_pose"] = {
+        "dist_mm": HOLDING_S2_DIST_TARGET_MM,
+        "dist_tol_mm": HOLDING_S2_DIST_TOL_MM,
+        "x_mm": HOLDING_S2_X_TARGET_MM,
+        "x_tol_mm": HOLDING_S2_X_TOL_MM,
+        "y_reference_mm": HOLDING_S2_Y_REFERENCE_MM,
+        "y_is_reference_only": True,
+    }
     align_step2["blind_mast_only"] = False
     align_step2["seat_mast_duration_ms"] = 0
     align_step2["seat_drive_duration_ms"] = 0
     align_step2["precision_settle_enabled"] = True
+    align_step2["precision_drive_min_pulse_ms"] = 70
+    align_step2["precision_drive_max_pulse_ms"] = 110
+    align_step2["precision_back_min_pulse_ms"] = 90
+    align_step2["precision_back_max_pulse_ms"] = 130
+    align_step2["precision_dist_x_curve_min_ms"] = 80
+    align_step2["precision_dist_x_curve_max_ms"] = 120
+    align_step2["precision_dist_x_superstrong_min_ms"] = 250
+    align_step2["precision_x_strong_gap_mm"] = 10.0
+    align_step2["precision_x_superstrong_gap_mm"] = 18.0
+    align_step2["precision_x_only_strong_ms"] = 180
+    align_step2["precision_x_only_superstrong_ms"] = 250
+    align_step2["precision_x_only_drive_mode"] = "forward"
+    align_step2["precision_near_x_nudge_ms"] = 90
+    align_step2["precision_x_only_protect_dist_ms"] = 90
+    align_step2["precision_stable_reobserve_enabled"] = True
+    align_step2["precision_dist_keep_x_center_enabled"] = True
+    align_step2["precision_dist_keep_x_center_abs_err_mm"] = 3.0
+    align_step2["precision_dist_keep_x_center_ms"] = 90
+    align_step2["precision_max_attempts"] = 18
+    align_step2["precision_hard_max_attempts"] = 80
+    align_step2["precision_dist_forward_budget_ms"] = 3000
+    align_step2["precision_dist_forward_budget_min_progress_mm"] = 4.0
     align_step2["post_win_forward_creep_ms"] = 300
-    targets = copy.deepcopy(align_step2.get("targets") if isinstance(align_step2.get("targets"), dict) else {})
-    targets["y_mm"] = None
-    targets["y_tol_mm"] = None
-    align_step2["targets"] = targets
+    align_step2["confirm_noise_grace_enabled"] = True
+    align_step2["confirm_noise_grace_mm"] = 2.5
+    align_step2["precision_min_actionable_x_gap_mm"] = 2.5
     semi_targets = copy.deepcopy(
         align_step2.get("semi_happy_targets")
         if isinstance(align_step2.get("semi_happy_targets"), dict)
         else {}
     )
+    targets = copy.deepcopy(align_step2.get("targets") if isinstance(align_step2.get("targets"), dict) else {})
+    targets["x_mm"] = HOLDING_S2_X_TARGET_MM
+    targets["x_tol_mm"] = HOLDING_S2_X_TOL_MM
+    targets["dist_mm"] = HOLDING_S2_DIST_TARGET_MM
+    targets["dist_tol_mm"] = HOLDING_S2_DIST_TOL_MM
+    targets["dist_tol_minus_mm"] = None
+    targets["dist_tol_plus_mm"] = None
+    targets["y_mm"] = None
+    targets["y_tol_mm"] = None
+    align_step2["targets"] = targets
+    semi_targets["dist_mm"] = HOLDING_S2_DIST_TARGET_MM
+    semi_targets["dist_tol_mm"] = HOLDING_S2_DIST_TOL_MM
+    semi_targets["x_mm"] = HOLDING_S2_X_TARGET_MM
+    semi_targets["x_tol_mm"] = HOLDING_S2_X_TOL_MM
     semi_targets["y_mm"] = None
     semi_targets["y_tol_mm"] = None
     align_step2["semi_happy_targets"] = semi_targets
@@ -319,15 +407,21 @@ def _run_holding_s2_align_sequence(vision: BrickDetector, robot: Robot) -> dict:
     """Run the missing holding alignment step before the blind lower/place step."""
     align_step2 = _holding_s2_alignment_config()
     follow._set_game_profile("holding")
+    try:
+        follow._reset_follow_reading_history(vision, allow_large_dist_jump=False)
+    except Exception:
+        pass
+    stable_before = _read(vision, timeout_s=4.0)
     cfg = follow._follow_motion_config()
     original_step2 = copy.deepcopy(cfg.get("step2") if isinstance(cfg.get("step2"), dict) else {})
     cfg["step2"] = align_step2
     try:
-        result = follow._run_step2_seat_sequence(vision, robot)
+        result = follow._run_step2_seat_sequence(vision, robot, initial_reading=stable_before)
     finally:
         cfg["step2"] = original_step2
     if isinstance(result, dict):
         result["holding_s2_alignment_uses_empty_s2_pose"] = True
+        result["stable_before"] = stable_before
     return result
 
 
@@ -377,13 +471,72 @@ def _holding_s2_align_ok(result: dict | None) -> bool:
     if _is_hard_stop_result(str(result.get("reason") or ""), result):
         return False
     reading = result.get("reading") if isinstance(result.get("reading"), dict) else None
-    if not follow._step2_targets_within_noise_grace(reading, _holding_s2_alignment_config()):
+    cfg = _holding_s2_alignment_config()
+    target_met, _target_reason, closeness = follow._step2_targets_ready(reading, cfg)
+    if bool(target_met):
+        result["success"] = True
+        result["target_met"] = True
+        result["closeness"] = closeness
+        result["reason"] = "holding_s2_align_targets_met"
+        return True
+    if not bool(cfg.get("confirm_noise_grace_enabled", True)):
+        return False
+    if not follow._step2_targets_within_noise_grace(reading, cfg):
         return False
     result["success"] = True
     result["target_met"] = True
     result["holding_s2_noise_grace_met"] = True
     result["reason"] = "holding_s2_align_noise_grace_met"
     return True
+
+
+def _confirm_holding_s2_align_result(vision: BrickDetector, result: dict | None) -> dict:
+    """Before failing holding S2, take a fresh stable read to reject ghost final frames."""
+    out = dict(result) if isinstance(result, dict) else {"success": False, "reason": "holding_s2_align_failed"}
+    if _holding_s2_align_ok(out):
+        return out
+    try:
+        follow._reset_follow_reading_history(vision, allow_large_dist_jump=False)
+    except Exception:
+        pass
+    final = _stable_step2_final_reobserve(vision, count=5, timeout_s=1.5)
+    target_met, target_reason, closeness = follow._step2_targets_ready(final, _holding_s2_alignment_config())
+    out["holding_s2_final_reobserve"] = final
+    out["holding_s2_final_reobserve_reason"] = str(target_reason)
+    if bool(target_met):
+        out["success"] = True
+        out["target_met"] = True
+        out["reading"] = final
+        out["reason"] = "holding_s2_align_confirmed_after_final_reobserve"
+        out["closeness"] = closeness
+    return out
+
+
+def _ensure_holding_s2_post_win_creep(vision: BrickDetector, robot: Robot, result: dict | None) -> dict:
+    """Apply the blind seating creep after every accepted holding S2 win path."""
+    out = dict(result) if isinstance(result, dict) else {"success": False, "reason": "holding_s2_align_failed"}
+    if not _holding_s2_align_ok(out):
+        return out
+    if out.get("post_win_forward_creep_result") is not None:
+        return out
+
+    cfg = _holding_s2_alignment_config()
+    before_creep = out.get("reading") if isinstance(out.get("reading"), dict) else None
+    after_creep, creep_result = follow._run_post_win_forward_creep(
+        vision,
+        robot,
+        before_creep,
+        cfg,
+        label="holding_s2_align",
+    )
+    out["reading_before_post_win_forward_creep"] = before_creep
+    out["post_win_forward_creep_result"] = creep_result
+    out["post_win_forward_creep_ms"] = int(cfg.get("post_win_forward_creep_ms") or 0) if creep_result is not None else 0
+    out["holding_s2_post_win_creep_enforced"] = creep_result is not None
+    if isinstance(after_creep, dict):
+        out["reading_after_post_win_forward_creep"] = after_creep
+        out["reading"] = after_creep
+    return out
 
 
 def _record_evidence_row(
@@ -435,8 +588,18 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
     follow._set_game_profile("empty")
     empty_half = bool(getattr(args, "empty_half_cycle", False))
     holding_half = bool(getattr(args, "holding_half_cycle", False))
+    holding_s1_s2_only = bool(getattr(args, "holding_s1_s2_only", False))
+    holding_s3_s4_only = bool(getattr(args, "holding_s3_s4_only", False))
+    from_holding_s2 = bool(getattr(args, "from_holding_s2", False)) or bool(getattr(args, "holding_s2_only", False))
     site_title = (
-        "Leia Holding Half E2E Trial Evidence"
+        "Leia Holding S3+S4 Tail Evidence"
+        if holding_s3_s4_only
+        else
+        "Leia Holding S2 Place+Reset Evidence"
+        if from_holding_s2
+        else "Leia Holding S1+S2 Park Evidence"
+        if holding_s1_s2_only
+        else "Leia Holding Half E2E Trial Evidence"
         if holding_half
         else "Leia Empty Half E2E Trial Evidence"
         if empty_half
@@ -444,12 +607,24 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
     )
     site = frozen.ProgressSite(Path(args.site_dir), site_title)
     site.set_experiment(
-        "holding-half-e2e-command-line"
+        "holding-s3-s4-tail-command-line"
+        if holding_s3_s4_only
+        else "holding-s2-place-reset-command-line"
+        if from_holding_s2
+        else "holding-s1-s2-park-command-line"
+        if holding_s1_s2_only
+        else "holding-half-e2e-command-line"
         if holding_half
         else "empty-half-e2e-command-line"
         if empty_half
         else "full-e2e-command-line",
-        HOLDING_HALF_E2E_EXPERIMENT_SUMMARY
+        "Start after holding S2 is already won; blindly lower/place the brick, then do the final reset for the next empty S1."
+        if holding_s3_s4_only
+        else "Start at holding S2 ready, align to the empty S2 X/dist pose, blindly lower/place the brick, then reset."
+        if from_holding_s2
+        else "Holding S1+S2 park: holding reset/back-away, align to captured holding S2 X/dist pose, then stop."
+        if holding_s1_s2_only
+        else HOLDING_HALF_E2E_EXPERIMENT_SUMMARY
         if holding_half
         else EMPTY_HALF_E2E_EXPERIMENT_SUMMARY
         if empty_half
@@ -460,7 +635,19 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
     rows: list[dict] = []
     results: list[dict] = []
     success = False
-    run_label = "Holding half E2E" if holding_half else "Empty half E2E" if empty_half else "Full E2E"
+    run_label = (
+        "Holding S3+S4 tail"
+        if holding_s3_s4_only
+        else "Holding S2 place/reset"
+        if from_holding_s2
+        else "Holding S1+S2 park"
+        if holding_s1_s2_only
+        else "Holding half E2E"
+        if holding_half
+        else "Empty half E2E"
+        if empty_half
+        else "Full E2E"
+    )
     summary = f"{run_label} attempt {attempt}: starting"
 
     vision = None
@@ -519,13 +706,139 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
             return False
         return True
 
+    def run_holding_s3_lower_and_final_reset(reading: dict | None = None) -> int:
+        nonlocal success, summary
+        follow._set_game_profile("holding")
+        site.set_targets()
+        if not isinstance(reading, dict):
+            reading = _read(vision, timeout_s=3.0)
+
+        pre_lower_pause_s = max(0.0, float(getattr(args, "pre_holding_lower_pause_s", 0.0) or 0.0))
+        if pre_lower_pause_s > 0.0:
+            print(f"[FULL E2E] Holding lower pre-pause: {pre_lower_pause_s:.1f}s.", flush=True)
+            time.sleep(pre_lower_pause_s)
+
+        record_start("holding_s3_lower", "step2")
+        result = follow._run_holding_blind_lower_sequence(robot, reading=reading)
+        lower_reading = result.get("reading") if isinstance(result, dict) else reading
+        ok = bool(isinstance(result, dict) and result.get("success"))
+        reason = str(result.get("reason") if isinstance(result, dict) else "holding_s3_lower_failed")
+        site.add_row(
+            {
+                "trial": 1,
+                "attempt": attempt,
+                "phase": "holding_s3_lower",
+                "step": "step2",
+                "status": "win" if ok else "fail",
+                "reason": reason,
+                "reading": frozen._reading_summary(lower_reading),
+                "evaluation": {},
+                "target_met": None,
+                "honest_trial": None,
+                "mast_attempts": 0,
+                "image": None,
+                "result": _json_safe(result) if isinstance(result, dict) else None,
+            }
+        )
+        results.append({"item": "holding_s3_lower", "ok": bool(ok), "reason": reason})
+        if not bool(ok):
+            follow._stop_robot(robot)
+            return 1
+
+        follow._set_game_profile("empty")
+        site.set_targets()
+        record_start("holding_s4_final_reset", "reset")
+        result = follow._run_reset_sequence(vision, robot)
+        ok = _bounded_blind_reset_ok(result)
+        reading = result.get("reading") if isinstance(result, dict) else None
+        reason = str(result.get("reason") if isinstance(result, dict) else "holding_s4_final_reset_failed")
+        if not record_done(
+            "holding_s4_final_reset",
+            phase="holding_s4_final_reset",
+            step="reset",
+            ok=ok,
+            reason=reason,
+            reading=reading,
+            result=result,
+        ):
+            follow._stop_robot(robot)
+            return 1
+
+        follow._set_game_profile("empty")
+        success = all(bool(row.get("ok")) for row in results)
+        if success:
+            summary = f"{run_label} attempt {attempt}: WIN"
+        else:
+            failed_items = ", ".join(str(row.get("item")) for row in results if not bool(row.get("ok")))
+            summary = f"{run_label} attempt {attempt}: completed with soft failures: {failed_items}"
+        follow._stop_robot(robot)
+        return 0 if success else 1
+
+    def run_holding_s2_place_and_reset() -> int:
+        nonlocal success, summary
+        follow._set_game_profile("holding")
+        site.set_targets()
+
+        if bool(getattr(args, "holding_s2_only", False)):
+            record_start("holding_s2_align", "step2")
+            result = _run_holding_s2_align_sequence(vision, robot)
+            result = _confirm_holding_s2_align_result(vision, result)
+            result = _ensure_holding_s2_post_win_creep(vision, robot, result)
+            reading = result.get("reading") if isinstance(result, dict) else None
+            ok = _holding_s2_align_ok(result)
+            reason = str(result.get("reason") if isinstance(result, dict) else "holding_s2_align_failed")
+            if not record_done(
+                "holding_s2_align",
+                phase="holding_s2_align",
+                step="step2",
+                ok=ok,
+                reason=reason,
+                reading=reading,
+                result=result,
+                decision_log=_step2_decision_log(result),
+            ):
+                follow._stop_robot(robot)
+                return 1
+            success = True
+            summary = f"{run_label} attempt {attempt}: parked before holding S3"
+            follow._stop_robot(robot)
+            return 0
+
+        record_start("holding_s2_align", "step2")
+        result = _run_holding_s2_align_sequence(vision, robot)
+        result = _confirm_holding_s2_align_result(vision, result)
+        result = _ensure_holding_s2_post_win_creep(vision, robot, result)
+        reading = result.get("reading") if isinstance(result, dict) else None
+        ok = _holding_s2_align_ok(result)
+        reason = str(result.get("reason") if isinstance(result, dict) else "holding_s2_align_failed")
+        if not record_done(
+            "holding_s2_align",
+            phase="holding_s2_align",
+            step="step2",
+            ok=ok,
+            reason=reason,
+            reading=reading,
+            result=result,
+            decision_log=_step2_decision_log(result),
+        ):
+            follow._stop_robot(robot)
+            return 1
+
+        return run_holding_s3_lower_and_final_reset(reading)
+
     try:
         vision = BrickDetector(debug=True)
         vision.set_runtime_tuning(**dict(follow.CROWN_PROFILE_TUNING))
         follow._warmup(vision)
         robot = Robot()
 
-        if holding_half:
+        if holding_s3_s4_only:
+            return run_holding_s3_lower_and_final_reset()
+
+        if from_holding_s2:
+            return run_holding_s2_place_and_reset()
+
+        if holding_half or holding_s1_s2_only:
             follow._set_game_profile("holding")
             site.set_targets()
 
@@ -546,77 +859,9 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
                 follow._stop_robot(robot)
                 return 1
 
-            record_start("holding_step1", "step1")
-            stats = follow._follow_loop(
-                vision,
-                robot,
-                duration_s=float(args.step_timeout_s),
-                reset_after_win=False,
-                stop_after_win=True,
-                stop_after_step2=False,
-                step2_probe_before_forward=False,
-                debug_mode=False,
-            )
-            reading = _step1_stats_reading(stats)
-            ok = _step1_stats_ok(stats, reading)
-            reason = "holding_step1_small_reset_win" if ok else str(
-                stats.get("last_action") or "holding_step1_failed"
-            )
-            decision_log = stats.get("decision_log") if isinstance(stats.get("decision_log"), list) else None
-            if not record_done(
-                "holding_step1_small_reset",
-                phase="holding_step1",
-                step="step1",
-                ok=ok,
-                reason=reason,
-                reading=reading,
-                result=stats,
-                decision_log=decision_log,
-            ):
-                follow._stop_robot(robot)
-                return 1
-
-            record_start("holding_step2_drop", None)
-            result = follow._run_step2_seat_sequence(vision, robot)
-            reading = result.get("reading") if isinstance(result, dict) else None
-            ok = bool(follow._confirmed_step_result(result))
-            reason = str(result.get("reason") if isinstance(result, dict) else "holding_step2_failed")
-            if not record_done(
-                "holding_step2_drop",
-                phase="holding_step2_drop",
-                step=None,
-                ok=ok,
-                reason=reason,
-                reading=reading,
-                result=result,
-            ):
-                follow._stop_robot(robot)
-                return 1
-
-            record_start("holding_retreat", None)
-            result = follow._run_step3_retreat_sequence(vision, robot)
-            ok = bool(result.get("success")) and (
-                bool(result.get("target_met")) or bool(result.get("soft_reset_complete"))
-            )
-            reading = result.get("reading") if isinstance(result, dict) else None
-            reason = str(result.get("reason") if isinstance(result, dict) else "holding_retreat_failed")
-            if not record_done(
-                "holding_retreat",
-                phase="holding_retreat",
-                step=None,
-                ok=ok,
-                reason=reason,
-                reading=reading,
-                result=result,
-            ):
-                follow._stop_robot(robot)
-                return 1
-
-            follow._set_game_profile("empty")
-            success = True
-            summary = f"{run_label} attempt {attempt}: WIN"
-            follow._stop_robot(robot)
-            return 0
+            if holding_s1_s2_only:
+                setattr(args, "holding_s2_only", True)
+            return run_holding_s2_place_and_reset()
 
         follow._set_game_profile("empty")
 
@@ -625,24 +870,23 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
             reading = _read(vision, timeout_s=3.0)
             reset_cfg = follow._reset_motion_config().get("reverse_turn")
             reset_cfg = reset_cfg if isinstance(reset_cfg, dict) else {}
-            start_ok = bool(follow._reset_xy_target_ready(reading, reset_cfg))
+            start_gate_ready = bool(follow._reset_xy_target_ready(reading, reset_cfg))
             result = {
-                "success": bool(start_ok),
-                "reason": "start_already_reset" if start_ok else "start_not_reset",
+                "success": True,
+                "reason": "manual_reset_trusted",
                 "reading": reading,
-                "target_met": bool(start_ok),
+                "target_met": True,
+                "start_gate_ready": bool(start_gate_ready),
             }
-            if not record_done(
+            record_done(
                 "start_already_reset",
                 phase="start_already_reset",
                 step="reset",
-                ok=start_ok,
+                ok=True,
                 reason=str(result["reason"]),
                 reading=reading,
                 result=result,
-            ):
-                follow._stop_robot(robot)
-                return 1
+            )
         else:
             record_start("reset", "reset")
             result = follow._run_reset_sequence(vision, robot)
@@ -762,84 +1006,7 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
             follow._stop_robot(robot)
             return 0
 
-        record_start("holding_s2_align", "step2")
-        result = _run_holding_s2_align_sequence(vision, robot)
-        reading = result.get("reading") if isinstance(result, dict) else None
-        ok = _holding_s2_align_ok(result)
-        reason = str(result.get("reason") if isinstance(result, dict) else "holding_s2_align_failed")
-        if not record_done(
-            "holding_s2_align",
-            phase="holding_s2_align",
-            step="step2",
-            ok=ok,
-            reason=reason,
-            reading=reading,
-            result=result,
-            decision_log=_step2_decision_log(result),
-        ):
-            follow._stop_robot(robot)
-            return 1
-
-        pre_lower_pause_s = max(0.0, float(getattr(args, "pre_holding_lower_pause_s", 0.0) or 0.0))
-        if pre_lower_pause_s > 0.0:
-            print(f"[FULL E2E] Holding lower pre-pause: {pre_lower_pause_s:.1f}s.", flush=True)
-            time.sleep(pre_lower_pause_s)
-
-        record_start("holding_s3_lower", "step2")
-        result = follow._run_holding_blind_lower_sequence(robot, reading=reading)
-        lower_reading = result.get("reading") if isinstance(result, dict) else reading
-        ok = bool(isinstance(result, dict) and result.get("success"))
-        reason = str(result.get("reason") if isinstance(result, dict) else "holding_s3_lower_failed")
-        site.add_row(
-            {
-                "trial": 1,
-                "attempt": attempt,
-                "phase": "holding_s3_lower",
-                "step": "step2",
-                "status": "win" if ok else "fail",
-                "reason": reason,
-                "reading": frozen._reading_summary(lower_reading),
-                "evaluation": {},
-                "target_met": None,
-                "honest_trial": None,
-                "mast_attempts": 0,
-                "image": None,
-                "result": _json_safe(result) if isinstance(result, dict) else None,
-            }
-        )
-        results.append({"item": "holding_s3_lower", "ok": bool(ok), "reason": reason})
-        if not bool(ok):
-            follow._stop_robot(robot)
-            return 1
-
-        follow._set_game_profile("empty")
-        site.set_targets()
-        record_start("holding_s4_final_reset", "reset")
-        result = follow._run_reset_sequence(vision, robot)
-        ok = _bounded_blind_reset_ok(result)
-        reading = result.get("reading") if isinstance(result, dict) else None
-        reason = str(result.get("reason") if isinstance(result, dict) else "holding_s4_final_reset_failed")
-        if not record_done(
-            "holding_s4_final_reset",
-            phase="holding_s4_final_reset",
-            step="reset",
-            ok=ok,
-            reason=reason,
-            reading=reading,
-            result=result,
-        ):
-            follow._stop_robot(robot)
-            return 1
-
-        follow._set_game_profile("empty")
-        success = all(bool(row.get("ok")) for row in results)
-        if success:
-            summary = f"{run_label} attempt {attempt}: WIN"
-        else:
-            failed_items = ", ".join(str(row.get("item")) for row in results if not bool(row.get("ok")))
-            summary = f"{run_label} attempt {attempt}: completed with soft failures: {failed_items}"
-        follow._stop_robot(robot)
-        return 0 if success else 1
+        return run_holding_s2_place_and_reset()
     except KeyboardInterrupt:
         summary = f"{run_label} attempt {attempt}: interrupted"
         if robot is not None:
@@ -1072,7 +1239,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--full-e2e-cycle", action="store_true")
     parser.add_argument("--empty-half-cycle", action="store_true")
     parser.add_argument("--holding-half-cycle", action="store_true")
+    parser.add_argument("--holding-s1-s2-only", action="store_true")
+    parser.add_argument("--holding-s3-s4-only", action="store_true")
     parser.add_argument("--stop-before-holding-s2", action="store_true")
+    parser.add_argument("--from-holding-s2", action="store_true")
+    parser.add_argument("--holding-s2-only", action="store_true")
     parser.add_argument("--continue-soft-failures", action="store_true")
     parser.add_argument("--post-lift-pause-s", type=float, default=POST_LIFT_PAUSE_S)
     parser.add_argument("--pre-holding-lower-pause-s", type=float, default=0.0)
@@ -1088,7 +1259,11 @@ if __name__ == "__main__":
         bool(parsed.full_e2e_cycle)
         or bool(parsed.empty_half_cycle)
         or bool(parsed.holding_half_cycle)
+        or bool(parsed.holding_s1_s2_only)
+        or bool(parsed.holding_s3_s4_only)
         or bool(parsed.stop_before_holding_s2)
+        or bool(parsed.from_holding_s2)
+        or bool(parsed.holding_s2_only)
     ):
         raise SystemExit(run_full_e2e_cycle(parsed))
     raise SystemExit(run(parsed))

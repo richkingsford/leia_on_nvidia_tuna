@@ -27,6 +27,7 @@ from helper_manual_config import load_manual_training_config
 from helper_holding_brick import HoldingMaskLock, detect_holding_brick
 from helper_holding_distance_calibration import (
     apply_holding_distance_calibration_to_result,
+    load_empty_distance_calibration_config,
     should_keep_unmasked_holding_distance,
 )
 
@@ -562,6 +563,16 @@ class CrownVisionLivestream:
                         }
             except Exception as exc:
                 logging.getLogger("CrownVisionLivestream").exception("Vision read failed: %s", exc)
+            if (
+                not bool(holding_model_allowed)
+                and isinstance(result, tuple)
+                and len(result) >= 3
+                and bool(result[0])
+            ):
+                result, _empty_raw, _empty_cal, _empty_used = apply_holding_distance_calibration_to_result(
+                    result,
+                    config=load_empty_distance_calibration_config(),
+                )
             self._publish(result)
             elapsed = time.monotonic() - started
             if elapsed < interval_s:

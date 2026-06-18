@@ -10,6 +10,7 @@ from typing import Any
 
 ROBOT_MODEL_FILE = Path(__file__).resolve().parent / "world_model_robot.json"
 CONFIG_KEY = "holding_target_distance_calibration"
+EMPTY_CONFIG_KEY = "empty_target_distance_calibration"
 UNMASKED_MID_FAR_MIN_MM = 140.0
 MASKED_CLOSE_MAX_MM = 130.0
 UNMASKED_MASKED_MIN_DISAGREE_MM = 45.0
@@ -32,15 +33,16 @@ def _coerce_point(raw: Any) -> tuple[float, float] | None:
     return float(reported), float(true)
 
 
-def load_holding_distance_calibration_config(path: Path | None = None) -> dict:
-    """Load holding-only stack-width distance calibration from world_model_robot.json."""
+def _load_distance_calibration_config(config_key: str, path: Path | None = None) -> dict:
+    """Load a reported->true stack-width distance calibration block from
+    world_model_robot.json under follow_the_brick.<config_key>."""
     model_path = path if isinstance(path, Path) else ROBOT_MODEL_FILE
     try:
         payload = json.loads(model_path.read_text())
     except Exception:
         return {"enabled": False, "points": []}
     follow = payload.get("follow_the_brick") if isinstance(payload, dict) else {}
-    raw = follow.get(CONFIG_KEY) if isinstance(follow, dict) else {}
+    raw = follow.get(config_key) if isinstance(follow, dict) else {}
     if not isinstance(raw, dict):
         return {"enabled": False, "points": []}
     points = []
@@ -56,6 +58,16 @@ def load_holding_distance_calibration_config(path: Path | None = None) -> dict:
         "enabled": bool(raw.get("enabled", False)) and len(points) >= 2,
         "points": points,
     }
+
+
+def load_holding_distance_calibration_config(path: Path | None = None) -> dict:
+    """Load holding-only stack-width distance calibration from world_model_robot.json."""
+    return _load_distance_calibration_config(CONFIG_KEY, path)
+
+
+def load_empty_distance_calibration_config(path: Path | None = None) -> dict:
+    """Load empty-game native-OAK brick distance calibration from world_model_robot.json."""
+    return _load_distance_calibration_config(EMPTY_CONFIG_KEY, path)
 
 
 def calibrate_holding_distance_mm(

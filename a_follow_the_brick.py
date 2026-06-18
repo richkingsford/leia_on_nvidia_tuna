@@ -45,6 +45,7 @@ from helper_holding_brick import (
 )
 from helper_holding_distance_calibration import (
     apply_holding_distance_calibration_to_reading,
+    calibrate_holding_distance_mm,
     should_keep_unmasked_holding_distance,
 )
 from helper_mast_direction_guard import classify_mast_y_effect, mast_effect_is_reversal
@@ -146,7 +147,7 @@ EMPTY_S1_TOO_CLOSE_BIAS_MAX_MS = 180
 VIRTUAL_WALL_RECOVERY_FORWARD_MS = 300
 EMPTY_S1_LEARNING_CURVE_MS = 250
 EMPTY_S1_CURVE_BREAKAWAY_MIN_MS = 450
-EMPTY_S1_SUPERSTRONG_X_OUTSIDE_MM = 32.0
+EMPTY_S1_SUPERSTRONG_X_OUTSIDE_MM = 4.0
 EMPTY_S1_GENTLE_X_OUTSIDE_MM = 4.0
 EMPTY_S1_IN_BAND_SUPERSTRONG_ABS_X_ERR_MM = 10.0
 EMPTY_S1_PREDICTIVE_X_ENABLED = True
@@ -164,8 +165,8 @@ EMPTY_S1_HAPPY_REJECT_X_JUMP_MM = 35.0
 EMPTY_S1_HAPPY_REJECT_REOBSERVE_S = 0.25
 EMPTY_STEP1_CONFIDENT_WORSE_STOP_COUNT = 3
 RESET_FINAL_X_POLISH_MARGIN_MM = 2.0
-RESET_FINAL_X_POLISH_MIN_MS = 170
-RESET_FINAL_X_POLISH_MAX_MS = 250
+RESET_FINAL_X_POLISH_MIN_MS = 85
+RESET_FINAL_X_POLISH_MAX_MS = 125
 GAP_REGRESSION_EPSILON_MM = 0.25
 NOISE_MARGIN_MM = 5.0
 STEP1_WRONG_WAY_TREND_WINDOW = 4
@@ -174,8 +175,8 @@ DEFAULT_FOLLOW_COMBINED_GAP_POLICY = {
     "straight_x_outside_max_mm": 0.0,
     "straight_dist_outside_min_mm": 8.0,
     "micro_x_outside_max_mm": 2.0,
-    "gentle_x_outside_max_mm": 6.0,
-    "medium_x_outside_max_mm": 30.0,
+    "gentle_x_outside_max_mm": 4.0,
+    "medium_x_outside_max_mm": 4.0,
 }
 DEFAULT_DIST_APPROACH_POLICY = {
     "closure_shots": 1.0,
@@ -277,6 +278,10 @@ DEFAULT_HOLDING_TARGET_DISTANCE_CALIBRATION_CONFIG = {
     "enabled": False,
     "points": [],
 }
+DEFAULT_EMPTY_TARGET_DISTANCE_CALIBRATION_CONFIG = {
+    "enabled": False,
+    "points": [],
+}
 DEFAULT_ACT_STALL_GUARD_CONFIG = {
     "enabled": True,
     "max_no_change_tries": 6,
@@ -317,6 +322,8 @@ DEFAULT_STEP2_CONFIG = {
     "post_precision_recovery_cycles": 0,
     "precision_drive_min_pulse_ms": 80,
     "precision_drive_max_pulse_ms": 200,
+    "precision_dist_forward_budget_ms": 360,
+    "precision_dist_forward_budget_min_progress_mm": 8.0,
     "precision_dist_positive_cmd": "f",
     "precision_mast_pulse_ms": 250,
     "precision_mast_small_gap_max_mm": 5.0,
@@ -1322,6 +1329,7 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         "pickup_suspect": dict(DEFAULT_PICKUP_SUSPECT_CONFIG),
         "holding_target_vision": dict(DEFAULT_HOLDING_TARGET_VISION_CONFIG),
         "holding_target_distance_calibration": dict(DEFAULT_HOLDING_TARGET_DISTANCE_CALIBRATION_CONFIG),
+        "empty_target_distance_calibration": dict(DEFAULT_EMPTY_TARGET_DISTANCE_CALIBRATION_CONFIG),
         "act_stall_guard": dict(DEFAULT_ACT_STALL_GUARD_CONFIG),
         "win_confirmation": dict(DEFAULT_WIN_CONFIRMATION_CONFIG),
         "dist_axis": dict(DEFAULT_FOLLOW_DIST_AXIS_CONFIG),
@@ -1519,6 +1527,28 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
     cfg["holding_target_distance_calibration"] = {
         "enabled": bool(raw_holding_distance.get("enabled", False)) and len(holding_distance_points) >= 2,
         "points": holding_distance_points,
+    }
+    raw_empty_distance = (
+        raw.get("empty_target_distance_calibration")
+        if isinstance(raw.get("empty_target_distance_calibration"), dict)
+        else {}
+    )
+    empty_distance_points = []
+    for item in raw_empty_distance.get("points", []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            empty_distance_points.append(
+                {
+                    "reported_mm": float(item.get("reported_mm")),
+                    "true_mm": float(item.get("true_mm")),
+                }
+            )
+        except (TypeError, ValueError):
+            continue
+    cfg["empty_target_distance_calibration"] = {
+        "enabled": bool(raw_empty_distance.get("enabled", False)) and len(empty_distance_points) >= 2,
+        "points": empty_distance_points,
     }
     raw_stall_guard = raw.get("act_stall_guard") if isinstance(raw.get("act_stall_guard"), dict) else {}
     cfg["act_stall_guard"]["enabled"] = bool(
@@ -1905,6 +1935,7 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         "edge_recovery_max_abs_dist_mm",
         "edge_recovery_min_confidence_pct",
         "confirm_window_mm",
+        "reacquire_window_mm",
     ):
         cfg["vision_jump_guard"][key] = _coerce_float(
             raw_jump_guard.get(key),
@@ -2180,7 +2211,7 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         raw_step2.get("precision_max_attempts"),
         DEFAULT_STEP2_CONFIG["precision_max_attempts"],
         minimum=1,
-        maximum=40,
+        maximum=200,
     )
     step2["post_precision_recovery_cycles"] = _coerce_int(
         raw_step2.get("post_precision_recovery_cycles"),
@@ -2194,17 +2225,22 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         "precision_mast_pulse_ms",
         "precision_mast_small_gap_min_pulse_ms",
         "precision_mast_small_gap_max_pulse_ms",
+        "precision_dist_forward_budget_ms",
     ):
         step2[key] = _coerce_int(
             raw_step2.get(key),
-            DEFAULT_STEP2_CONFIG[key],
+            DEFAULT_STEP2_CONFIG.get(key),
             minimum=1,
-            maximum=1000,
+            maximum=5000 if key == "precision_dist_forward_budget_ms" else 1000,
         )
-    for key in ("precision_mast_small_gap_max_mm", "precision_mast_small_gap_pwm_scale"):
+    for key in (
+        "precision_mast_small_gap_max_mm",
+        "precision_mast_small_gap_pwm_scale",
+        "precision_dist_forward_budget_min_progress_mm",
+    ):
         step2[key] = _coerce_float(
             raw_step2.get(key),
-            DEFAULT_STEP2_CONFIG[key],
+            DEFAULT_STEP2_CONFIG.get(key),
             minimum=0.0,
             maximum=1.0 if key.endswith("_scale") else 100.0,
         )
@@ -2532,15 +2568,28 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         "precision_mast_pulse_ms",
         "precision_mast_small_gap_min_pulse_ms",
         "precision_mast_small_gap_max_pulse_ms",
+        "precision_dist_forward_budget_ms",
     ):
         if key in raw_profile_step2:
             step2[key] = _coerce_int(
                 raw_profile_step2.get(key),
                 step2.get(key, DEFAULT_STEP2_CONFIG.get(key)),
                 minimum=1,
-                maximum=3 if key == "post_precision_recovery_cycles" else (1000 if key != "precision_max_attempts" else 40),
+                maximum=(
+                    3
+                    if key == "post_precision_recovery_cycles"
+                    else 5000
+                    if key == "precision_dist_forward_budget_ms"
+                    else 200
+                    if key == "precision_max_attempts"
+                    else 1000
+                ),
             )
-    for key in ("precision_mast_small_gap_max_mm", "precision_mast_small_gap_pwm_scale"):
+    for key in (
+        "precision_mast_small_gap_max_mm",
+        "precision_mast_small_gap_pwm_scale",
+        "precision_dist_forward_budget_min_progress_mm",
+    ):
         if key in raw_profile_step2:
             step2[key] = _coerce_float(
                 raw_profile_step2.get(key),
@@ -3144,6 +3193,38 @@ def _apply_holding_target_distance_calibration(reading: dict) -> dict:
     )
 
 
+def _empty_target_distance_calibration_config() -> dict:
+    raw = _follow_motion_config().get("empty_target_distance_calibration")
+    cfg = raw if isinstance(raw, dict) else {}
+    points = cfg.get("points") if isinstance(cfg.get("points"), list) else []
+    return {
+        "enabled": bool(cfg.get("enabled", False)) and len(points) >= 2,
+        "points": points,
+    }
+
+
+def _apply_empty_target_distance_calibration(reading: dict) -> dict:
+    """Map the empty-game native-OAK reported distance onto real-world mm using
+    the operator-measured reported->true points (piecewise linear)."""
+    if not isinstance(reading, dict) or reading.get("dist_mm") is None:
+        return reading
+    calibrated, used = calibrate_holding_distance_mm(
+        reading.get("dist_mm"),
+        config=_empty_target_distance_calibration_config(),
+    )
+    if calibrated is None or not used:
+        return reading
+    out = dict(reading)
+    out["uncalibrated_dist_mm"] = out.get("dist_mm")
+    out["dist_mm"] = float(calibrated)
+    out["empty_distance_calibrated"] = True
+    result = list(out.get("result") or [])
+    if len(result) >= 3:
+        result[2] = float(calibrated)
+        out["result"] = result
+    return out
+
+
 def _apply_unmasked_stack_xz_if_configured(target_reading: dict, stack_reading: dict) -> dict:
     if not isinstance(target_reading, dict) or not isinstance(stack_reading, dict):
         return target_reading
@@ -3586,6 +3667,18 @@ def _empty_step1_in_band_x_curve_ms(dist_err: float) -> int:
     if err <= 0.5 * tol:
         return 170
     return 190
+
+
+def _empty_step1_x_curve_floor_ms(x_outside: float) -> int:
+    """Minimum calibrated drive+turn pulse for real X movement on carpet."""
+    if float(x_outside) <= 0.0:
+        return 0
+    return int(EMPTY_S1_LEARNING_CURVE_MS)
+
+
+def _empty_step1_effective_x_outside(x_err: float, x_outside: float) -> float:
+    """Treat Step 1 as aligned only when X is close to the target center."""
+    return max(0.0, float(x_outside), abs(float(x_err)) - float(EMPTY_S1_GENTLE_X_OUTSIDE_MM))
 
 
 def _empty_step1_inband_x_forward_curve_ms(dist_err: float) -> int:
@@ -5353,9 +5446,9 @@ def _step2_targets_within_noise_grace(reading: dict, step2_cfg: dict | None = No
         return False
     targets = _configured_step2_targets(step2_cfg)
     try:
-        grace_mm = max(0.0, float(NOISE_MARGIN_MM))
+        grace_mm = max(0.0, float((step2_cfg or {}).get("confirm_noise_grace_mm", NOISE_MARGIN_MM)))
     except (TypeError, ValueError):
-        grace_mm = 0.0
+        grace_mm = max(0.0, float(NOISE_MARGIN_MM))
     if grace_mm <= 0.0:
         return False
     checked_axes = 0
@@ -5431,7 +5524,8 @@ def _step2_stop_and_confirm_target_hit(
         confirmed["step2_confirm_frames"] = int(required_frames)
         confirmed["step2_confirm_samples"] = list(confirm_samples[-required_frames:])
         return confirmed, True, f"{label}_target_hit_confirmed_{required_frames}x_after_stop", last_closeness
-    if _step2_targets_within_noise_grace(last_reading, step2_cfg):
+    noise_grace_enabled = bool((step2_cfg or {}).get("confirm_noise_grace_enabled", True))
+    if noise_grace_enabled and _step2_targets_within_noise_grace(last_reading, step2_cfg):
         confirmed = dict(last_reading)
         confirmed["step2_confirm_frames"] = 1
         confirmed["step2_confirm_samples"] = list(confirm_samples[-1:])
@@ -5476,7 +5570,7 @@ def _step2_stop_and_confirm_target_hit(
             confirmed["step2_confirm_frames"] = int(required_frames)
             confirmed["step2_confirm_samples"] = list(recovery_samples[-required_frames:])
             return confirmed, True, f"{label}_target_hit_confirmed_{required_frames}x_after_visibility_recovery", closeness
-        if _step2_targets_within_noise_grace(recovered, step2_cfg):
+        if noise_grace_enabled and _step2_targets_within_noise_grace(recovered, step2_cfg):
             confirmed = dict(recovered)
             confirmed["step2_confirm_frames"] = 1
             confirmed["step2_confirm_samples"] = list(recovery_samples[-1:])
@@ -5688,6 +5782,27 @@ def _step2_precision_mast_duration_ms(y_gap_mm: float, step2_cfg: dict) -> int:
     )
 
 
+def _step2_precision_x_curve_strength(x_gap_mm: float, step2_cfg: dict) -> str:
+    x_gap = max(0.0, float(x_gap_mm))
+    superstrong_at = _coerce_float(
+        step2_cfg.get("precision_x_superstrong_gap_mm"),
+        EMPTY_S1_SUPERSTRONG_X_OUTSIDE_MM,
+        minimum=0.0,
+        maximum=500.0,
+    )
+    strong_at = _coerce_float(
+        step2_cfg.get("precision_x_strong_gap_mm"),
+        0.0,
+        minimum=0.0,
+        maximum=500.0,
+    )
+    if float(superstrong_at) > 0.0 and x_gap >= float(superstrong_at):
+        return "superstrong"
+    if float(strong_at) > 0.0 and x_gap >= float(strong_at):
+        return "strong"
+    return _bias_strength_for_x_outside(x_gap)
+
+
 def _step2_precision_dist_cmd(dist_err: float, step2_cfg: dict) -> str:
     positive_cmd = str(
         step2_cfg.get("precision_dist_positive_cmd", DEFAULT_STEP2_CONFIG["precision_dist_positive_cmd"])
@@ -5697,6 +5812,55 @@ def _step2_precision_dist_cmd(dist_err: float, step2_cfg: dict) -> str:
     if float(dist_err) > 0.0:
         return positive_cmd
     return "b" if positive_cmd == "f" else "f"
+
+
+def _holding_step2_forward_duration_cap_ms(
+    reading: dict,
+    targets: dict,
+    duration_ms: int,
+) -> tuple[int, dict | None]:
+    """Cap forward holding-S2 packets when distance is nearly spent."""
+    if _active_game_profile() != "holding":
+        return int(duration_ms), None
+    try:
+        dist_mm = float((reading or {}).get("dist_mm"))
+        dist_target = float(targets.get("dist_mm"))
+        dist_tol_minus, _dist_tol_plus = _step2_axis_tolerance_pair(targets, "dist", "dist_tol_mm")
+    except (TypeError, ValueError):
+        return int(duration_ms), None
+    floor_mm = float(dist_target) - float(dist_tol_minus)
+    room_mm = float(dist_mm) - float(floor_mm)
+    if room_mm <= 0.0:
+        return 0, {
+            "reason": "holding_s2_forward_floor_reached",
+            "dist_mm": float(dist_mm),
+            "floor_mm": float(floor_mm),
+            "room_mm": float(room_mm),
+            "cap_ms": 0,
+        }
+    if room_mm > 20.0:
+        return int(duration_ms), None
+    cap_ms = max(60, int(round(float(room_mm) * 8.0)))
+    capped = min(int(duration_ms), int(cap_ms))
+    if capped >= int(duration_ms):
+        return int(duration_ms), None
+    return int(capped), {
+        "reason": "holding_s2_forward_predictive_cap",
+        "dist_mm": float(dist_mm),
+        "floor_mm": float(floor_mm),
+        "room_mm": float(room_mm),
+        "cap_ms": int(capped),
+        "original_ms": int(duration_ms),
+    }
+
+
+def _step2_reobserve_after_precision_act(vision: BrickDetector, step2_cfg: dict) -> dict:
+    if _active_game_profile() == "holding" and bool(step2_cfg.get("precision_stable_reobserve_enabled", False)):
+        try:
+            return _wait_for_confident_brick(vision, timeout_s=0.8, sample_s=0.08)
+        except Exception:
+            pass
+    return _read_brick_measurement(vision)
 
 
 def _step2_precision_settle_to_targets(
@@ -5758,6 +5922,20 @@ def _step2_precision_settle_to_targets(
     wrong_way_streak_axis: str | None = None
     wrong_way_streak_count = 0
     x_turn_override_cmd: str | None = None
+    dist_forward_budget_ms = _coerce_int(
+        step2_cfg.get("precision_dist_forward_budget_ms"),
+        360,
+        minimum=1,
+        maximum=2000,
+    )
+    dist_forward_budget_min_progress_mm = _coerce_float(
+        step2_cfg.get("precision_dist_forward_budget_min_progress_mm"),
+        8.0,
+        minimum=0.0,
+        maximum=100.0,
+    )
+    dist_forward_budget_used_ms = 0
+    dist_forward_budget_start_abs: float | None = None
     progress_min_mm = max(
         0.25,
         float(_act_stall_guard_config().get("min_axis_delta_mm", DEFAULT_ACT_STALL_GUARD_CONFIG["min_axis_delta_mm"])) * 0.5,
@@ -5813,13 +5991,23 @@ def _step2_precision_settle_to_targets(
             counts["target_hit_stop"] = int(counts.get("target_hit_stop", 0)) + 1
             if bool(confirmed):
                 counts["target_hit_confirmed"] = int(counts.get("target_hit_confirmed", 0)) + 1
+                counts["target_hit_reason"] = str(confirm_reason)
+                break
             else:
                 counts["target_hit_drifted_after_stop"] = int(
                     counts.get("target_hit_drifted_after_stop", 0)
                 ) + 1
                 counts["target_hit_confirm_failed"] = int(counts.get("target_hit_confirm_failed", 0)) + 1
-            counts["target_hit_reason"] = str(confirm_reason)
-            break
+                counts["target_hit_reason"] = str(confirm_reason)
+                if bool(isinstance(current, dict) and current.get("confident")):
+                    counts["target_hit_confirm_failed_continue"] = int(
+                        counts.get("target_hit_confirm_failed_continue", 0)
+                    ) + 1
+                    wrong_way_streak_axis = None
+                    wrong_way_streak_count = 0
+                    no_progress_attempts = 0
+                    continue
+                break
         dist_err = x_err = y_err = 0.0
         dist_gap = x_gap = y_gap = 0.0
         if dist_axis_configured:
@@ -5842,6 +6030,14 @@ def _step2_precision_settle_to_targets(
             except (TypeError, ValueError):
                 break
             x_gap = max(0.0, abs(float(x_err)) - float(x_tol))
+            min_actionable_x_gap = _coerce_float(
+                step2_cfg.get("precision_min_actionable_x_gap_mm"),
+                0.0,
+                minimum=0.0,
+                maximum=50.0,
+            )
+            if float(min_actionable_x_gap) > 0.0 and float(x_gap) <= float(min_actionable_x_gap):
+                x_gap = 0.0
         if y_axis_configured:
             try:
                 y_err = float(current.get("y_mm")) - float(targets.get("y_mm"))
@@ -5898,7 +6094,7 @@ def _step2_precision_settle_to_targets(
             and abs(float(dist_err)) <= 12.0
             and float(x_gap) >= float(dist_gap)
         ):
-            cmd = _turn_cmd_to_close_x_gap(float(x_err))
+            cmd = x_turn_override_cmd if x_turn_override_cmd in {"l", "r"} else _turn_cmd_to_close_x_gap(float(x_err))
             x_turn_override_cmd = None
             if cmd not in {"l", "r"}:
                 break
@@ -5916,8 +6112,17 @@ def _step2_precision_settle_to_targets(
                 use_production_curve=False,
             )
             x_turn_plan["one_wheel_x_nudge"] = True
-            x_turn_plan["duration_ms"] = 500
-            x_turn_plan["allow_long_duration"] = True
+            if _active_game_profile() == "holding":
+                x_turn_plan["duration_ms"] = _coerce_int(
+                    step2_cfg.get("precision_near_x_nudge_ms"),
+                    90,
+                    minimum=40,
+                    maximum=250,
+                )
+                x_turn_plan["allow_long_duration"] = False
+            else:
+                x_turn_plan["duration_ms"] = 500
+                x_turn_plan["allow_long_duration"] = True
             x_turn_plan["skip_near_target_crawl_cap"] = True
             x_turn_plan["strength"] = "one_wheel_500ms"
             pwm = 0
@@ -5936,17 +6141,38 @@ def _step2_precision_settle_to_targets(
             and float(dist_err) > 0.0
         ):
             cmd = "f"
-            turn_cmd = _turn_cmd_to_close_x_gap(float(x_err))
+            turn_cmd = x_turn_override_cmd if x_turn_override_cmd in {"l", "r"} else _turn_cmd_to_close_x_gap(float(x_err))
             x_turn_override_cmd = None
             if turn_cmd not in {"l", "r"}:
                 break
             duration_ms = _step2_precision_drive_duration_ms(float(dist_gap), step2_cfg, cmd=cmd)
-            duration_ms = max(90, min(160, int(duration_ms)))
-            if abs(float(x_err)) >= float(EMPTY_S1_SUPERSTRONG_X_OUTSIDE_MM):
+            curve_min_ms = _coerce_int(
+                step2_cfg.get("precision_dist_x_curve_min_ms"),
+                90,
+                minimum=1,
+                maximum=1000,
+            )
+            curve_max_ms = _coerce_int(
+                step2_cfg.get("precision_dist_x_curve_max_ms"),
+                160,
+                minimum=1,
+                maximum=1000,
+            )
+            if curve_min_ms > curve_max_ms:
+                curve_min_ms, curve_max_ms = curve_max_ms, curve_min_ms
+            duration_ms = max(int(curve_min_ms), min(int(curve_max_ms), int(duration_ms)))
+            configured_strength = _step2_precision_x_curve_strength(float(x_gap), step2_cfg)
+            if str(configured_strength) == "superstrong":
                 strength = "superstrong"
-                duration_ms = max(int(duration_ms), int(EMPTY_S1_LEARNING_CURVE_MS))
+                superstrong_min_ms = _coerce_int(
+                    step2_cfg.get("precision_dist_x_superstrong_min_ms"),
+                    EMPTY_S1_LEARNING_CURVE_MS,
+                    minimum=1,
+                    maximum=1000,
+                )
+                duration_ms = max(int(duration_ms), int(superstrong_min_ms))
             else:
-                strength = _bias_strength_for_x_outside(float(x_gap))
+                strength = str(configured_strength)
                 if strength == "micro":
                     strength = "gentle"
             x_turn_plan = {
@@ -5988,10 +6214,59 @@ def _step2_precision_settle_to_targets(
                         int(duration_ms),
                         _step2_precision_mast_duration_ms(y_gap, step2_cfg),
                     )
-            action_key = "fwd" if cmd == "f" else "bck"
-            display_action = "STEP2_PRECISION_FWD" if cmd == "f" else "STEP2_PRECISION_BCK"
-            if attached_mast_cmd:
-                display_action = f"{display_action}_MAST_{str(attached_mast_cmd).upper()}"
+            keep_x_center = False
+            if (
+                _active_game_profile() == "holding"
+                and bool(step2_cfg.get("precision_dist_keep_x_center_enabled", False))
+                and x_axis_configured
+                and cmd == "f"
+                and not attached_mast_cmd
+            ):
+                try:
+                    center_trigger_mm = _coerce_float(
+                        step2_cfg.get("precision_dist_keep_x_center_abs_err_mm"),
+                        max(0.0, float(targets.get("x_tol_mm")) * 0.6),
+                        minimum=0.0,
+                        maximum=50.0,
+                    )
+                    should_center_x = abs(float(x_err)) >= float(center_trigger_mm)
+                except (TypeError, ValueError):
+                    should_center_x = False
+                if bool(should_center_x):
+                    turn_cmd = _turn_cmd_to_close_x_gap(float(x_err))
+                    if turn_cmd in {"l", "r"}:
+                        center_ms = _coerce_int(
+                            step2_cfg.get("precision_dist_keep_x_center_ms"),
+                            90,
+                            minimum=40,
+                            maximum=250,
+                        )
+                        duration_ms = min(int(duration_ms), int(center_ms))
+                        x_turn_plan = {
+                            "kind": "drive_bias",
+                            "cmd": cmd,
+                            "drive_mode": "forward",
+                            "turn_cmd": str(turn_cmd),
+                            "strength": "gentle",
+                            "duration_ms": int(duration_ms),
+                            "distance_creep": True,
+                            "allow_long_duration": False,
+                            "use_calibrated_turn_drive_curve": True,
+                            "skip_near_target_crawl_cap": True,
+                            "reason": "step2_precision_dist_keep_x_center_curve",
+                        }
+                        keep_x_center = True
+            if bool(keep_x_center):
+                action_key = "dist_x_curve"
+                display_action = (
+                    "STEP2_PRECISION_DIST_KEEP_X_CENTER_"
+                    f"{str(x_turn_plan.get('turn_cmd')).upper()}_GENTLE"
+                )
+            else:
+                action_key = "fwd" if cmd == "f" else "bck"
+                display_action = "STEP2_PRECISION_FWD" if cmd == "f" else "STEP2_PRECISION_BCK"
+                if attached_mast_cmd:
+                    display_action = f"{display_action}_MAST_{str(attached_mast_cmd).upper()}"
             gap_before = float(dist_gap)
             progress_axis = "dist"
             before_err_for_sample = float(dist_err)
@@ -6002,23 +6277,87 @@ def _step2_precision_settle_to_targets(
                 "dist_tol_mm",
             )
         elif x_axis_configured and x_gap > 0.0:
-            cmd = _turn_cmd_to_close_x_gap(float(x_err))
+            cmd = x_turn_override_cmd if x_turn_override_cmd in {"l", "r"} else _turn_cmd_to_close_x_gap(float(x_err))
             x_turn_override_cmd = None
             if cmd not in {"l", "r"}:
                 break
-            x_turn_plan = _x_only_turn_plan(
-                reading=current,
-                turn_cmd=cmd,
-                drive_mode=_x_only_turn_drive_mode_for_dist(float(dist_err)),
-                strength="gentle",
-                dist_err=float(dist_err),
-                x_err=float(x_err),
-                x_outside=float(x_gap),
-                dist_outside=float(dist_gap),
-                y_plan=None,
-                reason="step2_precision_x_polish_gentle_curve",
-                use_production_curve=True,
-            )
+            x_strength = _step2_precision_x_curve_strength(float(x_gap), step2_cfg)
+            if _active_game_profile() == "holding":
+                drive_mode_override = str(step2_cfg.get("precision_x_only_drive_mode") or "").strip().lower()
+                drive_mode = (
+                    drive_mode_override
+                    if drive_mode_override in {"forward", "backward"}
+                    else _x_only_turn_drive_mode_for_dist(float(dist_err))
+                )
+                try:
+                    dist_tol_for_x_polish = _step2_axis_tolerance_for_error(
+                        float(dist_err),
+                        targets,
+                        "dist",
+                        "dist_tol_mm",
+                    )
+                except (TypeError, ValueError):
+                    dist_tol_for_x_polish = 0.0
+                protect_dist = bool(float(dist_err) <= float(dist_tol_for_x_polish))
+                if bool(protect_dist):
+                    cmd = _opposite_turn_cmd(cmd) or cmd
+                    x_turn_plan = _x_only_turn_plan(
+                        reading=current,
+                        turn_cmd=cmd,
+                        drive_mode="backward",
+                        strength=str(x_strength),
+                        dist_err=float(dist_err),
+                        x_err=float(x_err),
+                        x_outside=float(x_gap),
+                        dist_outside=float(dist_gap),
+                        y_plan=None,
+                        reason="step2_precision_x_polish_backward_protect_dist",
+                        use_production_curve=False,
+                    )
+                    x_turn_plan["duration_ms"] = _coerce_int(
+                        step2_cfg.get("precision_x_only_protect_dist_ms"),
+                        90,
+                        minimum=40,
+                        maximum=180,
+                    )
+                    x_turn_plan["allow_long_duration"] = False
+                    x_turn_plan["skip_near_target_crawl_cap"] = True
+                else:
+                    x_turn_plan = _x_dist_drive_bias_plan(
+                        turn_cmd=cmd,
+                        drive_mode=drive_mode,
+                        dist_err=float(dist_err),
+                        x_err=float(x_err),
+                        x_outside=float(x_gap),
+                        dist_outside=float(dist_gap),
+                        y_plan=None,
+                        reason="step2_precision_x_polish_drive_curve",
+                    )
+                    x_turn_plan["strength"] = str(x_strength)
+                    x_turn_plan["action"] = _shiny_curve_label(drive_mode, str(cmd), str(x_strength))
+                    x_turn_plan["use_calibrated_turn_drive_curve"] = str(x_strength) not in {"micro", "adaptive"}
+                    x_turn_plan["force_drive_turn_only"] = True
+                    x_turn_plan["skip_near_target_crawl_cap"] = True
+                    x_turn_plan["duration_ms"] = _coerce_int(
+                        step2_cfg.get(f"precision_x_only_{str(x_strength)}_ms"),
+                        250 if str(x_strength) == "superstrong" else 160,
+                        minimum=1,
+                        maximum=1000,
+                    )
+            else:
+                x_turn_plan = _x_only_turn_plan(
+                    reading=current,
+                    turn_cmd=cmd,
+                    drive_mode=_x_only_turn_drive_mode_for_dist(float(dist_err)),
+                    strength=str(x_strength),
+                    dist_err=float(dist_err),
+                    x_err=float(x_err),
+                    x_outside=float(x_gap),
+                    dist_outside=float(dist_gap),
+                    y_plan=None,
+                    reason="step2_precision_x_polish_gentle_curve",
+                    use_production_curve=True,
+                )
             pwm = 0
             duration_ms = int(x_turn_plan.get("duration_ms", PULSE_MS))
             action_key = "turn_l" if cmd == "l" else "turn_r"
@@ -6029,6 +6368,29 @@ def _step2_precision_settle_to_targets(
             tol_for_sample = float(targets.get("x_tol_mm"))
         else:
             break
+        predictive_forward_cap = None
+        forward_like = False
+        if x_turn_plan is not None:
+            forward_like = str(x_turn_plan.get("drive_mode") or "").strip().lower() == "forward"
+        else:
+            forward_like = str(cmd or "").strip().lower() == "f"
+        if bool(forward_like):
+            capped_duration_ms, predictive_forward_cap = _holding_step2_forward_duration_cap_ms(
+                current,
+                targets,
+                int(duration_ms),
+            )
+            if int(capped_duration_ms) <= 0:
+                counts["predictive_forward_floor_stop"] = int(counts.get("predictive_forward_floor_stop", 0)) + 1
+                counts["predictive_forward_floor_stop_detail"] = dict(predictive_forward_cap or {})
+                break
+            if int(capped_duration_ms) < int(duration_ms):
+                duration_ms = int(capped_duration_ms)
+                if x_turn_plan is not None:
+                    x_turn_plan["duration_ms"] = int(duration_ms)
+                    x_turn_plan["allow_long_duration"] = False
+                counts["predictive_forward_cap"] = int(counts.get("predictive_forward_cap", 0)) + 1
+                counts["predictive_forward_cap_last"] = dict(predictive_forward_cap or {})
         previous_current = dict(current) if isinstance(current, dict) else current
         if x_turn_plan is not None:
             send_result = _execute_follow_action(robot, x_turn_plan, current)
@@ -6063,7 +6425,7 @@ def _step2_precision_settle_to_targets(
         time.sleep((float(duration_ms) / 1000.0) + float(settle_s))
         _stop_robot(robot)
         _reset_follow_reading_history(vision)
-        current = _read_brick_measurement(vision)
+        current = _step2_reobserve_after_precision_act(vision, step2_cfg)
         if _pickup_suspected_reading(current):
             _stop_robot(robot)
             counts["pickup_suspected_stop"] = int(counts.get("pickup_suspected_stop", 0)) + 1
@@ -6118,6 +6480,14 @@ def _step2_precision_settle_to_targets(
                     "tol": float(tol_for_sample),
                     "duration_ms": int(duration_ms),
                 }
+                if predictive_forward_cap is not None:
+                    sample["predictive_forward_cap"] = dict(predictive_forward_cap)
+                if dist_axis_configured:
+                    try:
+                        sample["dist_before_err"] = float(previous_current.get("dist_mm")) - float(targets.get("dist_mm"))
+                        sample["dist_after_err"] = float(current.get("dist_mm")) - float(targets.get("dist_mm"))
+                    except (AttributeError, TypeError, ValueError):
+                        pass
                 counts.setdefault("gap_closure_samples", []).append(sample)
             except (TypeError, ValueError):
                 gap_after = None
@@ -6127,6 +6497,31 @@ def _step2_precision_settle_to_targets(
         else:
             no_progress_attempts += 1
             counts["no_progress"] = int(counts.get("no_progress", 0)) + 1
+        if progress_axis == "dist" and str(cmd or "").strip().lower() == "f":
+            if dist_forward_budget_start_abs is None:
+                try:
+                    dist_forward_budget_start_abs = abs(float(before_err_for_sample))
+                except (TypeError, ValueError):
+                    dist_forward_budget_start_abs = None
+            dist_forward_budget_used_ms += int(duration_ms)
+            if dist_forward_budget_start_abs is not None and gap_after is not None:
+                try:
+                    after_abs_for_budget = abs(float(after_err_for_sample))
+                except (TypeError, ValueError):
+                    after_abs_for_budget = None
+                if after_abs_for_budget is not None:
+                    observed_progress = float(dist_forward_budget_start_abs) - float(after_abs_for_budget)
+                    if observed_progress >= float(dist_forward_budget_min_progress_mm):
+                        dist_forward_budget_start_abs = float(after_abs_for_budget)
+                        dist_forward_budget_used_ms = 0
+                    elif dist_forward_budget_used_ms >= int(dist_forward_budget_ms):
+                        counts["dist_forward_budget_stop"] = int(counts.get("dist_forward_budget_stop", 0)) + 1
+                        counts["dist_forward_budget_used_ms"] = int(dist_forward_budget_used_ms)
+                        counts["dist_forward_budget_observed_progress_mm"] = int(round(float(observed_progress)))
+                        break
+        else:
+            dist_forward_budget_start_abs = None
+            dist_forward_budget_used_ms = 0
         target_met_after, _target_reason_after, _closeness_after = _step2_targets_ready(current, step2_cfg)
         if bool(target_met_after):
             current, confirmed, confirm_reason, _confirm_closeness = _step2_stop_and_confirm_target_hit(
@@ -6160,8 +6555,34 @@ def _step2_precision_settle_to_targets(
                 and float(safety_dist_err) < -float(safety_dist_tol)
                 and not bool(recovering_from_too_close)
             ):
-                counts["dist_too_close_safety_stop"] = int(counts.get("dist_too_close_safety_stop", 0)) + 1
-                break
+                too_close_past_tol_mm = abs(float(safety_dist_err)) - float(safety_dist_tol)
+                x_still_out = False
+                y_still_out = False
+                if x_axis_configured:
+                    try:
+                        x_still_out = max(
+                            0.0,
+                            abs(float(current.get("x_mm")) - float(targets.get("x_mm")))
+                            - float(targets.get("x_tol_mm")),
+                        ) > 0.0
+                    except (TypeError, ValueError):
+                        x_still_out = False
+                if y_axis_configured:
+                    try:
+                        y_still_out = max(
+                            0.0,
+                            abs(float(current.get("y_mm")) - float(targets.get("y_mm")))
+                            - float(targets.get("y_tol_mm")),
+                        ) > 0.0
+                    except (TypeError, ValueError):
+                        y_still_out = False
+                if (x_still_out or y_still_out) and float(too_close_past_tol_mm) <= float(NOISE_MARGIN_MM):
+                    counts["dist_too_close_axis_continue"] = int(
+                        counts.get("dist_too_close_axis_continue", 0)
+                    ) + 1
+                else:
+                    counts["dist_too_close_safety_stop"] = int(counts.get("dist_too_close_safety_stop", 0)) + 1
+                    break
         if progress_axis == "dist" and bool(current.get("confident")):
             try:
                 after_dist_err = float(current.get("dist_mm")) - float(targets.get("dist_mm"))
@@ -6174,11 +6595,13 @@ def _step2_precision_settle_to_targets(
                 "dist",
                 "dist_tol_mm",
             ):
-                counts["target_hit_stop"] = int(counts.get("target_hit_stop", 0)) + 1
-                break
+                if not bool(x_axis_configured or y_axis_configured):
+                    counts["target_hit_stop"] = int(counts.get("target_hit_stop", 0)) + 1
+                    break
             if after_dist_err is not None and (float(dist_err) * float(after_dist_err)) < 0.0:
-                counts["dist_crossed_target_stop"] = int(counts.get("dist_crossed_target_stop", 0)) + 1
-                break
+                if not bool(x_axis_configured or y_axis_configured):
+                    counts["dist_crossed_target_stop"] = int(counts.get("dist_crossed_target_stop", 0)) + 1
+                    break
             if after_dist_err is not None and abs(float(after_dist_err)) > abs(float(dist_err)) + float(progress_min_mm):
                 if wrong_way_streak_axis == "dist":
                     wrong_way_streak_count += 1
@@ -6186,7 +6609,7 @@ def _step2_precision_settle_to_targets(
                     wrong_way_streak_axis = "dist"
                     wrong_way_streak_count = 1
                 counts["dist_wrong_way_count"] = int(counts.get("dist_wrong_way_count", 0)) + 1
-                if wrong_way_streak_count >= 2:
+                if wrong_way_streak_count >= 3:
                     counts["dist_wrong_way_stop"] = int(counts.get("dist_wrong_way_stop", 0)) + 1
                     break
                 counts["dist_wrong_way_ignored"] = int(counts.get("dist_wrong_way_ignored", 0)) + 1
@@ -6208,7 +6631,34 @@ def _step2_precision_settle_to_targets(
                     wrong_way_streak_axis = "x"
                     wrong_way_streak_count = 1
                 counts["x_wrong_way_count"] = int(counts.get("x_wrong_way_count", 0)) + 1
-                if wrong_way_streak_count >= 2:
+                if wrong_way_streak_count >= 3:
+                    counts["x_wrong_way_recheck"] = int(counts.get("x_wrong_way_recheck", 0)) + 1
+                    try:
+                        recheck = _wait_for_confident_brick(vision, timeout_s=0.8, sample_s=0.12)
+                    except Exception:
+                        recheck = {}
+                    if bool(isinstance(recheck, dict) and recheck.get("confident")):
+                        target_met_recheck, _recheck_reason, _recheck_closeness = _step2_targets_ready(
+                            recheck,
+                            step2_cfg,
+                        )
+                        try:
+                            recheck_x_err = float(recheck.get("x_mm")) - float(targets.get("x_mm"))
+                            recheck_x_gap = max(0.0, abs(float(recheck_x_err)) - float(targets.get("x_tol_mm")))
+                        except (TypeError, ValueError):
+                            recheck_x_gap = None
+                        if bool(target_met_recheck) or (
+                            recheck_x_gap is not None
+                            and float(recheck_x_gap) <= max(0.0, float(x_gap) - float(progress_min_mm))
+                        ):
+                            counts["x_wrong_way_recheck_recovered"] = int(
+                                counts.get("x_wrong_way_recheck_recovered", 0)
+                            ) + 1
+                            current = recheck
+                            wrong_way_streak_axis = None
+                            wrong_way_streak_count = 0
+                            no_progress_attempts = 0
+                            continue
                     counts["x_wrong_way_stop"] = int(counts.get("x_wrong_way_stop", 0)) + 1
                     break
                 counts["x_wrong_way_ignored"] = int(counts.get("x_wrong_way_ignored", 0)) + 1
@@ -6441,6 +6891,7 @@ def _run_step2_seat_sequence(
     probe_before_forward: bool = False,
     step_cfg: dict | None = None,
     step_key: str = "step2",
+    initial_reading: dict | None = None,
 ) -> dict:
     step2 = step_cfg if isinstance(step_cfg, dict) else _follow_step2_config()
     label = str(step_key or "step2").strip().lower()
@@ -6452,7 +6903,7 @@ def _run_step2_seat_sequence(
         maximum=120.0,
     )
     deadline = _deadline_from_timeout_s(step_timeout_s)
-    before = _read_brick_measurement(vision)
+    before = initial_reading if isinstance(initial_reading, dict) else _read_brick_measurement(vision)
     if not bool(before.get("confident")):
         before = _wait_for_visibility_recovery(
             vision,
@@ -7707,6 +8158,30 @@ def _reset_reverse_turn(
         }
     if before_dist_for_duration is not None and float(before_dist_for_duration) < float(dist_target):
         desired_back_mm = max(0.0, float(dist_target) - float(before_dist_for_duration))
+        if desired_back_mm <= 5.0:
+            print(
+                "[RESET] Distance is already close enough for reset; skipping straight-back "
+                f"instead of forcing the minimum pulse: dist={before_dist_for_duration:.1f}->"
+                f"{dist_target:.1f}mm gap={desired_back_mm:.1f}mm.",
+                flush=True,
+            )
+            return {
+                "wheel_ms": 0,
+                "straight_back_ms": 0,
+                "gentle_ms": 0,
+                "sharp_finish_ms": 0,
+                "mast_up_ms": 0,
+                "mast_settle_s": 0.0,
+                "duration_ms": 0,
+                "actions": [],
+                "curve": {
+                    "drive_mode": "none",
+                    "strength": "straight_back_dist_already_ready",
+                    "inner_pwm": 0,
+                    "outer_pwm": 0,
+                    "turn_cmd": str(turn_cmd),
+                },
+            }
         estimated_ms = int(round(desired_back_mm / float(RESET_STRAIGHT_BACK_TARGET_MM_PER_MS)))
         effective_min_ms = max(int(RESET_STRAIGHT_BACK_TARGET_MIN_MS), int(min_duration_ms))
         effective_max_ms = max(int(effective_min_ms), int(RESET_STRAIGHT_BACK_TARGET_MAX_MS), int(max_duration_ms))
@@ -9440,6 +9915,7 @@ def _read_brick_measurement(vision: BrickDetector, *, jump_guard: bool = False) 
         _HOLDING_MASK_LOCK.reset()
         reading["holding"] = False
         reading["holding_reason"] = "empty_profile_skips_holding_mask"
+        reading = _apply_empty_target_distance_calibration(reading)
         return _apply_temporal_filter_brick_reading(vision, reading, jump_guard=jump_guard)
     holding_result = _HOLDING_MASK_LOCK.update(detect_holding_brick(frame))
     reading["holding"] = bool(holding_result.get("holding"))
@@ -11835,11 +12311,12 @@ def _x_dist_drive_bias_plan(
         }, y_plan)
     skip_near_target_cap = False
     if _active_game_profile() == "empty":
-        if mode == "forward" and float(x_outside) > 0.0:
-            strength = _drive_turn_bias_strength(_empty_step1_learning_curve_strength(float(x_outside)))
-            if str(strength) == "strong" and float(dist_err) <= 0.0 and float(x_outside) >= float(EMPTY_S1_SUPERSTRONG_X_OUTSIDE_MM):
+        x_outside_for_strength = _empty_step1_effective_x_outside(float(x_err), float(x_outside))
+        if mode == "forward" and float(x_outside_for_strength) > 0.0:
+            strength = _drive_turn_bias_strength(_empty_step1_learning_curve_strength(float(x_outside_for_strength)))
+            if str(strength) == "strong" and float(dist_err) <= 0.0 and float(x_outside_for_strength) >= float(EMPTY_S1_SUPERSTRONG_X_OUTSIDE_MM):
                 strength = "medium"
-            if str(strength) == "strong" and float(x_outside) >= float(EMPTY_S1_SUPERSTRONG_X_OUTSIDE_MM):
+            if str(strength) == "strong" and float(x_outside_for_strength) >= float(EMPTY_S1_SUPERSTRONG_X_OUTSIDE_MM):
                 duration_ms = int(EMPTY_S1_LEARNING_CURVE_MS)
                 skip_near_target_cap = True
         if str(strength).strip().lower() == "strong":
@@ -11855,16 +12332,19 @@ def _x_dist_drive_bias_plan(
                 int(duration_ms),
                 min(_max_act_ms(), int(EMPTY_S1_TOO_CLOSE_BIAS_MAX_MS)),
             )
+        if mode == "forward" and float(x_outside_for_strength) > float(EMPTY_S1_GENTLE_X_OUTSIDE_MM):
+            duration_ms = max(int(duration_ms), int(_empty_step1_x_curve_floor_ms(float(x_outside_for_strength))))
+            skip_near_target_cap = True
         if int(duration_ms) > int(_follow_dist_approach_policy().get("near_target_max_pulse_ms", 80)):
             skip_near_target_cap = True
-        if mode == "forward" and float(dist_outside) <= 0.0 and float(x_outside) > 0.0:
-            # If Step 1 distance is already in the happy band, do not chase the
-            # exact distance target with a long curve. Split X polish into tiny
-            # observed moves and let the near-target crawl cap protect distance.
-            strength = _drive_turn_bias_strength(_empty_step1_learning_curve_strength(float(x_outside)))
-            if str(strength) == "strong" and float(dist_err) <= 0.0 and float(x_outside) >= float(EMPTY_S1_SUPERSTRONG_X_OUTSIDE_MM):
+        if mode == "forward" and float(dist_outside) <= 0.0 and float(x_outside_for_strength) > 0.0:
+            # If Step 1 distance is already in the happy band, keep the X curve
+            # short, but not below the calibrated breakaway pulse.
+            strength = _drive_turn_bias_strength(_empty_step1_learning_curve_strength(float(x_outside_for_strength)))
+            if str(strength) == "strong" and float(dist_err) <= 0.0 and float(x_outside_for_strength) >= float(EMPTY_S1_SUPERSTRONG_X_OUTSIDE_MM):
                 strength = "medium"
-            skip_near_target_cap = False
+            duration_ms = max(int(duration_ms), int(_empty_step1_x_curve_floor_ms(float(x_outside_for_strength))))
+            skip_near_target_cap = True
     strength = _drive_turn_bias_strength(strength)
     return _attach_mast_to_plan({
         "kind": "drive_bias",
@@ -11997,14 +12477,17 @@ def _x_only_turn_plan(
         cap_ms = _empty_step1_observed_curve_cap_ms(float(dist_err), float(x_outside))
         room_to_floor_mm = float(dist_err) + float(_win_effective_tolerance(_dist_lower_tol_mm()))
         if float(dist_outside) <= 0.0:
-            cap_ms = min(int(cap_ms), 90)
-        plan["duration_ms"] = max(90, min(int(duration_ms), int(cap_ms)))
+            cap_ms = max(int(cap_ms), int(_empty_step1_x_curve_floor_ms(float(x_outside))))
+        plan["duration_ms"] = max(
+            int(_empty_step1_x_curve_floor_ms(float(x_outside))),
+            min(int(duration_ms), int(cap_ms)),
+        )
         plan["strength"] = strength_key
         plan["action"] = _shiny_curve_label(drive_key, str(turn_cmd or "r").strip().lower(), strength_key)
         plan["use_calibrated_turn_drive_curve"] = str(strength_key).strip().lower() not in {"micro", "adaptive"}
         plan["force_drive_turn_only"] = True
         plan["allow_long_duration"] = False
-        plan["skip_near_target_crawl_cap"] = bool(float(_dist_outside_gate_mm(dist_err)) > float(EMPTY_S1_APPROACH_TURN_BAND_MM))
+        plan["skip_near_target_crawl_cap"] = bool(float(x_outside) > float(EMPTY_S1_GENTLE_X_OUTSIDE_MM))
         return plan
     plan = {
         "kind": "turn",
@@ -12057,6 +12540,8 @@ def _follow_action_plan(reading: dict, *, virtual_safety_armed: bool = True) -> 
     dist_err = dist_mm - _dist_target_mm()
     x_err = float(x_mm - _x_target_mm())
     x_ok = _win_axis_ok_with_noise_grace(x_err, _x_tol_mm())
+    if _active_game_profile() == "empty" and abs(float(x_err)) > float(EMPTY_S1_GENTLE_X_OUTSIDE_MM):
+        x_ok = False
     dist_ok = bool(_dist_err_ok(dist_err) or _dist_outside_gate_mm(dist_err) <= float(NOISE_MARGIN_MM))
     dist_happy_tol = _win_effective_tolerance(_dist_tol_mm())
     dist_lower_happy_tol = _win_effective_tolerance(_dist_lower_tol_mm())
@@ -12098,6 +12583,21 @@ def _follow_action_plan(reading: dict, *, virtual_safety_armed: bool = True) -> 
             "y_err": y_err,
             "x_outside_mm": float(_x_outside_gate_mm(x_err)),
             "reason": "happy",
+        }
+    if (
+        _active_game_profile() == "empty"
+        and bool(dist_ok)
+        and bool(y_ok)
+        and abs(float(x_err)) <= float(_x_tol_mm()) + 1.0
+    ):
+        return {
+            "kind": "hold",
+            "action": "HAPPY",
+            "dist_err": dist_err,
+            "x_err": x_err,
+            "y_err": y_err,
+            "x_outside_mm": float(_x_outside_gate_mm(x_err)),
+            "reason": "empty_s1_stable_x_edge_noise_grace",
         }
     if (
         _active_game_profile() == "empty"
@@ -12223,6 +12723,7 @@ def _follow_action_plan(reading: dict, *, virtual_safety_armed: bool = True) -> 
         if _active_game_profile() == "empty":
             x_outside = _x_outside_gate_mm(x_err)
             dist_outside = _dist_outside_gate_mm(dist_err)
+            x_outside = _empty_step1_effective_x_outside(float(x_err), float(x_outside))
             if (
                 not x_ok
                 and float(dist_outside) <= 20.0
@@ -12336,6 +12837,8 @@ def _follow_action_plan(reading: dict, *, virtual_safety_armed: bool = True) -> 
         turn_cmd = _turn_cmd_to_close_x_gap(x_err) or "r"
         x_outside = _x_outside_gate_mm(x_err)
         dist_outside = _dist_outside_gate_mm(dist_err)
+        if _active_game_profile() == "empty":
+            x_outside = _empty_step1_effective_x_outside(float(x_err), float(x_outside))
         if _active_game_profile() == "empty" and float(dist_err) > float(dist_happy_tol):
             crawl_ms = int(_empty_step1_crawl_to_win_floor_ms(float(dist_err)))
             plan = _x_dist_drive_bias_plan(
@@ -12356,7 +12859,10 @@ def _follow_action_plan(reading: dict, *, virtual_safety_armed: bool = True) -> 
             ):
                 learning_strength = "strong"
             cap_ms = _empty_step1_observed_curve_cap_ms(float(dist_err), float(x_outside))
-            plan["duration_ms"] = int(max(90, min(int(crawl_ms), int(cap_ms))))
+            plan["duration_ms"] = int(max(
+                int(_empty_step1_x_curve_floor_ms(float(x_outside))),
+                min(int(crawl_ms), int(cap_ms)),
+            ))
             plan["strength"] = str(learning_strength)
             plan["action"] = _shiny_curve_label("forward", turn_cmd, learning_strength)
             plan["use_calibrated_turn_drive_curve"] = True
@@ -12832,10 +13338,17 @@ def _execute_follow_action(robot: Robot, plan: dict, reading: dict) -> None:
             except (TypeError, ValueError):
                 dist_err = 0.0
             if float(dist_err) > 0.0:
+                try:
+                    x_outside = float(plan.get("x_outside_mm", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    x_outside = 0.0
+                cap_ms = int(EMPTY_S1_COMBINED_CURVE_STRONG_MS)
+                if bool(plan.get("force_drive_turn_only")) and float(x_outside) > float(EMPTY_S1_GENTLE_X_OUTSIDE_MM):
+                    cap_ms = max(int(cap_ms), int(_empty_step1_x_curve_floor_ms(float(x_outside))))
                 plan = dict(plan)
                 plan["duration_ms"] = min(
                     int(_coerce_int(plan.get("duration_ms"), PULSE_MS, minimum=1, maximum=2000)),
-                    int(EMPTY_S1_COMBINED_CURVE_STRONG_MS),
+                    int(cap_ms),
                 )
                 plan["allow_long_duration"] = False
         return _send_drive_bias(
@@ -14342,9 +14855,12 @@ def _apply_empty_step1_recent_x_wrong_way_flip(stats: dict, plan: dict, reading:
     if dist_outside <= 0.0 and current_strength != "superstrong":
         out = dict(plan)
         out["strength"] = "superstrong"
-        out["duration_ms"] = min(
+        out["duration_ms"] = max(
+            int(_empty_step1_x_curve_floor_ms(float(out.get("x_outside_mm", 0.0) or 0.0))),
+            min(
             int(out.get("duration_ms", EMPTY_S1_NEAR_BAND_TURN_MAX_MS) or EMPTY_S1_NEAR_BAND_TURN_MAX_MS),
             int(EMPTY_S1_NEAR_BAND_TURN_MAX_MS),
+            ),
         )
         out["action"] = _shiny_curve_label(str(out.get("drive_mode") or "forward"), turn_cmd, "superstrong")
         out["reason"] = f"{str(out.get('reason') or 'empty_s1_x_curve')}_sharpen_after_2x_x_wrong_way"
@@ -14362,9 +14878,12 @@ def _apply_empty_step1_recent_x_wrong_way_flip(stats: dict, plan: dict, reading:
     if strength in {"strong", "superstrong"}:
         strength = "medium"
     out["strength"] = strength
-    out["duration_ms"] = min(
+    out["duration_ms"] = max(
+        int(_empty_step1_x_curve_floor_ms(float(out.get("x_outside_mm", 0.0) or 0.0))),
+        min(
         int(out.get("duration_ms", EMPTY_S1_NEAR_BAND_TURN_MAX_MS) or EMPTY_S1_NEAR_BAND_TURN_MAX_MS),
         int(EMPTY_S1_NEAR_BAND_TURN_MAX_MS),
+        ),
     )
     out["action"] = _shiny_curve_label(str(out.get("drive_mode") or "forward"), flipped, strength)
     out["reason"] = f"{str(out.get('reason') or 'empty_s1_x_curve')}_flip_after_2x_x_wrong_way"
@@ -14734,6 +15253,7 @@ def _record_observed_after_pending_act(stats: dict, reading: dict) -> dict | Non
         str(pending.get("cmd") or "").strip().lower() == "f"
         and float(forward_dist_jump) >= float(FORWARD_DIST_GHOST_JUMP_MM)
     ):
+        stats["pending_observation"] = pending
         stats["forward_dist_ghost_probe"] = {
             "action": action,
             "cmd": str(pending.get("cmd") or ""),
@@ -14746,6 +15266,14 @@ def _record_observed_after_pending_act(stats: dict, reading: dict) -> dict | Non
             "threshold_mm": float(FORWARD_DIST_GHOST_JUMP_MM),
         }
         _bump_stat_count(stats, "miss_reasons", "forward_dist_ghost_jump_probe")
+        return {
+            "action": action,
+            "observed": False,
+            "deferred_for_forward_dist_ghost_probe": True,
+            "delta_dist_mm": float(delta_dist),
+            "delta_x_mm": float(delta_x),
+            "delta_y_mm": float(delta_y),
+        }
     try:
         pending_duration_ms = int(pending.get("duration_ms", 0) or 0)
     except (TypeError, ValueError):
@@ -14762,11 +15290,37 @@ def _record_observed_after_pending_act(stats: dict, reading: dict) -> dict | Non
         )
     else:
         observed = bool(delta_dist >= min_delta or delta_x >= min_delta or delta_y >= min_delta)
+    if not bool(observed) and not bool(is_y_action):
+        streak_start = stats.get("no_observed_change_streak_start")
+        if not (
+            isinstance(streak_start, dict)
+            and str(streak_start.get("action") or "") == action
+        ):
+            streak_start = {
+                "action": action,
+                "dist_mm": float(prev_dist),
+                "x_mm": float(prev_x),
+                "y_mm": pending.get("y_mm"),
+            }
+            stats["no_observed_change_streak_start"] = dict(streak_start)
+        try:
+            cumulative_dist = abs(float(dist_mm) - float(streak_start.get("dist_mm")))
+            cumulative_x = abs(float(x_mm) - float(streak_start.get("x_mm")))
+            cumulative_y = abs(float((reading or {}).get("y_mm")) - float(streak_start.get("y_mm")))
+        except (TypeError, ValueError):
+            cumulative_dist = cumulative_x = cumulative_y = 0.0
+        if bool(cumulative_dist >= min_delta or cumulative_x >= min_delta or cumulative_y >= min_delta):
+            observed = True
+            stats["no_observed_change_cumulative_progress_count"] = int(
+                stats.get("no_observed_change_cumulative_progress_count", 0) or 0
+            ) + 1
     if observed:
         _bump_stat_count(stats, "observed_after_act_counts", action)
         stats["no_observed_change_streak_action"] = None
         stats["no_observed_change_streak_count"] = 0
         stats["no_observed_change_streak_duration_ms"] = 0
+        stats["no_observed_change_last_counted_act_id"] = None
+        stats["no_observed_change_streak_start"] = None
         stats["stall_recovery_boost"] = None
     else:
         _bump_stat_count(stats, "no_observed_after_act_counts", action)
@@ -14774,12 +15328,25 @@ def _record_observed_after_pending_act(stats: dict, reading: dict) -> dict | Non
         if is_y_action and mast_effect_is_reversal(y_progress_detail):
             _mark_mast_spool_unreliable(stats, y_progress_detail)
             _bump_stat_count(stats, "miss_reasons", str(y_progress_detail.get("status") or "mast_spool_reversal"))
-        if stats.get("no_observed_change_streak_action") == action:
+        act_id = pending.get("observation_act_id")
+        same_counted_act = (
+            act_id is not None
+            and stats.get("no_observed_change_last_counted_act_id") == act_id
+        )
+        if bool(same_counted_act):
+            streak = int(stats.get("no_observed_change_streak_count", 0))
+            streak_duration_ms = int(stats.get("no_observed_change_streak_duration_ms", 0))
+            stats["no_observed_change_duplicate_read_count"] = int(
+                stats.get("no_observed_change_duplicate_read_count", 0) or 0
+            ) + 1
+        elif stats.get("no_observed_change_streak_action") == action:
             streak = int(stats.get("no_observed_change_streak_count", 0)) + 1
             streak_duration_ms = int(stats.get("no_observed_change_streak_duration_ms", 0)) + max(0, pending_duration_ms)
         else:
             streak = 1
             streak_duration_ms = max(0, pending_duration_ms)
+        if not bool(same_counted_act):
+            stats["no_observed_change_last_counted_act_id"] = act_id
         stats["no_observed_change_streak_action"] = action
         stats["no_observed_change_streak_count"] = int(streak)
         stats["no_observed_change_streak_duration_ms"] = int(streak_duration_ms)
@@ -16071,8 +16638,7 @@ def _follow_loop(
             elif reading_reason == "reacquiring_stable_brick_lock":
                 _bump_stat_count(stats, "miss_reasons", "reacquiring_stable_brick_lock")
                 if isinstance(stats.get("pending_observation"), dict):
-                    stats["pending_observation"] = None
-                    _bump_stat_count(stats, "miss_reasons", "post_act_observation_cleared_for_reacquire")
+                    _bump_stat_count(stats, "miss_reasons", "post_act_observation_preserved_for_reacquire")
             if not found:
                 reading = _wait_for_visibility_recovery(
                     vision,
@@ -16376,6 +16942,8 @@ def _follow_loop(
                     pending["duration_ms"] = int(duration_val if duration_val is not None else plan.get("duration_ms", PULSE_MS))
                 except (TypeError, ValueError):
                     pending["duration_ms"] = int(PULSE_MS)
+                stats["pending_observation_seq"] = int(stats.get("pending_observation_seq", 0) or 0) + 1
+                pending["observation_act_id"] = int(stats["pending_observation_seq"])
                 stats["pending_observation"] = pending
                 _record_distance_act_state(stats, action, plan)
             print(
@@ -16409,6 +16977,7 @@ def _follow_loop(
             stats["y_lock_on_armed"] = False
             if not (isinstance(send_result, dict) and bool(send_result.get("blocked"))):
                 stats["y_commit_active"] = True
+                stats["pending_observation_seq"] = int(stats.get("pending_observation_seq", 0) or 0) + 1
                 stats["pending_observation"] = {
                     "action": action,
                     "dist_mm": dist_mm,
@@ -16417,6 +16986,7 @@ def _follow_loop(
                     "cmd": "d",
                     "duration_ms": int((send_result or {}).get("duration_ms", 400) if isinstance(send_result, dict) else 400),
                     "y_target_mm": _y_win_target_mm(),
+                    "observation_act_id": int(stats["pending_observation_seq"]),
                 }
             print(
                 f"[FOLLOW] {action:<10} dist={dist_mm:.1f}mm x={x_mm:+.1f}mm {y_text} {duration_text} conf={conf:.0f}%",
@@ -17052,6 +17622,82 @@ def _follow_loop(
                     next_step="Step 3",
                 )
                 return stats
+            if _active_game_profile() == "empty":
+                step3_lift_result = _run_step3_lift_sequence(vision, robot)
+                step3_lift_reading = (
+                    step3_lift_result.get("reading")
+                    if isinstance(step3_lift_result, dict)
+                    else None
+                )
+                step3_lift_y = "N/A"
+                if isinstance(step3_lift_reading, dict):
+                    try:
+                        step3_lift_y = f"{float(step3_lift_reading.get('y_mm')):+.1f}mm"
+                    except (TypeError, ValueError):
+                        pass
+                print(
+                    f"[STEP3] Lift after step 2: reason={step3_lift_result.get('reason')} "
+                    f"target_met={bool(step3_lift_result.get('target_met'))} "
+                    f"holding={bool(step3_lift_result.get('holding'))} after_y={step3_lift_y}",
+                    flush=True,
+                )
+                if bool(step3_lift_result.get("fallback_reset_ok")):
+                    print(
+                        f"[STEP3] No visibility fallback completed: "
+                        f"{step3_lift_result.get('fallback_cmd')} for "
+                        f"{step3_lift_result.get('fallback_duration_ms')}ms; continuing to reset.",
+                        flush=True,
+                    )
+                if bool(step3_lift_result.get("holding")):
+                    _set_game_profile("holding")
+                if not bool(step3_lift_result.get("success")):
+                    print(f"[STEP3] Failed gracefully: {step3_lift_result.get('reason')}", flush=True)
+                    break
+                if not (
+                    bool(step3_lift_result.get("target_met"))
+                    or bool(step3_lift_result.get("fallback_reset_ok"))
+                ):
+                    print("[STEP3] Not resetting until lift is an honest target hit.", flush=True)
+                    last_action = "STEP3_LIFT_NEEDS_WORK"
+                    break
+                if bool(debug_mode) and bool(step3_lift_result.get("target_met")):
+                    _stop_robot(robot)
+                    stats["debug_mode_terminated"] = True
+                    stats["last_action"] = "DEBUG_STEP3_LIFT_TERMINATE"
+                    print("[DEBUG] Robot stopped after Step 3 lift; waiting for operator confirmation.", flush=True)
+                    return stats
+                if _step2_result_freezes_xz(step2_result):
+                    _stop_robot(robot)
+                    print(
+                        "[FOLLOW] Placement complete with x/z frozen; parked without reset.",
+                        flush=True,
+                    )
+                    last_action = "XZ_FROZEN_PARK"
+                    break
+                if not bool(reset_after_win):
+                    last_action = "HAPPY"
+                    elapsed = time.monotonic() - loop_start
+                    if (remaining := LOOP_S - elapsed) > 0:
+                        time.sleep(remaining)
+                    continue
+                reset_result = _run_reset_sequence(vision, robot)
+                _record_reset_stats(stats, reset_result)
+                _print_reset_stats(stats)
+                if not bool(reset_result.get("success")):
+                    print(
+                        f"[RESET] Failed during {reset_result.get('phase')}: "
+                        f"{reset_result.get('reason')}",
+                        flush=True,
+                    )
+                    break
+                step1_started_at = time.monotonic()
+                last_action = "RESET"
+                stats["y_lock_on_armed"] = True
+                print_ticker = 0
+                elapsed = time.monotonic() - loop_start
+                if (remaining := LOOP_S - elapsed) > 0:
+                    time.sleep(remaining)
+                continue
             step3_result = _run_step3_seat_sequence(vision, robot)
             step3_reading = step3_result.get("reading") if isinstance(step3_result, dict) else None
             step3_dist = step3_x = step3_y = "N/A"
@@ -17265,6 +17911,8 @@ def _follow_loop(
                     plan_curve = _x_curve_for_plan(plan, reading)
                     if isinstance(plan_curve, dict):
                         pending["x_curve"] = dict(plan_curve)
+                stats["pending_observation_seq"] = int(stats.get("pending_observation_seq", 0) or 0) + 1
+                pending["observation_act_id"] = int(stats["pending_observation_seq"])
                 stats["pending_observation"] = pending
                 _record_distance_act_state(stats, action, plan)
 
@@ -17536,7 +18184,12 @@ def _run_custom_sequence(
             )
 
         completed.append(result)
-        if not bool(result.get("success")) and item in {"step1", "step2", "step3"}:
+        has_next_item = int(index) < len(sequence)
+        if (
+            has_next_item
+            and not bool(result.get("success"))
+            and item in {"step1", "step2", "step3"}
+        ):
             result["success"] = True
             result["unconfirmed_proceed"] = True
             result["original_reason"] = str(result.get("reason") or "")

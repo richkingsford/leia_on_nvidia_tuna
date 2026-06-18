@@ -1,2 +1,8 @@
 __pycache__/
 *.pyc
+
+# Regenerable run output / caches (do not commit)
+runs/
+.cache/
+.codex_backups/
+*.log

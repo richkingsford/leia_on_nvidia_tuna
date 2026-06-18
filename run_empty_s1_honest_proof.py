@@ -68,6 +68,29 @@ def _capture(
             site._write()
 
 
+def _top_miss_reason(stats: dict | None) -> str:
+    if not isinstance(stats, dict):
+        return "no_stats"
+    reasons = stats.get("miss_reasons")
+    if not isinstance(reasons, dict) or not reasons:
+        return str(stats.get("last_action") or "unknown")
+    try:
+        reason, count = max(reasons.items(), key=lambda item: int(item[1] or 0))
+        return f"{reason}={int(count or 0)}"
+    except Exception:
+        return str(stats.get("last_action") or "unknown")
+
+
+def _trial_outcome_line(trial: int, ok: bool, reading: dict | None, reason: str) -> str:
+    try:
+        dist = float((reading or {}).get("dist_mm"))
+        x = float((reading or {}).get("x_mm"))
+        pose = f"dist={dist:.1f}mm x={x:+.1f}mm"
+    except (TypeError, ValueError):
+        pose = "dist/x=N/A"
+    return f"trial {int(trial)}: {'win' if ok else 'fail'} {pose} reason={reason}"
+
+
 def _step1_met(reading: dict | None) -> bool:
     return bool(frozen._evaluate_reading(reading, "step1").get("target_met"))
 
@@ -965,6 +988,7 @@ def run(args: argparse.Namespace) -> int:
     base_robot = None
     robot = None
     wins = 0
+    outcomes: list[str] = []
     try:
         vision = BrickDetector(debug=True)
         set_tuning = getattr(vision, "set_runtime_tuning", None)
@@ -1022,8 +1046,15 @@ def run(args: argparse.Namespace) -> int:
                     failure_diagnosis=diagnosis_line,
                     failure_plan=plan_line,
                 )
-                site.update_summary(f"Stopped after trial {trial}: reset was not honest; {explanation_line}")
-                return 2
+                outcomes.append(_trial_outcome_line(trial, False, reset_reading, f"reset_not_honest:{reset_reason}"))
+                if not bool(args.practice_continue):
+                    site.update_summary(f"Stopped after trial {trial}: reset was not honest; {explanation_line}")
+                    return 2
+                site.update_summary(
+                    f"Practice iteration {attempt}: trial {trial}/{int(args.trials)} reset failed; continuing for data"
+                )
+                time.sleep(0.2)
+                continue
 
             site.update_summary(f"Iteration {attempt}: trial {trial}/{int(args.trials)} pursuing Step 1")
             stats = follow._follow_loop(
@@ -1077,11 +1108,26 @@ def run(args: argparse.Namespace) -> int:
                     failure_diagnosis=diagnosis_line,
                     failure_plan=plan_line,
                 )
-                site.update_summary(f"Stopped after trial {trial}: Step 1 failed; {explanation_line}")
-                return 3
+                outcomes.append(
+                    _trial_outcome_line(
+                        trial,
+                        False,
+                        step1_reading,
+                        f"{_top_miss_reason(stats)}; {diagnosis}",
+                    )
+                )
+                if not bool(args.practice_continue):
+                    site.update_summary(f"Stopped after trial {trial}: Step 1 failed; {explanation_line}")
+                    return 3
+                site.update_summary(
+                    f"Practice iteration {attempt}: {wins}/{trial} Step 1 wins; last failed, continuing for data"
+                )
+                time.sleep(0.2)
+                continue
 
             if bool(args.skip_post_win_reset):
                 wins += 1
+                outcomes.append(_trial_outcome_line(trial, True, step1_reading, "step1_win"))
                 trial_reason = (
                     "current non-happy pose -> earned Step 1; stopped before post-win reset by request"
                     if bool(args.skip_pre_reset)
@@ -1131,10 +1177,25 @@ def run(args: argparse.Namespace) -> int:
                     failure_diagnosis=diagnosis_line,
                     failure_plan=plan_line,
                 )
-                site.update_summary(f"Stopped after trial {trial}: post-win reset was not honest; {explanation_line}")
-                return 4
+                outcomes.append(
+                    _trial_outcome_line(
+                        trial,
+                        False,
+                        post_reading,
+                        f"post_win_reset_not_honest:{post_reason}",
+                    )
+                )
+                if not bool(args.practice_continue):
+                    site.update_summary(f"Stopped after trial {trial}: post-win reset was not honest; {explanation_line}")
+                    return 4
+                site.update_summary(
+                    f"Practice iteration {attempt}: {wins}/{trial} Step 1 wins; post-win reset failed, continuing for data"
+                )
+                time.sleep(0.2)
+                continue
 
             wins += 1
+            outcomes.append(_trial_outcome_line(trial, True, step1_reading, "honest_step1_win"))
             _capture(
                 site,
                 vision,
@@ -1151,6 +1212,12 @@ def run(args: argparse.Namespace) -> int:
             site.update_summary(f"Iteration {attempt}: {wins}/{int(args.trials)} honest Step 1 wins")
             time.sleep(0.2)
 
+        if bool(args.practice_continue):
+            summary = "; ".join(outcomes[-int(args.trials) :])
+            site.update_summary(
+                f"Practice complete: iteration {attempt} won {wins}/{int(args.trials)} empty Step 1 trials. {summary}"
+            )
+            return 0 if int(wins) == int(args.trials) else 5
         site.update_summary(f"Victory: iteration {attempt} won {wins}/{int(args.trials)} honest Step 1 trials")
         return 0
     finally:
@@ -1181,6 +1248,11 @@ def parse_args() -> argparse.Namespace:
         "--skip-pre-reset",
         action="store_true",
         help="Start the trial from Leia's current pose and record that start pose instead of issuing a reset.",
+    )
+    parser.add_argument(
+        "--practice-continue",
+        action="store_true",
+        help="Record all requested trials for practice instead of stopping after the first failed trial.",
     )
     return parser.parse_args()
 

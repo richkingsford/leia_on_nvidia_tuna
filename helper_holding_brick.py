@@ -127,6 +127,7 @@ class TargetContourConfig:
     close_kernel_w_ratio: float = 0.055
     close_kernel_h: int = 7
     span_min_width_ratio: float = 0.24
+    span_max_width_ratio: float = 0.92
     span_min_area_px: int = 1600
     span_min_coverage_ratio: float = 0.035
     span_max_dist_mm: float = 240.0
@@ -579,25 +580,73 @@ def _target_span_from_mask(
     y2 = min(frame_h, int(max_y))
     if y2 <= y1:
         return None
-    region = mask[y1:y2, :]
-    ys, xs = np.nonzero(region)
-    if len(xs) <= 0:
-        return None
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    components: list[dict[str, Any]] = []
+    component_min_area = max(1400.0, float(config.span_min_area_px) * 0.75)
+    component_min_width = max(18, int(round(float(frame_w) * 0.035)))
+    for contour in contours:
+        area = float(cv2.contourArea(contour))
+        if area < float(component_min_area):
+            continue
+        x, y, cw, ch = cv2.boundingRect(contour)
+        cy = float(y) + (float(ch) / 2.0)
+        if cy < y1 or cy > y2:
+            continue
+        if int(cw) < int(component_min_width):
+            continue
+        bbox_area = max(1, int(cw) * int(ch))
+        green_px = int(cv2.countNonZero(mask[int(y):int(y) + int(ch), int(x):int(x) + int(cw)]))
+        fill = float(green_px) / float(bbox_area)
+        if fill < max(0.10, float(config.span_min_coverage_ratio) * 2.0):
+            continue
+        components.append(
+            {
+                "area_px": float(area),
+                "green_px": int(green_px),
+                "bbox": (int(x), int(y), int(cw), int(ch)),
+                "fill_ratio": float(fill),
+            }
+        )
 
-    x_min = int(xs.min())
-    x_max = int(xs.max())
-    y_min = int(ys.min()) + y1
-    y_max = int(ys.max()) + y1
+    if components:
+        x_min = min(int(row["bbox"][0]) for row in components)
+        y_min = min(int(row["bbox"][1]) for row in components)
+        x_max = max(int(row["bbox"][0]) + int(row["bbox"][2]) - 1 for row in components)
+        y_max = max(int(row["bbox"][1]) + int(row["bbox"][3]) - 1 for row in components)
+    else:
+        region = mask[y1:y2, :]
+        ys, xs = np.nonzero(region)
+        if len(xs) <= 0:
+            return None
+        x_min = int(xs.min())
+        x_max = int(xs.max())
+        y_min = int(ys.min()) + y1
+        y_max = int(ys.max()) + y1
     w = int(x_max - x_min + 1)
     h = int(y_max - y_min + 1)
     if w <= 0 or h <= 0:
         return None
-    area = int(len(xs))
+    area = int(cv2.countNonZero(mask[y_min:y_max + 1, x_min:x_max + 1]))
 
     width_ratio = float(w) / float(max(1, frame_w))
     coverage = float(area) / float(max(1, w * h))
     camera_center_x = _camera_center_x(detector, frame_w)
-    center_x = float(x_min) + float(w) / 2.0
+    center_component = None
+    if components:
+        center_component = max(
+            components,
+            key=lambda row: (float(row.get("green_px", 0)), float(row.get("area_px", 0.0))),
+        )
+    center_bbox = center_component.get("bbox") if isinstance(center_component, dict) else None
+    if isinstance(center_bbox, (tuple, list)) and len(center_bbox) == 4:
+        cx, cy, cw, ch = [int(v) for v in center_bbox]
+        center_x = float(cx) + float(cw) / 2.0
+        center_y = float(cy) + float(ch) / 2.0
+        center_source = "primary_component"
+    else:
+        center_x = float(x_min) + float(w) / 2.0
+        center_y = float(y_min) + float(h) / 2.0
+        center_source = "span"
     max_center_offset_px = frame_w * _clamp_ratio(
         config.max_center_x_offset_ratio,
         DEFAULT_TARGET_CONTOUR_CONFIG.max_center_x_offset_ratio,
@@ -608,6 +657,7 @@ def _target_span_from_mask(
     checks = {
         "area": float(area) >= float(config.span_min_area_px),
         "width": width_ratio >= float(config.span_min_width_ratio),
+        "max_width": width_ratio <= float(config.span_max_width_ratio),
         "height": int(h) >= int(config.min_height_px),
         "coverage": coverage >= float(config.span_min_coverage_ratio),
         "center_x": abs(float(center_x) - float(camera_center_x)) <= float(max_center_offset_px),
@@ -623,9 +673,9 @@ def _target_span_from_mask(
             "coverage_ratio": float(coverage),
             "width_ratio": float(width_ratio),
             "dist_mm": float(dist_mm),
+            "span_components": components[:6],
         }
 
-    center_y = float(y_min) + float(h) / 2.0
     offset_x_mm = ((center_x - _camera_center_x(detector, frame_w)) * dist_mm) / focal_x
     y_mm = ((center_y - _camera_center_y(detector, frame_h)) * dist_mm) / focal_y
     confidence = max(60.0, min(98.0, 70.0 + (coverage * 35.0) + min(8.0, area / 3500.0)))
@@ -642,6 +692,8 @@ def _target_span_from_mask(
         "y_mm": float(y_mm),
         "confidence_pct": float(confidence),
         "checks": checks,
+        "span_components": components[:6],
+        "center_source": center_source,
     }
 
 
@@ -836,10 +888,12 @@ def detect_masked_target_brick_contour(
     for area, bbox, _contour in candidates:
         x, y, w, h = bbox
         center_x = float(x) + float(w) / 2.0
+        fallback_min_height_px = max(int(cfg.min_height_px), int(round(float(frame_h) * 0.18)))
         checks = {
             "area": area >= float(cfg.min_area_px),
             "width": (float(w) / float(max(1, frame_w))) >= float(cfg.min_width_ratio),
-            "height": int(h) >= int(cfg.min_height_px),
+            "max_width": (float(w) / float(max(1, frame_w))) <= float(cfg.span_max_width_ratio),
+            "height": int(h) >= int(fallback_min_height_px),
             "center_x": abs(float(center_x) - float(camera_center_x)) <= float(max_center_offset_px),
         }
         accepted.append({"area_px": area, "bbox": bbox, "checks": checks})

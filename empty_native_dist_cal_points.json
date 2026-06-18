@@ -1,0 +1,9 @@
+{
+  "note": "Empty-game native-OAK brick distance calibration scratch (new wider brick). true_mm measured by operator (tape, Leia at that pose); reported_mm = stable raw uncalibrated reading from the live native detector at that pose. Fit reported->true and write into world_model_robot.json follow_the_brick.empty_target_distance_calibration.",
+  "captured_via": "livestream /text telemetry (raw, pre-calibration)",
+  "points": [
+    {"true_mm": 350.0, "reported_mm": 135.0, "geometry": "native_rect_width", "width_px": 195.0},
+    {"true_mm": 200.0, "reported_mm": 82.0, "geometry": "native_rect_width", "width_px": 323.0},
+    {"true_mm": 170.0, "reported_mm": 62.0, "geometry": "green_edge_top_strip_width", "width_px": 434.0, "note": "operating floor; never approach closer than this"}
+  ]
+}

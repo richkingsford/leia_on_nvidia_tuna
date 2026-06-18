@@ -623,9 +623,78 @@ class NativeOakBrickDetector:
         kern_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         contour_mask = cv2.dilate(contour_mask, kern_dilate, iterations=1)
 
+        # Bricks may carry non-green surface markings (slots, stickers, dots)
+        # that punch interior holes in the green mask and fragment the outline.
+        # Fill each external contour solid so the brick reads as one block and
+        # the bounding box wraps the full green outline (incl. its true width),
+        # instead of the rectangle gates rejecting a holey/rounded blob.
+        contour_mask = self._fill_mask_interior_holes(contour_mask)
+        feature_mask = self._fill_mask_interior_holes(feature_mask)
+
         if cv2.countNonZero(contour_mask) <= 0 and loose_contour_mask is not None:
             return feature_mask, np.asarray(loose_contour_mask, dtype=np.uint8)
         return feature_mask, contour_mask
+
+    @staticmethod
+    def _fill_mask_interior_holes(mask):
+        """Return a copy of `mask` with interior holes of each external contour
+        filled solid. Exterior background is untouched, so this only closes gaps
+        that lie inside a green outline (surface markings), never merges separate
+        blobs."""
+        if mask is None:
+            return mask
+        arr = np.asarray(mask, dtype=np.uint8)
+        if arr.ndim != 2 or arr.size == 0 or cv2.countNonZero(arr) <= 0:
+            return mask
+        contours, _ = cv2.findContours(arr, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return mask
+        filled = arr.copy()
+        cv2.drawContours(filled, contours, -1, 255, thickness=cv2.FILLED)
+        return filled
+
+    def _dominant_green_component_bbox(self, saturated_mask, *, frame_h: int, frame_w: int):
+        """Tight bounding box around the whole brick's saturated-green outline.
+
+        Returns (x, y, w, h) or None. Robust to brick shape and to full-width
+        surface markings (e.g. a slot/band) that split the green into stacked
+        pieces: the helper unions every green blob that horizontally overlaps the
+        largest one, so a cap-over-body brick reads as a single rectangle. A
+        faint floor reflection is a separate, off-to-the-side and usually
+        desaturated blob, so it does not get unioned in."""
+        if saturated_mask is None:
+            return None
+        filled = self._fill_mask_interior_holes(np.asarray(saturated_mask, dtype=np.uint8))
+        if filled is None or cv2.countNonZero(filled) <= 0:
+            return None
+        try:
+            count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(filled, 8)
+        except Exception:
+            return None
+        min_area = max(150.0, float(frame_h * frame_w) * 0.003)
+        comps = []
+        for idx in range(1, int(count)):
+            x0, y0, cw, ch, area = (float(stats[idx][k]) for k in range(5))
+            if area < min_area:
+                continue
+            comps.append((int(x0), int(y0), int(cw), int(ch), float(area)))
+        if not comps:
+            return None
+        main = max(comps, key=lambda c: c[4])
+        mx1, mx2 = main[0], main[0] + main[2]
+        main_w = max(1, main[2])
+        selected = []
+        for c in comps:
+            cx1, cx2 = c[0], c[0] + c[2]
+            overlap = min(mx2, cx2) - max(mx1, cx1)
+            # Same brick column: meaningful horizontal overlap with the main blob.
+            if c is main or overlap >= 0.35 * min(main_w, max(1, c[2])):
+                selected.append(c)
+        x1 = min(c[0] for c in selected)
+        y1 = min(c[1] for c in selected)
+        x2 = max(c[0] + c[2] for c in selected)
+        y2 = max(c[1] + c[3] for c in selected)
+        return (int(x1), int(y1), int(max(1, x2 - x1)), int(max(1, y2 - y1)))
 
     def _shrinkwrap_native_rect_bbox(
         self,
@@ -1038,7 +1107,7 @@ class NativeOakBrickDetector:
         if raw_dist is None or not (0.0 < float(raw_dist) <= float(max_green_edge_dist)):
             return None
         calibrated_raw_dist = float(raw_dist)
-        if bool(top_strip) or (
+        if (
             bool(painted_column)
             and float(raw_dist) <= float(GREEN_EDGE_PAINTED_COLUMN_MAX_RAW_CALIBRATION_MM)
         ):
@@ -1063,15 +1132,41 @@ class NativeOakBrickDetector:
             rows = painted_column_active_rows
         else:
             band = mask[:, int(left):int(right)]
-            rows = np.where(np.count_nonzero(band, axis=1) > 0)[0]
+            green_rows = np.where(np.count_nonzero(band, axis=1) > 0)[0]
+            # The brick is one contiguous block of green rows from the top. A
+            # glossy floor can mirror it as faint green near the bottom of the
+            # frame, separated by a gap of non-green wood. Walk down from the
+            # topmost green row, tolerating small gaps (interior markings such
+            # as a slot or stickers) but stopping at the first large gap, so the
+            # box wraps only the brick and not its reflection.
+            if green_rows.size > 0:
+                row_gap_tol = max(4, int(round(float(h) * 0.05)))
+                top_row = int(green_rows[0])
+                bottom_row = top_row
+                for row_idx in green_rows[1:]:
+                    if int(row_idx) - bottom_row > row_gap_tol:
+                        break
+                    bottom_row = int(row_idx)
+                rows = green_rows[(green_rows >= top_row) & (green_rows <= bottom_row)]
+            else:
+                rows = green_rows
         cy = float(rows.mean()) if rows.size > 0 else float(h) / 2.0
         if bool(painted_column) and painted_column_bbox is not None:
             box_x, box_y, box_w, box_h = [int(v) for v in painted_column_bbox]
         else:
-            box_x = int(left)
-            box_y = int(rows[0]) if rows.size > 0 else 0
-            box_w = max(1, int(right) - int(left))
-            box_h = max(1, (int(rows[-1]) - int(rows[0]) + 1) if rows.size > 0 else int(h))
+            # Prefer a tight box around the whole saturated-green blob so the
+            # rectangle wraps the full brick (width included), independent of the
+            # strip-column percentiles, which can overshoot on stray columns.
+            comp_bbox = self._dominant_green_component_bbox(
+                balanced_mask, frame_h=int(h), frame_w=int(w)
+            )
+            if comp_bbox is not None:
+                box_x, box_y, box_w, box_h = comp_bbox
+            else:
+                box_x = int(left)
+                box_y = int(rows[0]) if rows.size > 0 else 0
+                box_w = max(1, int(right) - int(left))
+                box_h = max(1, (int(rows[-1]) - int(rows[0]) + 1) if rows.size > 0 else int(h))
         detector.last_bbox_w_px = int(box_w)
         detector.last_bbox_h_px = int(box_h)
         detector.last_bbox_eff_w_px = int(box_w)
