@@ -31,6 +31,7 @@ from telemetry_robot import (
 VALID_MOTION_COMMANDS = frozenset({"f", "b", "l", "r", "u", "d"})
 UNO_MAX_PERCENT = 100
 MAST_FULL_POWER_KEEPALIVE_MS = 350
+MIN_WHEEL_ACT_DURATION_MS = 200
 LEIA_UNO_SERIAL_PORT = "/dev/leia-uno"
 DEFAULT_SERIAL_PORT = "/dev/ttyCH341USB0"
 SERIAL_PORT_ENV_VARS = (
@@ -625,6 +626,8 @@ class Robot:
         _, min_duration_ms = self._min_floor_for_cmd(cmd_key)
         if min_duration_ms is None:
             return max(0, duration_val)
+        if cmd_key in {"f", "b", "l", "r"}:
+            min_duration_ms = max(int(min_duration_ms), int(MIN_WHEEL_ACT_DURATION_MS))
         return int(max(int(duration_val), int(min_duration_ms)))
 
     COLOR_RED = "\033[31m"
@@ -740,6 +743,65 @@ class Robot:
         self._send(f"{payload['wire_text']}\n")
         return payload
 
+    PWM_EQ_TOL = 2
+
+    def _enforce_arc_assist(self, action_specs):
+        """GLOBAL motion rule: never turn by running the two treads at different
+        SPEEDS. At the single crawl speed there are only two legal wheel states
+        per tread: the crawl speed, or 0.
+
+        A turn is therefore created by TIME, not speed: both treads run at the
+        crawl speed, and the inner tread is held at 0 for a spell (a shorter
+        duration in the same packet, or an explicit stop). Longer hold -> sharper
+        turn. So a packet with both treads in opposite polarity (forward = l.b +
+        r.f, backward = l.f + r.b) at the SAME speed is allowed as-is whether the
+        durations match (straight) or differ (duty-cycle turn).
+
+        Only a tank turn (both treads the same polarity) or a genuine speed
+        differential (treads at different PWM) is illegal — there we zero the
+        inner/weaker tread so just one drives. This catches every per-wheel
+        packet — Astolfi, drive-bias/duty curves, resets — regardless of source.
+        """
+        if not isinstance(action_specs, (list, tuple)):
+            return action_specs
+        wheels = [
+            s for s in action_specs
+            if isinstance(s, dict)
+            and str(s.get("target") or "").strip().lower() in ("l", "r")
+            and str(s.get("action") or "").strip().lower() in ("f", "b")
+            and int(round(float(s.get("pwm") or 0))) > 0
+        ]
+        if len(wheels) != 2:
+            return action_specs
+        by_target = {str(s.get("target")).strip().lower(): s for s in wheels}
+        ls, rs = by_target.get("l"), by_target.get("r")
+        if ls is None or rs is None:
+            return action_specs
+        lp = int(round(float(ls.get("pwm") or 0)))
+        rp = int(round(float(rs.get("pwm") or 0)))
+        ld = int(round(float(ls.get("duration_ms") or 0)))
+        rd = int(round(float(rs.get("duration_ms") or 0)))
+        la = str(ls.get("action")).strip().lower()
+        ra = str(rs.get("action")).strip().lower()
+        opposite_polarity = (la == "b" and ra == "f") or (la == "f" and ra == "b")
+        same_speed = abs(lp - rp) <= int(self.PWM_EQ_TOL)
+        # Same crawl speed, same heading: straight (equal duration) or a
+        # duty-cycle turn (inner held at 0 for the shorter span). Allow as-is.
+        if opposite_polarity and same_speed:
+            return action_specs
+        # Tank turn or speed differential: arc-assist by holding the inner
+        # (weaker, then shorter) tread at 0 so only one tread drives.
+        if lp != rp:
+            inner = ls if lp < rp else rs
+        elif ld != rd:
+            inner = ls if ld < rd else rs
+        else:
+            inner = ls
+        inner["action"] = "s"
+        inner["pwm"] = 0
+        inner["duration_ms"] = 0
+        return action_specs
+
     def send_custom_actions_pwm(self, cmd_char, action_specs, duration_ms=None):
         """Send an explicit per-target Uno action list while preserving the logical cmd label."""
         logical_cmd = str(cmd_char or "").strip().lower()
@@ -765,6 +827,7 @@ class Robot:
                 normalized_specs.append(spec_copy)
         else:
             normalized_specs = action_specs
+        normalized_specs = self._enforce_arc_assist(normalized_specs)
         payload = self._build_custom_action_payload(logical_cmd, action_specs=normalized_specs, duration_ms=duration_clamped)
         if payload is None:
             return {"cmd_sent": logical_cmd, "pwm": 0, "power": 0.0, "duration_ms": int(duration_clamped)}

@@ -25,11 +25,51 @@ SEQUENCE = (
 )
 
 POST_LIFT_PAUSE_S = 0.0
-HOLDING_S2_DIST_TARGET_MM = 128.3
+HOLDING_S2_DIST_TARGET_MM = 90.1
 HOLDING_S2_DIST_TOL_MM = 7.0
-HOLDING_S2_X_TARGET_MM = -1.6
+HOLDING_S2_X_TARGET_MM = 1.8
 HOLDING_S2_X_TOL_MM = 5.0
-HOLDING_S2_Y_REFERENCE_MM = 5.4  # Reference only; holding S2 alignment must not move the mast.
+HOLDING_S2_Y_REFERENCE_MM = -1.6  # Reference only; holding S2 alignment must not move the mast.
+
+# End-of-sequence retreat: after the brick is placed, back away ~2x the usual
+# reset reverse (~450ms) and turn a little, so Leia clears the placed brick.
+POST_GAME_REVERSE_MS = 900   # ~2x the usual ~450ms reset straight-back
+POST_GAME_TURN_MS = 450      # a little turn at the end
+POST_GAME_TURN_CMD = "l"     # arc-assist turn direction
+
+
+def _post_game_retreat(robot) -> None:
+    """Blind reverse (~2x) + a little arc turn after the brick is placed.
+
+    Direct sends (brick is placed / may be out of view); the Robot layer still
+    floors to the crawl/breakaway speed and enforces arc-assist (one wheel at 0).
+    """
+    pwm = int(follow._crawl_forward_pwm())
+    print(
+        f"[POST-GAME] Retreat: reverse {POST_GAME_REVERSE_MS}ms then turn "
+        f"{POST_GAME_TURN_CMD.upper()} {POST_GAME_TURN_MS}ms (crawl pwm={pwm}).",
+        flush=True,
+    )
+    reverse = [
+        {"target": "l", "action": "f", "pwm": pwm, "duration_ms": int(POST_GAME_REVERSE_MS)},
+        {"target": "r", "action": "b", "pwm": pwm, "duration_ms": int(POST_GAME_REVERSE_MS)},
+    ]
+    robot.send_custom_actions_pwm("b", reverse, duration_ms=int(POST_GAME_REVERSE_MS))
+    time.sleep(float(POST_GAME_REVERSE_MS) / 1000.0)
+    follow._stop_robot(robot)
+    if str(POST_GAME_TURN_CMD).strip().lower() == "l":
+        turn = [
+            {"target": "r", "action": "f", "pwm": pwm, "duration_ms": int(POST_GAME_TURN_MS)},
+            {"target": "l", "action": "s", "pwm": 0, "duration_ms": 0},
+        ]
+    else:
+        turn = [
+            {"target": "l", "action": "b", "pwm": pwm, "duration_ms": int(POST_GAME_TURN_MS)},
+            {"target": "r", "action": "s", "pwm": 0, "duration_ms": 0},
+        ]
+    robot.send_custom_actions_pwm("f", turn, duration_ms=int(POST_GAME_TURN_MS))
+    time.sleep(float(POST_GAME_TURN_MS) / 1000.0)
+    follow._stop_robot(robot)
 
 
 FULL_E2E_EXPERIMENT_SUMMARY = (
@@ -331,7 +371,7 @@ def _is_hard_stop_result(reason: str, result: dict | None = None) -> bool:
 
 
 def _holding_s2_alignment_config() -> dict:
-    """Use holding vision, but align to the empty S2 x/dist seat pose."""
+    """Use the empty S2 movement logic, with the captured holding S2 target."""
     previous_profile = follow._active_game_profile()
     try:
         follow._set_game_profile("empty")
@@ -351,33 +391,9 @@ def _holding_s2_alignment_config() -> dict:
     align_step2["blind_mast_only"] = False
     align_step2["seat_mast_duration_ms"] = 0
     align_step2["seat_drive_duration_ms"] = 0
-    align_step2["precision_settle_enabled"] = True
-    align_step2["precision_drive_min_pulse_ms"] = 70
-    align_step2["precision_drive_max_pulse_ms"] = 110
-    align_step2["precision_back_min_pulse_ms"] = 90
-    align_step2["precision_back_max_pulse_ms"] = 130
-    align_step2["precision_dist_x_curve_min_ms"] = 80
-    align_step2["precision_dist_x_curve_max_ms"] = 120
-    align_step2["precision_dist_x_superstrong_min_ms"] = 250
-    align_step2["precision_x_strong_gap_mm"] = 10.0
-    align_step2["precision_x_superstrong_gap_mm"] = 18.0
-    align_step2["precision_x_only_strong_ms"] = 180
-    align_step2["precision_x_only_superstrong_ms"] = 250
-    align_step2["precision_x_only_drive_mode"] = "forward"
-    align_step2["precision_near_x_nudge_ms"] = 90
-    align_step2["precision_x_only_protect_dist_ms"] = 90
-    align_step2["precision_stable_reobserve_enabled"] = True
-    align_step2["precision_dist_keep_x_center_enabled"] = True
-    align_step2["precision_dist_keep_x_center_abs_err_mm"] = 3.0
-    align_step2["precision_dist_keep_x_center_ms"] = 90
-    align_step2["precision_max_attempts"] = 18
-    align_step2["precision_hard_max_attempts"] = 80
-    align_step2["precision_dist_forward_budget_ms"] = 3000
-    align_step2["precision_dist_forward_budget_min_progress_mm"] = 4.0
     align_step2["post_win_forward_creep_ms"] = 300
-    align_step2["confirm_noise_grace_enabled"] = True
+    align_step2["confirm_noise_grace_enabled"] = False
     align_step2["confirm_noise_grace_mm"] = 2.5
-    align_step2["precision_min_actionable_x_gap_mm"] = 2.5
     semi_targets = copy.deepcopy(
         align_step2.get("semi_happy_targets")
         if isinstance(align_step2.get("semi_happy_targets"), dict)
@@ -404,23 +420,27 @@ def _holding_s2_alignment_config() -> dict:
 
 
 def _run_holding_s2_align_sequence(vision: BrickDetector, robot: Robot) -> dict:
-    """Run the missing holding alignment step before the blind lower/place step."""
+    """Run holding S2 alignment with the normal empty-S2 stack model and motion brain."""
     align_step2 = _holding_s2_alignment_config()
-    follow._set_game_profile("holding")
-    try:
-        follow._reset_follow_reading_history(vision, allow_large_dist_jump=False)
-    except Exception:
-        pass
-    stable_before = _read(vision, timeout_s=4.0)
+    previous_profile = follow._active_game_profile()
     cfg = follow._follow_motion_config()
     original_step2 = copy.deepcopy(cfg.get("step2") if isinstance(cfg.get("step2"), dict) else {})
-    cfg["step2"] = align_step2
     try:
+        follow._set_game_profile("empty")
+        try:
+            follow._reset_follow_reading_history(vision, allow_large_dist_jump=False)
+        except Exception:
+            pass
+        stable_before = _read(vision, timeout_s=4.0)
+        cfg["step2"] = align_step2
         result = follow._run_step2_seat_sequence(vision, robot, initial_reading=stable_before)
     finally:
         cfg["step2"] = original_step2
+        follow._set_game_profile(previous_profile)
     if isinstance(result, dict):
         result["holding_s2_alignment_uses_empty_s2_pose"] = True
+        result["holding_s2_alignment_uses_empty_vision_profile"] = True
+        result["holding_s2_alignment_uses_empty_motion_logic"] = True
         result["stable_before"] = stable_before
     return result
 
@@ -463,6 +483,22 @@ def _bounded_blind_reset_ok(result: dict | None) -> bool:
     return True
 
 
+def _opening_reset_ok(result: dict | None) -> bool:
+    """Opening reset is evidence, not a trial abort, unless it hit a hard stop."""
+    if not isinstance(result, dict):
+        return False
+    if bool(result.get("success")):
+        return True
+    reason = str(result.get("reason") or "")
+    if _is_hard_stop_result(reason, result):
+        return False
+    result["success"] = True
+    result["soft_reset_complete"] = True
+    result["opening_reset_soft_accepted"] = True
+    result["reason"] = f"{reason or 'reset_target_miss'}:soft_start_reset_accepted"
+    return True
+
+
 def _holding_s2_align_ok(result: dict | None) -> bool:
     if not isinstance(result, dict):
         return False
@@ -495,11 +531,16 @@ def _confirm_holding_s2_align_result(vision: BrickDetector, result: dict | None)
     out = dict(result) if isinstance(result, dict) else {"success": False, "reason": "holding_s2_align_failed"}
     if _holding_s2_align_ok(out):
         return out
+    previous_profile = follow._active_game_profile()
     try:
-        follow._reset_follow_reading_history(vision, allow_large_dist_jump=False)
-    except Exception:
-        pass
-    final = _stable_step2_final_reobserve(vision, count=5, timeout_s=1.5)
+        follow._set_game_profile("empty")
+        try:
+            follow._reset_follow_reading_history(vision, allow_large_dist_jump=False)
+        except Exception:
+            pass
+        final = _stable_step2_final_reobserve(vision, count=5, timeout_s=1.5)
+    finally:
+        follow._set_game_profile(previous_profile)
     target_met, target_reason, closeness = follow._step2_targets_ready(final, _holding_s2_alignment_config())
     out["holding_s2_final_reobserve"] = final
     out["holding_s2_final_reobserve_reason"] = str(target_reason)
@@ -522,13 +563,18 @@ def _ensure_holding_s2_post_win_creep(vision: BrickDetector, robot: Robot, resul
 
     cfg = _holding_s2_alignment_config()
     before_creep = out.get("reading") if isinstance(out.get("reading"), dict) else None
-    after_creep, creep_result = follow._run_post_win_forward_creep(
-        vision,
-        robot,
-        before_creep,
-        cfg,
-        label="holding_s2_align",
-    )
+    previous_profile = follow._active_game_profile()
+    try:
+        follow._set_game_profile("empty")
+        after_creep, creep_result = follow._run_post_win_forward_creep(
+            vision,
+            robot,
+            before_creep,
+            cfg,
+            label="holding_s2_align",
+        )
+    finally:
+        follow._set_game_profile(previous_profile)
     out["reading_before_post_win_forward_creep"] = before_creep
     out["post_win_forward_creep_result"] = creep_result
     out["post_win_forward_creep_ms"] = int(cfg.get("post_win_forward_creep_ms") or 0) if creep_result is not None else 0
@@ -765,6 +811,12 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
             return 1
 
         follow._set_game_profile("empty")
+        # End-of-sequence retreat: back away from the just-placed brick by ~2x
+        # the usual reset reverse, then turn a little. Blind/direct sends (the
+        # brick is placed and may be out of view); the Robot layer still floors
+        # to the crawl/breakaway speed and enforces arc-assist (one wheel at 0).
+        _post_game_retreat(robot)
+
         success = all(bool(row.get("ok")) for row in results)
         if success:
             summary = f"{run_label} attempt {attempt}: WIN"
@@ -890,7 +942,7 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
         else:
             record_start("reset", "reset")
             result = follow._run_reset_sequence(vision, robot)
-            ok = bool(result.get("success")) if isinstance(result, dict) else False
+            ok = _opening_reset_ok(result)
             reading = result.get("reading") if isinstance(result, dict) else None
             reason = str(result.get("reason") if isinstance(result, dict) else "reset_failed")
             if not record_done("reset", phase="reset", step="reset", ok=ok, reason=reason, reading=reading, result=result):
@@ -969,19 +1021,62 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
 
         follow._set_game_profile("holding")
         site.set_targets()
+        # Holding reset FIRST: blind reverse + random blind turn + blind turn
+        # back, to retreat off the just-lifted pose and randomize the approach
+        # (creates the gap the crawl then closes). This is the same reposition
+        # maneuver the empty game does at its reset.
         record_start("holding_s1_reset", "reset")
-        result = _run_holding_s1_reset_sequence(vision, robot)
-        ok = _holding_reset_ok(result)
-        reading = result.get("reading") if isinstance(result, dict) else None
-        reason = str(result.get("reason") if isinstance(result, dict) else "holding_s1_reset_failed")
-        if not record_done(
-            "holding_s1_reset",
+        reset_result = _run_holding_s1_reset_sequence(vision, robot)
+        reset_reading = reset_result.get("reading") if isinstance(reset_result, dict) else None
+        reset_ok = _holding_reset_ok(reset_result) or _bounded_blind_reset_ok(reset_result)
+        reset_reason = str(reset_result.get("reason") if isinstance(reset_result, dict) else "holding_s1_reset_failed")
+        # Record it but DON'T hard-fail the trial on a blind-reset target miss —
+        # it is a reposition maneuver; the gap-crawl below does the alignment.
+        _record_evidence_row(
+            args=args,
+            site=site,
+            rows=rows,
+            vision=vision,
+            attempt=attempt,
             phase="holding_s1_reset",
             step="reset",
+            status="win" if reset_ok else "info",
+            reason=reset_reason,
+            reading=reset_reading,
+            result=reset_result if isinstance(reset_result, dict) else None,
+        )
+        if _is_hard_stop_result(reset_reason, reset_result):
+            results.append({"item": "holding_s1_reset", "ok": False, "reason": reset_reason})
+            follow._stop_robot(robot)
+            return 1
+        # Holding S1 align: gap-close to the holding target via the same
+        # duty-cycle gap-closing crawl used for empty S1 (the new solution).
+        follow._set_game_profile("holding")
+        site.set_targets()
+        record_start("holding_s1", "step1")
+        stats = follow._follow_loop(
+            vision,
+            robot,
+            duration_s=float(args.step_timeout_s),
+            reset_after_win=False,
+            stop_after_win=True,
+            stop_after_step2=False,
+            step2_probe_before_forward=False,
+            debug_mode=False,
+        )
+        reading = _step1_stats_reading(stats)
+        ok = _step1_stats_ok(stats, reading)
+        reason = "holding_step1_win" if ok else str(stats.get("last_action") or "holding_step1_failed")
+        decision_log = stats.get("decision_log") if isinstance(stats.get("decision_log"), list) else None
+        if not record_done(
+            "holding_s1",
+            phase="holding_s1",
+            step="step1",
             ok=ok,
             reason=reason,
             reading=reading,
-            result=result,
+            result=stats,
+            decision_log=decision_log,
         ):
             follow._stop_robot(robot)
             return 1

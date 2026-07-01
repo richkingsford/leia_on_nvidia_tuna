@@ -27,7 +27,6 @@ from helper_manual_config import load_manual_training_config
 from helper_holding_brick import HoldingMaskLock, detect_holding_brick
 from helper_holding_distance_calibration import (
     apply_holding_distance_calibration_to_result,
-    load_empty_distance_calibration_config,
     should_keep_unmasked_holding_distance,
 )
 
@@ -175,10 +174,11 @@ VISION_CONTEXT_LABELS = {
     "empty_s1": "Empty Step 1/2: normal stack model locked",
     "empty_s2": "Empty Step 1/2: normal stack model locked",
     "empty_s3": "Empty Step 3: close stack model",
-    "holding_s1": "Holding Step 1: held-brick mask model",
-    "holding_s2": "Holding Step 2: held-brick mask model",
-    "holding_s3": "Holding Step 3: held-brick mask model",
+    "holding_s1": "Holding Step 1: normal stack model locked",
+    "holding_s2": "Holding Step 2: normal stack model locked",
+    "holding_s3": "Holding Step 3: normal stack model locked",
 }
+IGNORE_HOLDING_BRICK_MODEL_IN_LIVESTREAM = True
 
 
 def _normalize_vision_context(value) -> str:
@@ -211,6 +211,8 @@ def _vision_context_label(value) -> str:
 
 
 def _vision_context_allows_holding_model(value) -> bool:
+    if bool(IGNORE_HOLDING_BRICK_MODEL_IN_LIVESTREAM):
+        return False
     return _normalize_vision_context(value).startswith("holding_")
 
 
@@ -459,12 +461,20 @@ class CrownVisionLivestream:
                 result = self.vision.read()
                 self._last_holding_distance_calibration = {"calibrated": False}
                 raw_frame = getattr(self.vision, "raw_frame", None)
-                raw_holding_result = detect_holding_brick(raw_frame)
-                holding_result = _holding_result_for_vision_context(
-                    raw_holding_result,
-                    vision_context,
-                    self._holding_mask_lock,
-                )
+                if bool(holding_model_allowed):
+                    raw_holding_result = detect_holding_brick(raw_frame)
+                    holding_result = _holding_result_for_vision_context(
+                        raw_holding_result,
+                        vision_context,
+                        self._holding_mask_lock,
+                    )
+                else:
+                    self._holding_mask_lock.reset()
+                    holding_result = {
+                        "holding": False,
+                        "reason": "holding_model_disabled_for_livestream",
+                        "holding_model_allowed": False,
+                    }
                 self._holding_result = dict(holding_result) if isinstance(holding_result, dict) else {
                     "holding": False,
                     "reason": "invalid_holding_result",
@@ -563,16 +573,6 @@ class CrownVisionLivestream:
                         }
             except Exception as exc:
                 logging.getLogger("CrownVisionLivestream").exception("Vision read failed: %s", exc)
-            if (
-                not bool(holding_model_allowed)
-                and isinstance(result, tuple)
-                and len(result) >= 3
-                and bool(result[0])
-            ):
-                result, _empty_raw, _empty_cal, _empty_used = apply_holding_distance_calibration_to_result(
-                    result,
-                    config=load_empty_distance_calibration_config(),
-                )
             self._publish(result)
             elapsed = time.monotonic() - started
             if elapsed < interval_s:
@@ -854,7 +854,7 @@ def parse_args(argv=None):
         default=_normalize_vision_context(cfg.get("vision_context", "empty_s1")),
         help=(
             "Step/model context for livestream reads. empty_s1/empty_s2 lock the normal "
-            "stack model; holding_s1+ allow held-brick masking and holding calibration."
+            "stack model; holding_s1+ currently also use the normal stack model."
         ),
     )
     return parser.parse_args(argv)

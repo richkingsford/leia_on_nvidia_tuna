@@ -49,6 +49,21 @@ FORWARD_BASE_PWM = int(speed_power_pwm_for_cmd("f", SPEED_SCORE_MIN)[1])
 FORWARD_MICRO_X_DEADBAND_MM = 1.0
 FORWARD_WRONG_WAY_STOP_MM = 8.0
 
+# Turn-by-timed-hold tuning. At the single crawl speed the only way to turn is
+# to keep both treads at crawl, then hold the INNER tread at 0 for a spell while
+# the outer keeps crawling forward — longer hold = sharper turn. We always roll
+# forward; we never run the treads at different speeds.
+#   BOTH phase  -> both treads crawl forward (no turn)
+#   HOLD phase  -> inner tread at 0, outer keeps crawling (this is the turn)
+# The outer tread runs continuously across BOTH+HOLD in one packet (smooth); the
+# inner tread runs only the BOTH span then stops for the HOLD span.
+GRACEFUL_BOTH_MS = 200          # both-tread span (>= breakaway floor)
+GRACEFUL_HOLD_GENTLE_MS = 200   # inner-at-0 span for a gentle turn
+GRACEFUL_HOLD_SHARP_MS = 400    # inner-at-0 span for a sharp turn
+GRACEFUL_SHARP_X_MM = 14.0      # |x gap| above this uses the sharp hold
+GRACEFUL_STRAIGHT_MS = 300      # straight crawl span when x is already centered
+GRACEFUL_WIN_BUDGET_S = 16.0    # total time to crawl to the Step 1 win
+
 
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -507,6 +522,34 @@ def _curve_actions(reading: dict, strength: str, boost: float) -> tuple[str, lis
     return cmd, _crawl_cap_actions(actions)
 
 
+def _straight_segment(pwm: int, ms: int) -> list[dict]:
+    """Both treads crawl forward at the same speed for the same duration."""
+    return [
+        {"target": "l", "action": "b", "pwm": int(pwm), "duration_ms": int(ms)},
+        {"target": "r", "action": "f", "pwm": int(pwm), "duration_ms": int(ms)},
+    ]
+
+
+def _duty_turn_segment(turn_cmd: str, pwm: int, both_ms: int, hold_ms: int) -> list[dict]:
+    """One BOTH+HOLD turn cycle in a single packet.
+
+    The outer tread crawls forward continuously for both_ms+hold_ms; the inner
+    tread crawls only for both_ms then drops to 0 for the hold_ms span. Same
+    speed on both treads — the turn comes purely from the inner tread's shorter
+    on-time. turn_cmd 'l' drives the right tread (holds left); 'r' drives the
+    left tread (holds right).
+    """
+    outer_ms = int(both_ms) + int(hold_ms)
+    inner_ms = int(both_ms)
+    if str(turn_cmd).strip().lower() == "l":
+        outer = {"target": "r", "action": "f", "pwm": int(pwm), "duration_ms": outer_ms}
+        inner = {"target": "l", "action": "b", "pwm": int(pwm), "duration_ms": inner_ms}
+    else:
+        outer = {"target": "l", "action": "b", "pwm": int(pwm), "duration_ms": outer_ms}
+        inner = {"target": "r", "action": "f", "pwm": int(pwm), "duration_ms": inner_ms}
+    return [outer, inner]
+
+
 def _one_graceful_move(
     vision: BrickDetector,
     robot: proof.MastFrozenRobot,
@@ -516,54 +559,80 @@ def _one_graceful_move(
     strength: str,
     boost: float,
 ) -> tuple[dict, dict]:
-    turn_cmd, actions = _curve_actions(start, strength, boost)
-    if not actions:
-        actions = _crawl_cap_actions(follow._straight_drive_actions("f", _crawl_pwm("f")))
+    """Crawl forward to the Step 1 win, steering only by timed inner-wheel holds.
+
+    Always rolling forward; a turn is a HOLD (inner tread at 0) whose length sets
+    the sharpness. duration_ms/strength/boost from the harness are advisory; the
+    crawl runs until the win or GRACEFUL_WIN_BUDGET_S.
+    """
+    pwm = _crawl_pwm("f")
     before_mast = len(robot.mast_attempts)
     start_dist = _num(start.get("dist_mm")) if isinstance(start, dict) else None
-    send_result = robot.send_custom_actions_pwm("f", actions, duration_ms=int(duration_ms))
-    deadline = time.time() + max(0.05, float(duration_ms) / 1000.0)
-    latest = start
-    live_hit = False
-    wrong_way_stop = False
-    virtual_wall_stop = False
+    x_target = float(follow._x_target_mm())
+    deadline = time.time() + float(GRACEFUL_WIN_BUDGET_S)
+    latest = start if isinstance(start, dict) else {}
+    live_hit = wrong_way_stop = virtual_wall_stop = False
     samples = 0
+    last_turn = "straight"
+    last_send = None
+
     while time.time() < deadline:
-        time.sleep(float(LIVE_SAMPLE_S))
-        live = _quick_read(vision)
-        if isinstance(live, dict) and bool(live.get("confident")):
-            latest = live
-            samples += 1
-            dist = _num(live.get("dist_mm"))
-            if _virtual_wall_exceeded(live):
-                virtual_wall_stop = True
-                break
-            if (
-                start_dist is not None
-                and dist is not None
-                and float(dist) > float(start_dist) + float(FORWARD_WRONG_WAY_STOP_MM)
-            ):
-                wrong_way_stop = True
-                break
-            if _target_met(live):
-                live_hit = True
-                break
-            if dist is not None and dist <= float(proof._direct_step1_dist_target()) + 1.0:
-                break
-            if dist is not None and dist < float(proof._direct_step1_dist_target()) - float(proof.DIRECT_STEP1_DIST_TOL_MM):
-                break
+        cur = latest if isinstance(latest, dict) else {}
+        x_err = _num(cur.get("x_mm"))
+        x_delta = (float(x_err) - x_target) if x_err is not None else 0.0
+        if abs(x_delta) <= float(FORWARD_MICRO_X_DEADBAND_MM):
+            actions = _straight_segment(pwm, int(GRACEFUL_STRAIGHT_MS))
+            seg_ms = int(GRACEFUL_STRAIGHT_MS)
+            last_turn = "straight"
+        else:
+            turn_cmd = follow._turn_cmd_to_close_x_gap(x_delta)
+            if turn_cmd not in {"l", "r"}:
+                turn_cmd = "r" if x_delta > 0 else "l"
+            hold_ms = int(GRACEFUL_HOLD_SHARP_MS) if abs(x_delta) > float(GRACEFUL_SHARP_X_MM) else int(GRACEFUL_HOLD_GENTLE_MS)
+            actions = _duty_turn_segment(turn_cmd, pwm, int(GRACEFUL_BOTH_MS), hold_ms)
+            seg_ms = int(GRACEFUL_BOTH_MS) + hold_ms
+            last_turn = f"{turn_cmd}/hold{hold_ms}"
+        last_send = robot.send_custom_actions_pwm("f", actions, duration_ms=int(seg_ms))
+        seg_end = time.time() + float(seg_ms) / 1000.0
+        stop = False
+        while time.time() < seg_end:
+            time.sleep(float(LIVE_SAMPLE_S))
+            live = _quick_read(vision)
+            if isinstance(live, dict) and bool(live.get("confident")):
+                latest = live
+                samples += 1
+                dist = _num(live.get("dist_mm"))
+                if _virtual_wall_exceeded(live):
+                    virtual_wall_stop = True
+                    stop = True
+                    break
+                if (
+                    start_dist is not None
+                    and dist is not None
+                    and float(dist) > float(start_dist) + float(FORWARD_WRONG_WAY_STOP_MM)
+                ):
+                    wrong_way_stop = True
+                    stop = True
+                    break
+                if _target_met(live):
+                    live_hit = True
+                    stop = True
+                    break
+        if stop:
+            break
+
     follow._stop_robot(robot)
     final = _quick_read(vision)
     if not isinstance(final, dict) or not bool(final.get("confident")):
         final = latest if isinstance(latest, dict) else {}
     info = {
-        "turn_cmd": turn_cmd,
+        "turn_cmd": last_turn,
         "duration_ms": int(duration_ms),
         "strength": str(strength),
         "boost": float(boost),
         "live_hit": bool(live_hit),
         "live_samples": int(samples),
-        "send_result": send_result,
+        "send_result": last_send,
         "mast_attempt_delta": int(len(robot.mast_attempts) - before_mast),
         "wrong_way_stop": bool(wrong_way_stop),
         "virtual_wall_stop": bool(virtual_wall_stop),

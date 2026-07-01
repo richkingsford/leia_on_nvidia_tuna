@@ -99,7 +99,7 @@ GREEN_EDGE_MIN_COVERAGE = 0.05
 GREEN_EDGE_COL_ACTIVE_FRAC = 0.15
 GREEN_EDGE_CONF_PCT = 95.0
 GREEN_EDGE_MAX_DIST_MM = 220.0
-GREEN_EDGE_TOP_STRIP_ENABLED = True
+GREEN_EDGE_TOP_STRIP_ENABLED = False
 GREEN_EDGE_TOP_STRIP_MAX_Y_RATIO = 0.18
 GREEN_EDGE_TOP_STRIP_MIN_HEIGHT_PX = 12
 GREEN_EDGE_TOP_STRIP_MIN_WIDTH_PX = 120
@@ -113,6 +113,10 @@ GREEN_EDGE_PAINTED_COLUMN_COL_ACTIVE_FRAC = 0.18
 GREEN_EDGE_PAINTED_COLUMN_CONF_PCT = 92.0
 GREEN_EDGE_PAINTED_COLUMN_MAX_DIST_MM = 320.0
 GREEN_EDGE_PAINTED_COLUMN_MAX_RAW_CALIBRATION_MM = 130.0
+GREEN_EDGE_PAINTED_COLUMN_EDGE_MARGIN_PX = 14
+GREEN_EDGE_PAINTED_COLUMN_MAX_WIDTH_FRAC = 0.78
+GREEN_EDGE_PAINTED_COLUMN_MAX_HEIGHT_FRAC = 0.88
+GREEN_EDGE_PAINTED_COLUMN_MIN_FILL_RATIO = 0.18
 GREEN_EDGE_PAINTED_CLOSE_CALIBRATION_ENABLED = True
 GREEN_EDGE_PAINTED_CLOSE_CALIBRATION_POINTS = (
     (69.0, 90.0),
@@ -208,6 +212,10 @@ class NativeOakBrickDetector:
         self._native_last_good_dist = None
         self._native_last_good_center = None
         self._native_last_good_width_px = None
+        self._native_last_good_offset_x_mm = None
+        self._native_last_good_cam_height_mm = None
+        self._native_last_good_source = None
+        self._native_green_edge_hold_count = 0
         self._native_dist_history = deque(maxlen=int(NATIVE_RECT_DIST_HISTORY_LEN))
         self._native_last_stable_dist = None
         self._native_gate_anchor = None
@@ -241,6 +249,8 @@ class NativeOakBrickDetector:
         self._native_gate_anchor = None
         self._native_gate_pending = []
         self._native_conf_hold_count = 0
+        self._native_last_good_source = None
+        self._native_green_edge_hold_count = 0
         window = getattr(self, "_native_conf_window", None)
         if window is not None:
             window.clear()
@@ -411,10 +421,18 @@ class NativeOakBrickDetector:
         self._detector.last_candidate_count = int(len(candidates))
         self._detector.last_nms_count = int(len(candidates))
 
+        painted_column_result = self._green_edge_close_range_result(frame, require_close=False)
+        if (
+            isinstance(painted_column_result, tuple)
+            and len(painted_column_result) >= 1
+            and bool(painted_column_result[0])
+            and str(getattr(self._detector, "last_geometry_source", "") or "") == "green_edge_painted_column_width"
+        ):
+            return painted_column_result
+
         if primary is None:
-            green_edge_result = self._green_edge_close_range_result(frame, require_close=False)
-            if isinstance(green_edge_result, tuple) and len(green_edge_result) >= 1 and bool(green_edge_result[0]):
-                return green_edge_result
+            if isinstance(painted_column_result, tuple) and len(painted_column_result) >= 1 and bool(painted_column_result[0]):
+                return painted_column_result
             self._mark_not_found(str(getattr(self._detector, "last_status", "shape mismatch")))
             self.current_frame = frame.copy()
             self._detector.current_frame = self.current_frame
@@ -623,78 +641,9 @@ class NativeOakBrickDetector:
         kern_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         contour_mask = cv2.dilate(contour_mask, kern_dilate, iterations=1)
 
-        # Bricks may carry non-green surface markings (slots, stickers, dots)
-        # that punch interior holes in the green mask and fragment the outline.
-        # Fill each external contour solid so the brick reads as one block and
-        # the bounding box wraps the full green outline (incl. its true width),
-        # instead of the rectangle gates rejecting a holey/rounded blob.
-        contour_mask = self._fill_mask_interior_holes(contour_mask)
-        feature_mask = self._fill_mask_interior_holes(feature_mask)
-
         if cv2.countNonZero(contour_mask) <= 0 and loose_contour_mask is not None:
             return feature_mask, np.asarray(loose_contour_mask, dtype=np.uint8)
         return feature_mask, contour_mask
-
-    @staticmethod
-    def _fill_mask_interior_holes(mask):
-        """Return a copy of `mask` with interior holes of each external contour
-        filled solid. Exterior background is untouched, so this only closes gaps
-        that lie inside a green outline (surface markings), never merges separate
-        blobs."""
-        if mask is None:
-            return mask
-        arr = np.asarray(mask, dtype=np.uint8)
-        if arr.ndim != 2 or arr.size == 0 or cv2.countNonZero(arr) <= 0:
-            return mask
-        contours, _ = cv2.findContours(arr, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            return mask
-        filled = arr.copy()
-        cv2.drawContours(filled, contours, -1, 255, thickness=cv2.FILLED)
-        return filled
-
-    def _dominant_green_component_bbox(self, saturated_mask, *, frame_h: int, frame_w: int):
-        """Tight bounding box around the whole brick's saturated-green outline.
-
-        Returns (x, y, w, h) or None. Robust to brick shape and to full-width
-        surface markings (e.g. a slot/band) that split the green into stacked
-        pieces: the helper unions every green blob that horizontally overlaps the
-        largest one, so a cap-over-body brick reads as a single rectangle. A
-        faint floor reflection is a separate, off-to-the-side and usually
-        desaturated blob, so it does not get unioned in."""
-        if saturated_mask is None:
-            return None
-        filled = self._fill_mask_interior_holes(np.asarray(saturated_mask, dtype=np.uint8))
-        if filled is None or cv2.countNonZero(filled) <= 0:
-            return None
-        try:
-            count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(filled, 8)
-        except Exception:
-            return None
-        min_area = max(150.0, float(frame_h * frame_w) * 0.003)
-        comps = []
-        for idx in range(1, int(count)):
-            x0, y0, cw, ch, area = (float(stats[idx][k]) for k in range(5))
-            if area < min_area:
-                continue
-            comps.append((int(x0), int(y0), int(cw), int(ch), float(area)))
-        if not comps:
-            return None
-        main = max(comps, key=lambda c: c[4])
-        mx1, mx2 = main[0], main[0] + main[2]
-        main_w = max(1, main[2])
-        selected = []
-        for c in comps:
-            cx1, cx2 = c[0], c[0] + c[2]
-            overlap = min(mx2, cx2) - max(mx1, cx1)
-            # Same brick column: meaningful horizontal overlap with the main blob.
-            if c is main or overlap >= 0.35 * min(main_w, max(1, c[2])):
-                selected.append(c)
-        x1 = min(c[0] for c in selected)
-        y1 = min(c[1] for c in selected)
-        x2 = max(c[0] + c[2] for c in selected)
-        y2 = max(c[1] + c[3] for c in selected)
-        return (int(x1), int(y1), int(max(1, x2 - x1)), int(max(1, y2 - y1)))
 
     def _shrinkwrap_native_rect_bbox(
         self,
@@ -1048,6 +997,16 @@ class NativeOakBrickDetector:
                             continue
                         if int(cw) < int(GREEN_EDGE_MIN_WIDTH_PX):
                             continue
+                        edge_margin = int(GREEN_EDGE_PAINTED_COLUMN_EDGE_MARGIN_PX)
+                        if int(x0) <= edge_margin or int(x0 + cw) >= int(w - edge_margin):
+                            continue
+                        if float(cw) > float(w) * float(GREEN_EDGE_PAINTED_COLUMN_MAX_WIDTH_FRAC):
+                            continue
+                        if float(ch) > float(h) * float(GREEN_EDGE_PAINTED_COLUMN_MAX_HEIGHT_FRAC):
+                            continue
+                        fill_ratio = float(area) / float(max(1, int(cw) * int(ch)))
+                        if float(fill_ratio) < float(GREEN_EDGE_PAINTED_COLUMN_MIN_FILL_RATIO):
+                            continue
                         raw_component_dist = detector._estimate_distance_from_width(float(cw))
                         if raw_component_dist is None or float(raw_component_dist) <= 0.0:
                             continue
@@ -1086,11 +1045,15 @@ class NativeOakBrickDetector:
             return None
         if bool(top_strip) and width_px < int(GREEN_EDGE_TOP_STRIP_MIN_WIDTH_PX):
             return None
+        if bool(painted_column) and width_px > int(float(w) * float(GREEN_EDGE_PAINTED_COLUMN_MAX_WIDTH_FRAC)):
+            return None
         # When used to override the rectangle path, require the stack to be wide
         # enough to be unambiguously close range.
         if bool(require_close) and width_px < int(GREEN_EDGE_PRIMARY_MIN_WIDTH_PX):
             return None
         margin = int(GREEN_EDGE_FRAME_MARGIN_PX)
+        if bool(painted_column):
+            margin = max(int(margin), int(GREEN_EDGE_PAINTED_COLUMN_EDGE_MARGIN_PX))
         # Both side edges must sit inside the frame, else the width is cut off.
         if left <= margin or right >= (w - margin):
             return None
@@ -1132,41 +1095,15 @@ class NativeOakBrickDetector:
             rows = painted_column_active_rows
         else:
             band = mask[:, int(left):int(right)]
-            green_rows = np.where(np.count_nonzero(band, axis=1) > 0)[0]
-            # The brick is one contiguous block of green rows from the top. A
-            # glossy floor can mirror it as faint green near the bottom of the
-            # frame, separated by a gap of non-green wood. Walk down from the
-            # topmost green row, tolerating small gaps (interior markings such
-            # as a slot or stickers) but stopping at the first large gap, so the
-            # box wraps only the brick and not its reflection.
-            if green_rows.size > 0:
-                row_gap_tol = max(4, int(round(float(h) * 0.05)))
-                top_row = int(green_rows[0])
-                bottom_row = top_row
-                for row_idx in green_rows[1:]:
-                    if int(row_idx) - bottom_row > row_gap_tol:
-                        break
-                    bottom_row = int(row_idx)
-                rows = green_rows[(green_rows >= top_row) & (green_rows <= bottom_row)]
-            else:
-                rows = green_rows
+            rows = np.where(np.count_nonzero(band, axis=1) > 0)[0]
         cy = float(rows.mean()) if rows.size > 0 else float(h) / 2.0
         if bool(painted_column) and painted_column_bbox is not None:
             box_x, box_y, box_w, box_h = [int(v) for v in painted_column_bbox]
         else:
-            # Prefer a tight box around the whole saturated-green blob so the
-            # rectangle wraps the full brick (width included), independent of the
-            # strip-column percentiles, which can overshoot on stray columns.
-            comp_bbox = self._dominant_green_component_bbox(
-                balanced_mask, frame_h=int(h), frame_w=int(w)
-            )
-            if comp_bbox is not None:
-                box_x, box_y, box_w, box_h = comp_bbox
-            else:
-                box_x = int(left)
-                box_y = int(rows[0]) if rows.size > 0 else 0
-                box_w = max(1, int(right) - int(left))
-                box_h = max(1, (int(rows[-1]) - int(rows[0]) + 1) if rows.size > 0 else int(h))
+            box_x = int(left)
+            box_y = int(rows[0]) if rows.size > 0 else 0
+            box_w = max(1, int(right) - int(left))
+            box_h = max(1, (int(rows[-1]) - int(rows[0]) + 1) if rows.size > 0 else int(h))
         detector.last_bbox_w_px = int(box_w)
         detector.last_bbox_h_px = int(box_h)
         detector.last_bbox_eff_w_px = int(box_w)
@@ -1190,18 +1127,25 @@ class NativeOakBrickDetector:
         detector.last_primary_confidence = conf_pct / 100.0
         detector.last_max_confidence = conf_pct / 100.0
         if bool(top_strip):
-            detector.last_geometry_source = "green_edge_top_strip_width"
+            geometry_source = "green_edge_top_strip_width"
             detector.last_status = "target locked (green-edge top strip width)"
         elif bool(painted_column):
-            detector.last_geometry_source = "green_edge_painted_column_width"
+            geometry_source = "green_edge_painted_column_width"
             detector.last_status = "target locked (painted green column width)"
         else:
-            detector.last_geometry_source = "green_edge_close_range_width"
+            geometry_source = "green_edge_close_range_width"
             detector.last_status = "target locked (green-edge close range)"
+        detector.last_geometry_source = str(geometry_source)
         self.last_status = detector.last_status
         detector.last_candidate_count = 1
         detector.last_raw_prediction_count = 1
         detector.last_nms_count = 1
+        self._native_last_good_center = (float(cx), float(cy))
+        self._native_last_good_width_px = float(width_px)
+        self._native_last_good_offset_x_mm = float(offset_x)
+        self._native_last_good_cam_height_mm = float(cam_height)
+        self._native_last_good_source = str(geometry_source)
+        self._native_green_edge_hold_count = 0
         debug_frame = frame.copy()
         if bool(self.debug):
             pt1 = (max(0, int(box_x)), max(0, int(box_y)))
@@ -1299,6 +1243,51 @@ class NativeOakBrickDetector:
             dist = float(raw_dist)
         else:
             dist = self._native_rect_distance_from_raw(raw_dist, prev_for_dist, primary)
+        if str(primary.get("shape_profile") or "") == "native_rect":
+            last_source = str(getattr(self, "_native_last_good_source", "") or "")
+            last_dist = getattr(self, "_native_last_good_dist", None)
+            try:
+                dist_jump = abs(float(dist) - float(last_dist))
+                last_close = float(last_dist) <= 170.0
+            except (TypeError, ValueError):
+                dist_jump = 0.0
+                last_close = False
+            if (
+                last_source.startswith("green_edge_")
+                and bool(last_close)
+                and float(dist_jump) >= 45.0
+                and int(getattr(self, "_native_green_edge_hold_count", 0) or 0) < 5
+            ):
+                self._native_green_edge_hold_count = int(getattr(self, "_native_green_edge_hold_count", 0) or 0) + 1
+                held_dist = float(last_dist)
+                try:
+                    held_x = float(getattr(self, "_native_last_good_offset_x_mm"))
+                except (TypeError, ValueError):
+                    held_x = detector._estimate_offset_x_mm(anchor_cx, held_dist)
+                try:
+                    held_y = float(getattr(self, "_native_last_good_cam_height_mm"))
+                except (TypeError, ValueError):
+                    held_y = detector._estimate_cam_height(anchor_cy, held_dist)
+                detector.last_raw_dist = float(raw_dist)
+                detector.last_bbox_dist = float(held_dist)
+                detector.last_final_dist = float(held_dist)
+                detector.last_geometry_source = f"{last_source}_held_against_native_jump"
+                detector.last_status = (
+                    "holding last green-edge close-range lock against native rectangle jump "
+                    f"({held_dist:.1f}->{float(dist):.1f}mm)"
+                )
+                detector.last_distance_display_text = f"{held_dist:.0f}mm"
+                self.last_status = detector.last_status
+                return (
+                    True,
+                    0.0,
+                    float(held_dist),
+                    float(held_x),
+                    float(GREEN_EDGE_PAINTED_COLUMN_CONF_PCT),
+                    float(held_y),
+                    False,
+                    False,
+                )
         detector._prev_dist = dist
         detector.last_final_dist = dist
         if (
@@ -1324,6 +1313,11 @@ class NativeOakBrickDetector:
         raw_cam_height = detector._estimate_cam_height(anchor_cy, dist)
         cam_height = detector._smooth(raw_cam_height, detector._prev_offset_y)
         detector._prev_offset_y = cam_height
+        if str(primary.get("shape_profile") or "") == "native_rect":
+            self._native_last_good_offset_x_mm = float(offset_x)
+            self._native_last_good_cam_height_mm = float(cam_height)
+            self._native_last_good_source = str(getattr(detector, "last_geometry_source", "") or "native_rect_width")
+            self._native_green_edge_hold_count = 0
 
         detected_bricks = [primary]
         brick_above, brick_below = detector._stack_flags_from_individuals(

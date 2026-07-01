@@ -1444,6 +1444,33 @@ class ProgressSite:
     <h2>End Images</h2>
     <section class="gallery">{gallery}</section>
   </main>
+  <script>
+    (() => {{
+      const storageKey = "leia-proof-active-tab";
+      const tabs = Array.from(document.querySelectorAll('input[name="tabs"]'));
+      const tabForValue = (value) => document.getElementById(`tab-${{value}}`);
+      const clean = (value) => String(value || "").replace(/^#/, "").replace(/^tab-/, "");
+      const choose = (value, updateHash = false) => {{
+        const tab = tabForValue(clean(value));
+        if (!tab) return false;
+        tab.checked = true;
+        try {{ localStorage.setItem(storageKey, clean(value)); }} catch (_err) {{}}
+        if (updateHash) {{
+          history.replaceState(null, "", `#${{clean(value)}}`);
+        }}
+        return true;
+      }};
+      const initial = clean(location.hash) || (() => {{
+        try {{ return localStorage.getItem(storageKey); }} catch (_err) {{ return ""; }}
+      }})();
+      choose(initial || "step1");
+      tabs.forEach((tab) => {{
+        tab.addEventListener("change", () => {{
+          if (tab.checked) choose(tab.id, true);
+        }});
+      }});
+    }})();
+  </script>
 </body>
 </html>
 """

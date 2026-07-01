@@ -106,25 +106,37 @@
   },
   "dist_approach_policy": {
    "close_target_creep_band_mm": 20.0,
-   "close_target_max_pulse_ms": 180,
+   "close_target_max_pulse_ms": 220,
    "closure_shots": 1.0,
    "full_forward_gap_mm": 120.0,
    "max_forward_pulse_ms": 300,
    "micro_nudge_abs_dist_err_mm": 30.0,
-   "micro_nudge_min_effective_pulse_ms": 150,
-   "micro_nudge_pulse_ms": 150,
+   "micro_nudge_min_effective_pulse_ms": 220,
+   "micro_nudge_pulse_ms": 200,
    "micro_nudge_pwm": 103,
-   "min_effective_drive_pulse_ms": 150,
+   "min_effective_drive_pulse_ms": 200,
    "min_forward_pulse_ms": 150,
    "near_target_creep_band_mm": 50.0,
    "near_target_forward_veto_mm": 0.0,
-   "near_target_max_pulse_ms": 220,
-   "near_target_min_pulse_ms": 150,
+   "near_target_max_pulse_ms": 200,
+   "near_target_min_pulse_ms": 200,
    "pingpong_confirm_abs_dist_err_mm": 20.0,
    "require_y_ok_before_dist": false,
    "settle_after_act_s": 0.04,
    "very_close_target_creep_band_mm": 10.0,
-   "very_close_target_max_pulse_ms": 150
+   "very_close_target_max_pulse_ms": 220
+  },
+  "gap_crawl": {
+   "both_ms": 200,
+   "command_overlap_ms": 100,
+   "hold_gentle_ms": 200,
+   "hold_sharp_ms": 400,
+   "lost_confident_frames_before_stop": 10,
+   "micro_x_deadband_mm": 1.0,
+   "poll_s": 0.055,
+   "sharp_x_mm": 14.0,
+   "straight_ms": 300,
+   "sustained_jump_pause_s": 0.25
   },
   "dist_axis": {
    "win_target_mm": 63.882,
@@ -137,17 +149,18 @@
      "strong": 18.0
     },
     "dist_axis": {
-     "win_target_mm": 229.18,
+     "win_target_mm": 96.55192413805429,
      "win_tol_mm": 25.0,
      "lower_win_tol_mm": 25.0
     },
     "holding": false,
     "nickname": "align x/dist",
+    "step1_decision_model": "gapcrawl",
     "step2": {
      "nickname": "seat / new empty step2",
      "post_precision_recovery_cycles": 1,
-     "precision_drive_max_pulse_ms": 120,
-     "precision_drive_min_pulse_ms": 60,
+     "precision_drive_max_pulse_ms": 200,
+     "precision_drive_min_pulse_ms": 200,
      "precision_dist_forward_budget_ms": 1800,
      "precision_dist_forward_budget_min_progress_mm": 4.0,
      "precision_back_max_pulse_ms": 280,
@@ -157,21 +170,21 @@
      "recovery_creep_enabled": false,
      "recovery_creep_max_attempts": 0,
      "seat_mast_duration_ms": 0,
-     "post_win_forward_creep_ms": 300,
+     "post_win_forward_creep_ms": 1300,
      "post_win_forward_creep_pwm": 103,
      "semi_happy_targets": {
-      "dist_mm": 155.0,
+      "dist_mm": 88.28026778187918,
       "dist_tol_mm": 6.0,
-      "x_mm": -2.2,
+      "x_mm": -0.8766069635664037,
       "x_tol_mm": 7.0,
       "y_mm": null,
       "y_tol_mm": null
      },
      "step_timeout_s": 30.0,
      "targets": {
-      "dist_mm": 155.0,
+      "dist_mm": 88.28026778187918,
       "dist_tol_mm": 6.0,
-      "x_mm": -2.2,
+      "x_mm": -0.8766069635664037,
       "x_tol_mm": 7.0,
       "y_mm": null,
       "y_tol_mm": null
@@ -183,8 +196,8 @@
     "step3": {
      "nickname": "deprecated old empty step3; promoted to step2",
      "post_precision_recovery_cycles": 0,
-     "precision_drive_max_pulse_ms": 120,
-     "precision_drive_min_pulse_ms": 60,
+     "precision_drive_max_pulse_ms": 200,
+     "precision_drive_min_pulse_ms": 200,
      "precision_back_max_pulse_ms": 280,
      "precision_back_min_pulse_ms": 220,
      "precision_max_attempts": 120,
@@ -214,11 +227,11 @@
      "visibility_recovery_creep_max_attempts": 0
     },
     "step4": {
-     "fixed_lift_duration_ms": 2175,
+     "fixed_lift_duration_ms": 3575,
      "fixed_lift_only": true,
      "initial_lift_before_gate": true,
      "lift_mast_cmd": "u",
-     "lift_pulse_ms": 2175,
+     "lift_pulse_ms": 3575,
      "lift_settle_s": 0.25,
      "max_lift_attempts": 1,
      "no_visibility_fallback_mast_cmd": "u",
@@ -299,7 +312,7 @@
     },
     "x_axis": {
      "positive_error_turn_cmd": "r",
-     "win_target_mm": 1.08,
+     "win_target_mm": 3.5989066281269304,
      "win_tol_mm": 5.0
     },
     "x_dist_curve_policy": {
@@ -394,6 +407,7 @@
     },
     "holding": true,
     "nickname": "hover",
+    "step1_decision_model": "gapcrawl",
     "step2": {
      "blind_mast_only": true,
      "freeze_xz_after_xz_target": false,
@@ -404,16 +418,16 @@
      "precision_max_attempts": 7,
      "recovery_creep_enabled": false,
      "recovery_creep_max_attempts": 0,
-     "seat_mast_duration_ms": 2166,
+     "seat_mast_duration_ms": 3625,
      "seat_drive_duration_ms": 0,
-     "semi_happy_targets": {
-      "dist_mm": 81.0,
-      "dist_tol_mm": 5.0,
-      "x_mm": 0.3,
-      "x_tol_mm": 9.0,
-      "y_mm": -2.3,
-      "y_tol_mm": 1.0
-     },
+      "semi_happy_targets": {
+       "dist_mm": 90.1,
+       "dist_tol_mm": 7.0,
+       "x_mm": 1.8,
+       "x_tol_mm": 5.0,
+       "y_mm": -1.6,
+       "y_tol_mm": 1.0
+      },
      "step_timeout_s": 30.0,
      "targets": {
       "dist_mm": null,
@@ -522,7 +536,7 @@
     },
     "x_axis": {
      "positive_error_turn_cmd": "r",
-     "win_target_mm": -0.9,
+     "win_target_mm": -0.107,
      "win_tol_mm": 7.0
     },
     "x_dist_curve_policy": {
@@ -593,23 +607,6 @@
     }
    ]
   },
-  "empty_target_distance_calibration": {
-   "enabled": true,
-   "points": [
-    {
-     "reported_mm": 62.0,
-     "true_mm": 170.0
-    },
-    {
-     "reported_mm": 82.0,
-     "true_mm": 200.0
-    },
-    {
-     "reported_mm": 135.0,
-     "true_mm": 350.0
-    }
-   ]
-  },
   "max_act_ms": 450,
   "motion_power_scale": 1.0,
   "normal_speed_score": 1,
@@ -667,7 +664,7 @@
    "post_seat_pause_s": 0.25,
    "precision_dist_positive_cmd": "f",
    "precision_drive_max_pulse_ms": 200,
-   "precision_drive_min_pulse_ms": 80,
+   "precision_drive_min_pulse_ms": 200,
    "precision_mast_pulse_ms": 250,
    "precision_max_attempts": 7,
    "precision_settle_enabled": true,
@@ -713,7 +710,7 @@
    "post_seat_pause_s": 0.25,
    "precision_dist_positive_cmd": "f",
    "precision_drive_max_pulse_ms": 200,
-   "precision_drive_min_pulse_ms": 80,
+   "precision_drive_min_pulse_ms": 200,
    "precision_mast_pulse_ms": 250,
    "precision_max_attempts": 7,
    "precision_settle_enabled": true,
@@ -753,12 +750,12 @@
    "visibility_recovery_wait_s": 3.0
   },
   "step4": {
-   "fixed_lift_duration_ms": 2175,
+   "fixed_lift_duration_ms": 3575,
    "fixed_lift_only": true,
    "initial_lift_before_gate": true,
    "lift_mast_cmd": "u",
    "lift_mast_pwm": 255,
-   "lift_pulse_ms": 2175,
+   "lift_pulse_ms": 3575,
    "lift_settle_s": 0.25,
    "max_lift_attempts": 1,
    "no_visibility_fallback_duration_ms": 1000,
@@ -860,9 +857,9 @@
    "hard_reject_observe_poll_s": 0.15,
    "hard_reject_observe_s": 2.0,
    "max_abs_dist_mm": 450.0,
-   "max_dist_jump_mm": 0.0,
-   "max_vector_jump_mm": 0.0,
-   "max_x_jump_mm": 0.0,
+   "max_dist_jump_mm": 25.0,
+   "max_vector_jump_mm": 30.0,
+   "max_x_jump_mm": 18.0,
    "max_y_jump_mm": 0.0,
    "post_act_stabilize_s": 0.08,
    "reacquire_frames_after_motion": 3,
@@ -878,6 +875,8 @@
    "timeout_y_correction_grace_acts": 2
   },
   "x_axis": {
+   "positive_error_turn_cmd": "r",
+   "sign_convention": "positive_x_is_right_negative_x_is_left",
    "win_target_mm": -0.9425903280420904,
    "win_tol_mm": 4.0
   },

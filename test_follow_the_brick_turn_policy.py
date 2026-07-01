@@ -49,6 +49,24 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
 
         self.assertEqual(cfg["mast_down_duration_ms"], 1000)
 
+    def test_x_sign_convention_positive_right_negative_left(self):
+        old_follow_motion_config = follow._follow_motion_config
+        try:
+            follow._follow_motion_config = lambda: {
+                "x_axis": {"positive_error_turn_cmd": "r"}
+            }
+
+            self.assertEqual(follow._turn_cmd_to_close_x_gap(12.0), "r")
+            self.assertEqual(follow._turn_cmd_to_close_x_gap(-12.0), "l")
+            self.assertIsNone(follow._turn_cmd_to_close_x_gap(0.0))
+        finally:
+            follow._follow_motion_config = old_follow_motion_config
+
+    def test_holding_step2_does_not_enable_backward_x_inversion_by_default(self):
+        step2 = follow._default_step2_like_config()
+
+        self.assertFalse(step2.get("precision_x_only_backward_protect_dist_enabled", False))
+
     def test_reset_mast_up_action_is_one_second_when_enabled(self):
         old_reset_motion_config = follow._reset_motion_config
         try:
@@ -819,6 +837,32 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertEqual(plan["reason"], "holding_s1_dist_ok_x_forward_curve")
         self.assertNotIn("BACKOFF", plan["action"])
 
+    def test_holding_x_noise_margin_does_not_widen_step1_win_gate(self):
+        follow._set_game_profile("holding")
+        reading = self._reading_for_gap(
+            dist_gap_mm=0.0,
+            x_gap_mm=follow._x_tol_mm() + 1.8,
+        )
+
+        plan = follow._follow_action_plan(reading, virtual_safety_armed=False)
+
+        self.assertFalse(follow._step1_dist_x_target_ready(reading))
+        self.assertNotEqual(plan.get("action"), "HAPPY")
+        self.assertNotEqual(plan.get("kind"), "hold")
+
+    def test_holding_dist_noise_margin_does_not_widen_step1_win_gate(self):
+        follow._set_game_profile("holding")
+        reading = self._reading_for_gap(
+            dist_gap_mm=follow._dist_tol_mm() + 1.0,
+            x_gap_mm=0.0,
+        )
+
+        plan = follow._follow_action_plan(reading, virtual_safety_armed=False)
+
+        self.assertFalse(follow._step1_dist_x_target_ready(reading))
+        self.assertNotEqual(plan.get("action"), "HAPPY")
+        self.assertNotEqual(plan.get("kind"), "hold")
+
     def test_empty_too_close_x_bias_uses_bounded_back_recovery(self):
         plan = follow._follow_action_plan(
             self._reading_for_gap(dist_gap_mm=-54.0, x_gap_mm=-40.0)
@@ -1010,26 +1054,23 @@ class TestFollowTheBrickTurnPolicy(unittest.TestCase):
         self.assertEqual(plan["reason"], "empty_s1_dist_ok_x_only_no_forward_overshoot_one_wheel_500ms")
         self.assertTrue(plan["one_wheel_x_nudge"])
 
-    def test_tiny_x_outside_gap_inside_distance_band_wins_instead_of_polishing(self):
+    def test_tiny_x_outside_gap_inside_distance_band_does_not_win(self):
         x_gap = follow._x_tol_mm() + 1.0
         plan = follow._follow_action_plan(
             self._reading_for_gap(dist_gap_mm=25.0, x_gap_mm=x_gap)
         )
 
-        self.assertEqual(plan["kind"], "hold")
-        self.assertEqual(plan["action"], "HAPPY")
-        self.assertEqual(plan["reason"], "empty_s1_tiny_x_noise_grace")
+        self.assertNotEqual(plan["kind"], "hold")
+        self.assertNotEqual(plan.get("action"), "HAPPY")
 
-    def test_tiny_x_only_gap_inside_distance_band_wins_instead_of_stalling(self):
+    def test_tiny_x_only_gap_inside_distance_band_does_not_win(self):
         x_gap = follow._x_tol_mm() + 1.0
         plan = follow._follow_action_plan(
             self._reading_for_gap(dist_gap_mm=0.0, x_gap_mm=x_gap)
         )
 
-        self.assertEqual(plan["kind"], "hold")
-        self.assertEqual(plan["action"], "HAPPY")
-        self.assertEqual(plan["reason"], "empty_s1_tiny_x_noise_grace")
-        self.assertEqual(plan["x_outside_mm"], 1.0)
+        self.assertNotEqual(plan["kind"], "hold")
+        self.assertNotEqual(plan.get("action"), "HAPPY")
 
     def test_empty_step1_near_target_wide_x_uses_x_only_nudge(self):
         plan = follow._follow_action_plan(
