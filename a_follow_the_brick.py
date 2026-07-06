@@ -436,10 +436,15 @@ DEFAULT_VISION_JUMP_GUARD_CONFIG = {
     "max_x_jump_mm": 18.0,
     "max_y_jump_mm": 8.0,
     "max_vector_jump_mm": 26.0,
+    "motion_wrong_way_jump_mm": 8.0,
     "confirm_window_mm": 10.0,
     "reacquire_window_mm": 12.0,
 }
 DEFAULT_GAP_CRAWL_CONFIG = {
+    "turn_pwm": 115,
+    "turn_first_enabled": True,
+    "turn_phase_ms": 200,
+    "turn_straight_phase_ms": 200,
     "both_ms": 200,
     "hold_gentle_ms": 200,
     "hold_sharp_ms": 400,
@@ -1424,6 +1429,9 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
     )
     raw_gap_crawl = raw.get("gap_crawl") if isinstance(raw.get("gap_crawl"), dict) else {}
     for key in (
+        "turn_pwm",
+        "turn_phase_ms",
+        "turn_straight_phase_ms",
         "both_ms",
         "hold_gentle_ms",
         "hold_sharp_ms",
@@ -1441,6 +1449,12 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         DEFAULT_GAP_CRAWL_CONFIG["lost_confident_frames_before_stop"],
         minimum=1,
         maximum=60,
+    )
+    cfg["gap_crawl"]["turn_first_enabled"] = bool(
+        raw_gap_crawl.get(
+            "turn_first_enabled",
+            DEFAULT_GAP_CRAWL_CONFIG["turn_first_enabled"],
+        )
     )
     for key, maximum in (
         ("sharp_x_mm", 500.0),
@@ -1970,6 +1984,7 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         "max_x_jump_mm",
         "max_y_jump_mm",
         "max_vector_jump_mm",
+        "motion_wrong_way_jump_mm",
         "max_abs_dist_mm",
         "edge_recovery_min_abs_x_mm",
         "edge_recovery_max_abs_dist_mm",
@@ -10012,6 +10027,57 @@ def _set_follow_last_stable_reading(vision: BrickDetector, reading: dict) -> Non
         pass
 
 
+def _set_follow_motion_expectation(vision: BrickDetector, expectation: dict | None) -> None:
+    try:
+        if isinstance(expectation, dict):
+            setattr(vision, "_follow_motion_expectation", dict(expectation))
+        elif hasattr(vision, "_follow_motion_expectation"):
+            delattr(vision, "_follow_motion_expectation")
+    except Exception:
+        pass
+
+
+def _reading_motion_inconsistent(
+    previous: dict | None,
+    current: dict | None,
+    cfg: dict,
+    expectation: dict | None,
+) -> dict | None:
+    if not isinstance(previous, dict) or not isinstance(current, dict) or not isinstance(expectation, dict):
+        return None
+    try:
+        signed_dist = float(current.get("dist_mm")) - float(previous.get("dist_mm"))
+        signed_x = float(current.get("x_mm")) - float(previous.get("x_mm"))
+    except (TypeError, ValueError):
+        return None
+    wrong_way_limit = float(cfg.get("motion_wrong_way_jump_mm", 8.0) or 8.0)
+    expected_dist_sign = int(expectation.get("dist_sign", 0) or 0)
+    expected_x_sign = int(expectation.get("x_sign", 0) or 0)
+    reasons: list[str] = []
+    if expected_dist_sign < 0 and signed_dist > wrong_way_limit:
+        reasons.append("dist_moved_farther_than_command_allows")
+    elif expected_dist_sign > 0 and signed_dist < -wrong_way_limit:
+        reasons.append("dist_moved_closer_than_command_allows")
+    if expected_x_sign < 0 and signed_x > wrong_way_limit:
+        reasons.append("x_moved_opposite_right_turn")
+    elif expected_x_sign > 0 and signed_x < -wrong_way_limit:
+        reasons.append("x_moved_opposite_left_turn")
+    max_dist_step = float(cfg.get("max_dist_jump_mm", 0.0) or 0.0)
+    max_x_step = float(cfg.get("max_x_jump_mm", 0.0) or 0.0)
+    if max_dist_step > 0.0 and abs(signed_dist) > max_dist_step:
+        reasons.append("dist_step_exceeds_physical_limit")
+    if max_x_step > 0.0 and abs(signed_x) > max_x_step:
+        reasons.append("x_step_exceeds_physical_limit")
+    if not reasons:
+        return None
+    return {
+        "signed_dist_mm": float(signed_dist),
+        "signed_x_mm": float(signed_x),
+        "reasons": reasons,
+        "expectation": dict(expectation),
+    }
+
+
 def _temporal_filter_brick_reading(vision: BrickDetector, reading: dict, jump_guard: bool = False) -> dict:
     """Small 3-frame median plus jump-confirm guard around the detector."""
     if not isinstance(reading, dict):
@@ -10123,6 +10189,24 @@ def _temporal_filter_brick_reading(vision: BrickDetector, reading: dict, jump_gu
             except (TypeError, ValueError):
                 pass
         stable = getattr(vision, "_follow_last_stable_reading", None)
+        motion_detail = _reading_motion_inconsistent(
+            stable,
+            reading,
+            jump_cfg,
+            getattr(vision, "_follow_motion_expectation", None),
+        ) if bool(jump_guard) else None
+        if motion_detail is not None:
+            rejected = _ghost_jump_rejected_reading(
+                reading,
+                _reading_jump_delta(stable, reading),
+                "ghost_jump_motion_inconsistent",
+            )
+            rejected["motion_inconsistent_detail"] = dict(motion_detail)
+            try:
+                setattr(vision, "_follow_jump_candidate", None)
+            except Exception:
+                pass
+            return rejected
         suspicious, delta = (
             _reading_jump_suspicious(stable, reading, jump_cfg)
             if bool(jump_guard) and bool(jump_cfg.get("enabled"))
@@ -10974,6 +11058,7 @@ def _vision_jump_guard_config() -> dict:
         "max_x_jump_mm",
         "max_y_jump_mm",
         "max_vector_jump_mm",
+        "motion_wrong_way_jump_mm",
         "max_abs_dist_mm",
         "edge_recovery_min_abs_x_mm",
         "edge_recovery_max_abs_dist_mm",
@@ -10995,6 +11080,9 @@ def _gap_crawl_config() -> dict:
     cfg = raw if isinstance(raw, dict) else {}
     out = dict(DEFAULT_GAP_CRAWL_CONFIG)
     for key in (
+        "turn_pwm",
+        "turn_phase_ms",
+        "turn_straight_phase_ms",
         "both_ms",
         "hold_gentle_ms",
         "hold_sharp_ms",
@@ -11012,6 +11100,9 @@ def _gap_crawl_config() -> dict:
         DEFAULT_GAP_CRAWL_CONFIG["lost_confident_frames_before_stop"],
         minimum=1,
         maximum=60,
+    )
+    out["turn_first_enabled"] = bool(
+        cfg.get("turn_first_enabled", DEFAULT_GAP_CRAWL_CONFIG["turn_first_enabled"])
     )
     for key, maximum in (
         ("sharp_x_mm", 500.0),
@@ -17259,21 +17350,46 @@ def _gap_crawl_straight_actions(pwm: int, ms: int) -> list[dict]:
     ]
 
 
-def _gap_crawl_duty_turn_actions(turn_cmd: str, pwm: int, both_ms: int, hold_ms: int) -> list[dict]:
+def _gap_crawl_duty_turn_actions(
+    turn_cmd: str,
+    pwm: int,
+    both_ms: int,
+    hold_ms: int,
+    *,
+    turn_pwm: int | None = None,
+) -> list[dict]:
     """One BOTH+HOLD turn cycle: outer tread crawls forward continuously for
     both_ms+hold_ms; inner tread crawls only both_ms then holds at 0 for hold_ms.
     turn_cmd 'l' drives the right tread (holds left); 'r' drives left (holds right).
     """
+    outer_pwm = int(pwm if turn_pwm is None else turn_pwm)
     outer_ms = int(both_ms) + int(hold_ms)
     inner_ms = int(both_ms)
     if str(turn_cmd).strip().lower() == "l":
         return [
-            {"target": "r", "action": "f", "pwm": int(pwm), "duration_ms": outer_ms},
+            {"target": "r", "action": "f", "pwm": outer_pwm, "duration_ms": outer_ms},
             {"target": "l", "action": "b", "pwm": int(pwm), "duration_ms": inner_ms},
         ]
     return [
-        {"target": "l", "action": "b", "pwm": int(pwm), "duration_ms": outer_ms},
+        {"target": "l", "action": "b", "pwm": outer_pwm, "duration_ms": outer_ms},
         {"target": "r", "action": "f", "pwm": int(pwm), "duration_ms": inner_ms},
+    ]
+
+
+def _gap_crawl_one_wheel_turn_actions(
+    turn_cmd: str,
+    turn_pwm: int,
+    duration_ms: int,
+) -> list[dict]:
+    """Immediate correction used by the proven turn-first crawl experiment."""
+    if str(turn_cmd).strip().lower() == "l":
+        return [
+            {"target": "r", "action": "f", "pwm": int(turn_pwm), "duration_ms": int(duration_ms)},
+            {"target": "l", "action": "s", "pwm": 0, "duration_ms": 0},
+        ]
+    return [
+        {"target": "l", "action": "b", "pwm": int(turn_pwm), "duration_ms": int(duration_ms)},
+        {"target": "r", "action": "s", "pwm": 0, "duration_ms": 0},
     ]
 
 
@@ -17293,6 +17409,9 @@ def _gap_closing_crawl(
     """Crawl forward to close the dist+x gap, steering only by timed inner-wheel
     holds. Returns (won, last_reading). Records into the shared game stats."""
     crawl_cfg = _gap_crawl_config()
+    turn_first_enabled = bool(crawl_cfg["turn_first_enabled"])
+    turn_phase_ms = int(crawl_cfg["turn_phase_ms"])
+    turn_straight_phase_ms = int(crawl_cfg["turn_straight_phase_ms"])
     both_ms = int(crawl_cfg["both_ms"])
     hold_gentle_ms = int(crawl_cfg["hold_gentle_ms"])
     hold_sharp_ms = int(crawl_cfg["hold_sharp_ms"])
@@ -17305,6 +17424,7 @@ def _gap_closing_crawl(
     jump_pause_s = float(crawl_cfg["sustained_jump_pause_s"])
     jump_pause_frames = int(_vision_jump_guard_config().get("confirm_frames", 3) or 3)
     pwm = _crawl_forward_pwm()
+    turn_pwm = int(crawl_cfg["turn_pwm"])
     win_cfg = _win_confirmation_config()
     confirm_frames = int(win_cfg.get("confirm_frames", 1))
     settle_s = float(win_cfg.get("settle_s", 0.0))
@@ -17315,6 +17435,13 @@ def _gap_closing_crawl(
     last_committed: dict | None = None
     moved = False
     happy = 0
+    next_turn_first_phase = "turn"
+    last_turn_first_cmd: str | None = None
+    _set_follow_motion_expectation(vision, None)
+
+    def _stop_gapcrawl() -> None:
+        _set_follow_motion_expectation(vision, None)
+        _stop_robot(robot)
 
     def _winning(reading: dict) -> bool:
         return bool(win_predicate(reading)) and (moved or not require_motion_before_win)
@@ -17338,7 +17465,7 @@ def _gap_closing_crawl(
 
     def _pause_for_sustained_jump(reading: dict | None) -> None:
         nonlocal jump_frames, lost_frames, last_committed
-        _stop_robot(robot)
+        _stop_gapcrawl()
         stats["gapcrawl_jump_pause_count"] = int(stats.get("gapcrawl_jump_pause_count", 0) or 0) + 1
         stats["last_action"] = f"{log_tag}_JUMP_REOBSERVE"
         _bump_stat_count(stats, "miss_reasons", "gapcrawl_sustained_jump_reobserve")
@@ -17379,7 +17506,7 @@ def _gap_closing_crawl(
             if lost_frames < int(lost_frame_limit):
                 time.sleep(poll_s)
                 continue
-            _stop_robot(robot)
+            _stop_gapcrawl()
             stats["gapcrawl_confidence_pause_count"] = int(
                 stats.get("gapcrawl_confidence_pause_count", 0) or 0
             ) + 1
@@ -17400,7 +17527,7 @@ def _gap_closing_crawl(
         last = reading
 
         if _winning(reading):
-            _stop_robot(robot)
+            _stop_gapcrawl()
             happy += 1
             if happy >= confirm_frames:
                 return True, reading
@@ -17417,12 +17544,41 @@ def _gap_closing_crawl(
             actions = _gap_crawl_straight_actions(pwm, int(straight_ms))
             seg_ms = int(straight_ms)
             label = f"{log_tag}_FWD"
+            expected_x_sign = 0
+            next_turn_first_phase = "turn"
+            last_turn_first_cmd = None
         else:
             turn_cmd = _turn_cmd_to_close_x_gap(x_delta) or ("r" if x_delta > 0 else "l")
-            hold_ms = int(hold_sharp_ms) if abs(x_delta) > float(sharp_x_mm) else int(hold_gentle_ms)
-            actions = _gap_crawl_duty_turn_actions(turn_cmd, pwm, int(both_ms), hold_ms)
-            seg_ms = int(both_ms) + hold_ms
-            label = f"{log_tag}_{turn_cmd.upper()}_HOLD{hold_ms}"
+            if bool(turn_first_enabled):
+                if last_turn_first_cmd != turn_cmd:
+                    next_turn_first_phase = "turn"
+                if next_turn_first_phase == "turn":
+                    phase_ms = int(turn_phase_ms)
+                    seg_ms = phase_ms + int(overlap_ms)
+                    actions = _gap_crawl_one_wheel_turn_actions(turn_cmd, turn_pwm, seg_ms)
+                    label = f"{log_tag}_{turn_cmd.upper()}_TURN_FIRST"
+                    expected_x_sign = -1 if turn_cmd == "r" else 1
+                    next_turn_first_phase = "straight"
+                else:
+                    phase_ms = int(turn_straight_phase_ms)
+                    seg_ms = phase_ms + int(overlap_ms)
+                    actions = _gap_crawl_straight_actions(pwm, seg_ms)
+                    label = f"{log_tag}_{turn_cmd.upper()}_STRAIGHT_PHASE"
+                    expected_x_sign = 0
+                    next_turn_first_phase = "turn"
+                last_turn_first_cmd = turn_cmd
+            else:
+                hold_ms = int(hold_sharp_ms) if abs(x_delta) > float(sharp_x_mm) else int(hold_gentle_ms)
+                actions = _gap_crawl_duty_turn_actions(
+                    turn_cmd,
+                    pwm,
+                    int(both_ms),
+                    hold_ms,
+                    turn_pwm=turn_pwm,
+                )
+                seg_ms = int(both_ms) + hold_ms
+                label = f"{log_tag}_{turn_cmd.upper()}_HOLD{hold_ms}"
+                expected_x_sign = -1 if turn_cmd == "r" else 1
 
         if debug_mode:
             print(
@@ -17430,11 +17586,19 @@ def _gap_closing_crawl(
                 f"x={x_mm:+.1f} x_gap={x_delta:+.1f} {seg_ms}ms",
                 flush=True,
             )
+        _set_follow_motion_expectation(
+            vision,
+            {
+                "dist_sign": -1,
+                "x_sign": int(expected_x_sign),
+                "action": str(label),
+            },
+        )
         send = guarded_send_custom_actions_pwm(
             robot, "f", actions, duration_ms=int(seg_ms), reading=reading, context=context,
         )
         if isinstance(send, dict) and bool(send.get("blocked")):
-            _stop_robot(robot)
+            _stop_gapcrawl()
             _bump_stat_count(stats, "miss_reasons", str(send.get("reason") or "blocked"))
             time.sleep(poll_s)
             continue
@@ -17462,7 +17626,7 @@ def _gap_closing_crawl(
                 lost_frames += 1
                 stats["not_confident_count"] = int(stats.get("not_confident_count", 0)) + 1
                 if lost_frames >= int(lost_frame_limit):
-                    _stop_robot(robot)
+                    _stop_gapcrawl()
                     stats["gapcrawl_confidence_pause_count"] = int(
                         stats.get("gapcrawl_confidence_pause_count", 0) or 0
                     ) + 1
@@ -17480,15 +17644,16 @@ def _gap_closing_crawl(
             stats["confident_sample_count"] = int(stats.get("confident_sample_count", 0)) + 1
             last = live
             if _winning(live):
-                _stop_robot(robot)
+                _stop_gapcrawl()
                 return True, live
             if _virtual_safety_dist_exceeded(live):
-                _stop_robot(robot)
+                _stop_gapcrawl()
                 stats["last_action"] = "VIRTUAL_WALL_STOP"
                 return False, live
         if paused:
             continue
 
+    _set_follow_motion_expectation(vision, None)
     return False, last
 
 
@@ -17515,7 +17680,8 @@ def _follow_loop_gap_crawl(
     print(
         f"[FOLLOW][GAPCRAWL] Step 1 gap-closing crawl engaged: "
         f"target dist={_dist_target_mm():.1f}mm x={_x_target_mm():+.1f}mm; "
-        f"crawl pwm={_crawl_forward_pwm()} (one speed), turn=timed inner-wheel holds.",
+        f"crawl pwm={_crawl_forward_pwm()}, turn pwm={int(_gap_crawl_config()['turn_pwm'])} "
+        "with timed inner-wheel holds.",
         flush=True,
     )
     deadline = time.monotonic() + float(duration_s)

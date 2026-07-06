@@ -136,7 +136,11 @@
    "poll_s": 0.055,
    "sharp_x_mm": 14.0,
    "straight_ms": 300,
-   "sustained_jump_pause_s": 0.25
+   "sustained_jump_pause_s": 0.25,
+   "turn_first_enabled": true,
+   "turn_phase_ms": 200,
+   "turn_pwm": 115,
+   "turn_straight_phase_ms": 200
   },
   "dist_axis": {
    "win_target_mm": 63.882,
@@ -861,6 +865,7 @@
    "max_vector_jump_mm": 30.0,
    "max_x_jump_mm": 18.0,
    "max_y_jump_mm": 0.0,
+   "motion_wrong_way_jump_mm": 8.0,
    "post_act_stabilize_s": 0.08,
    "reacquire_frames_after_motion": 3,
    "reacquire_window_mm": 45.0
