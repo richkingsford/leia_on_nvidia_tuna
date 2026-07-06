@@ -442,7 +442,7 @@ DEFAULT_VISION_JUMP_GUARD_CONFIG = {
 }
 DEFAULT_GAP_CRAWL_CONFIG = {
     "crawl_pwm": 115,
-    "turn_pwm": 115,
+    "turn_pwm": 133,
     "turn_first_enabled": True,
     "turn_phase_ms": 220,
     "turn_straight_phase_ms": 220,
@@ -17427,7 +17427,7 @@ def _gap_closing_crawl(
     jump_pause_s = float(crawl_cfg["sustained_jump_pause_s"])
     jump_pause_frames = int(_vision_jump_guard_config().get("confirm_frames", 3) or 3)
     pwm = int(crawl_cfg["crawl_pwm"])
-    turn_pwm = int(crawl_cfg["turn_pwm"])
+    configured_turn_pwm = int(crawl_cfg["turn_pwm"])
     win_cfg = _win_confirmation_config()
     confirm_frames = int(win_cfg.get("confirm_frames", 1))
     settle_s = float(win_cfg.get("settle_s", 0.0))
@@ -17552,6 +17552,10 @@ def _gap_closing_crawl(
             last_turn_first_cmd = None
         else:
             turn_cmd = _turn_cmd_to_close_x_gap(x_delta) or ("r" if x_delta > 0 else "l")
+            turn_pwm = max(
+                int(configured_turn_pwm),
+                int(_pwm_floor_for_cmd(turn_cmd)),
+            )
             if bool(turn_first_enabled):
                 if last_turn_first_cmd != turn_cmd:
                     next_turn_first_phase = "turn"
@@ -17684,8 +17688,8 @@ def _follow_loop_gap_crawl(
         f"[FOLLOW][GAPCRAWL] Step 1 gap-closing crawl engaged: "
         f"target dist={_dist_target_mm():.1f}mm x={_x_target_mm():+.1f}mm; "
         f"crawl pwm={int(_gap_crawl_config()['crawl_pwm'])}, "
-        f"turn pwm={int(_gap_crawl_config()['turn_pwm'])} "
-        "with timed inner-wheel holds.",
+        f"turn pwm>={int(_gap_crawl_config()['turn_pwm'])} "
+        "with the global directional turn floor enforced.",
         flush=True,
     )
     deadline = time.monotonic() + float(duration_s)

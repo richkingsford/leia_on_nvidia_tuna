@@ -576,7 +576,18 @@ def run(args) -> tuple[int, dict]:
             if args.drive_pwm is None
             else int(args.drive_pwm)
         )
-        turn_pwm = pwm if args.turn_pwm is None else int(args.turn_pwm)
+        requested_drive_pwm = int(pwm)
+        drive_floor_pwm = max(
+            int(follow._pwm_floor_for_cmd("f")),
+            int(follow._approved_straight_drive_pwm("f")),
+        )
+        pwm = max(requested_drive_pwm, drive_floor_pwm)
+        requested_turn_pwm = pwm if args.turn_pwm is None else int(args.turn_pwm)
+        turn_floor_pwm = max(
+            int(follow._pwm_floor_for_cmd("l")),
+            int(follow._pwm_floor_for_cmd("r")),
+        )
+        turn_pwm = max(requested_turn_pwm, turn_floor_pwm)
         both_ms = int(cfg["both_ms"])
         hold_ms = int(cfg["hold_gentle_ms"])
         initial_x = _number(baseline.get("x_mm"))
@@ -611,6 +622,10 @@ def run(args) -> tuple[int, dict]:
             baseline_x_delta_mm=round(float(initial_plan["x_delta_mm"]), 3),
             pwm=pwm,
             turn_pwm=turn_pwm,
+            requested_drive_pwm=requested_drive_pwm,
+            requested_turn_pwm=requested_turn_pwm,
+            drive_floor_pwm=drive_floor_pwm,
+            turn_floor_pwm=turn_floor_pwm,
             production_crawl_pwm=production_crawl_pwm,
             both_ms=both_ms,
             hold_ms=hold_ms,

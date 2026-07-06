@@ -140,7 +140,7 @@
    "sustained_jump_pause_s": 0.25,
    "turn_first_enabled": true,
    "turn_phase_ms": 220,
-   "turn_pwm": 115,
+   "turn_pwm": 133,
    "turn_straight_phase_ms": 220
   },
   "dist_axis": {
