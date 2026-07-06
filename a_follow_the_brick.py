@@ -441,10 +441,11 @@ DEFAULT_VISION_JUMP_GUARD_CONFIG = {
     "reacquire_window_mm": 12.0,
 }
 DEFAULT_GAP_CRAWL_CONFIG = {
+    "crawl_pwm": 115,
     "turn_pwm": 115,
     "turn_first_enabled": True,
-    "turn_phase_ms": 200,
-    "turn_straight_phase_ms": 200,
+    "turn_phase_ms": 220,
+    "turn_straight_phase_ms": 220,
     "both_ms": 200,
     "hold_gentle_ms": 200,
     "hold_sharp_ms": 400,
@@ -1429,6 +1430,7 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
     )
     raw_gap_crawl = raw.get("gap_crawl") if isinstance(raw.get("gap_crawl"), dict) else {}
     for key in (
+        "crawl_pwm",
         "turn_pwm",
         "turn_phase_ms",
         "turn_straight_phase_ms",
@@ -11080,6 +11082,7 @@ def _gap_crawl_config() -> dict:
     cfg = raw if isinstance(raw, dict) else {}
     out = dict(DEFAULT_GAP_CRAWL_CONFIG)
     for key in (
+        "crawl_pwm",
         "turn_pwm",
         "turn_phase_ms",
         "turn_straight_phase_ms",
@@ -17423,7 +17426,7 @@ def _gap_closing_crawl(
     lost_frame_limit = int(crawl_cfg["lost_confident_frames_before_stop"])
     jump_pause_s = float(crawl_cfg["sustained_jump_pause_s"])
     jump_pause_frames = int(_vision_jump_guard_config().get("confirm_frames", 3) or 3)
-    pwm = _crawl_forward_pwm()
+    pwm = int(crawl_cfg["crawl_pwm"])
     turn_pwm = int(crawl_cfg["turn_pwm"])
     win_cfg = _win_confirmation_config()
     confirm_frames = int(win_cfg.get("confirm_frames", 1))
@@ -17680,7 +17683,8 @@ def _follow_loop_gap_crawl(
     print(
         f"[FOLLOW][GAPCRAWL] Step 1 gap-closing crawl engaged: "
         f"target dist={_dist_target_mm():.1f}mm x={_x_target_mm():+.1f}mm; "
-        f"crawl pwm={_crawl_forward_pwm()}, turn pwm={int(_gap_crawl_config()['turn_pwm'])} "
+        f"crawl pwm={int(_gap_crawl_config()['crawl_pwm'])}, "
+        f"turn pwm={int(_gap_crawl_config()['turn_pwm'])} "
         "with timed inner-wheel holds.",
         flush=True,
     )

@@ -129,6 +129,7 @@
   "gap_crawl": {
    "both_ms": 200,
    "command_overlap_ms": 100,
+   "crawl_pwm": 115,
    "hold_gentle_ms": 200,
    "hold_sharp_ms": 400,
    "lost_confident_frames_before_stop": 10,
@@ -138,9 +139,9 @@
    "straight_ms": 300,
    "sustained_jump_pause_s": 0.25,
    "turn_first_enabled": true,
-   "turn_phase_ms": 200,
+   "turn_phase_ms": 220,
    "turn_pwm": 115,
-   "turn_straight_phase_ms": 200
+   "turn_straight_phase_ms": 220
   },
   "dist_axis": {
    "win_target_mm": 63.882,
