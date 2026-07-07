@@ -38,7 +38,7 @@ class TestBrickDetectorYoloTrapezoidStackLabels(unittest.TestCase):
         ).reshape(-1, 1, 2)
         cv2.fillPoly(frame, [slot], (0, 0, 0))
 
-    def test_merged_cyan_stack_splits_into_topmost_numbered_bricks(self):
+    def test_merged_cyan_stack_gets_single_numbered_candidate(self):
         vision = self._build_detector_stub()
         frame = np.zeros((180, 220, 3), dtype=np.uint8)
         cv2.rectangle(frame, (32, 18), (188, 160), self.GREEN_BRICK_BGR, thickness=cv2.FILLED)
@@ -54,19 +54,18 @@ class TestBrickDetectorYoloTrapezoidStackLabels(unittest.TestCase):
             frame.shape[0],
         )
 
-        self.assertGreaterEqual(len(candidates), 2)
-        top_two = sorted(candidates, key=lambda item: item["center_y"])[:2]
-        self.assertLess(top_two[0]["center_y"], top_two[1]["center_y"])
+        self.assertEqual(len(candidates), 1)
+        self.assertTrue(candidates[0].get("from_color_detection"))
 
         highlighted = frame.copy()
-        detector.BrickDetector._draw_brick_id_labels(vision, highlighted, top_two)
+        detector.BrickDetector._draw_brick_id_labels(vision, highlighted, candidates)
         yellow_mask = (
             (highlighted[:, :, 0] == 0)
             & (highlighted[:, :, 1] == 255)
             & (highlighted[:, :, 2] == 255)
         )
         self.assertGreater(int(np.count_nonzero(yellow_mask)), 0)
-        outline_band_y = top_two[0]["bbox"][1]
+        outline_band_y = candidates[0]["bbox"][1]
         self.assertFalse(bool(np.any(yellow_mask[outline_band_y, :])))
 
 

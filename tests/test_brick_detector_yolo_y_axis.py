@@ -357,7 +357,7 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         result = BrickDetector._process_bricks(det, frame, [])
 
         self.assertTrue(result[0])
-        self.assertEqual(segment_calls, [(0, 0, 640, 480)])
+        self.assertEqual(segment_calls, [(134, 101, 505, 379)])
         self.assertEqual(det.last_status, "target locked (HSV)")
         self.assertAlmostEqual(result[4], 100.0, places=6)
 
@@ -392,7 +392,10 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         result = BrickDetector._process_bricks(det, frame, bricks)
 
         self.assertTrue(result[0])
-        self.assertEqual(segment_calls, [(8, 6, 632, 472), (0, 0, 640, 480)])
+        self.assertEqual(
+            segment_calls,
+            [(134, 101, 505, 379), (77, 58, 563, 423), (8, 6, 632, 472), (0, 0, 640, 480)],
+        )
         self.assertEqual(det.last_status, "target locked (HSV)")
         self.assertAlmostEqual(result[4], 87.0, places=6)
 
@@ -432,8 +435,8 @@ class TestBrickDetectorYoloYAxis(unittest.TestCase):
         result = BrickDetector._process_bricks(det, frame, bricks)
 
         self.assertTrue(result[0])
-        self.assertEqual(det.last_partial_count, 1)
-        self.assertEqual(det.last_partial_labels, ["TOP HALF"])
+        self.assertEqual(det.last_partial_count, 2)
+        self.assertEqual(det.last_partial_labels, ["TOP HALF", "LOWER PARTIAL"])
         self.assertEqual(det.last_primary_partial_kind, "top_half")
         self.assertEqual(det.last_primary_partial_label, "TOP HALF")
         self.assertFalse(bool(result[7]))

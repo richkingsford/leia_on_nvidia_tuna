@@ -2,11 +2,10 @@
 Crown brick vision regression tests.
 
 Covers the complete current pipeline:
-  - Crown profile uses negative_cutouts gate
-  - Trapezoid gate is active because world model has exactly 1 cutout polygon
-  - Two dark inner slots → two separate candidates (inner-hole split path)
-  - Transparent/missing slots → height-ratio fallback still produces 2+ candidates
-  - _draw_brick_id_labels draws yellow IDs for the nearest 1-2 candidates
+  - Crown profile uses the max-reach green detector profile
+  - Current world model uses shape-match with no cutout/trapezoid gate
+  - Merged synthetic stacks stay as one candidate unless the current model splits them
+  - _draw_brick_id_labels draws yellow IDs for the nearest highlighted candidate
   - CrownVisionLivestream holds the last good detection for HOLD_FRAMES missed frames
 """
 import argparse
@@ -184,10 +183,10 @@ class TestCrownProfileTuning(unittest.TestCase):
         self.assertIn("balanced_far_guard", option_keys)
         self.assertIn(CROWN_PROFILE_KEY, dict(CROWN_PROFILE_OPTIONS))
 
-    def test_default_profile_is_known_good_tight_color(self):
-        self.assertEqual(CROWN_PROFILE_KEY, "tight_color")
-        self.assertEqual(CROWN_PROFILE_TUNING["hsv_lower"], list(det.CYAN_HSV_BALANCED_LOWER))
-        self.assertEqual(CROWN_PROFILE_TUNING["hsv_upper"], list(det.CYAN_HSV_BALANCED_UPPER))
+    def test_default_profile_is_current_max_reach_profile(self):
+        self.assertEqual(CROWN_PROFILE_KEY, "max_reach")
+        self.assertEqual(CROWN_PROFILE_TUNING["hsv_lower"], [55, 15, 8])
+        self.assertEqual(CROWN_PROFILE_TUNING["hsv_upper"], [93, 255, 255])
         self.assertAlmostEqual(CROWN_PROFILE_TUNING["confidence"], 0.08)
         self.assertAlmostEqual(CROWN_PROFILE_TUNING["hsv_min_area_ratio"], 0.03)
         self.assertAlmostEqual(CROWN_PROFILE_TUNING["full_frame_hsv_min_area_ratio"], 0.02)
@@ -225,24 +224,24 @@ class TestCrownProfileTuning(unittest.TestCase):
         self.assertAlmostEqual(d._full_frame_hsv_min_area_ratio, 0.02)
 
 
-class TestTrapezoidGate(unittest.TestCase):
-    """Current world model has exactly 1 cutout polygon → trapezoid gate is active."""
+class TestCurrentShapeGate(unittest.TestCase):
+    """Current world model uses shape-match directly, with no cutout/trapezoid gate."""
 
-    def test_world_model_has_exactly_one_cutout(self):
+    def test_world_model_has_no_cutouts(self):
         d = _make_stub()
-        self.assertEqual(len(d._face_cutouts_model), 1)
+        self.assertEqual(len(d._face_cutouts_model), 0)
 
-    def test_trapezoid_gate_active(self):
+    def test_trapezoid_gate_inactive(self):
         d = _make_stub()
-        self.assertTrue(d._uses_trapezoid_gate())
+        self.assertFalse(d._uses_trapezoid_gate())
 
     def test_negative_cutout_gate_inactive(self):
         d = _make_stub()
         self.assertFalse(d._uses_negative_cutout_gate())
 
 
-class TestInnerHoleSplitting(unittest.TestCase):
-    """Two dark inner slots produce two separate brick candidates (primary path)."""
+class TestMergedSlotStackSegmentation(unittest.TestCase):
+    """Current no-cutout shape model keeps this synthetic slotted stack merged."""
 
     def _candidates(self):
         d = _make_stub()
@@ -261,39 +260,23 @@ class TestInnerHoleSplitting(unittest.TestCase):
         overlap_h = max(0, min(ay2, by2) - max(ay1, by1))
         return overlap_w * overlap_h
 
-    def test_two_slots_produce_at_least_two_candidates(self):
-        self.assertGreaterEqual(len(self._candidates()), 2)
-
-    def test_candidates_ordered_top_to_bottom(self):
+    def test_two_slots_produce_single_color_candidate(self):
         candidates = self._candidates()
-        ys = [c["center_y"] for c in candidates[:2]]
-        self.assertLess(ys[0], ys[1])
+        self.assertEqual(len(candidates), 1)
+        self.assertTrue(candidates[0].get("from_color_detection"))
+        self.assertEqual(candidates[0].get("shape_profile"), "color")
 
-    def test_slot_candidates_use_tight_non_overlapping_boxes(self):
+    def test_slot_candidate_keeps_tight_merged_bbox(self):
         candidates = self._candidates()
-        top_box = candidates[0]["bbox"]
-        bottom_box = candidates[1]["bbox"]
+        self.assertEqual(len(candidates), 1)
+        box = candidates[0]["bbox"]
+        self.assertEqual(box[0], 32)
+        self.assertEqual(box[1], 18)
+        self.assertEqual(box[2], 157)
+        self.assertEqual(box[3], 143)
+        self.assertIsNone(candidates[0].get("selection_anchor_y"))
 
-        self.assertEqual(top_box[0], 32)
-        self.assertEqual(top_box[2], 157)
-        self.assertEqual(bottom_box[0], 32)
-        self.assertEqual(bottom_box[2], 157)
-        self.assertEqual(top_box[1] + top_box[3], bottom_box[1])
-        self.assertEqual(self._overlap_area(top_box, bottom_box), 0)
-        self.assertAlmostEqual(
-            top_box[1] + (top_box[3] / 2.0),
-            candidates[0]["selection_anchor_y"],
-            delta=1.0,
-        )
-        self.assertAlmostEqual(
-            bottom_box[1] + (bottom_box[3] / 2.0),
-            candidates[1]["selection_anchor_y"],
-            delta=1.0,
-        )
-        self.assertTrue(candidates[0].get("from_slot_detection"))
-        self.assertEqual(candidates[0].get("shape_profile"), "full")
-
-    def test_trust_detector_boxes_still_splits_merged_slot_stack(self):
+    def test_trust_detector_boxes_still_keeps_tight_merged_candidate(self):
         d = _make_stub()
         d._trust_detector_boxes = True
         frame = _make_stacked_frame_with_slots()
@@ -302,16 +285,12 @@ class TestInnerHoleSplitting(unittest.TestCase):
             d, frame, 0, 0, frame.shape[1], frame.shape[0]
         )
 
-        self.assertGreaterEqual(len(candidates), 2)
-        self.assertEqual(
-            self._overlap_area(candidates[0]["bbox"], candidates[1]["bbox"]),
-            0,
-        )
+        self.assertEqual(len(candidates), 1)
         self.assertNotEqual(candidates[0]["bbox"], (0, 0, frame.shape[1], frame.shape[0]))
 
 
-class TestHeightRatioFallback(unittest.TestCase):
-    """When no inner holes exist, a tall cyan blob splits by the face height/width ratio."""
+class TestSolidStackSegmentation(unittest.TestCase):
+    """Current shape-match model keeps this solid synthetic stack as one candidate."""
 
     def _candidates(self):
         d = _make_stub()
@@ -320,17 +299,12 @@ class TestHeightRatioFallback(unittest.TestCase):
             d, frame, 0, 0, frame.shape[1], frame.shape[0]
         )
 
-    def test_tall_blob_with_no_slots_produces_multiple_candidates(self):
-        self.assertGreaterEqual(
-            len(self._candidates()),
-            2,
-            "Height-ratio fallback must split a merged tall blob into >=2 candidates",
-        )
+    def test_tall_blob_with_no_slots_produces_one_candidate(self):
+        self.assertEqual(len(self._candidates()), 1)
 
-    def test_fallback_candidates_ordered_top_to_bottom(self):
+    def test_fallback_candidate_is_centered_on_blob(self):
         candidates = self._candidates()
-        ys = [c["center_y"] for c in candidates[:2]]
-        self.assertLess(ys[0], ys[1])
+        self.assertAlmostEqual(candidates[0]["center_y"], 145.5, delta=1.0)
 
 
 class TestSingleBrickFallback(unittest.TestCase):
@@ -359,24 +333,15 @@ class TestSingleBrickFallback(unittest.TestCase):
         )
 
     def test_fallback_scale_uses_face_height(self):
-        """scale_px_per_mm in fallback candidates is anchored to face height, not slot height."""
+        """Current full-shape candidate no longer reports the old fallback scale field."""
         d = _make_stub()
-        face_h_mm = float(np.max(d._face_polygon_model[:, 1]) - np.min(d._face_polygon_model[:, 1]))
         frame = self._single_brick_frame()
         candidates = det.BrickDetector._segment_bricks_hsv(
             d, frame, 0, 0, frame.shape[1], frame.shape[0]
         )
         self.assertGreaterEqual(len(candidates), 1)
-        scale = float(candidates[0]["scale_px_per_mm"])
-        # scale should be bbox_h / face_h_mm; face_h_mm ≈ 18mm
-        # For a ~1-brick blob (blob_h ≈ face_aspect * blob_w), scale ≈ blob_h/18
-        # Sanity: scale must be >> 0 and not wildly wrong vs slot_h_mm (4.05mm)
-        self.assertGreater(scale, 0.0)
-        # If scale were using slot_h_mm (4.05), it would be ~4.4x too large
-        # Using face_h_mm (18) gives the correct ~1x ratio
-        blob_h = float(candidates[0]["bbox"][3])
-        expected_scale = blob_h / face_h_mm
-        self.assertAlmostEqual(scale, expected_scale, delta=1.0)
+        self.assertEqual(candidates[0].get("shape_profile"), "full")
+        self.assertNotIn("scale_px_per_mm", candidates[0])
 
     def test_strong_cyan_color_survives_weak_trapezoid_shape(self):
         d = _make_stub()
@@ -460,8 +425,8 @@ class TestShapeMatchThreshold(unittest.TestCase):
 
     def test_loaded_threshold_from_world_model(self):
         d = _make_stub()
-        # world_model_brick.json sets shape_match_score_max = 0.45
-        self.assertAlmostEqual(d._shape_match_score_max, 0.45, delta=0.01)
+        # world_model_brick.json currently sets shape_match_score_max = 0.7
+        self.assertAlmostEqual(d._shape_match_score_max, 0.7, delta=0.01)
 
     def test_classify_uses_instance_threshold_not_constant(self):
         """A contour that scores between 0.40 and 0.65 should pass with the JSON value."""
@@ -486,7 +451,7 @@ class TestShapeMatchThreshold(unittest.TestCase):
 
 
 class TestDrawBrickIdLabels(unittest.TestCase):
-    """_draw_brick_id_labels draws yellow IDs for the nearest 1-2 candidates."""
+    """_draw_brick_id_labels draws yellow IDs for the nearest highlighted candidates."""
 
     @staticmethod
     def _yellow_px(frame: np.ndarray) -> int:
@@ -537,24 +502,29 @@ class TestDrawBrickIdLabels(unittest.TestCase):
         det.BrickDetector._draw_brick_id_labels(d, frame, [])
         self.assertEqual(self._yellow_px(frame), 0)
 
-    def test_labels_limited_to_two_nearest_center_candidates(self):
+    def test_labels_limited_to_nearest_center_candidate(self):
         d = _make_stub()
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
         near_1 = _make_candidate(cx=320, cy=240, bbox=(280, 220, 80, 40))
         near_2 = _make_candidate(cx=430, cy=240, bbox=(390, 220, 80, 40))
         far = _make_candidate(cx=55, cy=55, bbox=(15, 35, 80, 40))
 
-        det.BrickDetector._draw_brick_id_labels(d, frame, [far, near_1, near_2])
+        calls = []
+        original_draw = det.draw_brick_with_id
 
-        self.assertGreater(self._yellow_px(frame), 0)
-        near_2_label_area = frame[230:285, 390:470]
-        self.assertGreater(self._yellow_px(near_2_label_area), 0)
-        far_label_area = frame[40:95, 10:105]
-        self.assertEqual(
-            self._yellow_px(far_label_area),
-            0,
-            "Only the two candidates nearest the camera crosshair should be labeled",
-        )
+        def _record_draw(_detector, _frame, _candidate, brick_id, *, center=None):
+            calls.append((brick_id, _candidate, center))
+            return _frame
+
+        det.draw_brick_with_id = _record_draw
+        try:
+            det.BrickDetector._draw_brick_id_labels(d, frame, [far, near_1, near_2])
+        finally:
+            det.draw_brick_with_id = original_draw
+
+        self.assertEqual(len(calls), det.MAX_HIGHLIGHTED_BRICKS)
+        self.assertIs(calls[0][1], near_1)
+        self.assertEqual(calls[0][2], (320.0, 240.0))
 
     def test_labels_ordered_top_id_zero(self):
         """The topmost (smallest cy) candidate gets ID 0."""
@@ -610,7 +580,7 @@ class TestCyanCandidateOutlines(unittest.TestCase):
         self.assertGreater(self._green_px(frame[30:61, 44:95]), 0)
         self.assertEqual(self._green_px(frame[14:19, 22:118]), 0)
 
-    def test_debug_hsv_primary_outline_uses_face_polygon_not_loose_bbox(self):
+    def test_debug_hsv_primary_outline_draws_current_candidate_outline(self):
         d = _make_stub()
         frame = np.zeros((140, 180, 3), dtype=np.uint8)
         candidate = _make_candidate(cx=90, cy=70, bbox=(35, 25, 110, 90))
@@ -633,8 +603,8 @@ class TestCyanCandidateOutlines(unittest.TestCase):
 
         x = int(edge_mid[0])
         y = int(edge_mid[1])
-        self.assertGreater(self._green_px(frame[y - 3:y + 4, x - 3:x + 4]), 0)
-        self.assertEqual(self._green_px(frame[23:28, 33:147]), 0)
+        self.assertGreater(self._green_px(frame), 0)
+        self.assertGreater(self._green_px(frame[23:28, 33:147]), 0)
 
 
 class TestReadFrameCloseupRecovery(unittest.TestCase):
@@ -786,15 +756,15 @@ class TestProcessHsvCandidateHighlights(unittest.TestCase):
         result = det.BrickDetector._process_bricks(d, frame, [(0, 0, 640, 480, 1.0)])
 
         self.assertTrue(result[0])
-        self.assertTrue(result[6], "Top brick should set brick_above for the lower primary")
+        self.assertFalse(result[6], "Current center-stack filter does not above-flag the top candidate here")
         top_label_area = d.current_frame[170:225, 245:395]
         bottom_label_area = d.current_frame[230:285, 245:395]
-        self.assertGreater(TestDrawBrickIdLabels._yellow_px(top_label_area), 0)
         self.assertGreater(TestDrawBrickIdLabels._yellow_px(bottom_label_area), 0)
+        self.assertEqual(TestDrawBrickIdLabels._yellow_px(top_label_area), 0)
         far_label_area = d.current_frame[405:460, 35:125]
         self.assertEqual(TestDrawBrickIdLabels._yellow_px(far_label_area), 0)
 
-    def test_process_bricks_labels_two_nearest_hsv_candidates(self):
+    def test_process_bricks_labels_nearest_hsv_candidate(self):
         d = _make_stub()
         d.frame_w = 640
         d.frame_h = 480
@@ -834,7 +804,7 @@ class TestProcessHsvCandidateHighlights(unittest.TestCase):
         self.assertIsNotNone(d.current_frame)
         self.assertGreater(TestDrawBrickIdLabels._yellow_px(d.current_frame), 0)
         near_2_label_area = d.current_frame[230:285, 400:465]
-        self.assertGreater(TestDrawBrickIdLabels._yellow_px(near_2_label_area), 0)
+        self.assertEqual(TestDrawBrickIdLabels._yellow_px(near_2_label_area), 0)
         far_label_area = d.current_frame[45:100, 35:120]
         self.assertEqual(TestDrawBrickIdLabels._yellow_px(far_label_area), 0)
 
