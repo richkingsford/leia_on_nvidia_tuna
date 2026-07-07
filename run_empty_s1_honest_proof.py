@@ -142,6 +142,55 @@ def _read_confident(vision: BrickDetector, timeout_s: float = 4.0) -> dict:
     return follow._wait_for_confident_brick(vision, timeout_s=float(timeout_s), sample_s=0.12)
 
 
+def _startup_settle_ready(startup_settle: dict | None) -> bool:
+    return bool(isinstance(startup_settle, dict) and startup_settle.get("ready"))
+
+
+def _reading_safe_for_pregame(reading: dict | None) -> bool:
+    if not isinstance(reading, dict) or not bool(reading.get("confident")):
+        return False
+    try:
+        dist_mm = float(reading.get("dist_mm"))
+    except (TypeError, ValueError):
+        return False
+    return bool(dist_mm <= follow._virtual_safety_max_dist_mm())
+
+
+def _print_pregame_visibility_ok(reading: dict, *, frames: str) -> None:
+    try:
+        dist_mm = float(reading.get("dist_mm"))
+        x_mm = float(reading.get("x_mm"))
+        y_mm = float(reading.get("y_mm"))
+        conf = float(reading.get("conf"))
+        print(
+            f"[FOLLOW] Pregame visibility ok: dist={dist_mm:.1f}mm "
+            f"x={x_mm:+.1f}mm y={y_mm:+.1f}mm conf={conf:.0f}% "
+            f"frames={frames}",
+            flush=True,
+        )
+    except (TypeError, ValueError):
+        print("[FOLLOW] Pregame visibility ok.", flush=True)
+
+
+def _read_step1_start_pose(vision: BrickDetector, startup_settle: dict | None) -> dict:
+    if _startup_settle_ready(startup_settle):
+        try:
+            reading = follow._read_brick_measurement(vision)
+        except Exception:
+            reading = {}
+        if _reading_safe_for_pregame(reading):
+            out = dict(reading)
+            out["startup_settle_fast_pregame"] = True
+            out["startup_settle_samples"] = int(startup_settle.get("samples", 0) or 0)
+            try:
+                out["startup_settle_elapsed_s"] = float(startup_settle.get("elapsed_s", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                pass
+            _print_pregame_visibility_ok(out, frames="1/1 after stable startup")
+            return out
+    return _read_confident(vision)
+
+
 def _wall_recovery_pose_ok(reading: dict | None, *, min_conf_pct: float = 50.0) -> bool:
     if not isinstance(reading, dict):
         return False
@@ -1060,11 +1109,16 @@ def run(args: argparse.Namespace) -> int:
             print(f"[VISION] Camera startup settle used full {settle_elapsed_s:.1f}s; continuing to pregame gate.", flush=True)
         base_robot = Robot()
         robot = frozen.MastFrozenRobot(base_robot)
+        startup_fast_pregame_available = bool(_startup_settle_ready(startup_settle))
 
         for trial in range(1, int(args.trials) + 1):
             if bool(args.skip_pre_reset):
                 site.update_summary(f"Iteration {attempt}: trial {trial}/{int(args.trials)} starting from current pose")
-                reset_reading = _read_confident(vision)
+                if startup_fast_pregame_available:
+                    reset_reading = _read_step1_start_pose(vision, startup_settle)
+                    startup_fast_pregame_available = False
+                else:
+                    reset_reading = _read_confident(vision)
                 reset_reason = "current_pose_no_pre_reset_by_request"
                 reset_ok = bool(reset_reading.get("confident"))
                 _capture(

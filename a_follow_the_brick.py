@@ -72,7 +72,7 @@ SPEED_SCORE        = 1    # slowest motor speed score
 PULSE_MS       = 200     # motor pulse duration — long enough for slow motor to engage
 MIN_WHEEL_ACT_DURATION_MS = 200
 LOOP_S         = 0.05    # control loop interval (20 Hz)
-WARMUP_READS   = 16      # reads to warm the camera pipeline before capture
+WARMUP_READS   = 8       # short camera warmup; adaptive startup settle verifies stability
 PREGAME_VISIBILITY_TIMEOUT_S = 12.0
 PREGAME_VISIBILITY_SAMPLE_S = 0.12
 
