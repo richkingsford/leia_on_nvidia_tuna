@@ -134,14 +134,14 @@
    "hold_sharp_ms": 400,
    "lost_confident_frames_before_stop": 10,
    "micro_x_deadband_mm": 1.0,
-   "poll_s": 0.055,
+   "poll_s": 0.035,
    "sharp_x_mm": 14.0,
-   "straight_ms": 300,
+   "straight_ms": 240,
    "sustained_jump_pause_s": 0.25,
    "turn_first_enabled": true,
-   "turn_phase_ms": 220,
+   "turn_phase_ms": 200,
    "turn_pwm": 133,
-   "turn_straight_phase_ms": 220
+   "turn_straight_phase_ms": 200
   },
   "dist_axis": {
    "win_target_mm": 63.882,

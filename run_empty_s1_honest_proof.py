@@ -210,14 +210,70 @@ def _read_wall_recovery_pose(
     return {}
 
 
-def _settle_vision_startup(vision: BrickDetector, seconds: float = 5.0) -> None:
+def _settle_vision_startup(
+    vision: BrickDetector,
+    seconds: float = 5.0,
+    *,
+    min_seconds: float = 1.0,
+    required_confident: int = 3,
+    stable_dist_span_mm: float = 35.0,
+    stable_x_span_mm: float = 20.0,
+) -> dict:
+    """Read through camera startup until the robot-camera stream is usable.
+
+    The old proof runner always burned a fixed 15s here.  That was safe, but it
+    made every no-reset Step 1 attempt feel glacial even when the OAK stream had
+    already settled.  Keep a bounded warmup, but exit as soon as we have a small
+    consecutive cluster of confident, stable, in-range robot-camera readings.
+    """
+    started = time.monotonic()
     deadline = time.monotonic() + float(seconds)
+    stable: list[dict] = []
+    best: dict = {}
     while time.monotonic() < deadline:
         try:
-            follow._read_brick_measurement(vision)
+            reading = follow._read_brick_measurement(vision)
         except Exception:
-            pass
-        time.sleep(0.15)
+            reading = {}
+        if isinstance(reading, dict):
+            best = reading
+            try:
+                dist_mm = float(reading.get("dist_mm"))
+                x_mm = float(reading.get("x_mm"))
+            except (TypeError, ValueError):
+                dist_mm = None
+                x_mm = None
+            if (
+                bool(reading.get("confident"))
+                and dist_mm is not None
+                and x_mm is not None
+                and dist_mm <= follow._virtual_safety_max_dist_mm()
+            ):
+                stable.append({"dist_mm": dist_mm, "x_mm": x_mm, "reading": reading})
+                stable = stable[-max(1, int(required_confident)) :]
+                dist_values = [float(row["dist_mm"]) for row in stable]
+                x_values = [float(row["x_mm"]) for row in stable]
+                if (
+                    time.monotonic() - started >= float(min_seconds)
+                    and len(stable) >= max(1, int(required_confident))
+                    and max(dist_values) - min(dist_values) <= float(stable_dist_span_mm)
+                    and max(x_values) - min(x_values) <= float(stable_x_span_mm)
+                ):
+                    return {
+                        "ready": True,
+                        "elapsed_s": time.monotonic() - started,
+                        "samples": len(stable),
+                        "reading": reading,
+                    }
+            else:
+                stable = []
+        time.sleep(0.10)
+    return {
+        "ready": False,
+        "elapsed_s": time.monotonic() - started,
+        "samples": len(stable),
+        "reading": best,
+    }
 
 
 def _safe_confident_read(vision: BrickDetector, timeout_s: float = 10.0) -> dict:
@@ -995,8 +1051,13 @@ def run(args: argparse.Namespace) -> int:
         if callable(set_tuning):
             set_tuning(**dict(follow.CROWN_PROFILE_TUNING))
         follow._warmup(vision)
-        print("[VISION] Settling camera startup for 15.0s...", flush=True)
-        _settle_vision_startup(vision, seconds=15.0)
+        print("[VISION] Settling camera startup until stable (max 6.0s)...", flush=True)
+        startup_settle = _settle_vision_startup(vision, seconds=6.0)
+        settle_elapsed_s = float(startup_settle.get("elapsed_s", 0.0) or 0.0)
+        if bool(startup_settle.get("ready")):
+            print(f"[VISION] Camera startup ready after {settle_elapsed_s:.1f}s.", flush=True)
+        else:
+            print(f"[VISION] Camera startup settle used full {settle_elapsed_s:.1f}s; continuing to pregame gate.", flush=True)
         base_robot = Robot()
         robot = frozen.MastFrozenRobot(base_robot)
 

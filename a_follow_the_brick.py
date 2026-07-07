@@ -444,15 +444,15 @@ DEFAULT_GAP_CRAWL_CONFIG = {
     "crawl_pwm": 115,
     "turn_pwm": 133,
     "turn_first_enabled": True,
-    "turn_phase_ms": 220,
-    "turn_straight_phase_ms": 220,
+    "turn_phase_ms": 200,
+    "turn_straight_phase_ms": 200,
     "both_ms": 200,
     "hold_gentle_ms": 200,
     "hold_sharp_ms": 400,
     "sharp_x_mm": 14.0,
-    "straight_ms": 300,
+    "straight_ms": 240,
     "micro_x_deadband_mm": 1.0,
-    "poll_s": 0.055,
+    "poll_s": 0.035,
     "command_overlap_ms": 100,
     "lost_confident_frames_before_stop": 10,
     "sustained_jump_pause_s": 0.25,
@@ -9967,6 +9967,70 @@ def _empty_step1_far_side_forward_dist_jump_ok(previous: dict | None, current: d
     )
 
 
+def _expected_motion_progress_jump_ok(
+    previous: dict | None,
+    current: dict | None,
+    cfg: dict,
+    expectation: dict | None,
+) -> bool:
+    """Allow bounded jump-guard deltas that match the command in progress.
+
+    Gap crawl reads while the robot is still moving.  A healthy forward crawl can
+    therefore produce a larger-than-frame-to-frame distance delta even though it
+    is exactly the progress requested.  Keep wrong-way and hard-jump protection:
+    this only accepts bounded deltas whose signed axes agree with the active
+    motion expectation and whose non-commanded axes stay inside normal limits.
+    """
+    if not isinstance(previous, dict) or not isinstance(current, dict) or not isinstance(expectation, dict):
+        return False
+    try:
+        signed_dist = float(current.get("dist_mm")) - float(previous.get("dist_mm"))
+        signed_x = float(current.get("x_mm")) - float(previous.get("x_mm"))
+        signed_y = float(current.get("y_mm")) - float(previous.get("y_mm"))
+    except (TypeError, ValueError):
+        return False
+
+    expected_dist_sign = int(expectation.get("dist_sign", 0) or 0)
+    expected_x_sign = int(expectation.get("x_sign", 0) or 0)
+    if expected_dist_sign == 0 and expected_x_sign == 0:
+        return False
+
+    wrong_way_limit = float(cfg.get("motion_wrong_way_jump_mm", 8.0) or 8.0)
+    max_expected_dist_jump = max(
+        float(cfg.get("max_dist_jump_mm", 0.0) or 0.0),
+        float(FORWARD_DIST_GHOST_FAR_SIDE_ACCEPT_MM),
+    )
+    max_x_jump = float(cfg.get("max_x_jump_mm", 0.0) or 0.0)
+    max_y_jump = float(cfg.get("max_y_jump_mm", 0.0) or 0.0)
+
+    if expected_dist_sign < 0:
+        if signed_dist > float(wrong_way_limit):
+            return False
+    elif expected_dist_sign > 0:
+        if signed_dist < -float(wrong_way_limit):
+            return False
+    elif abs(float(signed_dist)) > float(wrong_way_limit):
+        return False
+
+    if max_expected_dist_jump > 0.0 and abs(float(signed_dist)) > float(max_expected_dist_jump):
+        return False
+
+    if expected_x_sign < 0:
+        if signed_x > float(wrong_way_limit):
+            return False
+    elif expected_x_sign > 0:
+        if signed_x < -float(wrong_way_limit):
+            return False
+    elif abs(float(signed_x)) > float(wrong_way_limit):
+        return False
+
+    if max_x_jump > 0.0 and abs(float(signed_x)) > float(max_x_jump):
+        return False
+    if max_y_jump > 0.0 and abs(float(signed_y)) > float(max_y_jump):
+        return False
+    return True
+
+
 def _reading_jump_suspicious(previous: dict | None, current: dict | None, cfg: dict) -> tuple[bool, dict | None]:
     delta = _reading_jump_delta(previous, current)
     if delta is None:
@@ -10191,11 +10255,12 @@ def _temporal_filter_brick_reading(vision: BrickDetector, reading: dict, jump_gu
             except (TypeError, ValueError):
                 pass
         stable = getattr(vision, "_follow_last_stable_reading", None)
+        motion_expectation = getattr(vision, "_follow_motion_expectation", None) if bool(jump_guard) else None
         motion_detail = _reading_motion_inconsistent(
             stable,
             reading,
             jump_cfg,
-            getattr(vision, "_follow_motion_expectation", None),
+            motion_expectation,
         ) if bool(jump_guard) else None
         if motion_detail is not None:
             rejected = _ghost_jump_rejected_reading(
@@ -10214,6 +10279,13 @@ def _temporal_filter_brick_reading(vision: BrickDetector, reading: dict, jump_gu
             if bool(jump_guard) and bool(jump_cfg.get("enabled"))
             else (False, None)
         )
+        if bool(suspicious) and _expected_motion_progress_jump_ok(stable, reading, jump_cfg, motion_expectation):
+            reading = dict(reading)
+            reading["expected_motion_progress_jump_accepted"] = True
+            if delta is not None:
+                reading["expected_motion_progress_jump_delta"] = dict(delta)
+            suspicious = False
+            delta = None
         if bool(suspicious) and _empty_step1_far_side_forward_dist_jump_ok(stable, reading):
             reading = dict(reading)
             reading["far_side_dist_jump_accepted"] = True
