@@ -310,6 +310,9 @@ DEFAULT_STEP2_CONFIG = {
     "seat_drive_duration_ms": 0,
     "post_win_forward_creep_ms": 0,
     "post_win_forward_creep_pwm": 103,
+    "post_win_forward_creep_read_after": True,
+    "pre_place_forward_creep_ms": 0,
+    "pre_place_forward_creep_pwm": 103,
     "post_seat_pause_s": 0.25,
     "step_timeout_s": 15.0,
     "recovery_creep_enabled": True,
@@ -362,6 +365,7 @@ DEFAULT_STEP3_CONFIG = {
     "lift_pulse_ms": 250,
     "fixed_lift_only": False,
     "fixed_lift_duration_ms": 1700,
+    "fixed_lift_read_after": True,
     "lift_settle_s": 0.12,
     "max_lift_attempts": 12,
     "step_timeout_s": 15.0,
@@ -389,8 +393,19 @@ DEFAULT_STEP3_RETREAT_CONFIG = {
     "stop_when_dist_at_or_beyond": True,
     "holding_blind_reset_enabled": True,
     "holding_blind_back_crawl_ms": 1500,
-    "holding_blind_turn_ms": 1500,
+    "post_lift_back_crawl_ms": 1500,
+    "post_lift_turn_ms": 2160,
+    "holding_blind_turn_ms": 1800,
     "holding_blind_turn_pause_ms": 500,
+}
+DEFAULT_EMPTY_STEP0_CONFIG = {
+    "enabled": False,
+    "nickname": "2 blind turns",
+    "turn_ms": 1500,
+    "pause_ms": 0,
+    "strength": "superstrong",
+    "first_drive_mode": "backward",
+    "mirror_drive_mode": "forward",
 }
 CURRENT_GAME_PROFILE = "empty"
 HOLDING_TARGET_MASK_Y_SHIFT_PX = 100
@@ -446,6 +461,7 @@ DEFAULT_GAP_CRAWL_CONFIG = {
     "turn_first_enabled": True,
     "turn_phase_ms": 200,
     "turn_straight_phase_ms": 200,
+    "turn_min_seg_ms": 220,
     "both_ms": 200,
     "hold_gentle_ms": 200,
     "hold_sharp_ms": 400,
@@ -453,8 +469,9 @@ DEFAULT_GAP_CRAWL_CONFIG = {
     "straight_ms": 240,
     "micro_x_deadband_mm": 1.0,
     "poll_s": 0.035,
-    "command_overlap_ms": 100,
+    "command_overlap_ms": 70,
     "lost_confident_frames_before_stop": 10,
+    "lost_confident_grace_s": 3.0,
     "sustained_jump_pause_s": 0.25,
 }
 DEFAULT_FOLLOW_Y_AXIS_CONFIG = {
@@ -755,6 +772,32 @@ def _default_step2_like_config() -> dict:
     }
 
 
+def _apply_step0_config(raw_cfg: dict | None, step0_cfg: dict) -> dict:
+    raw = raw_cfg if isinstance(raw_cfg, dict) else {}
+    if "enabled" in raw:
+        step0_cfg["enabled"] = bool(raw.get("enabled"))
+    if "nickname" in raw:
+        step0_cfg["nickname"] = str(raw.get("nickname") or DEFAULT_EMPTY_STEP0_CONFIG["nickname"]).strip()
+    for key in ("turn_ms", "pause_ms"):
+        if key in raw:
+            step0_cfg[key] = _coerce_int(
+                raw.get(key),
+                step0_cfg.get(key, DEFAULT_EMPTY_STEP0_CONFIG[key]),
+                minimum=0 if key == "pause_ms" else MIN_WHEEL_ACT_DURATION_MS,
+                maximum=5000,
+            )
+    if "strength" in raw:
+        strength = str(raw.get("strength") or DEFAULT_EMPTY_STEP0_CONFIG["strength"]).strip().lower()
+        if strength in {"gentle", "medium", "strong", "superstrong"}:
+            step0_cfg["strength"] = strength
+    for key in ("first_drive_mode", "mirror_drive_mode"):
+        if key in raw:
+            drive_mode = str(raw.get(key) or DEFAULT_EMPTY_STEP0_CONFIG[key]).strip().lower()
+            if drive_mode in {"forward", "backward"}:
+                step0_cfg[key] = drive_mode
+    return step0_cfg
+
+
 def _apply_step2_like_config(raw_cfg: dict | None, step_cfg: dict) -> dict:
     raw = raw_cfg if isinstance(raw_cfg, dict) else {}
     if "kind" in raw:
@@ -818,12 +861,47 @@ def _apply_step2_like_config(raw_cfg: dict | None, step_cfg: dict) -> dict:
             minimum=1,
             maximum=255,
         )
+    if "post_win_forward_creep_read_after" in raw:
+        step_cfg["post_win_forward_creep_read_after"] = bool(raw.get("post_win_forward_creep_read_after"))
+    if "pre_place_forward_creep_ms" in raw:
+        step_cfg["pre_place_forward_creep_ms"] = _coerce_int(
+            raw.get("pre_place_forward_creep_ms"),
+            step_cfg.get("pre_place_forward_creep_ms", DEFAULT_STEP2_CONFIG["pre_place_forward_creep_ms"]),
+            minimum=0,
+            maximum=2000,
+        )
+    if "pre_place_forward_creep_pwm" in raw:
+        step_cfg["pre_place_forward_creep_pwm"] = _coerce_int(
+            raw.get("pre_place_forward_creep_pwm"),
+            step_cfg.get(
+                "pre_place_forward_creep_pwm",
+                step_cfg.get("seat_drive_pwm", DEFAULT_STEP2_CONFIG["pre_place_forward_creep_pwm"]),
+            ),
+            minimum=1,
+            maximum=255,
+        )
     for key, maximum in (("max_duration_ms", 30000), ("chunk_ms", 1000)):
         if key in raw:
             step_cfg[key] = _coerce_int(
                 raw.get(key),
                 step_cfg.get(key, DEFAULT_STEP3_RETREAT_CONFIG[key]),
                 minimum=1,
+                maximum=maximum,
+            )
+    if "holding_blind_reset_enabled" in raw:
+        step_cfg["holding_blind_reset_enabled"] = bool(raw.get("holding_blind_reset_enabled"))
+    for key, maximum in (
+        ("holding_blind_back_crawl_ms", 5000),
+        ("post_lift_back_crawl_ms", 5000),
+        ("post_lift_turn_ms", 5000),
+        ("holding_blind_turn_ms", 5000),
+        ("holding_blind_turn_pause_ms", 5000),
+    ):
+        if key in raw:
+            step_cfg[key] = _coerce_int(
+                raw.get(key),
+                step_cfg.get(key, DEFAULT_STEP3_RETREAT_CONFIG[key]),
+                minimum=0 if key == "holding_blind_turn_pause_ms" else MIN_WHEEL_ACT_DURATION_MS,
                 maximum=maximum,
             )
     if "settle_s" in raw:
@@ -1371,6 +1449,7 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         "dist_axis": dict(DEFAULT_FOLLOW_DIST_AXIS_CONFIG),
         "x_axis": dict(DEFAULT_FOLLOW_X_AXIS_CONFIG),
         "y_axis": dict(DEFAULT_FOLLOW_Y_AXIS_CONFIG),
+        "step0": dict(DEFAULT_EMPTY_STEP0_CONFIG),
         "step2": _default_step2_like_config(),
         "step3": _default_step2_like_config(),
         "step4": {
@@ -1434,6 +1513,7 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         "turn_pwm",
         "turn_phase_ms",
         "turn_straight_phase_ms",
+        "turn_min_seg_ms",
         "both_ms",
         "hold_gentle_ms",
         "hold_sharp_ms",
@@ -1462,6 +1542,7 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         ("sharp_x_mm", 500.0),
         ("micro_x_deadband_mm", 500.0),
         ("poll_s", 2.0),
+        ("lost_confident_grace_s", 10.0),
         ("sustained_jump_pause_s", 10.0),
     ):
         cfg["gap_crawl"][key] = _coerce_float(
@@ -2367,6 +2448,12 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
             DEFAULT_STEP3_CONFIG["fixed_lift_only"],
         )
     )
+    step4["fixed_lift_read_after"] = bool(
+        raw_step4_lift.get(
+            "fixed_lift_read_after",
+            DEFAULT_STEP3_CONFIG["fixed_lift_read_after"],
+        )
+    )
     step4["fixed_lift_duration_ms"] = _coerce_int(
         raw_step4_lift.get("fixed_lift_duration_ms"),
         DEFAULT_STEP3_CONFIG["fixed_lift_duration_ms"],
@@ -2441,8 +2528,13 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         DEFAULT_STEP3_CONFIG["targets"]["y_tol_mm"],
         minimum=0.0,
     )
+    _apply_step0_config(raw.get("step0") if isinstance(raw.get("step0"), dict) else {}, cfg["step0"])
     raw_profiles = raw.get("game_profiles") if isinstance(raw.get("game_profiles"), dict) else {}
     raw_profile = raw_profiles.get(_active_game_profile()) if isinstance(raw_profiles.get(_active_game_profile()), dict) else {}
+    _apply_step0_config(
+        raw_profile.get("step0") if isinstance(raw_profile.get("step0"), dict) else {},
+        cfg["step0"],
+    )
     cfg["step2_suspended"] = bool(raw_profile.get("step2_suspended", cfg.get("step2_suspended", False)))
     cfg["complete_after_step2"] = bool(raw_profile.get("complete_after_step2", cfg.get("complete_after_step2", False)))
     raw_step1_model = raw_profile.get("step1_decision_model", raw.get("step1_decision_model"))
@@ -2622,6 +2714,27 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
             minimum=1,
             maximum=255,
         )
+    if "post_win_forward_creep_read_after" in raw_profile_step2:
+        step2["post_win_forward_creep_read_after"] = bool(
+            raw_profile_step2.get("post_win_forward_creep_read_after")
+        )
+    if "pre_place_forward_creep_ms" in raw_profile_step2:
+        step2["pre_place_forward_creep_ms"] = _coerce_int(
+            raw_profile_step2.get("pre_place_forward_creep_ms"),
+            step2.get("pre_place_forward_creep_ms", DEFAULT_STEP2_CONFIG["pre_place_forward_creep_ms"]),
+            minimum=0,
+            maximum=2000,
+        )
+    if "pre_place_forward_creep_pwm" in raw_profile_step2:
+        step2["pre_place_forward_creep_pwm"] = _coerce_int(
+            raw_profile_step2.get("pre_place_forward_creep_pwm"),
+            step2.get(
+                "pre_place_forward_creep_pwm",
+                step2.get("seat_drive_pwm", DEFAULT_STEP2_CONFIG["pre_place_forward_creep_pwm"]),
+            ),
+            minimum=1,
+            maximum=255,
+        )
     for key in (
         "precision_max_attempts",
         "post_precision_recovery_cycles",
@@ -2752,6 +2865,8 @@ def _load_follow_motion_config(path: Path | None = None) -> dict:
         step4["no_visibility_fallback_enabled"] = bool(raw_profile_step4_lift.get("no_visibility_fallback_enabled"))
     if "fixed_lift_only" in raw_profile_step4_lift:
         step4["fixed_lift_only"] = bool(raw_profile_step4_lift.get("fixed_lift_only"))
+    if "fixed_lift_read_after" in raw_profile_step4_lift:
+        step4["fixed_lift_read_after"] = bool(raw_profile_step4_lift.get("fixed_lift_read_after"))
     if "initial_lift_before_gate" in raw_profile_step4_lift:
         step4["initial_lift_before_gate"] = bool(raw_profile_step4_lift.get("initial_lift_before_gate"))
     if "no_visibility_fallback_mast_cmd" in raw_profile_step4_lift:
@@ -5022,6 +5137,12 @@ def _follow_step2_config() -> dict:
     return step2 if isinstance(step2, dict) else {}
 
 
+def _follow_step0_config() -> dict:
+    cfg = _follow_motion_config()
+    step0 = cfg.get("step0") if isinstance(cfg.get("step0"), dict) else {}
+    return step0 if isinstance(step0, dict) else {}
+
+
 def _game_complete_after_step2() -> bool:
     return bool(_follow_motion_config().get("complete_after_step2", False))
 
@@ -5287,6 +5408,18 @@ def _run_step3_lift_sequence(vision: BrickDetector, robot: Robot) -> dict:
         send_result = robot.send_command_pwm(lift_cmd, lift_pwm, duration_ms=pulse_ms)
         time.sleep(float(pulse_ms) / 1000.0 + float(settle_s))
         _stop_robot(robot)
+        if not bool(step3.get("fixed_lift_read_after", DEFAULT_STEP3_CONFIG["fixed_lift_read_after"])):
+            return {
+                "success": True,
+                "target_met": True,
+                "holding": True,
+                "reason": "step4_fixed_lift_only_no_read_after",
+                "reading": before,
+                "attempts": 1,
+                "send_result": send_result,
+                "duration_ms": int(pulse_ms),
+                "mast_duration_ms": int(pulse_ms),
+            }
         _reset_follow_reading_history(vision)
         try:
             after = _read_brick_measurement(vision)
@@ -7097,6 +7230,54 @@ def _run_step2_seat_sequence(
     )
     deadline = _deadline_from_timeout_s(step_timeout_s)
     before = initial_reading if isinstance(initial_reading, dict) else _read_brick_measurement(vision)
+    if (
+        bool(step2.get("blind_mast_only", False))
+        and str(_active_game_profile() or "").strip().lower() == "holding"
+        and label == "step2"
+    ):
+        nudged_reading, nudge_result = _run_holding_step1_forward_nudge(
+            vision,
+            robot,
+            before,
+            step2,
+        )
+        if _send_result_blocked(nudge_result):
+            return {
+                "success": False,
+                "target_met": False,
+                "reason": "holding_step2_pre_lower_forward_nudge_blocked",
+                "before": before,
+                "reading": nudged_reading if isinstance(nudged_reading, dict) else before,
+                "send_result": nudge_result,
+                "pre_place_forward_creep_result": nudge_result,
+                "pre_place_forward_creep_ms": _coerce_int(
+                    step2.get("pre_place_forward_creep_ms"),
+                    DEFAULT_STEP2_CONFIG["pre_place_forward_creep_ms"],
+                    minimum=0,
+                    maximum=2000,
+                ),
+                "mast_duration_ms": 0,
+                "drive_duration_ms": 0,
+                "creep_attempts": 0,
+                "visibility_recovery_creeps": 0,
+                "precision_counts": {"pre_lower_forward_nudge_blocked": 1},
+                "closeness": None,
+            }
+        lower_result = _run_holding_blind_lower_sequence(
+            robot,
+            reading=nudged_reading if isinstance(nudged_reading, dict) else before,
+            step_cfg=step2,
+            label=label,
+        )
+        if isinstance(lower_result, dict):
+            lower_result["pre_place_forward_creep_result"] = nudge_result
+            lower_result["pre_place_forward_creep_ms"] = _coerce_int(
+                step2.get("pre_place_forward_creep_ms"),
+                DEFAULT_STEP2_CONFIG["pre_place_forward_creep_ms"],
+                minimum=0,
+                maximum=2000,
+            ) if nudge_result is not None else 0
+        return lower_result
     if not bool(before.get("confident")):
         before = _wait_for_visibility_recovery(
             vision,
@@ -7269,7 +7450,7 @@ def _run_step2_seat_sequence(
                 step2.get("post_win_forward_creep_ms"),
                 DEFAULT_STEP2_CONFIG["post_win_forward_creep_ms"],
                 minimum=0,
-                maximum=1000,
+                maximum=2000,
             ) if post_creep_result is not None else 0,
         }
     initial_xz_lock_reading: dict | None = None
@@ -7498,7 +7679,7 @@ def _run_step2_seat_sequence(
                     step2.get("post_win_forward_creep_ms"),
                     DEFAULT_STEP2_CONFIG["post_win_forward_creep_ms"],
                     minimum=0,
-                    maximum=1000,
+                    maximum=2000,
                 ) if post_creep_result is not None else 0,
             }
         return {
@@ -7668,7 +7849,7 @@ def _run_step2_seat_sequence(
             step2.get("post_win_forward_creep_ms"),
             DEFAULT_STEP2_CONFIG["post_win_forward_creep_ms"],
             minimum=0,
-            maximum=1000,
+            maximum=2000,
         ) if post_creep_result is not None else 0,
     }
 
@@ -7680,13 +7861,14 @@ def _run_post_win_forward_creep(
     step_cfg: dict | None,
     *,
     label: str,
+    reason_text: str = "after confirmed target",
 ) -> tuple[dict | None, dict | None]:
     cfg = step_cfg if isinstance(step_cfg, dict) else {}
     duration_ms = _coerce_int(
         cfg.get("post_win_forward_creep_ms"),
         DEFAULT_STEP2_CONFIG["post_win_forward_creep_ms"],
         minimum=0,
-        maximum=1000,
+        maximum=2000,
     )
     if duration_ms <= 0:
         return reading, None
@@ -7704,7 +7886,7 @@ def _run_post_win_forward_creep(
         ),
     )
     print(
-        f"[{label.upper()}] Post-win forward creep: {duration_ms}ms pwm={pwm} after confirmed target.",
+        f"[{label.upper()}] Post-win forward creep: {duration_ms}ms pwm={pwm} {reason_text}.",
         flush=True,
     )
     send_result = guarded_send_command_pwm(
@@ -7720,9 +7902,61 @@ def _run_post_win_forward_creep(
         return reading, send_result
     time.sleep(float(duration_ms) / 1000.0)
     _stop_robot(robot)
+    if not bool(cfg.get("post_win_forward_creep_read_after", DEFAULT_STEP2_CONFIG["post_win_forward_creep_read_after"])):
+        return reading, send_result
     _reset_follow_reading_history(vision)
     after = _read_brick_measurement(vision)
     return after, send_result
+
+
+def _run_holding_step1_forward_nudge(
+    vision: BrickDetector,
+    robot: Robot,
+    reading: dict | None = None,
+    step_cfg: dict | None = None,
+) -> tuple[dict | None, dict | None]:
+    """Blind holding-S1 nudge that must happen before the holding place/drop step."""
+    cfg = step_cfg if isinstance(step_cfg, dict) else _follow_step2_config()
+    duration_ms = _coerce_int(
+        cfg.get("pre_place_forward_creep_ms"),
+        DEFAULT_STEP2_CONFIG["pre_place_forward_creep_ms"],
+        minimum=0,
+        maximum=2000,
+    )
+    if duration_ms <= 0:
+        return reading, None
+    duration_ms = max(int(MIN_WHEEL_ACT_DURATION_MS), int(duration_ms))
+    pwm = _clamp_to_approved_straight_drive_pwm(
+        "f",
+        cfg.get(
+            "pre_place_forward_creep_pwm",
+            cfg.get("seat_drive_pwm", DEFAULT_STEP2_CONFIG["pre_place_forward_creep_pwm"]),
+        ),
+    )
+    safe_reading = {
+        "visible": True,
+        "confident": True,
+        "conf": 100.0,
+        "reason": "blind_reset_no_start_visibility",
+    }
+    print(
+        f"[HOLDING S1] Blind forward nudge before place: {duration_ms}ms pwm={pwm}.",
+        flush=True,
+    )
+    send_result = guarded_send_command_pwm(
+        robot,
+        "f",
+        pwm,
+        duration_ms=duration_ms,
+        reading=safe_reading,
+        context="reset_holding_step1_pre_place_forward_creep",
+    )
+    if isinstance(send_result, dict) and bool(send_result.get("blocked")):
+        _stop_robot(robot)
+        return reading, send_result
+    time.sleep(float(duration_ms) / 1000.0)
+    _stop_robot(robot)
+    return safe_reading, send_result
 
 
 def _run_step3_seat_sequence(vision: BrickDetector, robot: Robot) -> dict:
@@ -7757,7 +7991,7 @@ def _run_step3_seat_sequence(vision: BrickDetector, robot: Robot) -> dict:
                 step3_cfg.get("post_win_forward_creep_ms"),
                 DEFAULT_STEP2_CONFIG["post_win_forward_creep_ms"],
                 minimum=0,
-                maximum=1000,
+                maximum=2000,
             )
             if isinstance(after_creep, dict):
                 result["reading"] = after_creep
@@ -7950,6 +8184,378 @@ def _run_holding_blind_small_reset_sequence(vision: BrickDetector, robot: Robot,
         "duration_ms": int(back_crawl_ms) + (2 * int(turn_ms)) + int(pause_ms),
         "drive_duration_ms": int(back_crawl_ms) + (2 * int(turn_ms)),
         "attempts": 3,
+    }
+
+
+def _run_post_lift_holding_transition_reset(
+    vision: BrickDetector,
+    robot: Robot,
+    step3: dict | None = None,
+) -> dict:
+    """Back away after pickup, then make a full random turn and its mirror."""
+    cfg = step3 if isinstance(step3, dict) else _follow_step3_config()
+    back_crawl_ms = _coerce_int(
+        (cfg or {}).get("post_lift_back_crawl_ms"),
+        DEFAULT_STEP3_RETREAT_CONFIG["post_lift_back_crawl_ms"],
+        minimum=MIN_WHEEL_ACT_DURATION_MS,
+        maximum=5000,
+    )
+    turn_ms = _coerce_int(
+        (cfg or {}).get("post_lift_turn_ms"),
+        DEFAULT_STEP3_RETREAT_CONFIG["post_lift_turn_ms"],
+        minimum=MIN_WHEEL_ACT_DURATION_MS,
+        maximum=5000,
+    )
+    pause_ms = _coerce_int(
+        (cfg or {}).get("holding_blind_turn_pause_ms"),
+        DEFAULT_STEP3_RETREAT_CONFIG["holding_blind_turn_pause_ms"],
+        minimum=0,
+        maximum=5000,
+    )
+    turn_cmd = random.choice(("l", "r"))
+    mirror_turn_cmd = "l" if turn_cmd == "r" else "r"
+    blind_reading = {
+        "visible": True,
+        "confident": True,
+        "conf": 100.0,
+        "reason": "blind_reset_no_start_visibility",
+    }
+    results = []
+    print(
+        "[E2E] Holding transition reset: "
+        f"straight back {int(back_crawl_ms)}ms, backward superstrong away turn "
+        f"{turn_cmd.upper()} {int(turn_ms)}ms, "
+        f"pause {int(pause_ms)}ms, forward mirror {mirror_turn_cmd.upper()} {int(turn_ms)}ms.",
+        flush=True,
+    )
+    back_pwm = _approved_straight_drive_pwm("b") or _scaled_pwm_for_cmd(
+        "b",
+        DEFAULT_STEP3_RETREAT_CONFIG["drive_pwm"],
+    )
+    back_result = guarded_send_command_pwm(
+        robot,
+        "b",
+        int(back_pwm),
+        duration_ms=int(back_crawl_ms),
+        reading=blind_reading,
+        context="reset_post_lift_holding_transition_back_crawl",
+    )
+    results.append({"phase": "back_crawl", "result": back_result})
+    if isinstance(back_result, dict) and bool(back_result.get("blocked")):
+        _stop_robot(robot)
+        return {
+            "success": False,
+            "target_met": False,
+            "soft_reset_complete": False,
+            "reason": f"post_lift_holding_transition_blocked:{back_result.get('reason')}",
+            "send_result": back_result,
+            "phase_results": results,
+            "duration_ms": 0,
+            "drive_duration_ms": 0,
+        }
+    time.sleep(float(back_crawl_ms) / 1000.0)
+    _stop_robot(robot)
+
+    away_result = _send_duty_curve_sequence(
+        robot,
+        "b",
+        drive_mode="backward",
+        turn_cmd=turn_cmd,
+        strength="superstrong",
+        duration_ms=int(turn_ms),
+        reading=blind_reading,
+        context="reset_post_lift_holding_transition_away_turn",
+        allow_long_duration=True,
+    )
+    results.append({"phase": "away_turn", "turn_cmd": turn_cmd, "result": away_result})
+    if isinstance(away_result, dict) and bool(away_result.get("blocked")):
+        _stop_robot(robot)
+        return {
+            "success": False,
+            "target_met": False,
+            "soft_reset_complete": False,
+            "reason": f"post_lift_holding_transition_blocked:{away_result.get('reason')}",
+            "send_result": away_result,
+            "phase_results": results,
+            "duration_ms": int(back_crawl_ms),
+            "drive_duration_ms": int(back_crawl_ms),
+        }
+    _stop_robot(robot)
+    if int(pause_ms) > 0:
+        time.sleep(float(pause_ms) / 1000.0)
+    mirror_result = _send_duty_curve_sequence(
+        robot,
+        "f",
+        drive_mode="forward",
+        turn_cmd=mirror_turn_cmd,
+        strength="superstrong",
+        duration_ms=int(turn_ms),
+        reading=blind_reading,
+        context="reset_post_lift_holding_transition_mirror_turn",
+        allow_long_duration=True,
+    )
+    results.append({"phase": "mirror_turn", "turn_cmd": mirror_turn_cmd, "result": mirror_result})
+    if isinstance(mirror_result, dict) and bool(mirror_result.get("blocked")):
+        _stop_robot(robot)
+        return {
+            "success": False,
+            "target_met": False,
+            "soft_reset_complete": False,
+            "reason": f"post_lift_holding_transition_blocked:{mirror_result.get('reason')}",
+            "send_result": mirror_result,
+            "phase_results": results,
+            "duration_ms": int(back_crawl_ms) + int(turn_ms) + int(pause_ms),
+            "drive_duration_ms": int(back_crawl_ms) + int(turn_ms),
+        }
+    _stop_robot(robot)
+    return {
+        "success": True,
+        "target_met": False,
+        "soft_reset_complete": True,
+        "reason": "post_lift_holding_transition_mirrored_turn_complete",
+        "reading": blind_reading,
+        "send_result": mirror_result,
+        "phase_results": results,
+        "turn_cmd": turn_cmd,
+        "mirror_turn_cmd": mirror_turn_cmd,
+        "back_crawl_ms": int(back_crawl_ms),
+        "duration_ms": int(back_crawl_ms) + (2 * int(turn_ms)) + int(pause_ms),
+        "drive_duration_ms": int(back_crawl_ms) + (2 * int(turn_ms)),
+    }
+
+
+def _drive_mode_to_cmd(drive_mode: str) -> str:
+    return "b" if str(drive_mode or "").strip().lower() == "backward" else "f"
+
+
+def _run_empty_step0_two_blind_turns(
+    vision: BrickDetector,
+    robot: Robot,
+    step0: dict | None = None,
+) -> dict:
+    """Empty Step 0: a blind random turn followed by its mirror turn."""
+    cfg = step0 if isinstance(step0, dict) else _follow_step0_config()
+    if not bool((cfg or {}).get("enabled", False)):
+        return {
+            "success": True,
+            "target_met": True,
+            "skipped": True,
+            "reason": "empty_step0_disabled",
+        }
+    nickname = str((cfg or {}).get("nickname") or DEFAULT_EMPTY_STEP0_CONFIG["nickname"]).strip()
+    turn_ms = _coerce_int(
+        (cfg or {}).get("turn_ms"),
+        DEFAULT_EMPTY_STEP0_CONFIG["turn_ms"],
+        minimum=MIN_WHEEL_ACT_DURATION_MS,
+        maximum=5000,
+    )
+    pause_ms = _coerce_int(
+        (cfg or {}).get("pause_ms"),
+        DEFAULT_EMPTY_STEP0_CONFIG["pause_ms"],
+        minimum=0,
+        maximum=5000,
+    )
+    strength = str((cfg or {}).get("strength") or DEFAULT_EMPTY_STEP0_CONFIG["strength"]).strip().lower()
+    if strength not in {"gentle", "medium", "strong", "superstrong"}:
+        strength = DEFAULT_EMPTY_STEP0_CONFIG["strength"]
+    first_drive_mode = str(
+        (cfg or {}).get("first_drive_mode") or DEFAULT_EMPTY_STEP0_CONFIG["first_drive_mode"]
+    ).strip().lower()
+    if first_drive_mode not in {"forward", "backward"}:
+        first_drive_mode = DEFAULT_EMPTY_STEP0_CONFIG["first_drive_mode"]
+    mirror_drive_mode = str(
+        (cfg or {}).get("mirror_drive_mode") or DEFAULT_EMPTY_STEP0_CONFIG["mirror_drive_mode"]
+    ).strip().lower()
+    if mirror_drive_mode not in {"forward", "backward"}:
+        mirror_drive_mode = DEFAULT_EMPTY_STEP0_CONFIG["mirror_drive_mode"]
+    turn_cmd = random.choice(("l", "r"))
+    mirror_turn_cmd = "l" if turn_cmd == "r" else "r"
+    blind_reading = {
+        "visible": True,
+        "confident": True,
+        "conf": 100.0,
+        "reason": "blind_reset_no_start_visibility",
+    }
+    results = []
+    print(
+        f"[STEP0] {nickname}: {first_drive_mode} {strength} {turn_cmd.upper()} "
+        f"{int(turn_ms)}ms, pause {int(pause_ms)}ms, {mirror_drive_mode} mirror "
+        f"{mirror_turn_cmd.upper()} {int(turn_ms)}ms.",
+        flush=True,
+    )
+    first_result = _send_duty_curve_sequence(
+        robot,
+        _drive_mode_to_cmd(first_drive_mode),
+        drive_mode=first_drive_mode,
+        turn_cmd=turn_cmd,
+        strength=strength,
+        duration_ms=int(turn_ms),
+        reading=blind_reading,
+        context="reset_empty_step0_first_blind_turn",
+        allow_long_duration=True,
+    )
+    results.append({"phase": "first_turn", "turn_cmd": turn_cmd, "result": first_result})
+    if isinstance(first_result, dict) and bool(first_result.get("blocked")):
+        _stop_robot(robot)
+        return {
+            "success": False,
+            "target_met": False,
+            "reason": f"empty_step0_blocked:{first_result.get('reason')}",
+            "send_result": first_result,
+            "phase_results": results,
+            "duration_ms": 0,
+            "drive_duration_ms": 0,
+        }
+    _stop_robot(robot)
+    if int(pause_ms) > 0:
+        time.sleep(float(pause_ms) / 1000.0)
+    mirror_result = _send_duty_curve_sequence(
+        robot,
+        _drive_mode_to_cmd(mirror_drive_mode),
+        drive_mode=mirror_drive_mode,
+        turn_cmd=mirror_turn_cmd,
+        strength=strength,
+        duration_ms=int(turn_ms),
+        reading=blind_reading,
+        context="reset_empty_step0_mirror_blind_turn",
+        allow_long_duration=True,
+    )
+    results.append({"phase": "mirror_turn", "turn_cmd": mirror_turn_cmd, "result": mirror_result})
+    if isinstance(mirror_result, dict) and bool(mirror_result.get("blocked")):
+        _stop_robot(robot)
+        return {
+            "success": False,
+            "target_met": False,
+            "reason": f"empty_step0_blocked:{mirror_result.get('reason')}",
+            "send_result": mirror_result,
+            "phase_results": results,
+            "duration_ms": int(turn_ms) + int(pause_ms),
+            "drive_duration_ms": int(turn_ms),
+        }
+    _stop_robot(robot)
+    return {
+        "success": True,
+        "target_met": True,
+        "reason": "empty_step0_two_blind_turns_complete",
+        "nickname": nickname,
+        "reading": blind_reading,
+        "send_result": mirror_result,
+        "phase_results": results,
+        "turn_cmd": turn_cmd,
+        "mirror_turn_cmd": mirror_turn_cmd,
+        "duration_ms": (2 * int(turn_ms)) + int(pause_ms),
+        "drive_duration_ms": 2 * int(turn_ms),
+    }
+
+
+def _run_e2e_pre_empty_step1_right_visibility_crawl(
+    vision: BrickDetector,
+    robot: Robot,
+) -> dict:
+    """Blind right-crawl recovery between Empty Step 0 and Empty Step 1."""
+    reading = _read_brick_measurement(vision)
+    if bool(reading.get("confident")):
+        return {
+            "success": True,
+            "reason": "empty_step1_pre_visibility_already_confident",
+            "reading": reading,
+            "attempts": 0,
+        }
+
+    crawl_cfg = _gap_crawl_config()
+    duration_ms = _coerce_int(
+        crawl_cfg.get("turn_min_seg_ms"),
+        DEFAULT_GAP_CRAWL_CONFIG["turn_min_seg_ms"],
+        minimum=MIN_WHEEL_ACT_DURATION_MS,
+        maximum=500,
+    )
+    turn_pwm = max(
+        int(crawl_cfg.get("turn_pwm", DEFAULT_GAP_CRAWL_CONFIG["turn_pwm"])),
+        int(_pwm_floor_for_cmd("r")),
+    )
+    max_duration_s = 5.0
+    poll_s = float(_gap_crawl_config().get("poll_s", DEFAULT_GAP_CRAWL_CONFIG["poll_s"]))
+    command_overlap_ms = _coerce_int(
+        crawl_cfg.get("command_overlap_ms"),
+        DEFAULT_GAP_CRAWL_CONFIG["command_overlap_ms"],
+        minimum=0,
+        maximum=200,
+    )
+    refresh_s = max(0.05, (float(duration_ms) - float(command_overlap_ms)) / 1000.0)
+    blind_reading = {
+        "visible": True,
+        "confident": True,
+        "conf": 100.0,
+        "reason": "blind_reset_no_start_visibility",
+    }
+    print(
+        "[E2E] Brick not visible before Empty Step 1; steady right crawl "
+        f"with camera polling, max {max_duration_s:.1f}s.",
+        flush=True,
+    )
+    last_send = None
+    started_at = time.monotonic()
+    deadline = float(started_at) + float(max_duration_s)
+    next_refresh_at = float(started_at)
+    camera_reads = 0
+    refresh_count = 0
+    while time.monotonic() < float(deadline):
+        now = time.monotonic()
+        if now >= float(next_refresh_at):
+            actions = _gap_crawl_one_wheel_turn_actions("r", turn_pwm, duration_ms)
+            last_send = guarded_send_custom_actions_pwm(
+                robot,
+                "r",
+                actions,
+                duration_ms=duration_ms,
+                reading=blind_reading,
+                context="reset_e2e_pre_empty_step1_right_visibility_crawl",
+            )
+            refresh_count += 1
+            if _send_result_blocked(last_send):
+                _stop_robot(robot)
+                return {
+                    "success": False,
+                    "reason": f"empty_step1_pre_visibility_right_crawl_blocked:{last_send.get('reason')}",
+                    "reading": reading,
+                    "send_result": last_send,
+                    "camera_reads": camera_reads,
+                    "refresh_count": refresh_count,
+                }
+            next_refresh_at = float(now) + float(refresh_s)
+
+        reading = _read_brick_measurement(vision)
+        camera_reads += 1
+        if bool(reading.get("confident")):
+            _stop_robot(robot)
+            _reset_follow_reading_history(vision, allow_large_dist_jump=True)
+            print(
+                "[E2E] Brick visible during steady right crawl: "
+                f"dist={float(reading.get('dist_mm')):.1f}mm "
+                f"x={float(reading.get('x_mm')):+.1f}mm after "
+                f"{float(time.monotonic() - started_at):.2f}s.",
+                flush=True,
+            )
+            return {
+                "success": True,
+                "reason": "empty_step1_pre_visibility_recovered_by_steady_right_crawl",
+                "reading": reading,
+                "send_result": last_send,
+                "camera_reads": camera_reads,
+                "refresh_count": refresh_count,
+            }
+        time.sleep(max(0.005, min(0.05, poll_s)))
+
+    _stop_robot(robot)
+    _reset_follow_reading_history(vision, allow_large_dist_jump=True)
+    return {
+        "success": False,
+        "reason": "empty_step1_pre_visibility_right_crawl_timeout",
+        "reading": reading,
+        "send_result": last_send,
+        "camera_reads": camera_reads,
+        "refresh_count": refresh_count,
+        "max_duration_s": max_duration_s,
     }
 
 
@@ -11158,6 +11764,7 @@ def _gap_crawl_config() -> dict:
         "turn_pwm",
         "turn_phase_ms",
         "turn_straight_phase_ms",
+        "turn_min_seg_ms",
         "both_ms",
         "hold_gentle_ms",
         "hold_sharp_ms",
@@ -11183,6 +11790,7 @@ def _gap_crawl_config() -> dict:
         ("sharp_x_mm", 500.0),
         ("micro_x_deadband_mm", 500.0),
         ("poll_s", 2.0),
+        ("lost_confident_grace_s", 10.0),
         ("sustained_jump_pause_s", 10.0),
     ):
         out[key] = _coerce_float(
@@ -17082,6 +17690,65 @@ def _confirmed_step_result(result: dict | None) -> bool:
     )
 
 
+def _step_result_has_blocked_send(result: dict | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    for key in ("send_result", "mast_result", "post_win_forward_creep_result"):
+        if _send_result_blocked(result.get(key)):
+            return True
+    return False
+
+
+def _e2e_empty_step2_lost_only_final_visibility(step2_result: dict | None) -> bool:
+    if not isinstance(step2_result, dict) or not bool(step2_result.get("success")):
+        return False
+    reason = str(step2_result.get("reason") or "")
+    return bool(
+        reason == "step2_unconfirmed_no_final_visibility"
+        or reason.endswith("_target_hit_unconfirmed_after_stop")
+    )
+
+
+def _e2e_empty_step2_ready_for_lift(step2_result: dict | None, step2_cfg: dict | None = None) -> bool:
+    """E2E-only handoff from Empty Step 2 to the fixed mast-up pickup.
+
+    Empty Step 2 intentionally finishes with a blind forward creep before the
+    mast lift. If the stopped confirmation is just outside the formal gate but
+    within the existing Step 2 noise grace, or only the final visibility read
+    was lost, do not reset backward before giving the pickup lift a chance.
+    """
+    if not isinstance(step2_result, dict) or not bool(step2_result.get("success")):
+        return False
+    if _step_result_has_blocked_send(step2_result):
+        return False
+    reason = str(step2_result.get("reason") or "")
+    if "pickup_suspected" in reason:
+        return False
+    if bool(step2_result.get("target_met")):
+        return True
+    if _e2e_empty_step2_lost_only_final_visibility(step2_result):
+        return True
+    reading = step2_result.get("reading")
+    cfg = step2_cfg if isinstance(step2_cfg, dict) else _follow_step2_config()
+    return bool(_step2_targets_within_noise_grace(reading if isinstance(reading, dict) else {}, cfg))
+
+
+def _e2e_empty_step2_not_confirmed_action(step2_result: dict | None) -> str:
+    reason = "unknown"
+    if isinstance(step2_result, dict):
+        reason = str(step2_result.get("reason") or reason).strip() or reason
+    reason = re.sub(r"[^A-Za-z0-9_.:-]+", "_", reason)
+    return f"EMPTY_STEP2_NOT_CONFIRMED:{reason}"
+
+
+def _e2e_step1_complete(label: str, step_stats: dict | None) -> bool:
+    if not isinstance(step_stats, dict) or int(step_stats.get("win_count", 0) or 0) < 1:
+        return False
+    if str(label or "").strip().lower() != "holding":
+        return True
+    return _step1_wheel_act_sent(step_stats)
+
+
 def _stop_unconfirmed_transition(
     robot: Robot,
     stats: dict,
@@ -17468,6 +18135,23 @@ def _gap_crawl_one_wheel_turn_actions(
     ]
 
 
+def _gap_crawl_turn_first_duration_ms(crawl_cfg: dict, abs_x_delta_mm: float) -> int:
+    """Scale turn bite duration by X gap while keeping PWM fixed."""
+    min_ms = _coerce_int(
+        crawl_cfg.get("turn_min_seg_ms"),
+        DEFAULT_GAP_CRAWL_CONFIG["turn_min_seg_ms"],
+        minimum=MIN_WHEEL_ACT_DURATION_MS,
+        maximum=2000,
+    )
+    max_ms = int(crawl_cfg["turn_phase_ms"]) + int(crawl_cfg["command_overlap_ms"])
+    max_ms = max(int(min_ms), int(max_ms))
+    deadband = float(crawl_cfg["micro_x_deadband_mm"])
+    full_gap = max(deadband + 1e-6, float(crawl_cfg["sharp_x_mm"]))
+    ratio = (float(abs_x_delta_mm) - deadband) / (full_gap - deadband)
+    ratio = max(0.0, min(1.0, ratio))
+    return int(round(float(min_ms) + (float(max_ms - min_ms) * ratio)))
+
+
 def _gap_closing_crawl(
     vision: BrickDetector,
     robot: Robot,
@@ -17496,6 +18180,7 @@ def _gap_closing_crawl(
     poll_s = float(crawl_cfg["poll_s"])
     overlap_ms = int(crawl_cfg["command_overlap_ms"])
     lost_frame_limit = int(crawl_cfg["lost_confident_frames_before_stop"])
+    lost_grace_s = float(crawl_cfg["lost_confident_grace_s"])
     jump_pause_s = float(crawl_cfg["sustained_jump_pause_s"])
     jump_pause_frames = int(_vision_jump_guard_config().get("confirm_frames", 3) or 3)
     pwm = int(crawl_cfg["crawl_pwm"])
@@ -17506,6 +18191,7 @@ def _gap_closing_crawl(
     deadline = time.monotonic() + float(duration_s)
     last: dict | None = None
     lost_frames = 0
+    lost_started_at: float | None = None
     jump_frames = 0
     last_committed: dict | None = None
     moved = False
@@ -17538,8 +18224,30 @@ def _gap_closing_crawl(
         jump_frames = int(jump_frames) + 1 if _jump_guard_event(reading) else 0
         return int(jump_frames) >= max(1, int(jump_pause_frames))
 
+    def _record_lost_frame() -> float:
+        nonlocal lost_frames, lost_started_at
+        lost_frames += 1
+        now = time.monotonic()
+        if lost_started_at is None:
+            lost_started_at = now
+        return max(0.0, now - float(lost_started_at))
+
+    def _lost_confident_timeout_ready() -> bool:
+        if int(lost_frames) < int(lost_frame_limit):
+            return False
+        if float(lost_grace_s) <= 0.0:
+            return True
+        if lost_started_at is None:
+            return False
+        return (time.monotonic() - float(lost_started_at)) >= float(lost_grace_s)
+
+    def _lost_confident_elapsed_s() -> float:
+        if lost_started_at is None:
+            return 0.0
+        return max(0.0, time.monotonic() - float(lost_started_at))
+
     def _pause_for_sustained_jump(reading: dict | None) -> None:
-        nonlocal jump_frames, lost_frames, last_committed
+        nonlocal jump_frames, lost_frames, lost_started_at, last_committed
         _stop_gapcrawl()
         stats["gapcrawl_jump_pause_count"] = int(stats.get("gapcrawl_jump_pause_count", 0) or 0) + 1
         stats["last_action"] = f"{log_tag}_JUMP_REOBSERVE"
@@ -17557,6 +18265,7 @@ def _gap_closing_crawl(
         _reset_follow_reading_history(vision, allow_large_dist_jump=False)
         jump_frames = 0
         lost_frames = 0
+        lost_started_at = None
         last_committed = None
 
     while time.monotonic() < deadline:
@@ -17566,9 +18275,9 @@ def _gap_closing_crawl(
             _pause_for_sustained_jump(reading)
             continue
         if not bool(reading.get("confident")):
-            lost_frames += 1
+            _record_lost_frame()
             stats["not_confident_count"] = int(stats.get("not_confident_count", 0)) + 1
-            if lost_frames < int(lost_frame_limit) and last_committed is not None:
+            if not _lost_confident_timeout_ready() and last_committed is not None:
                 guarded_send_custom_actions_pwm(
                     robot, "f", list(last_committed["actions"]),
                     duration_ms=int(last_committed["seg_ms"]),
@@ -17578,7 +18287,7 @@ def _gap_closing_crawl(
                 stats["last_action"] = f"{log_tag}_CONTINUE_NOVIS"
                 time.sleep(poll_s)
                 continue
-            if lost_frames < int(lost_frame_limit):
+            if not _lost_confident_timeout_ready():
                 time.sleep(poll_s)
                 continue
             _stop_gapcrawl()
@@ -17587,7 +18296,8 @@ def _gap_closing_crawl(
             ) + 1
             print(
                 f"[FOLLOW][{log_tag}] Pausing after {int(lost_frames)} consecutive "
-                "non-confident frames; waiting for a stable brick lock.",
+                f"non-confident frames over {float(_lost_confident_elapsed_s()):.1f}s; "
+                "waiting for a stable brick lock.",
                 flush=True,
             )
             reading = _wait_for_visibility_recovery(vision, robot, reading, context=context, jump_guard=True)
@@ -17598,6 +18308,7 @@ def _gap_closing_crawl(
                 time.sleep(poll_s)
                 continue
         lost_frames = 0
+        lost_started_at = None
         stats["confident_sample_count"] = int(stats.get("confident_sample_count", 0)) + 1
         last = reading
 
@@ -17632,8 +18343,7 @@ def _gap_closing_crawl(
                 if last_turn_first_cmd != turn_cmd:
                     next_turn_first_phase = "turn"
                 if next_turn_first_phase == "turn":
-                    phase_ms = int(turn_phase_ms)
-                    seg_ms = phase_ms + int(overlap_ms)
+                    seg_ms = _gap_crawl_turn_first_duration_ms(crawl_cfg, abs(x_delta))
                     actions = _gap_crawl_one_wheel_turn_actions(turn_cmd, turn_pwm, seg_ms)
                     label = f"{log_tag}_{turn_cmd.upper()}_TURN_FIRST"
                     expected_x_sign = -1 if turn_cmd == "r" else 1
@@ -17702,9 +18412,9 @@ def _gap_closing_crawl(
                 paused = True
                 break
             if not bool(live.get("confident")):
-                lost_frames += 1
+                _record_lost_frame()
                 stats["not_confident_count"] = int(stats.get("not_confident_count", 0)) + 1
-                if lost_frames >= int(lost_frame_limit):
+                if _lost_confident_timeout_ready():
                     _stop_gapcrawl()
                     stats["gapcrawl_confidence_pause_count"] = int(
                         stats.get("gapcrawl_confidence_pause_count", 0) or 0
@@ -17712,7 +18422,8 @@ def _gap_closing_crawl(
                     stats["last_action"] = f"{log_tag}_CONFIDENCE_PAUSE"
                     print(
                         f"[FOLLOW][{log_tag}] Pausing after {int(lost_frames)} consecutive "
-                        "non-confident frames; waiting for a stable brick lock.",
+                        f"non-confident frames over {float(_lost_confident_elapsed_s()):.1f}s; "
+                        "waiting for a stable brick lock.",
                         flush=True,
                     )
                     last_committed = None
@@ -17720,6 +18431,7 @@ def _gap_closing_crawl(
                     break
                 continue
             lost_frames = 0
+            lost_started_at = None
             stats["confident_sample_count"] = int(stats.get("confident_sample_count", 0)) + 1
             last = live
             if _winning(live):
@@ -19426,6 +20138,10 @@ def _follow_loop(
 _CUSTOM_SEQUENCE_ALIASES = {
     "r": "reset",
     "reset": "reset",
+    "s0": "step0",
+    "step0": "step0",
+    "two_blind_turns": "step0",
+    "2_blind_turns": "step0",
     "s1": "step1",
     "step1": "step1",
     "happy": "step1",
@@ -19433,8 +20149,14 @@ _CUSTOM_SEQUENCE_ALIASES = {
     "s2": "step2",
     "step2": "step2",
     "seat": "step2",
-    "s3": "step3_lift",
-    "step3": "step3_lift",
+    "transition": "holding_transition_reset",
+    "post_lift": "holding_transition_reset",
+    "post_lift_reset": "holding_transition_reset",
+    "post_lift_holding_transition": "holding_transition_reset",
+    "holding_transition": "holding_transition_reset",
+    "holding_transition_reset": "holding_transition_reset",
+    "s3": "step3",
+    "step3": "step3",
     "crawl": "step3",
     "retreat": "step3",
     "s4": "step3_lift",
@@ -19572,6 +20294,43 @@ def _run_custom_sequence(
                 reading=reading,
                 result=reset_result if isinstance(reset_result, dict) else None,
             )
+        elif item == "holding_transition_reset":
+            _set_game_profile("holding")
+            transition_result = _run_post_lift_holding_transition_reset(
+                vision,
+                robot,
+                _follow_step3_config(),
+            )
+            reading = transition_result.get("reading") if isinstance(transition_result, dict) else None
+            ok = bool(transition_result.get("success")) and bool(
+                transition_result.get("soft_reset_complete")
+            )
+            reason = str(
+                transition_result.get("reason")
+                if isinstance(transition_result, dict)
+                else "holding_transition_reset_failed"
+            )
+            result = _custom_sequence_result(
+                success=ok,
+                item=item,
+                index=index,
+                reason=reason,
+                reading=reading,
+                result=transition_result if isinstance(transition_result, dict) else None,
+            )
+        elif item == "step0":
+            step0_result = _run_empty_step0_two_blind_turns(vision, robot)
+            ok = bool(step0_result.get("success"))
+            reason = str(step0_result.get("reason") if isinstance(step0_result, dict) else "step0_failed")
+            reading = step0_result.get("reading") if isinstance(step0_result, dict) else None
+            result = _custom_sequence_result(
+                success=ok,
+                item=item,
+                index=index,
+                reason=reason,
+                reading=reading,
+                result=step0_result,
+            )
         elif item == "step1":
             stats = _follow_loop(
                 vision,
@@ -19590,6 +20349,7 @@ def _run_custom_sequence(
             reading = stats.get("last_step1_win") if isinstance(stats.get("last_step1_win"), dict) else None
             if reading is None:
                 reading = stats.get("debug_stop_reading") if isinstance(stats.get("debug_stop_reading"), dict) else None
+            step1_detail = None
             print("[SEQUENCE][STEP1 RESULTS]", flush=True)
             print(_format_game_results_table(stats), flush=True)
             result = _custom_sequence_result(
@@ -19599,14 +20359,50 @@ def _run_custom_sequence(
                 reason=reason,
                 reading=reading,
                 stats=stats,
+                result=step1_detail,
             )
         elif item == "step2":
             profile_before_step2 = _active_game_profile()
+            initial_step2_reading = None
+            if str(profile_before_step2 or "").strip().lower() == "holding":
+                previous_result = completed[-1] if completed else None
+                initial_step2_reading = (
+                    previous_result.get("reading")
+                    if isinstance(previous_result, dict) and isinstance(previous_result.get("reading"), dict)
+                    else None
+                )
             step2_result = _run_step2_seat_sequence(
                 vision,
                 robot,
                 probe_before_forward=bool(step2_probe_before_forward),
+                initial_reading=initial_step2_reading if isinstance(initial_step2_reading, dict) else None,
             )
+            if (
+                str(profile_before_step2 or "").strip().lower() == "empty"
+                and _e2e_empty_step2_lost_only_final_visibility(step2_result)
+                and not _step_result_has_blocked_send(step2_result)
+            ):
+                original_reason = str(step2_result.get("reason") or "")
+                _after_creep, creep_result = _run_post_win_forward_creep(
+                    vision,
+                    robot,
+                    {
+                        "visible": True,
+                        "confident": True,
+                        "conf": 100.0,
+                        "reason": "custom_assumed_empty_step2_after_final_visibility_loss",
+                    },
+                    _follow_step2_config(),
+                    label="step2",
+                    reason_text="after assumed Empty Step 2 final visibility loss",
+                )
+                step2_result["original_reason"] = original_reason
+                step2_result["post_win_forward_creep_result"] = creep_result
+                if not _send_result_blocked(creep_result):
+                    step2_result["success"] = True
+                    step2_result["target_met"] = True
+                    step2_result["custom_assumed_complete_after_final_visibility_loss"] = True
+                    step2_result["reason"] = "step2_assumed_complete_after_final_visibility_loss"
             stats = _new_game_stats()
             _record_step2_stats(stats, step2_result)
             ok = _confirmed_step_result(step2_result)
@@ -19614,7 +20410,16 @@ def _run_custom_sequence(
             reading = step2_result.get("reading") if isinstance(step2_result, dict) else None
             print("[SEQUENCE][STEP2 RESULTS]", flush=True)
             print(_format_game_results_table(stats), flush=True)
-            if bool(ok) and str(profile_before_step2 or "").strip().lower() == "holding":
+            remaining_items = sequence[int(index):]
+            holding_reset_still_requested = any(
+                str(next_item or "").strip().lower() in {"step3", "reset"}
+                for next_item in remaining_items
+            )
+            if (
+                bool(ok)
+                and str(profile_before_step2 or "").strip().lower() == "holding"
+                and not bool(holding_reset_still_requested)
+            ):
                 _set_game_profile("empty")
                 if isinstance(step2_result, dict):
                     step2_result["profile_after_holding_step2"] = "empty"
@@ -19716,6 +20521,216 @@ def _run_custom_sequence(
     _stop_robot(robot)
     print("[SEQUENCE] Complete: all requested items succeeded.", flush=True)
     return {"success": True, "reason": "sequence_complete", "items": completed}
+
+
+def _merge_e2e_child_stats(base: dict, child: dict | None) -> None:
+    if not isinstance(base, dict) or not isinstance(child, dict):
+        return
+    for key, value in child.items():
+        if key in {"last_action", "decision_log_t0", "decision_model"}:
+            continue
+        if isinstance(value, bool):
+            base[key] = bool(base.get(key, False) or value)
+        elif isinstance(value, int):
+            base[key] = int(base.get(key, 0) or 0) + int(value)
+        elif isinstance(value, float):
+            if key not in base:
+                base[key] = float(value)
+        elif isinstance(value, list):
+            base.setdefault(key, []).extend(value)
+        elif isinstance(value, dict):
+            target = base.setdefault(key, {})
+            if isinstance(target, dict):
+                for subkey, subvalue in value.items():
+                    if isinstance(subvalue, int):
+                        target[subkey] = int(target.get(subkey, 0) or 0) + int(subvalue)
+                    else:
+                        target[subkey] = subvalue
+
+
+def _run_e2e_trial_gapcrawl_production(
+    vision: BrickDetector,
+    robot: Robot,
+    *,
+    duration_s: float,
+) -> dict:
+    """Run one production e2e cycle while keeping Step 1 on gapcrawl."""
+    stats = _new_game_stats()
+    stats["decision_model"] = "gapcrawl_e2e"
+    stats["decision_log_t0"] = time.monotonic()
+
+    def fail(action: str, detail: dict | None = None) -> dict:
+        _stop_robot(robot)
+        stats["last_action"] = str(action)
+        if isinstance(detail, dict):
+            stats["e2e_failed_detail"] = detail
+        return stats
+
+    def run_step1(label: str) -> dict | None:
+        require_motion = str(label or "").strip().lower() == "holding"
+        print(
+            f"[E2E] {label} Step 1: gapcrawl align"
+            + (" with required post-transition wheel motion." if require_motion else "."),
+            flush=True,
+        )
+        step_stats = _follow_loop(
+            vision,
+            robot,
+            duration_s=float(duration_s),
+            reset_after_win=False,
+            stop_after_win=True,
+            stop_after_step2=False,
+            complete_after_step3=False,
+            debug_mode=False,
+            require_step1_motion_before_win=bool(require_motion),
+        )
+        _merge_e2e_child_stats(stats, step_stats)
+        print(f"[E2E][{label} STEP1 RESULTS]", flush=True)
+        print(_format_game_results_table(step_stats), flush=True)
+        if _e2e_step1_complete(label, step_stats):
+            return step_stats
+        if bool(require_motion) and bool(int(step_stats.get("win_count", 0) or 0) >= 1):
+            fail("HOLDING_STEP1_INCOMPLETE_NO_WHEEL_MOTION", step_stats)
+            return None
+        fail(f"{label.upper()}_STEP1_FAILED", step_stats)
+        return None
+
+    _set_game_profile("empty")
+    print("[E2E] Empty Step 0: 2 blind turns.", flush=True)
+    step0_result = _run_empty_step0_two_blind_turns(vision, robot, _follow_step0_config())
+    stats["empty_step0_result"] = dict(step0_result)
+    if not bool(step0_result.get("success")):
+        return fail("EMPTY_STEP0_FAILED", step0_result)
+
+    pre_step1_visibility = _run_e2e_pre_empty_step1_right_visibility_crawl(vision, robot)
+    stats["empty_step1_pre_visibility_right_crawl"] = dict(pre_step1_visibility)
+    if not bool(pre_step1_visibility.get("success")):
+        return fail("EMPTY_STEP1_PRE_VISIBILITY_RIGHT_CRAWL_FAILED", pre_step1_visibility)
+
+    if run_step1("empty") is None:
+        return stats
+
+    print("[E2E] Empty Step 2: seat.", flush=True)
+    step2_result = _run_step2_seat_sequence(vision, robot)
+    if not bool(step2_result.get("success")):
+        _record_step2_stats(stats, step2_result)
+        return fail("EMPTY_STEP2_FAILED", step2_result)
+    step2_cfg = _follow_step2_config()
+    ready_for_lift = _e2e_empty_step2_ready_for_lift(step2_result, step2_cfg)
+    if bool(ready_for_lift) and not bool(step2_result.get("target_met")):
+        lift_reading = step2_result.get("reading") if isinstance(step2_result.get("reading"), dict) else None
+        assumed_after_visibility_loss = _e2e_empty_step2_lost_only_final_visibility(step2_result)
+        if bool(assumed_after_visibility_loss):
+            print(
+                "[E2E] Empty Step 2 lost only final visibility; assuming the seat motion "
+                "succeeded, then sending the configured blind forward creep before pickup.",
+                flush=True,
+            )
+            creep_reading = {
+                "visible": True,
+                "confident": True,
+                "conf": 100.0,
+                "reason": "e2e_assumed_empty_step2_after_final_visibility_loss",
+            }
+        else:
+            print(
+                "[E2E] Empty Step 2 is within noise grace; sending the configured "
+                "blind forward creep before the pickup lift.",
+                flush=True,
+            )
+            creep_reading = lift_reading
+        after_creep, creep_result = _run_post_win_forward_creep(
+            vision,
+            robot,
+            creep_reading,
+            step2_cfg,
+            label="step2",
+            reason_text=(
+                "before empty pickup lift after assumed Step 2 final visibility loss"
+                if bool(assumed_after_visibility_loss)
+                else "before empty pickup lift from noise-grace Step 2"
+            ),
+        )
+        step2_result["e2e_empty_step2_unconfirmed_lift"] = True
+        step2_result["e2e_empty_step2_noise_grace_lift"] = not bool(assumed_after_visibility_loss)
+        step2_result["e2e_empty_step2_assumed_after_final_visibility_loss"] = bool(
+            assumed_after_visibility_loss
+        )
+        step2_result["reading_before_post_win_forward_creep"] = lift_reading
+        step2_result["post_win_forward_creep_result"] = creep_result
+        step2_result["post_win_forward_creep_ms"] = _coerce_int(
+            step2_cfg.get("post_win_forward_creep_ms"),
+            DEFAULT_STEP2_CONFIG["post_win_forward_creep_ms"],
+            minimum=0,
+            maximum=2000,
+        ) if creep_result is not None else 0
+        if isinstance(after_creep, dict) and not bool(assumed_after_visibility_loss):
+            step2_result["reading"] = after_creep
+        if _send_result_blocked(creep_result):
+            _record_step2_stats(stats, step2_result)
+            return fail("EMPTY_STEP2_PRE_LIFT_NUDGE_BLOCKED", step2_result)
+    _record_step2_stats(stats, step2_result)
+    if not bool(ready_for_lift):
+        return fail(_e2e_empty_step2_not_confirmed_action(step2_result), step2_result)
+    if not _confirmed_step_result(step2_result) and not bool(step2_result.get("e2e_empty_step2_unconfirmed_lift")):
+        _stop_unconfirmed_transition(robot, stats, previous_step="Empty Step 2", next_step="Empty lift")
+        return stats
+
+    print("[E2E] Empty lift: pick brick.", flush=True)
+    lift_result = _run_step3_lift_sequence(vision, robot)
+    if bool(lift_result.get("holding")):
+        _set_game_profile("holding")
+    if not bool(lift_result.get("success")):
+        return fail("EMPTY_LIFT_FAILED", lift_result)
+    if not (bool(lift_result.get("target_met")) or bool(lift_result.get("fallback_reset_ok"))):
+        return fail("EMPTY_LIFT_NEEDS_WORK", lift_result)
+
+    print("[E2E] Holding Step 1 reset: back away, full blind turn, then mirror.", flush=True)
+    reset_result = _run_post_lift_holding_transition_reset(vision, robot, _follow_step3_config())
+    stats["post_lift_holding_transition_reset"] = dict(reset_result)
+    if not bool(reset_result.get("success")):
+        return fail("HOLDING_STEP1_TRANSITION_RESET_FAILED", reset_result)
+
+    _set_game_profile("holding")
+    holding_step1_stats = run_step1("holding")
+    if holding_step1_stats is None:
+        return stats
+    holding_step1_reading = (
+        holding_step1_stats.get("last_step1_win")
+        if isinstance(holding_step1_stats.get("last_step1_win"), dict)
+        else holding_step1_stats.get("debug_stop_reading")
+        if isinstance(holding_step1_stats.get("debug_stop_reading"), dict)
+        else None
+    )
+    print("[E2E] Holding place: blind lower.", flush=True)
+    holding_step2 = _run_step2_seat_sequence(
+        vision,
+        robot,
+        initial_reading=holding_step1_reading if isinstance(holding_step1_reading, dict) else None,
+    )
+    _record_step2_stats(stats, holding_step2)
+    if not bool(holding_step2.get("success")):
+        return fail("HOLDING_PLACE_FAILED", holding_step2)
+    if not _confirmed_step_result(holding_step2):
+        _stop_unconfirmed_transition(robot, stats, previous_step="Holding place", next_step="Holding reset")
+        return stats
+
+    if _step3_kind() == "retreat":
+        print("[E2E] Holding retreat.", flush=True)
+        retreat_result = _run_step3_retreat_sequence(vision, robot)
+        if not bool(retreat_result.get("success")):
+            return fail("HOLDING_RETREAT_FAILED", retreat_result)
+        if not (
+            bool(retreat_result.get("target_met"))
+            or bool(retreat_result.get("soft_reset_complete"))
+        ):
+            return fail("HOLDING_RETREAT_NEEDS_WORK", retreat_result)
+
+    print("[E2E] Holding retreat is the final reset; no extra backup act.", flush=True)
+    _set_game_profile("empty")
+    stats["holding_retreat_is_final_reset"] = True
+    stats["last_action"] = "E2E_CYCLES_DONE"
+    return stats
 
 
 def _parse_args(argv=None) -> argparse.Namespace:
@@ -20079,7 +21094,7 @@ def _run_worker(args: argparse.Namespace) -> int:
         print(
             "[SEQUENCE] Invalid sequence item(s): "
             + ", ".join(sequence_errors)
-            + ". Allowed examples: reset, step1/s1, step2/s2, step3/s3, step4/s4, empty, holding, park.",
+                + ". Allowed examples: reset, post_lift_reset, step1/s1, step2/s2, step3/s3, step4/s4, empty, holding, park.",
             flush=True,
         )
         return 2
@@ -20249,22 +21264,19 @@ def _run_worker(args: argparse.Namespace) -> int:
                             print("[E2E] HARD STOP: virtual safety wall tripped during reset; no retry.", flush=True)
                             return 1
                         continue
-                stats = _follow_loop(
+                stats = _run_e2e_trial_gapcrawl_production(
                     vision,
                     robot,
-                    duration_s=365.0 * 24.0 * 60.0 * 60.0,
-                    reset_after_win=True,
-                    stop_after_win=False,
-                    stop_after_step2=False,
-                    step2_probe_before_forward=False,
-                    debug_mode=False,
-                    max_cycles=1,
-                    require_step1_motion_before_win=False,
+                    duration_s=float(args.duration_s),
                 )
                 print(f"[RESULTS attempt {e2e_attempt}/{max_attempts}]", flush=True)
                 print(_format_game_results_table(stats), flush=True)
                 if str(stats.get("last_action") or "") == "E2E_CYCLES_DONE":
-                    print("[E2E] Trial complete: empty+holding cycle won and final reset completed.", flush=True)
+                    print(
+                        "[E2E] Trial complete: empty+holding cycle won; holding retreat "
+                        "was the final wheel motion.",
+                        flush=True,
+                    )
                     return 0
                 last_action = str(stats.get("last_action") or "unknown")
                 print(f"[E2E] Attempt {e2e_attempt}/{max_attempts} missed: {last_action}", flush=True)

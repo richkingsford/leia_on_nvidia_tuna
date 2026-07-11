@@ -128,17 +128,19 @@
   },
   "gap_crawl": {
    "both_ms": 200,
-   "command_overlap_ms": 100,
+   "command_overlap_ms": 70,
    "crawl_pwm": 115,
    "hold_gentle_ms": 200,
    "hold_sharp_ms": 400,
    "lost_confident_frames_before_stop": 10,
+   "lost_confident_grace_s": 3.0,
    "micro_x_deadband_mm": 1.0,
    "poll_s": 0.035,
    "sharp_x_mm": 14.0,
    "straight_ms": 240,
    "sustained_jump_pause_s": 0.25,
    "turn_first_enabled": true,
+   "turn_min_seg_ms": 220,
    "turn_phase_ms": 200,
    "turn_pwm": 133,
    "turn_straight_phase_ms": 200
@@ -160,6 +162,15 @@
     },
     "holding": false,
     "nickname": "align x/dist",
+    "step0": {
+     "enabled": true,
+     "nickname": "2 blind turns",
+     "turn_ms": 1500,
+     "pause_ms": 0,
+     "strength": "superstrong",
+     "first_drive_mode": "backward",
+     "mirror_drive_mode": "forward"
+    },
     "step1_decision_model": "gapcrawl",
     "step2": {
      "nickname": "seat / new empty step2",
@@ -175,13 +186,14 @@
      "recovery_creep_enabled": false,
      "recovery_creep_max_attempts": 0,
      "seat_mast_duration_ms": 0,
-     "post_win_forward_creep_ms": 1300,
+     "post_win_forward_creep_ms": 940,
      "post_win_forward_creep_pwm": 103,
+     "post_win_forward_creep_read_after": false,
      "semi_happy_targets": {
       "dist_mm": 88.28026778187918,
       "dist_tol_mm": 6.0,
       "x_mm": -0.8766069635664037,
-      "x_tol_mm": 7.0,
+      "x_tol_mm": 10.0,
       "y_mm": null,
       "y_tol_mm": null
      },
@@ -190,7 +202,7 @@
       "dist_mm": 88.28026778187918,
       "dist_tol_mm": 6.0,
       "x_mm": -0.8766069635664037,
-      "x_tol_mm": 7.0,
+      "x_tol_mm": 10.0,
       "y_mm": null,
       "y_tol_mm": null
      },
@@ -231,13 +243,14 @@
      "visibility_recovery_creep_enabled": false,
      "visibility_recovery_creep_max_attempts": 0
     },
-    "step4": {
+     "step4": {
      "fixed_lift_duration_ms": 3575,
      "fixed_lift_only": true,
+     "fixed_lift_read_after": false,
      "initial_lift_before_gate": true,
      "lift_mast_cmd": "u",
      "lift_pulse_ms": 3575,
-     "lift_settle_s": 0.25,
+     "lift_settle_s": 0.0,
      "max_lift_attempts": 1,
      "no_visibility_fallback_mast_cmd": "u",
      "step_timeout_s": 30.0,
@@ -318,7 +331,7 @@
     "x_axis": {
      "positive_error_turn_cmd": "r",
      "win_target_mm": 3.5989066281269304,
-     "win_tol_mm": 5.0
+     "win_tol_mm": 10.0
     },
     "x_dist_curve_policy": {
    "combined_x_dist_strength": "adaptive",
@@ -423,8 +436,10 @@
      "precision_max_attempts": 7,
      "recovery_creep_enabled": false,
      "recovery_creep_max_attempts": 0,
-     "seat_mast_duration_ms": 3625,
+     "seat_mast_duration_ms": 3773,
      "seat_drive_duration_ms": 0,
+     "pre_place_forward_creep_ms": 1400,
+     "pre_place_forward_creep_pwm": 103,
       "semi_happy_targets": {
        "dist_mm": 90.1,
        "dist_tol_mm": 7.0,
@@ -457,6 +472,12 @@
      "target_dist_mm": 160.0,
      "target_dist_profile": "holding",
      "target_dist_tol_mm": 0.0,
+     "holding_blind_reset_enabled": true,
+     "holding_blind_back_crawl_ms": 3000,
+     "post_lift_back_crawl_ms": 1500,
+     "post_lift_turn_ms": 2160,
+     "holding_blind_turn_ms": 1800,
+     "holding_blind_turn_pause_ms": 500,
      "retreat_turn_cmd": "l",
      "retreat_inner_pwm": 104,
      "retreat_outer_pwm": 160,
@@ -757,11 +778,12 @@
   "step4": {
    "fixed_lift_duration_ms": 3575,
    "fixed_lift_only": true,
+   "fixed_lift_read_after": false,
    "initial_lift_before_gate": true,
    "lift_mast_cmd": "u",
    "lift_mast_pwm": 255,
    "lift_pulse_ms": 3575,
-   "lift_settle_s": 0.25,
+   "lift_settle_s": 0.0,
    "max_lift_attempts": 1,
    "no_visibility_fallback_duration_ms": 1000,
    "no_visibility_fallback_enabled": true,
