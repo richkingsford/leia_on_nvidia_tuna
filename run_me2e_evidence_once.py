@@ -31,47 +31,6 @@ HOLDING_S2_X_TARGET_MM = 1.8
 HOLDING_S2_X_TOL_MM = 5.0
 HOLDING_S2_Y_REFERENCE_MM = -1.6  # Reference only; holding S2 alignment must not move the mast.
 
-# End-of-sequence retreat: after the brick is placed, back away ~2x the usual
-# reset reverse (~450ms) and turn a little, so Leia clears the placed brick.
-POST_GAME_REVERSE_MS = 900   # ~2x the usual ~450ms reset straight-back
-POST_GAME_TURN_MS = 450      # a little turn at the end
-POST_GAME_TURN_CMD = "l"     # arc-assist turn direction
-
-
-def _post_game_retreat(robot) -> None:
-    """Blind reverse (~2x) + a little arc turn after the brick is placed.
-
-    Direct sends (brick is placed / may be out of view); the Robot layer still
-    floors to the crawl/breakaway speed and enforces arc-assist (one wheel at 0).
-    """
-    pwm = int(follow._crawl_forward_pwm())
-    print(
-        f"[POST-GAME] Retreat: reverse {POST_GAME_REVERSE_MS}ms then turn "
-        f"{POST_GAME_TURN_CMD.upper()} {POST_GAME_TURN_MS}ms (crawl pwm={pwm}).",
-        flush=True,
-    )
-    reverse = [
-        {"target": "l", "action": "f", "pwm": pwm, "duration_ms": int(POST_GAME_REVERSE_MS)},
-        {"target": "r", "action": "b", "pwm": pwm, "duration_ms": int(POST_GAME_REVERSE_MS)},
-    ]
-    robot.send_custom_actions_pwm("b", reverse, duration_ms=int(POST_GAME_REVERSE_MS))
-    time.sleep(float(POST_GAME_REVERSE_MS) / 1000.0)
-    follow._stop_robot(robot)
-    if str(POST_GAME_TURN_CMD).strip().lower() == "l":
-        turn = [
-            {"target": "r", "action": "f", "pwm": pwm, "duration_ms": int(POST_GAME_TURN_MS)},
-            {"target": "l", "action": "s", "pwm": 0, "duration_ms": 0},
-        ]
-    else:
-        turn = [
-            {"target": "l", "action": "b", "pwm": pwm, "duration_ms": int(POST_GAME_TURN_MS)},
-            {"target": "r", "action": "s", "pwm": 0, "duration_ms": 0},
-        ]
-    robot.send_custom_actions_pwm("f", turn, duration_ms=int(POST_GAME_TURN_MS))
-    time.sleep(float(POST_GAME_TURN_MS) / 1000.0)
-    follow._stop_robot(robot)
-
-
 FULL_E2E_EXPERIMENT_SUMMARY = (
     "Full E2E: start from an already-reset empty pose, empty S1 align, "
     "empty S2 seat, empty S3 lift, holding S1 small reset, holding S2 align, "
@@ -391,7 +350,7 @@ def _holding_s2_alignment_config() -> dict:
     align_step2["blind_mast_only"] = False
     align_step2["seat_mast_duration_ms"] = 0
     align_step2["seat_drive_duration_ms"] = 0
-    align_step2["post_win_forward_creep_ms"] = 300
+    align_step2["post_win_forward_creep_ms"] = 0
     align_step2["confirm_noise_grace_enabled"] = False
     align_step2["confirm_noise_grace_mm"] = 2.5
     semi_targets = copy.deepcopy(
@@ -420,29 +379,40 @@ def _holding_s2_alignment_config() -> dict:
 
 
 def _run_holding_s2_align_sequence(vision: BrickDetector, robot: Robot) -> dict:
-    """Run holding S2 alignment with the normal empty-S2 stack model and motion brain."""
-    align_step2 = _holding_s2_alignment_config()
-    previous_profile = follow._active_game_profile()
-    cfg = follow._follow_motion_config()
-    original_step2 = copy.deepcopy(cfg.get("step2") if isinstance(cfg.get("step2"), dict) else {})
-    try:
-        follow._set_game_profile("empty")
-        try:
-            follow._reset_follow_reading_history(vision, allow_large_dist_jump=False)
-        except Exception:
-            pass
-        stable_before = _read(vision, timeout_s=4.0)
-        cfg["step2"] = align_step2
-        result = follow._run_step2_seat_sequence(vision, robot, initial_reading=stable_before)
-    finally:
-        cfg["step2"] = original_step2
-        follow._set_game_profile(previous_profile)
-    if isinstance(result, dict):
-        result["holding_s2_alignment_uses_empty_s2_pose"] = True
-        result["holding_s2_alignment_uses_empty_vision_profile"] = True
-        result["holding_s2_alignment_uses_empty_motion_logic"] = True
-        result["stable_before"] = stable_before
-    return result
+    """Perform Holding S2 as a fully blind handoff.
+
+    S1 already established the holding pose. Reading the empty stack here
+    invites a long blind crawl when the stack is briefly unavailable, so S2
+    intentionally performs no vision-driven motion and leaves lowering to S3.
+    A nonzero legacy nudge remains supported by the shared helper, but the
+    production holding profile is explicitly configured at 0 ms.
+    """
+    follow._set_game_profile("holding")
+    step_cfg = follow._follow_step2_config()
+    nudge_reading, nudge_result = follow._run_holding_step1_forward_nudge(
+        vision,
+        robot,
+        reading=None,
+        step_cfg=step_cfg,
+    )
+    blocked = bool(isinstance(nudge_result, dict) and nudge_result.get("blocked"))
+    nudge_ms = int(step_cfg.get("pre_place_forward_creep_ms") or 0)
+    if blocked:
+        reason = "holding_s2_blind_handoff_blocked"
+    elif nudge_ms > 0:
+        reason = "holding_s2_legacy_forward_nudge_complete"
+    else:
+        reason = "holding_s2_blind_handoff_complete"
+    return {
+        "success": not blocked,
+        "target_met": not blocked,
+        "reason": reason,
+        "reading": nudge_reading,
+        "before": None,
+        "pre_place_forward_creep_result": nudge_result,
+        "pre_place_forward_creep_ms": nudge_ms,
+        "holding_s2_fully_blind": True,
+    }
 
 
 def _run_holding_s1_reset_sequence(vision: BrickDetector, robot: Robot) -> dict:
@@ -502,6 +472,8 @@ def _opening_reset_ok(result: dict | None) -> bool:
 def _holding_s2_align_ok(result: dict | None) -> bool:
     if not isinstance(result, dict):
         return False
+    if bool(result.get("holding_s2_fully_blind")):
+        return bool(result.get("success")) and not _is_hard_stop_result(str(result.get("reason") or ""), result)
     if bool(follow._confirmed_step_result(result)):
         return True
     if _is_hard_stop_result(str(result.get("reason") or ""), result):
@@ -529,6 +501,8 @@ def _holding_s2_align_ok(result: dict | None) -> bool:
 def _confirm_holding_s2_align_result(vision: BrickDetector, result: dict | None) -> dict:
     """Before failing holding S2, take a fresh stable read to reject ghost final frames."""
     out = dict(result) if isinstance(result, dict) else {"success": False, "reason": "holding_s2_align_failed"}
+    if bool(out.get("holding_s2_fully_blind")):
+        return out
     if _holding_s2_align_ok(out):
         return out
     previous_profile = follow._active_game_profile()
@@ -556,6 +530,8 @@ def _confirm_holding_s2_align_result(vision: BrickDetector, result: dict | None)
 def _ensure_holding_s2_post_win_creep(vision: BrickDetector, robot: Robot, result: dict | None) -> dict:
     """Apply the blind seating creep after every accepted holding S2 win path."""
     out = dict(result) if isinstance(result, dict) else {"success": False, "reason": "holding_s2_align_failed"}
+    if bool(out.get("holding_s2_fully_blind")):
+        return out
     if not _holding_s2_align_ok(out):
         return out
     if out.get("post_win_forward_creep_result") is not None:
@@ -633,7 +609,9 @@ def _record_evidence_row(
 def run_full_e2e_cycle(args: argparse.Namespace) -> int:
     follow._set_game_profile("empty")
     empty_half = bool(getattr(args, "empty_half_cycle", False))
+    empty_s1_s2_only = bool(getattr(args, "empty_s1_s2_only", False))
     holding_half = bool(getattr(args, "holding_half_cycle", False))
+    holding_s1_only = bool(getattr(args, "holding_s1_only", False))
     holding_s1_s2_only = bool(getattr(args, "holding_s1_s2_only", False))
     holding_s3_s4_only = bool(getattr(args, "holding_s3_s4_only", False))
     from_holding_s2 = bool(getattr(args, "from_holding_s2", False)) or bool(getattr(args, "holding_s2_only", False))
@@ -641,12 +619,17 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
         "Leia Holding S3+S4 Tail Evidence"
         if holding_s3_s4_only
         else
+        "Leia Holding S1 Frame Evidence"
+        if holding_s1_only
+        else
         "Leia Holding S2 Place+Reset Evidence"
         if from_holding_s2
         else "Leia Holding S1+S2 Park Evidence"
         if holding_s1_s2_only
         else "Leia Holding Half E2E Trial Evidence"
         if holding_half
+        else "Leia Empty S1+S2 Tracking Evidence"
+        if empty_s1_s2_only
         else "Leia Empty Half E2E Trial Evidence"
         if empty_half
         else "Leia Full E2E Trial Evidence"
@@ -655,12 +638,16 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
     site.set_experiment(
         "holding-s3-s4-tail-command-line"
         if holding_s3_s4_only
+        else "holding-s1-frame-evidence-command-line"
+        if holding_s1_only
         else "holding-s2-place-reset-command-line"
         if from_holding_s2
         else "holding-s1-s2-park-command-line"
         if holding_s1_s2_only
         else "holding-half-e2e-command-line"
         if holding_half
+        else "empty-s1-s2-tracking-command-line"
+        if empty_s1_s2_only
         else "empty-half-e2e-command-line"
         if empty_half
         else "full-e2e-command-line",
@@ -668,10 +655,14 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
         if holding_s3_s4_only
         else "Start at holding S2 ready, align to the empty S2 X/dist pose, blindly lower/place the brick, then reset."
         if from_holding_s2
+        else "Holding S1 only: use the current pose, capture every production frame, then stop."
+        if holding_s1_only
         else "Holding S1+S2 park: holding reset/back-away, align to captured holding S2 X/dist pose, then stop."
         if holding_s1_s2_only
         else HOLDING_HALF_E2E_EXPERIMENT_SUMMARY
         if holding_half
+        else "Empty S1+S2: debug tracking of every production brick observation."
+        if empty_s1_s2_only
         else EMPTY_HALF_E2E_EXPERIMENT_SUMMARY
         if empty_half
         else FULL_E2E_EXPERIMENT_SUMMARY,
@@ -684,12 +675,16 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
     run_label = (
         "Holding S3+S4 tail"
         if holding_s3_s4_only
+        else "Holding S1 only"
+        if holding_s1_only
         else "Holding S2 place/reset"
         if from_holding_s2
         else "Holding S1+S2 park"
         if holding_s1_s2_only
         else "Holding half E2E"
         if holding_half
+        else "Empty S1+S2 tracking"
+        if empty_s1_s2_only
         else "Empty half E2E"
         if empty_half
         else "Full E2E"
@@ -699,8 +694,22 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
     vision = None
     robot = None
 
-    def record_start(phase: str, step: str | None = None) -> None:
-        before = _read(vision, timeout_s=3.0) if vision is not None else None
+    def record_start(
+        phase: str,
+        step: str | None = None,
+        *,
+        blind: bool = False,
+    ) -> None:
+        before = (
+            {
+                "visible": True,
+                "confident": True,
+                "conf": 100.0,
+                "reason": "blind_phase_no_start_read",
+            }
+            if blind
+            else (_read(vision, timeout_s=3.0) if vision is not None else None)
+        )
         _record_evidence_row(
             args=args,
             site=site,
@@ -791,10 +800,13 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
             follow._stop_robot(robot)
             return 1
 
-        follow._set_game_profile("empty")
+        # Holding's final step is blind. Reuse the production holding retreat
+        # so the required random away turn and mirrored return turn cannot be
+        # skipped by the evidence runner.
+        follow._set_game_profile("holding")
         site.set_targets()
         record_start("holding_s4_final_reset", "reset")
-        result = follow._run_reset_sequence(vision, robot)
+        result = follow._run_step3_retreat_sequence(vision, robot)
         ok = _bounded_blind_reset_ok(result)
         reading = result.get("reading") if isinstance(result, dict) else None
         reason = str(result.get("reason") if isinstance(result, dict) else "holding_s4_final_reset_failed")
@@ -811,11 +823,6 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
             return 1
 
         follow._set_game_profile("empty")
-        # End-of-sequence retreat: back away from the just-placed brick by ~2x
-        # the usual reset reverse, then turn a little. Blind/direct sends (the
-        # brick is placed and may be out of view); the Robot layer still floors
-        # to the crawl/breakaway speed and enforces arc-assist (one wheel at 0).
-        _post_game_retreat(robot)
 
         success = all(bool(row.get("ok")) for row in results)
         if success:
@@ -890,11 +897,46 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
         if from_holding_s2:
             return run_holding_s2_place_and_reset()
 
+        if holding_s1_only:
+            follow._set_game_profile("holding")
+            site.set_targets()
+            record_start("holding_s1", "step1")
+            stats = follow._follow_loop(
+                vision,
+                robot,
+                duration_s=float(args.step_timeout_s),
+                reset_after_win=False,
+                stop_after_win=True,
+                stop_after_step2=False,
+                step2_probe_before_forward=False,
+                debug_mode=bool(args.debug_mode),
+            )
+            reading = _step1_stats_reading(stats)
+            ok = _step1_stats_ok(stats, reading)
+            reason = "holding_step1_win" if ok else str(stats.get("last_action") or "holding_step1_failed")
+            decision_log = stats.get("decision_log") if isinstance(stats.get("decision_log"), list) else None
+            if not record_done(
+                "holding_s1",
+                phase="holding_s1",
+                step="step1",
+                ok=ok,
+                reason=reason,
+                reading=reading,
+                result=stats,
+                decision_log=decision_log,
+            ):
+                follow._stop_robot(robot)
+                return 1
+            success = True
+            summary = f"{run_label} attempt {attempt}: {'WIN' if ok else 'captured failure'}"
+            follow._stop_robot(robot)
+            return 0 if ok else 1
+
         if holding_half or holding_s1_s2_only:
             follow._set_game_profile("holding")
             site.set_targets()
 
-            record_start("holding_small_reset", None)
+            record_start("holding_small_reset", None, blind=True)
             result = _run_holding_s1_reset_sequence(vision, robot)
             ok = _holding_reset_ok(result)
             reading = result.get("reading") if isinstance(result, dict) else None
@@ -911,43 +953,61 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
                 follow._stop_robot(robot)
                 return 1
 
+            if holding_half:
+                record_start("holding_s1", "step1")
+                stats = follow._follow_loop(
+                    vision,
+                    robot,
+                    duration_s=float(args.step_timeout_s),
+                    reset_after_win=False,
+                    stop_after_win=True,
+                    stop_after_step2=False,
+                    step2_probe_before_forward=False,
+                    debug_mode=bool(args.debug_mode),
+                )
+                reading = _step1_stats_reading(stats)
+                ok = _step1_stats_ok(stats, reading)
+                reason = "holding_step1_win" if ok else str(stats.get("last_action") or "holding_step1_failed")
+                decision_log = stats.get("decision_log") if isinstance(stats.get("decision_log"), list) else None
+                if not record_done(
+                    "holding_s1",
+                    phase="holding_s1",
+                    step="step1",
+                    ok=ok,
+                    reason=reason,
+                    reading=reading,
+                    result=stats,
+                    decision_log=decision_log,
+                ):
+                    follow._stop_robot(robot)
+                    return 1
+
             if holding_s1_s2_only:
                 setattr(args, "holding_s2_only", True)
             return run_holding_s2_place_and_reset()
 
         follow._set_game_profile("empty")
 
-        if bool(getattr(args, "skip_initial_reset", False)):
-            record_start("start_already_reset", "reset")
-            reading = _read(vision, timeout_s=3.0)
-            reset_cfg = follow._reset_motion_config().get("reverse_turn")
-            reset_cfg = reset_cfg if isinstance(reset_cfg, dict) else {}
-            start_gate_ready = bool(follow._reset_xy_target_ready(reading, reset_cfg))
-            result = {
-                "success": True,
-                "reason": "manual_reset_trusted",
-                "reading": reading,
-                "target_met": True,
-                "start_gate_ready": bool(start_gate_ready),
-            }
-            record_done(
-                "start_already_reset",
-                phase="start_already_reset",
-                step="reset",
-                ok=True,
-                reason=str(result["reason"]),
-                reading=reading,
-                result=result,
-            )
-        else:
-            record_start("reset", "reset")
-            result = follow._run_reset_sequence(vision, robot)
-            ok = _opening_reset_ok(result)
-            reading = result.get("reading") if isinstance(result, dict) else None
-            reason = str(result.get("reason") if isinstance(result, dict) else "reset_failed")
-            if not record_done("reset", phase="reset", step="reset", ok=ok, reason=reason, reading=reading, result=result):
-                follow._stop_robot(robot)
-                return 1
+        # The stack is known to be in front of Leia and not too close. Never
+        # issue an opening backward reset; begin from the current pose.
+        record_start("start_already_reset", "reset")
+        reading = _read(vision, timeout_s=3.0)
+        result = {
+            "success": True,
+            "reason": "opening_no_reverse_reset_trusted",
+            "reading": reading,
+            "target_met": True,
+            "start_gate_ready": True,
+        }
+        record_done(
+            "start_already_reset",
+            phase="start_already_reset",
+            step="reset",
+            ok=True,
+            reason=str(result["reason"]),
+            reading=reading,
+            result=result,
+        )
 
         record_start("step1", "step1")
         stats = follow._follow_loop(
@@ -958,7 +1018,7 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
             stop_after_win=True,
             stop_after_step2=False,
             step2_probe_before_forward=False,
-            debug_mode=False,
+            debug_mode=bool(getattr(args, "debug_mode", False)),
         )
         reading = _step1_stats_reading(stats)
         ok = _step1_stats_ok(stats, reading)
@@ -978,7 +1038,9 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
             return 1
 
         record_start("step2", "step2")
-        result = follow._run_step2_seat_sequence(vision, robot)
+        result = follow._run_step2_seat_sequence(
+            vision, robot, debug_mode=bool(getattr(args, "debug_mode", False))
+        )
         reading = result.get("reading") if isinstance(result, dict) else None
         ok = bool(follow._confirmed_step_result(result))
         reason = str(result.get("reason") if isinstance(result, dict) else "step2_failed")
@@ -995,7 +1057,13 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
             follow._stop_robot(robot)
             return 1
 
-        record_start("empty_step3_lift", "step3")
+        if empty_s1_s2_only:
+            success = True
+            summary = f"{run_label} attempt {attempt}: completed"
+            follow._stop_robot(robot)
+            return 0
+
+        record_start("empty_step3_lift", "step3", blind=True)
         result = follow._run_step3_lift_sequence(vision, robot)
         ok = bool(result.get("success")) if isinstance(result, dict) else False
         reading = result.get("reading") if isinstance(result, dict) else None
@@ -1025,7 +1093,7 @@ def run_full_e2e_cycle(args: argparse.Namespace) -> int:
         # back, to retreat off the just-lifted pose and randomize the approach
         # (creates the gap the crawl then closes). This is the same reposition
         # maneuver the empty game does at its reset.
-        record_start("holding_s1_reset", "reset")
+        record_start("holding_s1_reset", "reset", blind=True)
         reset_result = _run_holding_s1_reset_sequence(vision, robot)
         reset_reading = reset_result.get("reading") if isinstance(reset_result, dict) else None
         reset_ok = _holding_reset_ok(reset_result) or _bounded_blind_reset_ok(reset_result)
@@ -1199,7 +1267,7 @@ def run(args: argparse.Namespace) -> int:
                     stop_after_win=True,
                     stop_after_step2=False,
                     step2_probe_before_forward=False,
-                    debug_mode=False,
+                    debug_mode=bool(getattr(args, "debug_mode", False)),
                 )
                 ok = bool(int(result.get("win_count", 0) or 0) >= 1) and not bool(
                     result.get("step1_confident_worse_hard_stop")
@@ -1209,7 +1277,9 @@ def run(args: argparse.Namespace) -> int:
                     reading = result.get("debug_stop_reading") if isinstance(result.get("debug_stop_reading"), dict) else None
                 reason = "step1_win" if ok else str(result.get("last_action") or "step1_failed")
             elif item == "step2":
-                result = follow._run_step2_seat_sequence(vision, robot)
+                result = follow._run_step2_seat_sequence(
+                    vision, robot, debug_mode=bool(getattr(args, "debug_mode", False))
+                )
                 ok = bool(follow._confirmed_step_result(result))
                 reading = result.get("reading") if isinstance(result, dict) else None
                 reason = str(result.get("reason") if isinstance(result, dict) else "step2_failed")
@@ -1333,13 +1403,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-initial-reset", action="store_true")
     parser.add_argument("--full-e2e-cycle", action="store_true")
     parser.add_argument("--empty-half-cycle", action="store_true")
+    parser.add_argument("--empty-s1-s2-only", action="store_true")
     parser.add_argument("--holding-half-cycle", action="store_true")
+    parser.add_argument("--holding-s1-only", action="store_true")
     parser.add_argument("--holding-s1-s2-only", action="store_true")
     parser.add_argument("--holding-s3-s4-only", action="store_true")
     parser.add_argument("--stop-before-holding-s2", action="store_true")
     parser.add_argument("--from-holding-s2", action="store_true")
     parser.add_argument("--holding-s2-only", action="store_true")
     parser.add_argument("--continue-soft-failures", action="store_true")
+    parser.add_argument(
+        "--debug-mode",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable verbose/debug termination behavior; production telemetry remains enabled.",
+    )
     parser.add_argument("--post-lift-pause-s", type=float, default=POST_LIFT_PAUSE_S)
     parser.add_argument("--pre-holding-lower-pause-s", type=float, default=0.0)
     parser.add_argument("--evidence-file", default=None)
@@ -1353,7 +1431,9 @@ if __name__ == "__main__":
     if (
         bool(parsed.full_e2e_cycle)
         or bool(parsed.empty_half_cycle)
+        or bool(parsed.empty_s1_s2_only)
         or bool(parsed.holding_half_cycle)
+        or bool(parsed.holding_s1_only)
         or bool(parsed.holding_s1_s2_only)
         or bool(parsed.holding_s3_s4_only)
         or bool(parsed.stop_before_holding_s2)

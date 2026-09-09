@@ -1,0 +1,186 @@
+// =====================================================
+// LEIA UNO MOTOR INTERFACE
+//
+// Orin command format:
+//   <left,right,mast>
+//
+// Examples:
+//   <25,25,0>    forward
+//   <-25,-25,0>  backward
+//   <-20,20,0>   pivot left
+//   <20,-20,0>   pivot right
+//   <0,0,40>     mast up
+//   <0,0,-40>    mast down
+//   <0,0,0>      stop everything
+// =====================================================
+
+// Motor-driver pins
+const byte LEFT_FORWARD_PIN  = 5;
+const byte LEFT_REVERSE_PIN  = 6;
+
+const byte RIGHT_FORWARD_PIN = 9;
+const byte RIGHT_REVERSE_PIN = 10;
+
+// Mast direction was previously inverted, so:
+// positive mast command = pin 11
+// negative mast command = pin 3
+const byte MAST_UP_PIN   = 11;
+const byte MAST_DOWN_PIN = 3;
+
+// Change either value to true only if that tread runs backward.
+const bool INVERT_LEFT  = false;
+const bool INVERT_RIGHT = false;
+
+// Safety stop if commands stop arriving.
+const unsigned long WATCHDOG_MS = 250;
+
+char inputBuffer[32];
+byte inputLength = 0;
+bool receivingPacket = false;
+
+unsigned long lastCommandTime = 0;
+
+// -----------------------------------------------------
+// Setup
+// -----------------------------------------------------
+
+void setup() {
+  pinMode(LEFT_FORWARD_PIN, OUTPUT);
+  pinMode(LEFT_REVERSE_PIN, OUTPUT);
+
+  pinMode(RIGHT_FORWARD_PIN, OUTPUT);
+  pinMode(RIGHT_REVERSE_PIN, OUTPUT);
+
+  pinMode(MAST_UP_PIN, OUTPUT);
+  pinMode(MAST_DOWN_PIN, OUTPUT);
+
+  stopEverything();
+
+  Serial.begin(115200);
+  lastCommandTime = millis();
+}
+
+// -----------------------------------------------------
+// Main loop
+// -----------------------------------------------------
+
+void loop() {
+  readSerial();
+
+  if (millis() - lastCommandTime > WATCHDOG_MS) {
+    stopEverything();
+  }
+}
+
+// -----------------------------------------------------
+// Serial packet reader
+// -----------------------------------------------------
+
+void readSerial() {
+  while (Serial.available() > 0) {
+    char c = Serial.read();
+
+    if (c == '<') {
+      receivingPacket = true;
+      inputLength = 0;
+      continue;
+    }
+
+    if (!receivingPacket) {
+      continue;
+    }
+
+    if (c == '>') {
+      inputBuffer[inputLength] = '\0';
+      receivingPacket = false;
+
+      processPacket(inputBuffer);
+      inputLength = 0;
+      continue;
+    }
+
+    if (inputLength < sizeof(inputBuffer) - 1) {
+      inputBuffer[inputLength++] = c;
+    } else {
+      receivingPacket = false;
+      inputLength = 0;
+    }
+  }
+}
+
+// -----------------------------------------------------
+// Parse: left,right,mast
+// -----------------------------------------------------
+
+void processPacket(char* packet) {
+  char* firstComma = strchr(packet, ',');
+
+  if (firstComma == NULL) {
+    return;
+  }
+
+  char* secondComma = strchr(firstComma + 1, ',');
+
+  if (secondComma == NULL) {
+    return;
+  }
+
+  *firstComma = '\0';
+  *secondComma = '\0';
+
+  int left  = constrain(atoi(packet), -100, 100);
+  int right = constrain(atoi(firstComma + 1), -100, 100);
+  int mast  = constrain(atoi(secondComma + 1), -100, 100);
+
+  if (INVERT_LEFT) {
+    left = -left;
+  }
+
+  if (INVERT_RIGHT) {
+    right = -right;
+  }
+
+  setMotor(LEFT_FORWARD_PIN, LEFT_REVERSE_PIN, left);
+  setMotor(RIGHT_FORWARD_PIN, RIGHT_REVERSE_PIN, right);
+  setMotor(MAST_UP_PIN, MAST_DOWN_PIN, mast);
+
+  lastCommandTime = millis();
+}
+
+// -----------------------------------------------------
+// Motor output
+// -----------------------------------------------------
+
+void setMotor(byte forwardPin, byte reversePin, int percent) {
+  percent = constrain(percent, -100, 100);
+
+  int pwm = map(abs(percent), 0, 100, 0, 255);
+
+  if (percent > 0) {
+    analogWrite(forwardPin, pwm);
+    analogWrite(reversePin, 0);
+  }
+  else if (percent < 0) {
+    analogWrite(forwardPin, 0);
+    analogWrite(reversePin, pwm);
+  }
+  else {
+    analogWrite(forwardPin, 0);
+    analogWrite(reversePin, 0);
+  }
+}
+
+// -----------------------------------------------------
+// Safety stop
+// -----------------------------------------------------
+
+void stopEverything() {
+  analogWrite(LEFT_FORWARD_PIN, 0);
+  analogWrite(LEFT_REVERSE_PIN, 0);
+
+  analogWrite(RIGHT_FORWARD_PIN, 0);
+  analogWrite(RIGHT_REVERSE_PIN, 0);
+
+  analogWrite(MAST_UP_PIN, 0);
+  analogWrite(MAST_DOWN_PIN, 0);
+}

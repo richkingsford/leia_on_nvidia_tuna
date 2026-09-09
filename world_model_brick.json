@@ -6,7 +6,8 @@
         "val": "Value/Brightness Margin [0-255]"
     },
     "calibration": {
-        "camera_center_offset_px": 0.0
+        "camera_center_offset_px": 0.0,
+        "distance_scale": 1.3359401693
     },
     "brick": {
         "color": {

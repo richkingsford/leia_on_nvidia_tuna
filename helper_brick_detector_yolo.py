@@ -50,10 +50,23 @@ def _brick_dimension_mm(name: str, default: float) -> float:
         return float(default)
 
 
+def _brick_calibration_value(name: str, default: float) -> float:
+    try:
+        data = json.loads(BRICK_MODEL_PATH.read_text())
+        value = data.get("calibration", {}).get(name, default)
+        parsed = float(value)
+        return parsed if parsed > 0.0 else float(default)
+    except Exception:
+        return float(default)
+
+
 # Known brick dimensions (mm) — source of truth is world_model_brick.json.
 BRICK_WIDTH_MM = _brick_dimension_mm("width", 53.0)
 BRICK_HEIGHT_MM = _brick_dimension_mm("height", 35.4)
 BRICK_DEPTH_MM = _brick_dimension_mm("depth", 20.0)
+# Width-based native OAK distance calibration. Defaults to 1 so generic
+# detector tests and legacy callers retain their original geometry.
+BRICK_DISTANCE_SCALE = _brick_calibration_value("distance_scale", 1.0)
 
 # Camera defaults (overridden at runtime from actual frame size)
 DEFAULT_FRAME_W = 640
@@ -1000,7 +1013,8 @@ class BrickDetector:
         """Estimate distance from apparent brick width in the image."""
         if bbox_width_px <= 0:
             return 999.0
-        return (BRICK_WIDTH_MM * self.focal_px) / float(bbox_width_px)
+        scale = float(getattr(self, "_native_distance_scale", 1.0) or 1.0)
+        return (BRICK_WIDTH_MM * self.focal_px * scale) / float(bbox_width_px)
 
     def _calibrated_distance_from_height_signal(self, height_dist_mm):
         try:

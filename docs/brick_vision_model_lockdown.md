@@ -4,7 +4,7 @@ Date: 2026-06-08
 
 ## What Broke
 
-The livestream/debug vision path was letting the held-brick detector choose the distance model frame by frame. A false "holding" read could switch the stream into the holding target model and apply holding distance calibration, which made the distance jump to 90 mm even while we were practicing empty Step 1.
+The livestream/debug vision path was letting the held-brick detector choose the distance model frame by frame. A false "holding" read could switch the stream into the holding target model, which made the distance jump while we were practicing empty Step 1.
 
 The game script was already safer when forced to the empty profile, but the livestream was not. That made debugging painful because the view could show the wrong model even when the step at hand was an empty step.
 
@@ -18,7 +18,7 @@ For the current empty game, the robot-facing model is locked to the native recta
 
 ## Step Policy
 
-- `empty_s1`, `empty_s2`: native rectangle stack model only. Holding masks, holding distance calibration, and green-edge close-range distance overrides are blocked.
+- `empty_s1`, `empty_s2`: native rectangle stack model only. Holding masks and green-edge close-range distance overrides are blocked.
 - `empty_s3` / lift: keep the same model as far as vision is available; if the camera loses the stack because Leia is close or carrying a brick, the game may continue only through explicit blind scripted steps.
 - `holding_s1`, `holding_s2`, `holding_s3`: held-brick mask model is allowed. The mask lock may keep the held-brick exclusion stable through brief detector flicker.
 
@@ -29,7 +29,7 @@ When the livestream or command-line read is being used for empty S1/S2 motion, t
 - `green_edge_top_strip_width`
 - `green_edge_painted_column_width`
 - `green_edge_close_range_width`
-- holding-calibrated distance reads
+- holding-model distance substitutions
 
 Healthy empty-mode reads should stay on a native-rectangle source such as:
 
@@ -53,7 +53,7 @@ Healthy debug text should include:
 HOLDING: false (...) raw=true/... model=blocked
 ```
 
-It is okay for `raw=true` to appear. That means the side detector noticed green at the top. It is not okay for empty Step 1/2 to show `model=allowed`, a `holding calibrated: ... -> 90mm` line, or green-edge geometry as the active distance source.
+It is okay for `raw=true` to appear. That means the side detector noticed green at the top. It is not okay for empty Step 1/2 to show `model=allowed` or green-edge geometry as the active distance source.
 
 ## Regression Tests
 
@@ -69,7 +69,7 @@ These tests protect the current fix:
 - Short broad top-edge regions do not count as holding.
 - A single top nub does not count as holding.
 - The holding mask lock resets when an empty context blocks the holding model.
-- Empty contexts preserve raw holding diagnostics but never activate holding masking or calibration.
+- Empty contexts preserve raw holding diagnostics but never activate holding masking.
 - Holding contexts still use mask lock behavior for brief flicker.
 
 ## Quick Diagnosis
@@ -79,7 +79,7 @@ If distance jumps between the real estimate and about 90 mm during empty Step 1:
 1. Check `/text` on the livestream.
 2. Confirm the context is `empty_s1` or `empty_s2`.
 3. Confirm the holding line says `model=blocked`.
-4. Confirm there is no `holding calibrated` line.
+4. Confirm the distance source remains the native rectangle stack model.
 5. Confirm geometry does not say `green_edge_top_strip_width`, `green_edge_painted_column_width`, or `green_edge_close_range_width`.
 6. If the stream is in a holding context, restart it with `--vision-context empty_s1`.
 

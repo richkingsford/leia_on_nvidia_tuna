@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 
 import a_follow_the_brick as follow
-from helper_brick_detector_yolo import BrickDetector
+from helper_brick_detector_native_oak import BrickDetector
 from helper_robot_control import Robot
 
 
@@ -514,35 +514,11 @@ def _green_contour_measurement_from_frame(frame, base: dict | None = None) -> di
 
 
 def _install_single_green_contour_fallback() -> None:
-    if getattr(follow, "_frozen_step12_green_contour_fallback_installed", False):
-        return
-    original = follow._read_brick_measurement
-
-    def _green_contour_reading(vision: BrickDetector, *, jump_guard: bool = False) -> dict:
-        reading = original(vision, jump_guard=jump_guard)
-        if bool(reading.get("confident")) and not bool(reading.get("ghost_dist_implausible")):
-            return reading
-        frame = _target_guard_frame(vision)
-        return _green_contour_measurement_from_frame(frame, reading)
-
-    follow._read_brick_measurement = _green_contour_reading
-    follow._frozen_step12_green_contour_fallback_installed = True
+    raise RuntimeError("alternate contour brick vision was removed; use native production vision")
 
 
 def _install_green_contour_override() -> None:
-    if getattr(follow, "_frozen_step12_green_contour_override_installed", False):
-        return
-    original = follow._read_brick_measurement
-
-    def _green_contour_override_reading(vision: BrickDetector, *, jump_guard: bool = False) -> dict:
-        base = original(vision, jump_guard=jump_guard)
-        frame = _target_guard_frame(vision)
-        reading = _green_contour_measurement_from_frame(frame, base)
-        reading["green_contour_override"] = True
-        return reading
-
-    follow._read_brick_measurement = _green_contour_override_reading
-    follow._frozen_step12_green_contour_override_installed = True
+    raise RuntimeError("alternate contour brick vision was removed; use native production vision")
 
 
 class ProgressSite:
@@ -983,6 +959,61 @@ class ProgressSite:
                     '</details>'
                 )
 
+            def gapcrawl_overshoot_html(row: dict | None) -> str:
+                result = (row or {}).get("result") if isinstance(row, dict) else None
+                stats = result.get("stats") if isinstance(result, dict) and isinstance(result.get("stats"), dict) else result
+                entries = stats.get("gapcrawl_action_log") if isinstance(stats, dict) else None
+                if not isinstance(entries, list) or not entries:
+                    return ""
+                rows_html = []
+                overshoot_count = 0
+                for entry in entries[-80:]:
+                    if not isinstance(entry, dict):
+                        continue
+                    crossed = bool(entry.get("x_overshoot"))
+                    overshoot_count += int(crossed)
+                    status = "OVERSHOT" if crossed else "no cross"
+                    cls = " overshoot-row" if crossed else ""
+                    before_x = _fmt_mm(entry.get("before_x_mm"), signed=True)
+                    after_x = _fmt_mm(entry.get("after_x_mm"), signed=True)
+                    before_err = _fmt_mm(entry.get("before_x_err_mm"), signed=True)
+                    after_err = _fmt_mm(entry.get("after_x_err_mm"), signed=True)
+                    frame_bits = []
+                    for frame in list(entry.get("frames") or []):
+                        if not isinstance(frame, dict):
+                            continue
+                        frame_dist = _fmt_mm(frame.get("dist_mm"))
+                        frame_x = _fmt_mm(frame.get("x_mm"), signed=True)
+                        gap_dist = _fmt_mm(entry.get("before_dist_mm"))
+                        gap_x = _fmt_mm(entry.get("before_x_err_mm"), signed=True)
+                        frame_bits.append(
+                            f"I see [dist={html.escape(frame_dist)}, x={html.escape(frame_x)}] "
+                            f"then I'll do {html.escape(str(entry.get('action', 'UNKNOWN')))} "
+                            f"for {html.escape(str(entry.get('duration_ms', '')))}ms "
+                            f"to close the [dist={html.escape(gap_dist)}, x={html.escape(gap_x)}] gap. "
+                            f"<small>{html.escape(str(frame.get('phase') or 'frame'))}</small>"
+                        )
+                    frame_detail = "<br>".join(frame_bits) if frame_bits else "no readback frames"
+                    rows_html.append(
+                        f'<tr class="{cls}"><td>{html.escape(str(entry.get("index", "")))}</td>'
+                        f'<td>{html.escape(str(entry.get("action", "")))}</td>'
+                        f'<td>{html.escape(str(entry.get("duration_ms", "")))} ms</td>'
+                        f'<td>{html.escape(str(entry.get("turn_pwm", "")))}</td>'
+                        f'<td>{html.escape(before_x)} / {html.escape(after_x)}</td>'
+                        f'<td>{html.escape(before_err)} / {html.escape(after_err)}</td>'
+                        f'<td><b>{status}</b><br><small>{frame_detail}</small></td></tr>'
+                    )
+                if not rows_html:
+                    return ""
+                return (
+                    '<details class="overshoot-log">'
+                    f'<summary>X overshoot diagnostics: {overshoot_count} crossing(s), {len(rows_html)} actions</summary>'
+                    '<table class="overshoot-table"><thead><tr>'
+                    '<th>#</th><th>Action</th><th>Pulse</th><th>Turn PWM</th>'
+                    '<th>X before / after</th><th>Error before / after</th><th>Readback</th>'
+                    f'</tr></thead><tbody>{"".join(rows_html)}</tbody></table></details>'
+                )
+
             def decision_log_html(row: dict | None) -> str:
                 entries = (row or {}).get("decision_log") if isinstance(row, dict) else None
                 if not isinstance(entries, list) or not entries:
@@ -1198,6 +1229,7 @@ class ProgressSite:
                         )
                         end_panel = photo_panel(step_label, "end", step_row, axes)
                         decision_html = decision_log_html(step_row)
+                        overshoot_html = gapcrawl_overshoot_html(step_row)
                         return (
                             f'<div class="proof-step">'
                             f'<div class="step-status-stack">'
@@ -1205,7 +1237,7 @@ class ProgressSite:
                             f'</div>'
                             f'{start_panel}'
                             f'{end_panel}'
-                            f'<div class="proof-log">{decision_html}</div>'
+                            f'<div class="proof-log">{overshoot_html}{decision_html}</div>'
                             f'</div>'
                         )
 
@@ -1376,6 +1408,12 @@ class ProgressSite:
     .decision-log {{ margin-top: 3px; padding: 7px 8px; border: 1px solid #d9e0e8; border-radius: 5px; background: #fff; font-size: 11px; color: #253341; overflow-wrap: anywhere; }}
     .decision-log summary {{ cursor: pointer; font-weight: 700; color: #33485b; }}
     .decision-log ol {{ margin: 6px 0 0 18px; padding: 0; display: grid; gap: 4px; }}
+    .overshoot-log {{ margin-top: 5px; padding: 7px 8px; border: 1px solid #e4c3c3; border-radius: 5px; background: #fffafa; font-size: 11px; color: #253341; overflow-wrap: anywhere; }}
+    .overshoot-log summary {{ cursor: pointer; font-weight: 700; color: #8a3030; }}
+    .overshoot-table {{ width: 100%; margin-top: 6px; border-collapse: collapse; font-size: 10px; }}
+    .overshoot-table th, .overshoot-table td {{ padding: 4px 5px; border: 1px solid #eadede; text-align: left; vertical-align: top; }}
+    .overshoot-table th {{ background: #f7eded; color: #6d2929; }}
+    .overshoot-row {{ background: #ffe5e5; color: #7d2222; }}
     .decision-time {{ font-family: ui-monospace, SFMono-Regular, Consolas, monospace; color: #5b6570; }}
     .decision-num {{ font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-weight: 800; }}
     .decision-num.dist {{ color: #0b6b55; }}
@@ -2729,14 +2767,18 @@ def _median_float(values: list[float]) -> float | None:
 
 def _direct_contour_read(vision: BrickDetector) -> dict:
     try:
-        vision.read()
-    except Exception:
-        pass
-    frame = _target_guard_frame(vision)
-    reading = _green_contour_measurement_from_frame(frame)
-    reading["green_contour_override"] = True
-    reading["vision_geometry_source"] = "direct_contour"
-    return reading
+        reading = follow._read_brick_measurement(vision, jump_guard=False)
+    except TypeError:
+        reading = follow._read_brick_measurement(vision)
+    return reading if isinstance(reading, dict) else {}
+
+
+def _native_reading_source_is_valid(vision: BrickDetector, reading: dict | None) -> bool:
+    """Keep the frozen trial on the same native detector as production motion."""
+    expected = getattr(vision, "vision_model_id", None)
+    if expected is None:
+        return True
+    return isinstance(reading, dict) and reading.get("vision_model_id") == str(expected)
 
 
 def _direct_read(vision: BrickDetector, *, timeout_s: float = 2.5) -> dict:
@@ -2802,6 +2844,9 @@ def _direct_live_observed_move(
         live = _direct_contour_read(vision)
         if not isinstance(live, dict) or not bool(live.get("confident")):
             continue
+        if not _native_reading_source_is_valid(vision, live):
+            follow._stop_robot(robot)
+            return live, False
         latest = live
         try:
             if bool(stop_when(live)):
@@ -2815,6 +2860,9 @@ def _direct_live_observed_move(
     if hit and bool(latest.get("confident")):
         return latest, True
     final = _direct_contour_read(vision)
+    if isinstance(final, dict) and not _native_reading_source_is_valid(vision, final):
+        follow._stop_robot(robot)
+        return final, False
     if isinstance(final, dict) and bool(final.get("confident")):
         try:
             if bool(stop_when(final)):
@@ -3040,6 +3088,33 @@ def _direct_dist_live_stop_margin(label: str, cmd: str) -> float:
     return 0.0
 
 
+def _front_virtual_wall_limit_mm(label: str) -> float | None:
+    """Safety floor for empty-game direct Step 2 forward pulses."""
+    if not str(label or "").strip().lower().startswith("step2"):
+        return None
+    if str(follow._active_game_profile() or "").strip().lower() != "empty":
+        return None
+    try:
+        return float(follow._dist_target_mm()) - float(follow._dist_lower_tol_mm())
+    except (TypeError, ValueError):
+        return None
+
+
+def _confirm_front_virtual_wall(vision: BrickDetector, first: dict, limit_mm: float) -> tuple[bool, dict]:
+    """Require two more confident below-limit reads after stopping the wheels."""
+    latest = first
+    for _ in range(2):
+        time.sleep(float(DIRECT_LIVE_SAMPLE_S))
+        latest = _direct_read(vision)
+        try:
+            confirmed = bool(latest.get("confident")) and float(latest.get("dist_mm")) < float(limit_mm)
+        except (TypeError, ValueError):
+            confirmed = False
+        if not confirmed:
+            return False, latest
+    return True, latest
+
+
 def _direct_step2_dist_x_unsafe(reading: dict | None) -> bool:
     if not isinstance(reading, dict):
         return False
@@ -3160,6 +3235,8 @@ def _direct_close_dist(
         bool(initial_reading.get("confident")) or ("reset" in str(label) and initial_dist is not None)
     )
     reading = initial_reading if use_initial else _direct_read(vision)
+    if not _native_reading_source_is_valid(vision, reading):
+        return False, f"{label}_vision_model_mismatch", reading
     if not bool(reading.get("confident")) and not ("reset" in str(label) and _float_or_none(reading.get("dist_mm")) is not None):
         return False, f"{label}_not_confident", reading
     step3_mid_mast_done = False
@@ -3176,6 +3253,14 @@ def _direct_close_dist(
         cmd = "f" if float(dist) > float(target) else "b"
         if cmd == "b" and not bool(allow_back):
             return False, f"{label}_reverse_blocked", reading
+        front_wall_limit = _front_virtual_wall_limit_mm(label) if cmd == "f" else None
+        if front_wall_limit is not None and float(dist) < float(front_wall_limit):
+            _stop_robot(robot)
+            confirmed, confirmed_reading = _confirm_front_virtual_wall(
+                vision, reading, float(front_wall_limit)
+            )
+            suffix = "confirmed" if confirmed else "suspect_unconfirmed"
+            return False, f"{label}_front_virtual_wall_{suffix}", confirmed_reading
         pulse_ms = _direct_dist_pulse_ms(label, old_gap, float(tol))
         def dist_hit(live: dict) -> bool:
             live_dist = _float_or_none(live.get("dist_mm"))
@@ -3189,6 +3274,8 @@ def _direct_close_dist(
             if margin <= 0.0:
                 return False
             if cmd == "f":
+                if front_wall_limit is not None and float(live_dist) < float(front_wall_limit):
+                    return True
                 return float(live_dist) <= float(target) + float(tol) + float(margin)
             if cmd == "b":
                 return float(live_dist) >= float(target) - float(tol) - float(margin)
@@ -3209,6 +3296,9 @@ def _direct_close_dist(
             reading=reading,
             stop_when=dist_hit,
         )
+        if not _native_reading_source_is_valid(vision, next_reading):
+            _stop_robot(robot)
+            return False, f"{label}_vision_model_mismatch_after_{cmd}", next_reading
         if not bool(next_reading.get("confident")):
             time.sleep(0.8)
             retry_reading = _direct_read(vision, timeout_s=8.0)
@@ -3223,6 +3313,13 @@ def _direct_close_dist(
         next_dist = _float_or_none(next_reading.get("dist_mm"))
         if next_dist is None:
             return False, f"{label}_dist_invalid_after_{cmd}", next_reading
+        if front_wall_limit is not None and float(next_dist) < float(front_wall_limit):
+            _stop_robot(robot)
+            confirmed, confirmed_reading = _confirm_front_virtual_wall(
+                vision, next_reading, float(front_wall_limit)
+            )
+            suffix = "confirmed" if confirmed else "suspect_unconfirmed"
+            return False, f"{label}_front_virtual_wall_{suffix}", confirmed_reading
         if str(label).startswith("step2") and _direct_step2_dist_x_unsafe(next_reading):
             next_x = _float_or_none(next_reading.get("x_mm"))
             x_text = "invalid" if next_x is None else f"{float(next_x):.1f}"
@@ -3286,6 +3383,8 @@ def _direct_close_x(
     initial_dist = _float_or_none(initial_reading.get("dist_mm") if isinstance(initial_reading, dict) else None)
     numeric_reset_contract = "reset_x_contract" in str(label) and initial_x is not None and initial_dist is not None
     reading = initial_reading if isinstance(initial_reading, dict) and (bool(initial_reading.get("confident")) or numeric_reset_contract) else _direct_read(vision)
+    if not _native_reading_source_is_valid(vision, reading):
+        return False, f"{label}_vision_model_mismatch", reading
     if not bool(reading.get("confident")) and not numeric_reset_contract:
         return False, f"{label}_not_confident", reading
     if bool(reading.get("confident")):
@@ -3344,8 +3443,17 @@ def _direct_close_x(
             elif outside > 2.0:
                 pulse_ms = max(int(pulse_ms), 300)
         pulse_pwm = int(DIRECT_X_PWM if pwm is None else pwm)
+        front_wall_limit = _front_virtual_wall_limit_mm(label)
+
         def x_hit(live: dict) -> bool:
             live_x = _float_or_none(live.get("x_mm"))
+            if (
+                front_wall_limit is not None
+                and bool(live.get("confident"))
+                and _float_or_none(live.get("dist_mm")) is not None
+                and float(live.get("dist_mm")) < float(front_wall_limit)
+            ):
+                return True
             return live_x is not None and abs(float(live_x) - float(target)) <= float(tol)
 
         next_reading, live_hit = _direct_live_observed_move(
@@ -3357,6 +3465,21 @@ def _direct_close_x(
             reading=reading,
             stop_when=x_hit,
         )
+        if not _native_reading_source_is_valid(vision, next_reading):
+            _stop_robot(robot)
+            return False, f"{label}_vision_model_mismatch_after_{cmd}", next_reading
+        if (
+            front_wall_limit is not None
+            and bool(next_reading.get("confident"))
+            and _float_or_none(next_reading.get("dist_mm")) is not None
+            and float(next_reading.get("dist_mm")) < float(front_wall_limit)
+        ):
+            _stop_robot(robot)
+            confirmed, confirmed_reading = _confirm_front_virtual_wall(
+                vision, next_reading, float(front_wall_limit)
+            )
+            suffix = "confirmed" if confirmed else "suspect_unconfirmed"
+            return False, f"{label}_front_virtual_wall_{suffix}", confirmed_reading
         if not bool(next_reading.get("confident")):
             time.sleep(0.8)
             retry_reading = _direct_read(vision, timeout_s=8.0)

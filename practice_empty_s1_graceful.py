@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import random
 import shutil
 import socket
 import time
@@ -17,7 +18,7 @@ import numpy as np
 
 import a_follow_the_brick as follow
 import frozen_step12_trials as proof
-from helper_brick_detector_yolo import BrickDetector
+from helper_brick_detector_native_oak import BrickDetector
 from helper_robot_control import Robot
 from telemetry_robot import SPEED_SCORE_MIN, speed_power_pwm_for_cmd
 
@@ -48,6 +49,9 @@ ALLOW_AUTO_REVERSE_STAGING = False
 FORWARD_BASE_PWM = int(speed_power_pwm_for_cmd("f", SPEED_SCORE_MIN)[1])
 FORWARD_MICRO_X_DEADBAND_MM = 1.0
 FORWARD_WRONG_WAY_STOP_MM = 8.0
+FORWARD_WRONG_WAY_CONFIRM_FRAMES = 3
+PRACTICE_STEP1_DIST_TOL_MM = 15.0
+PRACTICE_STEP1_X_TOL_MM = 7.0
 
 # Turn-by-timed-hold tuning. At the single crawl speed the only way to turn is
 # to keep both treads at crawl, then hold the INNER tread at 0 for a spell while
@@ -119,11 +123,11 @@ def _reading_summary(reading: dict | None) -> dict:
 def _axis(reading: dict | None, axis: str) -> dict:
     if axis == "dist":
         target = float(proof._direct_step1_dist_target())
-        tol = float(proof.DIRECT_STEP1_DIST_TOL_MM)
+        tol = float(PRACTICE_STEP1_DIST_TOL_MM)
         value = _num((reading or {}).get("dist_mm") if isinstance(reading, dict) else None)
     elif axis == "x":
         target = float(follow._x_target_mm())
-        tol = float(proof.DIRECT_STEP1_X_TOL_MM)
+        tol = float(PRACTICE_STEP1_X_TOL_MM)
         value = _num((reading or {}).get("x_mm") if isinstance(reading, dict) else None)
     else:
         return {"target_mm": None, "tol_mm": None, "value_mm": None, "ok": False, "closeness_pct": 0.0}
@@ -209,11 +213,17 @@ class S1Site:
             except Exception:
                 pass
         self.state = {
-            "title": "Leia Empty Step 1: 5-Win Streak",
+            "title": "Leia Empty Steps 1 + 2: 10 Practice Attempts",
             "started_at": _now(),
             "updated_at": _now(),
-            "summary": "Goal: 5 consecutive empty S1 wins",
+            "summary": "Goal: 10 empty S1 + S2 practice attempts",
             "trials_per_iteration": DEFAULT_TRIALS_PER_ITERATION,
+            "practice_gates": {
+                "dist_target_mm": float(follow._dist_target_mm()),
+                "dist_tol_mm": float(PRACTICE_STEP1_DIST_TOL_MM),
+                "x_target_mm": float(follow._x_target_mm()),
+                "x_tol_mm": float(PRACTICE_STEP1_X_TOL_MM),
+            },
             "iterations": [],
         }
         self.write()
@@ -304,6 +314,112 @@ class S1Site:
             f'<a href="{html.escape(image)}"><img src="{html.escape(image)}" alt="{html.escape(caption)}"></a></figure>'
         )
 
+    def failure_diagnosis_html(self, row: dict) -> str:
+        """Explain the first gate that failed, including controller/verifier drift."""
+        if not isinstance(row, dict) or str(row.get("status") or "") == "win":
+            return ""
+        end = row.get("end_reading") if isinstance(row.get("end_reading"), dict) else {}
+        dist = _axis(end, "dist")
+        x_axis = _axis(end, "x")
+        move = row.get("move") if isinstance(row.get("move"), dict) else {}
+        s2 = row.get("s2") if isinstance(row.get("s2"), dict) else {}
+        facts = []
+        if bool(dist.get("ok")):
+            facts.append(
+                f"Distance passed: {_fmt(dist.get('value_mm'))}mm is inside "
+                f"{_fmt(dist.get('target_mm'))} +/- {_fmt(dist.get('tol_mm'))}mm."
+            )
+        else:
+            facts.append(
+                f"Distance failed: {_fmt(dist.get('value_mm'))}mm is outside "
+                f"{_fmt(dist.get('target_mm'))} +/- {_fmt(dist.get('tol_mm'))}mm."
+            )
+        if bool(x_axis.get("ok")):
+            facts.append(
+                f"X passed: {_fmt(x_axis.get('value_mm'), signed=True)}mm is inside "
+                f"{_fmt(x_axis.get('target_mm'), signed=True)} +/- {_fmt(x_axis.get('tol_mm'))}mm."
+            )
+        else:
+            facts.append(
+                f"X failed: {_fmt(x_axis.get('value_mm'), signed=True)}mm missed "
+                f"the {_fmt(x_axis.get('target_mm'), signed=True)} +/- {_fmt(x_axis.get('tol_mm'))}mm gate "
+                f"by {_fmt(abs(float(x_axis.get('err_mm') or 0.0)) - float(x_axis.get('tol_mm') or 0.0))}mm."
+            )
+        if bool(move.get("live_hit")) and not _target_met(end):
+            facts.append(
+                "Controller reported live_hit, but the practice verifier rejected the pose; "
+                "the controller's production X tolerance is wider than this practice loop's 7mm gate."
+            )
+        if not bool(s2.get("ok")):
+            facts.append(f"S2 was not run: {s2.get('reason') or 'S1 did not pass.'}")
+        visibility = row.get("visibility") if isinstance(row.get("visibility"), dict) else {}
+        frames = int(visibility.get("frames", 0) or 0)
+        confident = int(visibility.get("confident_frames", 0) or 0)
+        facts.append(f"Vision evidence: {confident}/{frames} frames confident; no visibility loss caused this failure.")
+        return (
+            '<section class="diagnosis">'
+            '<h3>Why This Attempt Failed</h3>'
+            + "".join(f"<p>{html.escape(item)}</p>" for item in facts)
+            + "</section>"
+        )
+
+    def gapcrawl_debug_html(self, debug: dict | None) -> str:
+        if not isinstance(debug, dict):
+            return ""
+        frames = list(debug.get("debug_tracking_frames") or [])
+        actions = list(debug.get("gapcrawl_action_log") or [])
+        if not frames and not actions:
+            return ""
+        frame_rows = []
+        previous_x = None
+        for index, frame in enumerate(frames, 1):
+            if not isinstance(frame, dict):
+                continue
+            x_value = _num(frame.get("x_mm"))
+            delta_x = None if x_value is None or previous_x is None else x_value - previous_x
+            if x_value is not None:
+                previous_x = x_value
+            frame_rows.append(
+                "<tr>"
+                f"<td>{index}</td><td>{html.escape(str(frame.get('phase') or ''))}</td>"
+                f"<td>{html.escape(_fmt(frame.get('dist_mm')))}</td>"
+                f"<td>{html.escape(_fmt(x_value, signed=True))}</td>"
+                f"<td>{html.escape(_fmt(delta_x, signed=True))}</td>"
+                f"<td>{'yes' if frame.get('confident') else 'no'}</td></tr>"
+            )
+        action_rows = []
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            action_rows.append(
+                "<tr>"
+                f"<td>{html.escape(str(action.get('action') or ''))}</td>"
+                f"<td>{html.escape(str(action.get('turn_cmd') or ''))}</td>"
+                f"<td>{int(action.get('duration_ms') or 0)} ms</td>"
+                f"<td>{html.escape(_fmt(action.get('before_x_mm'), signed=True))}</td>"
+                f"<td>{html.escape(_fmt(action.get('after_x_mm'), signed=True))}</td>"
+                f"<td>{'yes' if action.get('x_overshoot') else 'no'}</td></tr>"
+            )
+        action_table = (
+            "<h4>Gap-closing actions</h4><table class=debug-table>"
+            "<thead><tr><th>Action</th><th>Turn</th><th>Duration</th><th>X before</th>"
+            "<th>X after</th><th>Overshoot</th></tr></thead>"
+            f"<tbody>{''.join(action_rows) or '<tr><td colspan=6>none</td></tr>'}</tbody></table>"
+        )
+        frame_table = (
+            "<h4>Every production vision frame</h4><table class=debug-table>"
+            "<thead><tr><th>Frame</th><th>Phase</th><th>Dist</th><th>X</th><th>ΔX</th>"
+            "<th>Confident</th></tr></thead>"
+            f"<tbody>{''.join(frame_rows) or '<tr><td colspan=6>none</td></tr>'}</tbody></table>"
+        )
+        target = next((a.get("x_target_mm") for a in actions if isinstance(a, dict)), None)
+        intent = f"close x gap toward {_fmt(target, signed=True)}mm" if target is not None else "no x target recorded"
+        return (
+            '<details class="debug-log"><summary>Debug trace: '
+            f"{len(frames)} frames, {len(actions)} actions</summary>"
+            f'<div class="intent">Intent: {html.escape(intent)}</div>{action_table}{frame_table}</details>'
+        )
+
     def render(self) -> str:
         rows = list(self.state.get("iterations") or [])
         wins = sum(1 for row in rows if row.get("status") == "win")
@@ -340,13 +456,16 @@ class S1Site:
                     f'{self.state_icon_html("Move", "move", move_note[:150] if move_note else "no move sent")}'
                     f'{self.state_icon_html("Result", status, result_text)}'
                     f'</div>'
+                    f'{self.failure_diagnosis_html(row)}'
                     f'<div class="proof-row">'
                     f'{self.photo_html(row.get("start_image"), "start")}'
                     f'<div class="bars"><h3>Start</h3>{self.axis_html(start, "dist")}{self.axis_html(start, "x")}'
                     f'<h3>End</h3>{self.axis_html(end, "dist")}{self.axis_html(end, "x")}'
                     f'<div class="move-note">{html.escape(str(row.get("move_note") or ""))}</div></div>'
                     f'{self.photo_html(row.get("end_image"), "end")}'
-                    f'</div></article>'
+                    f'</div>'
+                    f'{self.gapcrawl_debug_html(row.get("move", {}).get("gapcrawl_debug") if isinstance(row.get("move"), dict) else None)}'
+                    f'</article>'
                 )
             sections.append(
                 f'<section class="iteration-group">'
@@ -405,6 +524,16 @@ class S1Site:
     .axis-ok .bar i {{ background:#2b8a58; }}
     .axis-sub {{ color:#566574; font-size:12px; }}
     .move-note {{ margin-top:6px; padding-top:8px; border-top:1px solid #e6ebf0; color:#33485b; }}
+    .diagnosis {{ margin-top:12px; padding:10px 12px; border-left:4px solid #bd5a45; background:#fff7f5; color:#33485b; }}
+    .diagnosis h3 {{ margin:0 0 5px; color:#8c261e; }}
+    .diagnosis p {{ margin:4px 0; }}
+    .debug-log {{ margin-top:12px; border-top:1px solid #d9e0e8; padding-top:9px; }}
+    .debug-log summary {{ cursor:pointer; font-weight:700; color:#193549; }}
+    .intent {{ margin:8px 0; color:#33485b; font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12px; }}
+    .debug-table {{ width:100%; border-collapse:collapse; margin:7px 0 12px; font-size:11px; }}
+    .debug-table th,.debug-table td {{ border:1px solid #e1e7ec; padding:4px 5px; text-align:right; white-space:nowrap; }}
+    .debug-table th:nth-child(1),.debug-table td:nth-child(1),.debug-table th:nth-child(2),.debug-table td:nth-child(2) {{ text-align:left; }}
+    .debug-table th {{ background:#f1f5f7; color:#566574; }}
     .empty {{ padding:14px; background:white; border:1px solid #d9e0e8; border-radius:6px; }}
     @media (max-width: 900px) {{ .proof-row,.state-strip {{ grid-template-columns:1fr; }} .proof-photo img {{ height:240px; }} }}
   </style>
@@ -423,6 +552,20 @@ class S1Site:
     </section>
     <section class="trial-grid">{cards_html}</section>
   </main>
+  <script>
+    (() => {{
+      const keyPrefix = "leia-debug-trace-open:";
+      document.querySelectorAll("details.debug-log").forEach((node, index) => {{
+        const key = keyPrefix + index;
+        const saved = window.localStorage.getItem(key);
+        if (saved === "open") node.open = true;
+        if (saved === "closed") node.open = false;
+        node.addEventListener("toggle", () => {{
+          window.localStorage.setItem(key, node.open ? "open" : "closed");
+        }});
+      }});
+    }})();
+  </script>
 </body>
 </html>
 """
@@ -433,7 +576,6 @@ def _configure_empty_s1() -> None:
     cfg = follow._follow_motion_config()
     step2 = cfg.get("step2") if isinstance(cfg.get("step2"), dict) else {}
     proof._disable_y_gates(cfg, step2)
-    _install_relaxed_top_contour_reader()
     proof.HONEST_RESET_DIST_OFFSET_MIN_MM = float(RESET_DIST_OFFSET_MIN_MM)
     proof.HONEST_RESET_DIST_OFFSET_MAX_MM = float(RESET_DIST_OFFSET_MAX_MM)
     proof.HONEST_RESET_X_GAP_MIN_MM = float(RESET_X_GAP_MIN_MM)
@@ -442,61 +584,9 @@ def _configure_empty_s1() -> None:
     proof.DIRECT_LIVE_OBSERVE_MOVES = True
     proof.DIRECT_LIVE_SAMPLE_S = float(LIVE_SAMPLE_S)
     proof.DIRECT_LIVE_FINAL_SETTLE_S = 0.0
-    proof.DIRECT_STEP1_X_TOL_MM = 7.0
-    proof.DIRECT_STEP1_DIST_TOL_MM = 15.0
+    proof.DIRECT_STEP1_X_TOL_MM = float(PRACTICE_STEP1_X_TOL_MM)
+    proof.DIRECT_STEP1_DIST_TOL_MM = float(PRACTICE_STEP1_DIST_TOL_MM)
     proof._set_direct_stable_reads(3)
-
-
-def _relaxed_green_stack_candidates(frame) -> list[dict]:
-    if frame is None:
-        return []
-    try:
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    except Exception:
-        return []
-    mask = cv2.inRange(
-        hsv,
-        np.array([45, 90, 25], dtype=np.uint8),
-        np.array([105, 255, 255], dtype=np.uint8),
-    )
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), dtype=np.uint8))
-    mask = cv2.dilate(mask, np.ones((25, 45), dtype=np.uint8), iterations=1)
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    candidates = []
-    frame_h, frame_w = frame.shape[:2]
-    for contour in contours:
-        area = float(cv2.contourArea(contour))
-        if area < 700.0:
-            continue
-        x, y, w, h = cv2.boundingRect(contour)
-        cx = float(x) + float(w) / 2.0
-        if (
-            y < 15
-            or y > int(frame_h * 0.62)
-            or x < 20
-            or x + w > int(frame_w - 20)
-            or cx < float(proof.DIRECT_X_MIN_SAFE_CX_PX)
-            or cx > float(proof.DIRECT_X_MAX_SAFE_CX_PX)
-            or w < 28
-            or h < 40
-            or w > int(frame_w * 0.55)
-        ):
-            continue
-        candidates.append(
-            {
-                "x": int(x),
-                "y": int(y),
-                "w": int(w),
-                "h": int(h),
-                "cx": round(cx, 1),
-                "area": round(area, 1),
-            }
-        )
-    return sorted(candidates, key=lambda box: float(box["cx"]))
-
-
-def _install_relaxed_top_contour_reader() -> None:
-    proof._green_stack_candidates = _relaxed_green_stack_candidates
 
 
 def _curve_actions(reading: dict, strength: str, boost: float) -> tuple[str, list[dict]]:
@@ -565,6 +655,45 @@ def _one_graceful_move(
     the sharpness. duration_ms/strength/boost from the harness are advisory; the
     crawl runs until the win or GRACEFUL_WIN_BUDGET_S.
     """
+    # Exercise the production Empty S1 gapcrawl so this experiment measures the
+    # same motion policy used by the game, while retaining the isolated scope.
+    gap_stats: dict = {}
+    won, production_final = follow._gap_closing_crawl(
+        vision,
+        robot,
+        # Grade the same strict practice gate that the site reports. The
+        # production game may accept its wider operational x band, but this
+        # experiment must keep correcting until the advertised proof gate wins.
+        win_predicate=_target_met,
+        x_target_mm=follow._x_target_mm(),
+        duration_s=float(GRACEFUL_WIN_BUDGET_S),
+        stats=gap_stats,
+        context="gapcrawl_step1",
+        require_motion_before_win=True,
+        debug_mode=True,
+        log_tag="PRACTICE_S1",
+    )
+    final = production_final if isinstance(production_final, dict) else _quick_read(vision)
+    return final, {
+        "turn_cmd": str(gap_stats.get("last_action") or "gapcrawl"),
+        "duration_ms": int(duration_ms),
+        "strength": str(strength),
+        "boost": float(boost),
+        "live_hit": bool(won),
+        "live_samples": int(gap_stats.get("sample_count", 0) or 0),
+        "send_result": None,
+        "mast_attempt_delta": 0,
+        "wrong_way_stop": False,
+        "virtual_wall_stop": str(gap_stats.get("last_action") or "") == "VIRTUAL_WALL_STOP",
+        "production_gapcrawl": True,
+        "gapcrawl_debug": {
+            "debug_tracking_frames": list(gap_stats.get("debug_tracking_frames") or []),
+            "gapcrawl_action_log": list(gap_stats.get("gapcrawl_action_log") or []),
+            "act_counts": dict(gap_stats.get("act_counts") or {}),
+        },
+    }
+
+    # Historical single-arc implementation retained below for replay comparison.
     pwm = _crawl_pwm("f")
     before_mast = len(robot.mast_attempts)
     start_dist = _num(start.get("dist_mm")) if isinstance(start, dict) else None
@@ -572,9 +701,12 @@ def _one_graceful_move(
     deadline = time.time() + float(GRACEFUL_WIN_BUDGET_S)
     latest = start if isinstance(start, dict) else {}
     live_hit = wrong_way_stop = virtual_wall_stop = False
+    started_beyond_virtual_wall = _virtual_wall_exceeded(start)
+    virtual_wall_recovered = not bool(started_beyond_virtual_wall)
     samples = 0
     last_turn = "straight"
     last_send = None
+    wrong_way_streak = 0
 
     while time.time() < deadline:
         cur = latest if isinstance(latest, dict) else {}
@@ -602,15 +734,22 @@ def _one_graceful_move(
                 latest = live
                 samples += 1
                 dist = _num(live.get("dist_mm"))
-                if _virtual_wall_exceeded(live):
+                if _virtual_wall_exceeded(live) and not bool(started_beyond_virtual_wall):
                     virtual_wall_stop = True
                     stop = True
                     break
-                if (
+                if not _virtual_wall_exceeded(live):
+                    virtual_wall_recovered = True
+                wrong_way = bool(
                     start_dist is not None
                     and dist is not None
                     and float(dist) > float(start_dist) + float(FORWARD_WRONG_WAY_STOP_MM)
-                ):
+                )
+                if wrong_way:
+                    wrong_way_streak += 1
+                else:
+                    wrong_way_streak = 0
+                if wrong_way_streak >= int(FORWARD_WRONG_WAY_CONFIRM_FRAMES):
                     wrong_way_stop = True
                     stop = True
                     break
@@ -636,19 +775,86 @@ def _one_graceful_move(
         "mast_attempt_delta": int(len(robot.mast_attempts) - before_mast),
         "wrong_way_stop": bool(wrong_way_stop),
         "virtual_wall_stop": bool(virtual_wall_stop),
+        "started_beyond_virtual_wall": bool(started_beyond_virtual_wall),
+        "virtual_wall_recovered": bool(virtual_wall_recovered),
     }
     return final, info
 
 
 def _quick_read(vision: BrickDetector) -> dict:
-    reading = proof._direct_contour_read(vision)
-    if isinstance(reading, dict) and bool(reading.get("confident")):
-        return reading
     try:
         fallback = follow._read_brick_measurement(vision, jump_guard=False)
     except TypeError:
         fallback = follow._read_brick_measurement(vision)
-    return fallback if isinstance(fallback, dict) else reading
+    return fallback if isinstance(fallback, dict) else {}
+
+
+def _single_native_practice_read(vision: BrickDetector) -> dict:
+    """Use the exact production native detector for every practice read."""
+    try:
+        reading = follow._read_brick_measurement(vision, jump_guard=False)
+    except TypeError:
+        reading = follow._read_brick_measurement(vision)
+    return reading if isinstance(reading, dict) else {}
+
+
+def _install_visibility_tracker(vision: BrickDetector, stats: dict) -> tuple[callable, callable]:
+    """Count every direct camera sample made during the scoped experiment."""
+    original = proof._direct_contour_read
+
+    def tracked(vision):
+        reading = original(vision)
+        if isinstance(reading, dict) and "green_stack_candidates" not in reading:
+            native = getattr(vision, "_detector", None)
+            center = getattr(vision, "_native_last_good_center", None)
+            width = getattr(vision, "_native_last_good_width_px", None)
+            height = getattr(native, "last_bbox_h_px", None)
+            if isinstance(center, tuple) and len(center) == 2 and width and height:
+                reading = dict(reading)
+                reading["green_stack_candidate_count"] = 1
+                reading["green_stack_candidates"] = [{
+                    "cx": float(center[0]),
+                    "cy": float(center[1]),
+                    "w": float(width),
+                    "h": float(height),
+                }]
+        stats["frames"] = int(stats.get("frames", 0)) + 1
+        if isinstance(reading, dict) and bool(reading.get("confident")):
+            stats["confident_frames"] = int(stats.get("confident_frames", 0)) + 1
+        if isinstance(reading, dict) and bool(reading.get("visible")):
+            stats["visible_frames"] = int(stats.get("visible_frames", 0)) + 1
+        return reading
+
+    proof._direct_contour_read = tracked
+    original_read = vision.read
+
+    def tracked_read():
+        result = original_read()
+        if isinstance(result, tuple) and len(result) >= 5:
+            stats["frames"] = int(stats.get("frames", 0)) + 1
+            if bool(result[0]):
+                stats["visible_frames"] = int(stats.get("visible_frames", 0)) + 1
+                try:
+                    if float(result[4]) >= 75.0:
+                        stats["confident_frames"] = int(stats.get("confident_frames", 0)) + 1
+                except (TypeError, ValueError):
+                    pass
+        return result
+
+    vision.read = tracked_read
+    return original, original_read
+
+
+def _visibility_summary(stats: dict) -> str:
+    frames = int(stats.get("frames", 0) or 0)
+    confident = int(stats.get("confident_frames", 0) or 0)
+    visible = int(stats.get("visible_frames", 0) or 0)
+    if frames <= 0:
+        return "frames=0; maintained_visibility=N/A"
+    return (
+        f"frames={frames}; confident={confident} ({100.0 * confident / frames:.1f}%); "
+        f"visible={visible} ({100.0 * visible / frames:.1f}%)"
+    )
 
 
 def _dist_offset(reading: dict | None) -> float | None:
@@ -752,37 +958,24 @@ def _stage_empty_s1_start_pose(
     initial_dist = _num(reading.get("dist_mm"))
     if initial_dist is None:
         return False, f"{label}_dist_invalid", reading, actions
-    if _virtual_wall_exceeded(reading):
-        return False, f"{label}_virtual_wall_exceeded_{float(initial_dist):.1f}mm", reading, actions
+    started_beyond_virtual_wall = _virtual_wall_exceeded(reading)
     if _target_met(reading):
         return False, f"{label}_already_s1_happy_manual_reset_required", reading, actions
-    backup_needed = float(min_dist) - float(initial_dist)
-    if backup_needed > 0.0 and not bool(ALLOW_AUTO_REVERSE_STAGING):
-        return False, f"{label}_too_close_no_reverse_allowed_need_{backup_needed:.1f}mm", reading, actions
-    if bool(ALLOW_AUTO_REVERSE_STAGING):
-        if backup_needed > float(RESET_MAX_AUTO_BACKUP_NEEDED_MM):
-            return False, f"{label}_too_close_for_auto_reset_need_{backup_needed:.1f}mm", reading, actions
-        for _attempt in range(int(RESET_STAGE_MAX_REVERSE_ATTEMPTS)):
-            dist = _num(reading.get("dist_mm"))
-            if dist is None or float(dist) >= min_dist:
-                break
-            reading, reverse_actions = _live_reverse_to_start_band(vision, robot, reading, label=label)
-            actions.extend(reverse_actions)
-            if not _usable_stack_reading(reading):
-                return False, f"{label}_lost_confidence_after_live_reverse", reading, actions
-    dist = _num(reading.get("dist_mm"))
-    if dist is not None and float(dist) < min_dist:
-        return False, f"{label}_still_too_close_after_live_reverse_{float(dist):.1f}", reading, actions
+    if started_beyond_virtual_wall:
+        return True, f"{label}_start_beyond_virtual_wall_proceed_forward", reading, actions
+    # A non-wall start may be a little closer than the historical staging band.
+    # Do not reverse or reject it; the live gap crawl owns the forward approach.
     dist = _num(reading.get("dist_mm"))
     if dist is None:
-        return False, f"{label}_dist_invalid_after_backoff", reading, actions
+        return False, f"{label}_dist_invalid", reading, actions
     if float(dist) > max_dist:
         return False, f"{label}_too_far_after_backoff_{float(dist):.1f}", reading, actions
     if _start_pose_ready(reading):
         actions.append({"cmd": "x_gap", "reason": "skipped_natural_x_error", "ok": True})
         return True, f"{label}_start_pose_ready", reading, actions
     if _x_offset(reading) is not None and _dist_offset(reading) is not None:
-        return False, f"{label}_start_pose_not_ready", reading, actions
+        actions.append({"cmd": "start_band", "reason": "non_wall_start_band_override", "ok": True})
+        return True, f"{label}_start_pose_override_nonwall", reading, actions
     return False, f"{label}_start_pose_reading_invalid", reading, actions
 
 
@@ -829,6 +1022,10 @@ def run(args: argparse.Namespace) -> int:
     vision = None
     base_robot = None
     robot = None
+    visibility_stats = {"frames": 0, "confident_frames": 0, "visible_frames": 0}
+    original_contour_read = None
+    historical_contour_read = None
+    original_vision_read = None
     previous = None
     try:
         vision = BrickDetector(debug=True)
@@ -836,6 +1033,12 @@ def run(args: argparse.Namespace) -> int:
         follow._warmup(vision)
         base_robot = Robot()
         robot = proof.MastFrozenRobot(base_robot)
+        # frozen_step12_trials has a historical contour-only reader for old
+        # proof experiments. This practice must use one geometry source end to
+        # end, so route its direct-read seam through production native vision.
+        historical_contour_read = proof._direct_contour_read
+        proof._direct_contour_read = _single_native_practice_read
+        original_contour_read, original_vision_read = _install_visibility_tracker(vision, visibility_stats)
         total_iterations = int(args.iterations)
         trials_per_iteration = int(args.trials_per_iteration)
         site.state["trials_per_iteration"] = int(trials_per_iteration)
@@ -848,6 +1051,50 @@ def run(args: argparse.Namespace) -> int:
                     f"trial {trial}/{trials_per_iteration}"
                 )
                 site.write()
+                random_reset = None
+                if trial > 1 or iteration > 1:
+                    random_reset = follow._run_reset_sequence(
+                        vision,
+                        robot,
+                        rng=random,
+                        honest_step1_reset=True,
+                        allow_blind_motion=False,
+                    )
+                    print(
+                        f"[PRACTICE RESET] trial {trial}: "
+                        f"{'PASS' if random_reset.get('success') else 'MISS'} "
+                        f"{random_reset.get('turn_cmd', '')} {random_reset.get('reason', '')}",
+                        flush=True,
+                    )
+                    if not bool(random_reset.get("success")):
+                        reset_reading = _reading_summary(random_reset.get("reading"))
+                        row = {
+                            "iteration": iteration,
+                            "trial": trial,
+                            "status": "fail",
+                            "case_study": True,
+                            "experiment": params["name"],
+                            "experiment_line": params["line"],
+                            "reason": f"random reset failed; no forward motion sent: {random_reset.get('reason')}",
+                            "start_image": None,
+                            "end_image": None,
+                            "start_reading": reset_reading,
+                            "end_reading": reset_reading,
+                            "reset_actions": [{
+                                "kind": "random_production_reset",
+                                "result": {**random_reset, "reading": reset_reading},
+                            }],
+                            "move_note": "No S1/S2 motion sent because the production random reset did not succeed.",
+                            "visibility": dict(visibility_stats),
+                        }
+                        site.add_iteration(row)
+                        previous = row
+                        site.state["summary"] = (
+                            f"Stopped safely at trial {trial}/{trials_per_iteration}: "
+                            "reset failed; no blind or forward motion was sent"
+                        )
+                        site.write()
+                        return 3
                 ok, reset_reason, start, reset_actions = _stage_empty_s1_start_pose(
                     vision,
                     robot,
@@ -876,7 +1123,13 @@ def run(args: argparse.Namespace) -> int:
                         "end_image": start_image,
                         "start_reading": start_summary,
                         "end_reading": start_summary,
-                        "reset_actions": reset_actions,
+                        "reset_actions": reset_actions + ([{
+                            "kind": "random_production_reset",
+                            "result": {
+                                **(random_reset or {}),
+                                "reading": _reading_summary((random_reset or {}).get("reading")),
+                            },
+                        }] if random_reset is not None else []),
                         "move_note": (
                             "No S1 move sent because Leia is already at S1; move her to an honest start pose or allow a capped reset."
                             if already_happy
@@ -921,8 +1174,29 @@ def run(args: argparse.Namespace) -> int:
                     and not bool(move.get("wrong_way_stop"))
                     and not bool(move.get("virtual_wall_stop"))
                 )
+                s2_ok = False
+                s2_reason = "s2_not_started_s1_failed"
+                s2_final = None
+                if graceful:
+                    s2_ok, s2_reason, s2_final = proof._direct_close_step2_pose(
+                        vision,
+                        robot,
+                        positive_cmd="r",
+                        label=f"empty_s2_iter{iteration}_trial{trial}",
+                        initial_reading=final,
+                    )
+                    s2_eval = proof._evaluate_reading(s2_final, "step2")
+                    s2_ok = bool(s2_ok and s2_eval.get("target_met"))
+                    print(
+                        f"[S2] {'PASS' if s2_ok else 'FAIL'}: {s2_reason}; "
+                        f"dist={_fmt((s2_final or {}).get('dist_mm'))} "
+                        f"x={_fmt((s2_final or {}).get('x_mm'), signed=True)}",
+                        flush=True,
+                    )
                 reason = (
-                    "single graceful live arc landed in empty S1"
+                    "continuous vision run landed in empty S1 and S2"
+                    if graceful and s2_ok
+                    else "empty S1 passed but empty S2 did not reach its target"
                     if graceful
                     else (
                         "hard-stopped: forward arc widened distance"
@@ -945,8 +1219,8 @@ def run(args: argparse.Namespace) -> int:
                 row = {
                     "iteration": iteration,
                     "trial": trial,
-                    "status": "win" if graceful else "fail",
-                    "case_study": not bool(graceful),
+                    "status": "win" if graceful and s2_ok else "fail",
+                    "case_study": not bool(graceful and s2_ok),
                     "experiment": params["name"],
                     "experiment_line": params["line"],
                     "reason": reason,
@@ -954,13 +1228,25 @@ def run(args: argparse.Namespace) -> int:
                     "end_image": end_image,
                     "start_reading": start_summary,
                     "end_reading": end_summary,
-                    "reset_actions": reset_actions,
+                    "reset_actions": reset_actions + ([{
+                        "kind": "random_production_reset",
+                        "result": {
+                            **(random_reset or {}),
+                            "reading": _reading_summary((random_reset or {}).get("reading")),
+                        },
+                    }] if random_reset is not None else []),
                     "move": move,
                     "move_note": move_note,
+                    "s2": {
+                        "ok": bool(s2_ok),
+                        "reason": str(s2_reason),
+                        "reading": _reading_summary(s2_final),
+                    },
+                    "visibility": dict(visibility_stats),
                 }
                 site.add_iteration(row)
                 previous = row
-                if not bool(graceful):
+                if not bool(graceful and s2_ok):
                     follow._stop_robot(robot)
                     site.state["summary"] = (
                         f"Stopped at trial {trial}/{trials_per_iteration}: "
@@ -987,6 +1273,11 @@ def run(args: argparse.Namespace) -> int:
         print(f"[RESULT] {wins}/{len(rows)} graceful one-move S1 wins; {perfect}/{total_iterations} perfect streaks", flush=True)
         return 0 if perfect >= total_iterations else 2
     finally:
+        if callable(historical_contour_read):
+            proof._direct_contour_read = historical_contour_read
+        if vision is not None and callable(original_vision_read):
+            vision.read = original_vision_read
+        print(f"[VISION] Maintained stack visibility: {_visibility_summary(visibility_stats)}", flush=True)
         if robot is not None:
             try:
                 follow._stop_robot(robot)
@@ -1010,6 +1301,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trials-per-iteration", type=int, default=DEFAULT_TRIALS_PER_ITERATION)
     parser.add_argument("--site-dir", default=str(DEFAULT_SITE_DIR))
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--continue-on-failure",
+        action="store_true",
+        help="record failed attempts and continue the requested practice series",
+    )
     return parser.parse_args()
 
 

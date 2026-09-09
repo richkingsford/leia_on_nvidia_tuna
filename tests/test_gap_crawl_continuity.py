@@ -31,8 +31,8 @@ def _crawl_config():
         "micro_x_deadband_mm": 1.0,
         "poll_s": 0.055,
         "command_overlap_ms": 100,
-        "lost_confident_frames_before_stop": 10,
-        "lost_confident_grace_s": 3.0,
+        "lost_confident_frames_before_stop": 3,
+        "lost_confident_grace_s": 0.0,
         "sustained_jump_pause_s": 0.25,
     }
 
@@ -92,11 +92,11 @@ class TestGapCrawlContinuity(unittest.TestCase):
         send_gaps = [later[0] - earlier[0] for earlier, later in zip(sends, sends[1:])]
         self.assertTrue(all(gap < 0.3 for gap in send_gaps))
 
-    def test_confidence_loss_does_not_stop_on_tenth_frame_before_grace(self):
+    def test_confidence_loss_does_not_stop_before_third_frame(self):
         read_count = 0
         readings = [_confident_reading()] + [
             {"confident": False, "visible": False, "reason": "not_visible"}
-            for _ in range(10)
+            for _ in range(2)
         ] + [_confident_reading()]
 
         def read(*_args, **_kwargs):
@@ -116,25 +116,22 @@ class TestGapCrawlContinuity(unittest.TestCase):
         self.assertEqual(recovery_calls, [])
         self.assertIsNone(stats.get("gapcrawl_confidence_pause_count"))
 
-    def test_confidence_loss_waits_full_grace_before_visibility_recovery(self):
+    def test_confidence_loss_stops_on_fourth_frame(self):
+        readings = [_confident_reading()] + [
+            {"confident": False, "visible": False, "reason": "not_visible"}
+            for _ in range(30)
+        ]
+
         def read(*_args, **_kwargs):
-            return {"confident": False, "visible": False, "reason": "not_visible"}
+            return readings.pop(0) if readings else {"confident": False, "visible": False, "reason": "not_visible"}
 
-        recovery_times = []
-
-        def recover(*_args, **_kwargs):
-            recovery_times.append(follow.time.monotonic())
-            return _confident_reading()
-
-        with patch.object(follow, "_wait_for_visibility_recovery", side_effect=recover):
-            _won, _last, stats, _sends, stops = self._run(read, duration_s=3.8)
+        _won, _last, stats, sends, stops = self._run(read, duration_s=1.2)
 
         self.assertTrue(stops)
-        self.assertTrue(recovery_times)
-        self.assertGreaterEqual(recovery_times[0], 3.0)
-        self.assertEqual(stats.get("gapcrawl_confidence_pause_count"), 1)
+        self.assertGreaterEqual(len(sends), 2)
+        self.assertGreaterEqual(stats.get("gapcrawl_confidence_pause_count"), 1)
 
-    def test_three_jump_guard_frames_trigger_brief_reobserve(self):
+    def test_three_jump_guard_frames_stop_and_reobserve(self):
         read_count = 0
         jump = {
             "confident": False,
@@ -159,7 +156,60 @@ class TestGapCrawlContinuity(unittest.TestCase):
     def test_holding_blind_lower_uses_active_profile_duration(self):
         follow._set_game_profile("holding")
 
-        self.assertEqual(follow._follow_step2_config().get("seat_mast_duration_ms"), 3773)
+        self.assertEqual(follow._follow_step2_config().get("seat_mast_duration_ms"), 3473)
+
+    def test_empty_step1_logical_command_guard_forces_forward(self):
+        follow._set_game_profile("empty")
+
+        self.assertEqual(follow._empty_step1_logical_command("b", "gapcrawl_step1"), "f")
+        self.assertEqual(follow._empty_step1_logical_command("f", "gapcrawl_step1"), "f")
+
+    def test_empty_step1_turn_uses_both_forward_polarity_treads(self):
+        actions = follow._gap_crawl_forward_differential_turn_actions("r", 115, 133, 90)
+
+        self.assertEqual([row["action"] for row in actions], ["b", "f"])
+        self.assertTrue(all(row["duration_ms"] >= follow.MIN_WHEEL_ACT_DURATION_MS for row in actions))
+        self.assertTrue(all(row["pwm"] >= follow._pwm_floor_for_cmd(row["action"]) for row in actions))
+
+    def test_visibility_loss_stops_replaying_turn_after_first_lost_frame(self):
+        follow._set_game_profile("empty")
+        actions = follow._gap_crawl_straight_actions(115, 240)
+        self.assertEqual(actions[0]["action"], "b")
+        self.assertEqual(actions[1]["action"], "f")
+
+    def test_near_target_disables_overlap_only_on_far_side_approach(self):
+        cfg = _crawl_config()
+        cfg["command_overlap_ms"] = 100
+        cfg["near_target_no_overlap_mm"] = 25.0
+
+        self.assertEqual(
+            follow._gap_crawl_effective_overlap_ms(
+                cfg,
+                {"dist_mm": 120.0},
+                "gapcrawl_step1",
+                dist_target_mm=100.0,
+            ),
+            0,
+        )
+        self.assertEqual(
+            follow._gap_crawl_effective_overlap_ms(
+                cfg,
+                {"dist_mm": 130.1},
+                "gapcrawl_step1",
+                dist_target_mm=100.0,
+            ),
+            100,
+        )
+        self.assertEqual(
+            follow._gap_crawl_effective_overlap_ms(
+                cfg,
+                {"dist_mm": 95.0},
+                "gapcrawl_step1",
+                dist_target_mm=100.0,
+            ),
+            100,
+        )
+
 
 
 if __name__ == "__main__":

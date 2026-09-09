@@ -5,37 +5,29 @@ import a_follow_the_brick as follow
 
 
 class TestStep2PostWinCreepConfig(unittest.TestCase):
-    def test_empty_profile_preserves_post_win_forward_creep(self):
+    def test_empty_profile_has_no_post_win_forward_creep(self):
         follow._set_game_profile("empty")
         cfg = follow._follow_step2_config()
 
-        self.assertEqual(cfg.get("post_win_forward_creep_ms"), 940)
+        self.assertEqual(cfg.get("post_win_forward_creep_ms"), 0)
         self.assertEqual(cfg.get("post_win_forward_creep_pwm"), 103)
         self.assertFalse(cfg.get("post_win_forward_creep_read_after"))
 
-    def test_holding_profile_preserves_pre_place_forward_creep(self):
+    def test_holding_profile_has_no_pre_place_forward_creep(self):
         follow._set_game_profile("holding")
         cfg = follow._follow_step2_config()
 
         self.assertTrue(cfg.get("blind_mast_only"))
-        self.assertEqual(cfg.get("seat_mast_duration_ms"), 3773)
-        self.assertEqual(cfg.get("pre_place_forward_creep_ms"), 1400)
+        self.assertEqual(cfg.get("seat_mast_duration_ms"), 3473)
+        self.assertEqual(cfg.get("pre_place_forward_creep_ms"), 0)
         self.assertEqual(cfg.get("pre_place_forward_creep_pwm"), 103)
 
-    def test_holding_step2_nudges_forward_before_blind_lower(self):
+    def test_holding_step2_lowers_without_forward_nudge(self):
         follow._set_game_profile("holding")
         order = []
-        nudge_send = {"cmd_sent": "f", "duration_ms": 1400, "pwm": 103}
-
-        def fake_nudge(_vision, _robot, reading, step2):
-            order.append("nudge")
-            self.assertEqual(step2.get("pre_place_forward_creep_ms"), 1400)
-            self.assertEqual(step2.get("pre_place_forward_creep_pwm"), 103)
-            return {"confident": True, "reason": "after_forward_nudge"}, nudge_send
-
         def fake_lower(_robot, *, reading=None, step_cfg=None, label="holding_s3_lower"):
             order.append("lower")
-            self.assertEqual((reading or {}).get("reason"), "after_forward_nudge")
+            self.assertEqual((reading or {}).get("reason"), "holding_step1_win")
             self.assertTrue((step_cfg or {}).get("blind_mast_only"))
             self.assertEqual(label, "step2")
             return {
@@ -47,10 +39,6 @@ class TestStep2PostWinCreepConfig(unittest.TestCase):
 
         with mock.patch.object(
             follow,
-            "_run_holding_step1_forward_nudge",
-            side_effect=fake_nudge,
-        ), mock.patch.object(
-            follow,
             "_run_holding_blind_lower_sequence",
             side_effect=fake_lower,
         ):
@@ -60,58 +48,61 @@ class TestStep2PostWinCreepConfig(unittest.TestCase):
                 initial_reading={"confident": True, "reason": "holding_step1_win"},
             )
 
-        self.assertEqual(order, ["nudge", "lower"])
+        self.assertEqual(order, ["lower"])
         self.assertTrue(result["success"])
-        self.assertEqual(result["pre_place_forward_creep_result"], nudge_send)
-        self.assertEqual(result["pre_place_forward_creep_ms"], 1400)
+        self.assertIsNone(result.get("pre_place_forward_creep_result"))
+        self.assertEqual(result["pre_place_forward_creep_ms"], 0)
 
-    def test_holding_forward_nudge_sends_and_waits_for_configured_duration(self):
+    def test_holding_forward_nudge_is_disabled(self):
         follow._set_game_profile("holding")
-        events = []
-
-        def fake_send(_robot, cmd, pwm, *, duration_ms, reading, context):
-            events.append(("send", cmd, pwm, duration_ms, context))
-            return {"cmd_sent": cmd, "pwm": pwm, "duration_ms": duration_ms}
-
-        with mock.patch.object(
-            follow,
-            "guarded_send_command_pwm",
-            side_effect=fake_send,
-        ), mock.patch.object(
-            follow.time,
-            "sleep",
-            side_effect=lambda seconds: events.append(("sleep", seconds)),
-        ), mock.patch.object(
-            follow,
-            "_stop_robot",
-            side_effect=lambda _robot: events.append(("stop",)),
-        ):
-            _reading, result = follow._run_holding_step1_forward_nudge(
-                object(),
-                object(),
-                {"confident": True},
-                follow._follow_step2_config(),
-            )
-
-        self.assertEqual(result["cmd_sent"], "f")
-        self.assertEqual(
-            events,
-            [
-                ("send", "f", 103, 1400, "reset_holding_step1_pre_place_forward_creep"),
-                ("sleep", 1.4),
-                ("stop",),
-            ],
+        reading, result = follow._run_holding_step1_forward_nudge(
+            object(), object(), {"confident": True}, follow._follow_step2_config()
         )
+        self.assertTrue(reading.get("confident"))
+        self.assertIsNone(result)
+
+    def test_empty_step2_uses_step1_gapcrawl_controller(self):
+        follow._set_game_profile("empty")
+        calls = []
+        reading = {
+            "visible": True,
+            "confident": True,
+            "conf": 95.0,
+            "dist_mm": 70.3,
+            "x_mm": -0.9,
+        }
+
+        def fake_gapcrawl(_vision, _robot, **kwargs):
+            calls.append(kwargs)
+            return True, reading
+
+        with mock.patch.object(follow, "_gap_closing_crawl", side_effect=fake_gapcrawl), mock.patch.object(
+            follow,
+            "_run_post_win_forward_creep",
+            return_value=(reading, {"cmd_sent": "f", "duration_ms": 740}),
+        ):
+            result = follow._run_step2_seat_sequence(object(), object())
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["target_met"])
+        self.assertEqual(result["reason"], "step2_gapcrawl_target_hit")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["context"], "gapcrawl_empty_step2")
+        self.assertEqual(calls[0]["log_tag"], "STEP2_GAPCRAWL")
+        self.assertAlmostEqual(calls[0]["x_target_mm"], -0.4)
+        self.assertTrue(calls[0]["win_predicate"](reading))
 
     def test_holding_retreat_uses_full_mirrored_turn_reset(self):
         follow._set_game_profile("holding")
         cfg = follow._follow_step3_config()
 
         self.assertTrue(cfg.get("holding_blind_reset_enabled"))
-        self.assertEqual(cfg.get("holding_blind_back_crawl_ms"), 3000)
+        self.assertEqual(cfg.get("holding_blind_back_crawl_ms"), 1500)
         self.assertEqual(cfg.get("post_lift_back_crawl_ms"), 1500)
         self.assertEqual(cfg.get("post_lift_turn_ms"), 2160)
+        self.assertEqual(cfg.get("post_lift_mirror_turn_ms"), 1860)
         self.assertEqual(cfg.get("holding_blind_turn_ms"), 1800)
+        self.assertEqual(cfg.get("holding_blind_mirror_turn_ms"), 1500)
         self.assertEqual(cfg.get("holding_blind_turn_pause_ms"), 500)
 
     def test_post_lift_reset_sequence_item_uses_holding_transition_reset(self):
@@ -129,6 +120,7 @@ class TestStep2PostWinCreepConfig(unittest.TestCase):
                     "profile": follow._active_game_profile(),
                     "back_ms": step3.get("post_lift_back_crawl_ms"),
                     "turn_ms": step3.get("post_lift_turn_ms"),
+                    "mirror_turn_ms": step3.get("post_lift_mirror_turn_ms"),
                     "pause_ms": step3.get("holding_blind_turn_pause_ms"),
                 }
             )
@@ -154,7 +146,7 @@ class TestStep2PostWinCreepConfig(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(
             calls,
-            [{"profile": "holding", "back_ms": 1500, "turn_ms": 2160, "pause_ms": 500}],
+            [{"profile": "holding", "back_ms": 1500, "turn_ms": 2160, "mirror_turn_ms": 1860, "pause_ms": 500}],
         )
 
     def test_post_lift_transition_backs_away_before_full_random_turn_and_mirror(self):
@@ -174,7 +166,11 @@ class TestStep2PostWinCreepConfig(unittest.TestCase):
                     kwargs["duration_ms"],
                 )
             )
-            return {"cmd_sent": logical_cmd, "duration_ms": kwargs["duration_ms"]}
+            return {
+                "cmd_sent": logical_cmd,
+                "duration_ms": kwargs["duration_ms"],
+                "duty_curve_sequence": [{"duration_ms": kwargs["duration_ms"]}],
+            }
 
         with mock.patch.object(follow.random, "choice", return_value="l"), mock.patch.object(
             follow,
@@ -198,6 +194,7 @@ class TestStep2PostWinCreepConfig(unittest.TestCase):
                 {
                     "post_lift_back_crawl_ms": 1500,
                     "post_lift_turn_ms": 2160,
+                    "post_lift_mirror_turn_ms": 1860,
                     "holding_blind_turn_pause_ms": 500,
                 },
             )
@@ -213,7 +210,7 @@ class TestStep2PostWinCreepConfig(unittest.TestCase):
                 ("sleep", 1.5),
                 ("turn", "b", "backward", "l", 2160),
                 ("sleep", 0.5),
-                ("turn", "f", "forward", "r", 2160),
+                ("turn", "f", "forward", "r", 1860),
             ],
         )
 
@@ -226,7 +223,7 @@ class TestStep2PostWinCreepConfig(unittest.TestCase):
         self.assertEqual(cfg.get("turn_ms"), 1500)
         self.assertEqual(cfg.get("pause_ms"), 0)
         self.assertEqual(cfg.get("strength"), "superstrong")
-        self.assertEqual(cfg.get("first_drive_mode"), "backward")
+        self.assertEqual(cfg.get("first_drive_mode"), "forward")
         self.assertEqual(cfg.get("mirror_drive_mode"), "forward")
 
     def test_e2e_pre_empty_step1_crawls_right_until_visible(self):
@@ -469,7 +466,7 @@ class TestStep2PostWinCreepConfig(unittest.TestCase):
             "reason": "step2_unconfirmed_no_final_visibility",
             "reading": {"visible": False, "confident": False},
         }
-        creep_send = {"cmd_sent": "f", "duration_ms": 940, "pwm": 103}
+        creep_send = {"cmd_sent": "f", "duration_ms": 740, "pwm": 103}
 
         with mock.patch.object(
             follow,

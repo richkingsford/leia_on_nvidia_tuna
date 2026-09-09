@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import logging
 import statistics
+import threading
+import time
 from collections import deque
 from typing import Optional
 
@@ -27,17 +29,22 @@ from helper_camera_sources import (
 )
 from helper_brick_detector_yolo import (
     BRICK_HEIGHT_MM,
+    BRICK_DISTANCE_SCALE,
     BRICK_WIDTH_MM,
     COLOR_ONLY_CONF_PCT,
     CYAN_HSV_BALANCED_LOWER,
     CYAN_HSV_BALANCED_UPPER,
+    CYAN_HSV_TIGHT_LOWER,
+    CYAN_HSV_TIGHT_UPPER,
     CYAN_HSV_WIDE_LOWER,
     CYAN_HSV_WIDE_UPPER,
+    CYAN_SHADE_HEXES,
     DEFAULT_FRAME_H,
     DEFAULT_FRAME_W,
     FOCAL_PX_REF,
     FOCAL_REF_WIDTH,
     NMS_THRESHOLD,
+    PARTIAL_EDGE_MARGIN_PX,
     YOLO_INPUT_SIZE,
     build_negative_cutout_shape_detector,
     detect_single_negative_cutout_brick,
@@ -47,7 +54,10 @@ from helper_brick_detector_yolo import (
 NATIVE_RECT_MIN_FILL_RATIO = 0.22
 NATIVE_RECT_MIN_SOLIDITY = 0.30
 NATIVE_RECT_MAX_BBOX_ASPECT = 3.25
-NATIVE_RECT_MAX_BBOX_WIDTH_RATIO = 0.55
+# A close, valid stack can occupy most of the frame. Keep a margin for
+# full-frame green artifacts, but do not reject a clearly shrink-wrapped stack
+# merely because Leia is already near it.
+NATIVE_RECT_MAX_BBOX_WIDTH_RATIO = 0.90
 NATIVE_RECT_MAX_MIN_AREA_ASPECT = 4.25
 NATIVE_RECT_STRIP_ASPECT = 2.55
 NATIVE_RECT_STRIP_MAX_HEIGHT_RATIO = 0.12
@@ -123,17 +133,20 @@ GREEN_EDGE_PAINTED_CLOSE_CALIBRATION_POINTS = (
     (89.0, 100.0),
     (116.0, 150.0),
 )
-# Green-edge becomes the PRIMARY distance source (overriding the rectangle path) once
-# the stack is wide enough to mean close range. The rectangle path returns unreliable
-# (often garbage) distances at close range without failing cleanly, so we can't wait for
-# it to return None. ~180px width corresponds to ~148mm; Step 1 mid-range (~227mm) is
-# only ~117px wide, so it stays on the verified rectangle path.
+# Green-edge constants are retained for offline diagnostics only. They are not part of
+# the robot-facing detector: motion uses one rectangle geometry model at every range.
 GREEN_EDGE_PRIMARY_MIN_WIDTH_PX = 180
 NATIVE_RECT_MAX_CENTER_STEP_PX = 140.0
 NATIVE_RECT_MAX_WIDTH_RATIO_JUMP = 0.42
 NATIVE_RECT_PREFERRED_LOCK_DIST_MM = 170.0
 NATIVE_RECT_MAX_INITIAL_ABS_Y_MM = 130.0
 NATIVE_RECT_MAX_INITIAL_ABS_X_MM = 420.0
+# A stack can be clipped by the camera frame. Solid green fill and straight
+# edges remain strong evidence even when the missing edge breaks full geometry.
+NATIVE_RECT_PARTIAL_MIN_FILL_RATIO = 0.65
+NATIVE_RECT_PARTIAL_MIN_EDGE_SCORE = 0.60
+NATIVE_RECT_PARTIAL_MAX_BBOX_WIDTH_RATIO = 1.05
+NATIVE_RECT_PARTIAL_MAX_BBOX_ASPECT = 8.0
 
 
 def _calibrate_painted_close_green_edge_dist(raw_dist_mm: float) -> float:
@@ -164,6 +177,8 @@ def _calibrate_painted_close_green_edge_dist(raw_dist_mm: float) -> float:
 class NativeOakBrickDetector:
     """OAK-D/OpenCV detector that confirms bricks by color and shape."""
 
+    VISION_MODEL_ID = "native_oak_green_rectangle"
+
     def __init__(
         self,
         debug: bool = True,
@@ -176,6 +191,11 @@ class NativeOakBrickDetector:
         self.debug = bool(debug)
         self.log = logging.getLogger("BrickVisionNativeOAK")
         self.cap = None
+        self._capture_thread = None
+        self._capture_stop = threading.Event()
+        self._capture_lock = threading.Lock()
+        self._latest_capture_frame = None
+        self._camera_recovery_count = 0
         self.camera_index = None
         self.current_frame = None
         self.raw_frame = None
@@ -185,6 +205,7 @@ class NativeOakBrickDetector:
         self.inference_backend = "native_oak_color_shape"
         self.model_path = "native_oak_color_shape"
         self.model_name = "native_oak_color_shape"
+        self.vision_model_id = self.VISION_MODEL_ID
         self.input_size = 0
         self.conf_threshold = 0.0
         self.nms_threshold = float(NMS_THRESHOLD)
@@ -208,6 +229,7 @@ class NativeOakBrickDetector:
         self._detector._native_rect_max_dist_step_mm = float(NATIVE_RECT_MAX_DIST_STEP_MM)
         self._detector._depth_source_mode = "pinhole"
         self._detector._stereo_config_mode = "standard"
+        self._detector._native_distance_scale = float(BRICK_DISTANCE_SCALE)
         self._detector.cap = None
         self._native_last_good_dist = None
         self._native_last_good_center = None
@@ -239,6 +261,15 @@ class NativeOakBrickDetector:
         self._detector._prev_offset = None
         self._detector._prev_offset_y = None
         self._detector._center_lock_prev_center = None
+        # A rejected lock must be a true reacquisition. Keeping the old native
+        # center/width makes every new candidate look like a continuity jump.
+        self._native_last_good_dist = None
+        self._native_last_good_center = None
+        self._native_last_good_width_px = None
+        self._native_last_good_offset_x_mm = None
+        self._native_last_good_cam_height_mm = None
+        self._native_last_good_source = None
+        self._native_miss_count = 0
         self._reset_native_dist_filter()
 
     def _reset_native_dist_filter(self) -> None:
@@ -335,12 +366,16 @@ class NativeOakBrickDetector:
         tried_sources: list[CameraSource] = []
         for source in self._candidate_camera_sources(self._camera_index_preference):
             tried_sources.append(source)
-            cap = open_opencv_camera_source(
-                source,
-                cv2,
-                width=int(self.frame_w),
-                height=int(self.frame_h),
-            )
+            try:
+                cap = open_opencv_camera_source(
+                    source,
+                    cv2,
+                    width=int(self.frame_w),
+                    height=int(self.frame_h),
+                )
+            except Exception as exc:
+                self.log.warning("Camera source %s failed to open after OAK recovery: %s", source, exc)
+                cap = None
             if cap is None or not cap.isOpened():
                 continue
             self.cap = cap
@@ -400,12 +435,64 @@ class NativeOakBrickDetector:
         if not self._open_camera():
             self._mark_not_found("camera unavailable")
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
-        ret, frame = self.cap.read()
-        if not ret or frame is None:
+        self._start_capture_worker()
+        deadline = time.monotonic() + 1.0
+        frame = None
+        while time.monotonic() < deadline:
+            with self._capture_lock:
+                if self._latest_capture_frame is not None:
+                    frame = self._latest_capture_frame.copy()
+                    self._latest_capture_frame = None
+            if frame is not None:
+                break
+            time.sleep(0.002)
+        if frame is None:
+            self._camera_recovery_count += 1
             self.release()
+            self._reset_detector_tracking()
+            self._clear_detection_metadata()
+            if self._open_camera():
+                self.log.warning(
+                    "Camera frame timeout recovered by reopening OAK source (attempt %d)",
+                    self._camera_recovery_count,
+                )
+            else:
+                self.log.error(
+                    "Camera frame timeout recovery failed after OAK source crash (attempt %d)",
+                    self._camera_recovery_count,
+                )
             self._mark_not_found("camera read failed")
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        self._camera_recovery_count = 0
         return self.read_frame(frame)
+
+    def _start_capture_worker(self) -> None:
+        thread = self._capture_thread
+        if thread is not None and thread.is_alive():
+            return
+        self._capture_stop.clear()
+        self._capture_thread = threading.Thread(
+            target=self._capture_loop,
+            name="leia-oak-latest-frame",
+            daemon=True,
+        )
+        self._capture_thread.start()
+
+    def _capture_loop(self) -> None:
+        while not self._capture_stop.is_set():
+            cap = self.cap
+            if cap is None:
+                time.sleep(0.002)
+                continue
+            try:
+                ret, frame = cap.read()
+            except Exception:
+                ret, frame = False, None
+            if not ret or frame is None:
+                time.sleep(0.002)
+                continue
+            with self._capture_lock:
+                self._latest_capture_frame = frame
 
     def read_frame(self, frame):
         if frame is None or getattr(frame, "size", 0) == 0:
@@ -421,18 +508,7 @@ class NativeOakBrickDetector:
         self._detector.last_candidate_count = int(len(candidates))
         self._detector.last_nms_count = int(len(candidates))
 
-        painted_column_result = self._green_edge_close_range_result(frame, require_close=False)
-        if (
-            isinstance(painted_column_result, tuple)
-            and len(painted_column_result) >= 1
-            and bool(painted_column_result[0])
-            and str(getattr(self._detector, "last_geometry_source", "") or "") == "green_edge_painted_column_width"
-        ):
-            return painted_column_result
-
         if primary is None:
-            if isinstance(painted_column_result, tuple) and len(painted_column_result) >= 1 and bool(painted_column_result[0]):
-                return painted_column_result
             self._mark_not_found(str(getattr(self._detector, "last_status", "shape mismatch")))
             self.current_frame = frame.copy()
             self._detector.current_frame = self.current_frame
@@ -444,11 +520,10 @@ class NativeOakBrickDetector:
 
     def _detect_color_rectangle_candidate(self, frame):
         detector = self._detector
-        loose_feature_mask, loose_contour_mask = detector._build_hsv_masks(frame)
         feature_mask, contour_mask = self._build_native_brick_masks(
             frame,
-            loose_feature_mask,
-            loose_contour_mask,
+            None,
+            None,
         )
         if feature_mask is None or contour_mask is None:
             return None, []
@@ -504,6 +579,17 @@ class NativeOakBrickDetector:
             if rw <= 0.0 or rh <= 0.0:
                 continue
             aspect = float(max(rw, rh)) / float(max(1e-6, min(rw, rh)))
+            partial_edges = {
+                "top": bool(int(y) <= int(PARTIAL_EDGE_MARGIN_PX)),
+                "bottom": bool(int(y + h) >= int(frame_h - PARTIAL_EDGE_MARGIN_PX)),
+                "left": bool(int(x) <= int(PARTIAL_EDGE_MARGIN_PX)),
+                "right": bool(int(x + w) >= int(frame_w - PARTIAL_EDGE_MARGIN_PX)),
+            }
+            partial_geometry = bool(
+                any(partial_edges.values())
+                and float(fill_ratio) >= float(NATIVE_RECT_PARTIAL_MIN_FILL_RATIO)
+                and float(edge_metrics.get("edge_score", 0.0)) >= float(NATIVE_RECT_PARTIAL_MIN_EDGE_SCORE)
+            )
             ok, geometry = self._native_rect_geometry_ok(
                 contour,
                 bbox=(int(x), int(y), int(w), int(h)),
@@ -513,6 +599,7 @@ class NativeOakBrickDetector:
                 fill_ratio=float(fill_ratio),
                 min_area_aspect=float(aspect),
                 edge_metrics=edge_metrics,
+                allow_partial=partial_geometry,
             )
             if not ok:
                 continue
@@ -540,9 +627,9 @@ class NativeOakBrickDetector:
                 except Exception:
                     proxy_x = proxy_y = None
             try:
-                if proxy_y is not None and abs(float(proxy_y)) > float(NATIVE_RECT_MAX_INITIAL_ABS_Y_MM):
+                if not partial_geometry and proxy_y is not None and abs(float(proxy_y)) > float(NATIVE_RECT_MAX_INITIAL_ABS_Y_MM):
                     continue
-                if proxy_x is not None and abs(float(proxy_x)) > float(NATIVE_RECT_MAX_INITIAL_ABS_X_MM):
+                if not partial_geometry and proxy_x is not None and abs(float(proxy_x)) > float(NATIVE_RECT_MAX_INITIAL_ABS_X_MM):
                     continue
             except (TypeError, ValueError):
                 pass
@@ -569,10 +656,10 @@ class NativeOakBrickDetector:
                     "rect": rect,
                     "bbox": (int(x), int(y), int(w), int(h)),
                     "area": float(area),
-                    "partial": False,
-                    "partial_kind": None,
-                    "partial_label": None,
-                    "partial_edges": {},
+                    "partial": bool(partial_geometry),
+                    "partial_kind": "frame_edge_partial" if partial_geometry else None,
+                    "partial_label": "CLIPPED SOLID GREEN" if partial_geometry else None,
+                    "partial_edges": partial_edges if partial_geometry else {},
                     "shape_profile": "native_rect",
                     "shape_match_score": None,
                     "negative_cutout_polygons": [],
@@ -816,6 +903,7 @@ class NativeOakBrickDetector:
         fill_ratio: float,
         min_area_aspect: float,
         edge_metrics: dict | None = None,
+        allow_partial: bool = False,
     ) -> tuple[bool, dict]:
         _x, _y, w, h = bbox
         bbox_aspect = float(max(w, h)) / float(max(1, min(w, h)))
@@ -835,16 +923,26 @@ class NativeOakBrickDetector:
         }
         edge_metrics = edge_metrics if isinstance(edge_metrics, dict) else {}
         metrics.update(edge_metrics)
+        partial_geometry = bool(
+            allow_partial
+            and float(fill_ratio) >= float(NATIVE_RECT_PARTIAL_MIN_FILL_RATIO)
+            and float(edge_metrics.get("edge_score", 0.0)) >= float(NATIVE_RECT_PARTIAL_MIN_EDGE_SCORE)
+        )
+        metrics["partial_geometry"] = partial_geometry
         if float(fill_ratio) < float(NATIVE_RECT_MIN_FILL_RATIO):
             metrics["reason"] = "low_fill"
             return False, metrics
         if float(solidity) < float(NATIVE_RECT_MIN_SOLIDITY):
             metrics["reason"] = "low_solidity"
             return False, metrics
-        if float(bbox_aspect) > float(NATIVE_RECT_MAX_BBOX_ASPECT):
+        if float(bbox_aspect) > float(
+            NATIVE_RECT_PARTIAL_MAX_BBOX_ASPECT if partial_geometry else NATIVE_RECT_MAX_BBOX_ASPECT
+        ):
             metrics["reason"] = "implausible_bbox_aspect"
             return False, metrics
-        if float(bbox_width_ratio) > float(NATIVE_RECT_MAX_BBOX_WIDTH_RATIO):
+        if float(bbox_width_ratio) > float(
+            NATIVE_RECT_PARTIAL_MAX_BBOX_WIDTH_RATIO if partial_geometry else NATIVE_RECT_MAX_BBOX_WIDTH_RATIO
+        ):
             metrics["reason"] = "implausible_bbox_width_ratio"
             return False, metrics
         if float(min_area_aspect) > float(NATIVE_RECT_MAX_MIN_AREA_ASPECT):
@@ -855,6 +953,7 @@ class NativeOakBrickDetector:
         if (
             horizontal_aspect > float(NATIVE_RECT_STRIP_ASPECT)
             and height_ratio < float(NATIVE_RECT_STRIP_MAX_HEIGHT_RATIO)
+            and not partial_geometry
         ):
             metrics["reason"] = "thin_horizontal_strip"
             return False, metrics
@@ -1181,6 +1280,9 @@ class NativeOakBrickDetector:
 
     def _result_from_candidate(self, frame, primary: dict, candidates: list[dict]):
         detector = self._detector
+        if str(primary.get("shape_profile") or "") != "native_rect":
+            self._mark_not_found("non-native brick geometry rejected")
+            return (False, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         if str(primary.get("shape_profile") or "") == "native_rect":
             # Model lock: do not swap to the green-edge close/top-strip/painted-column
             # distance model mid-run. That switch caused 250mm poses to jump to
@@ -1243,56 +1345,12 @@ class NativeOakBrickDetector:
             dist = float(raw_dist)
         else:
             dist = self._native_rect_distance_from_raw(raw_dist, prev_for_dist, primary)
-        if str(primary.get("shape_profile") or "") == "native_rect":
-            last_source = str(getattr(self, "_native_last_good_source", "") or "")
-            last_dist = getattr(self, "_native_last_good_dist", None)
-            try:
-                dist_jump = abs(float(dist) - float(last_dist))
-                last_close = float(last_dist) <= 170.0
-            except (TypeError, ValueError):
-                dist_jump = 0.0
-                last_close = False
-            if (
-                last_source.startswith("green_edge_")
-                and bool(last_close)
-                and float(dist_jump) >= 45.0
-                and int(getattr(self, "_native_green_edge_hold_count", 0) or 0) < 5
-            ):
-                self._native_green_edge_hold_count = int(getattr(self, "_native_green_edge_hold_count", 0) or 0) + 1
-                held_dist = float(last_dist)
-                try:
-                    held_x = float(getattr(self, "_native_last_good_offset_x_mm"))
-                except (TypeError, ValueError):
-                    held_x = detector._estimate_offset_x_mm(anchor_cx, held_dist)
-                try:
-                    held_y = float(getattr(self, "_native_last_good_cam_height_mm"))
-                except (TypeError, ValueError):
-                    held_y = detector._estimate_cam_height(anchor_cy, held_dist)
-                detector.last_raw_dist = float(raw_dist)
-                detector.last_bbox_dist = float(held_dist)
-                detector.last_final_dist = float(held_dist)
-                detector.last_geometry_source = f"{last_source}_held_against_native_jump"
-                detector.last_status = (
-                    "holding last green-edge close-range lock against native rectangle jump "
-                    f"({held_dist:.1f}->{float(dist):.1f}mm)"
-                )
-                detector.last_distance_display_text = f"{held_dist:.0f}mm"
-                self.last_status = detector.last_status
-                return (
-                    True,
-                    0.0,
-                    float(held_dist),
-                    float(held_x),
-                    float(GREEN_EDGE_PAINTED_COLUMN_CONF_PCT),
-                    float(held_y),
-                    False,
-                    False,
-                )
         detector._prev_dist = dist
         detector.last_final_dist = dist
         if (
             str(primary.get("shape_profile") or "") == "native_rect"
             and not str(getattr(detector, "last_geometry_source", "") or "").startswith("native_rect_width_stable_avg")
+            and int(getattr(detector, "last_stable_dist_inlier_count", 0) or 0) > 0
         ):
             detector.last_status = (
                 f"target locked (native robust median warming "
@@ -1438,7 +1496,10 @@ class NativeOakBrickDetector:
             # good reading via the visibility bridge rather than publishing a jump.
             # The miss_count terms still relax both thresholds so a genuinely lost lock
             # can re-acquire.
-            if float(continuity_dist) > max_center_step or float(width_ratio) > max_width_ratio:
+            if (
+                not bool(candidate_list[int(best_idx)].get("partial"))
+                and (float(continuity_dist) > max_center_step or float(width_ratio) > max_width_ratio)
+            ):
                 self.last_status = "native color rectangle continuity reject"
                 self._detector.last_status = self.last_status
                 return None
@@ -1454,6 +1515,10 @@ class NativeOakBrickDetector:
 
     def _native_rect_center_jump_rejected(self, primary: dict | None, center_x, center_y) -> bool:
         if str((primary or {}).get("shape_profile") or "") != "native_rect":
+            return False
+        if bool((primary or {}).get("partial")):
+            # A clipped solid-green stack is an intentional reacquisition path;
+            # its first valid center may be far from a stale pre-loss lock.
             return False
         previous = self._native_last_good_center
         if not isinstance(previous, tuple) or len(previous) != 2:
@@ -1568,10 +1633,13 @@ class NativeOakBrickDetector:
         debug_frame = frame.copy()
         if self.debug:
             _found, angle, dist, offset_x, conf_pct, _cam_height, _above, _below = result
+            # Draw only the selected candidate. Passing every candidate makes
+            # the legacy debug renderer union their boxes, which flickers and
+            # no longer shrink-wraps the tracked brick.
             self._detector._draw_debug_hsv(
                 debug_frame,
                 [],
-                candidates if candidates else [primary],
+                [primary] if isinstance(primary, dict) else candidates,
                 primary,
                 angle,
                 dist,
@@ -1582,9 +1650,16 @@ class NativeOakBrickDetector:
         self._detector.current_frame = debug_frame
 
     def release(self) -> None:
+        self._capture_stop.set()
+        thread = self._capture_thread
+        self._capture_thread = None
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
         cap = self.cap
         self.cap = None
         self._detector.cap = None
+        with self._capture_lock:
+            self._latest_capture_frame = None
         if cap is not None:
             try:
                 cap.release()
@@ -1603,4 +1678,11 @@ __all__ = [
     "BRICK_WIDTH_MM",
     "BrickDetector",
     "NativeOakBrickDetector",
+    "CYAN_HSV_BALANCED_LOWER",
+    "CYAN_HSV_BALANCED_UPPER",
+    "CYAN_HSV_TIGHT_LOWER",
+    "CYAN_HSV_TIGHT_UPPER",
+    "CYAN_HSV_WIDE_LOWER",
+    "CYAN_HSV_WIDE_UPPER",
+    "CYAN_SHADE_HEXES",
 ]
